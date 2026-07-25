@@ -22,7 +22,7 @@
  *    - Per-pair only — same per-pair-only invariant as
  *      `standing_instructions` (PB10).
  *
- *  Spec: `docs/d-145-spec.md` § B.12. */
+ *  Spec: D-145 § B.12. */
 
 import {
   EXTRACTION_EVENT_KIND_SET,

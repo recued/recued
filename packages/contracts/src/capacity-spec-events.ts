@@ -6,8 +6,8 @@
  *  for downstream consumers that don't depend on `@recued/storage`
  *  (e.g. UI shared label maps, MCP-facing audit projections).
  *
- *  Spec: `docs/d-145-spec.md` § B.4.4.
- *  Design draft: `docs/d-145-pb1-design.md`. */
+ *  Spec: D-145 § B.4.4.
+ *  Design draft: D-145. */
 
 import type {
   CapacityAuditParams,

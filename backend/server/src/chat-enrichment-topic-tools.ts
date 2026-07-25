@@ -10,7 +10,7 @@
  *  ("deal health" was legitimately torn between `deal.search` and
  *  `enrichment.search`, ~40-50% batch-reliable); the lab's two-section
  *  framing with per-topic ENRICHMENT TOOLS lifted target-topic intent
- *  0% → 67-100% on smoke (`recued-enrichment-benchmark/enrichment-farm/
+ *  0% → 67-100% on smoke (internal benchmarks
  *  harness/compose-agent.ts` + HANDOFF §1).
  *
  *  Shape: a wrapper around the chat orchestrator's view of the

@@ -19,7 +19,7 @@
  *       surface alongside fresh ones; consumers read `staleness_class`
  *       off the bag-form envelope to decide.
  *
- *  Spec: `docs/d-136-spec.md` §A.13.3 + spec P7 lines 1123-1124. The
+ *  Spec: D-136 §A.13.3 + spec P7 lines 1123-1124. The
  *  storage substrate is the foundation P7.D's `mcp.enrichment.read`
  *  rpc layers `as_of` / `coherent_at` / `include_historical` filters
  *  on top of. */

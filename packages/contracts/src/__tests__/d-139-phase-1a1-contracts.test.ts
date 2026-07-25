@@ -13,7 +13,7 @@
  *      the published catalog at v1; per-topic visibility opt-in is the
  *      only path to expose.
  *
- *  Spec: docs/d-139-spec.md § A.3, § A.3.2, § A.3.3, § A.3.6, § A.5.1,
+ *  Spec: D-139 § A.3, § A.3.2, § A.3.3, § A.3.6, § A.5.1,
  *  § A.9.5, § P1a.1 acceptance. */
 
 import { describe, expect, it } from 'vitest';

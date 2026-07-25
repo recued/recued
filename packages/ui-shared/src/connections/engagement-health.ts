@@ -14,7 +14,7 @@
  *    - `data-action="connections-engagement-configure-cadence"` → host
  *      navigates to Settings → Server → Housekeeping (HubSpot only)
  *
- *  Spec: docs/d-139-spec.md § A.8 + § P2. */
+ *  Spec: D-139 § A.8 + § P2. */
 
 import type {
   EngagementHealthResponse,

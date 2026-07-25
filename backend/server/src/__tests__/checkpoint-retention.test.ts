@@ -75,6 +75,7 @@ const harness = (opts: {
   cancelOutcome?: 'cancelled' | 'not_open';
   askHooks?: CheckpointRetentionAskHooks | 'absent';
   staleAfterDays?: number | null;
+  onExpired?: (entry: AuditEntry) => Promise<void> | void;
 } = {}): Harness => {
   const entries = createInMemoryCollection<AuditEntry>();
   const activities = createInMemoryCollection<ActivityEntry>();
@@ -103,6 +104,7 @@ const harness = (opts: {
       staleAfterDays:
         opts.staleAfterDays === undefined ? WINDOW_DAYS : opts.staleAfterDays,
     }),
+    ...(opts.onExpired ? { onExpired: opts.onExpired } : {}),
   });
   return {
     retention,
@@ -125,6 +127,21 @@ const seed = async (
 };
 
 describe('checkpoint-retention — staleness guard', () => {
+  it('notifies an additive observer only after the terminal row and checkpoint deletion', async () => {
+    let h: Harness;
+    const onExpired = vi.fn(async (entry: AuditEntry) => {
+      expect(entry.commit_status).toBe('failed');
+      expect(entry.errors[0]?.code).toBe('RECIPE_APPROVAL_TIMEOUT');
+      expect(await h.checkpointStore.get('cp-1')).toBeNull();
+      expect((await h.auditLog.get('run-1'))?.commit_status).toBe('failed');
+    });
+    h = harness({ onExpired });
+    await seed(h, [checkpoint()], [anchor()]);
+
+    await expect(h.retention.run()).resolves.toMatchObject({ expired: 1 });
+    expect(onExpired).toHaveBeenCalledTimes(1);
+  });
+
   it('expires a stale awaiting run: cancels the ask, retires the anchor, deletes the checkpoint, logs one reserve activity', async () => {
     const h = harness();
     const original = anchor();

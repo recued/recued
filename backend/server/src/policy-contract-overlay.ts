@@ -46,7 +46,7 @@
  *  meters nothing and reads all — the snapshot's `allowed_tools` stays the sole
  *  authority, unchanged.
  *
- *  Spec: `docs/d-166-spec.md` §"contract_definition" + `docs/d-187-spec.md`
+ *  Spec: D-166 §"contract_definition" + D-187
  *  AMENDMENT §3 / slice 5 (`[[project_policy_matrix_retirement]]`). */
 
 import {

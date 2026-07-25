@@ -19,7 +19,7 @@
  *  The suggestion SOURCE (the reject-driven learner) is Slice 1; until then a
  *  test/fake source calls `upsertOpen` directly.
  *
- *  Spec: docs/d-202-spec.md §5 / §12.4. */
+ *  Spec: D-202 §5 / §12.4. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import {

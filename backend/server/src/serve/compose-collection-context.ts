@@ -49,7 +49,7 @@ import type { IngredientManifest } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
 import type { CascadeEngine } from '../storage/enrichment-cascade.js';
-import type { createBlobStore } from '../storage/index.js';
+import type { BlobStore } from '../storage/index.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type { WorkEntitySourceWriteExecutor } from '../work-entity-write-executor.js';
 import type { GateRegistry } from '../storage-gates.js';
@@ -73,7 +73,6 @@ import {
   type ArchiveUploadService,
 } from '../archive/archive-upload-service.js';
 
-type BlobStore = ReturnType<typeof createBlobStore>;
 type WatcherDispatcher = ReturnType<typeof createWatcherDispatcher>;
 type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 

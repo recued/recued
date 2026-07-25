@@ -337,6 +337,9 @@ describe('D-163 Slice B — composeExecuteDeps threads Slice B fields', () => {
           registerHold: vi.fn(),
           hooks: { handleAnswer: vi.fn() },
         } as never,
+        // Required on the bundle — omitting it is a silent feature-off for the
+        // `/ask` detail block, so the type refuses it rather than the page.
+        getBatch: vi.fn(async () => null),
       } as NotificationBlockBundle),
     );
     vi.doMock('../composition/bin/wire-notification-block.js', () => ({
@@ -397,6 +400,9 @@ describe('D-163 Slice B — composeExecuteDeps threads Slice B fields', () => {
           registerHold: vi.fn(),
           hooks: { handleAnswer: vi.fn() },
         } as never,
+        // Required on the bundle — omitting it is a silent feature-off for the
+        // `/ask` detail block, so the type refuses it rather than the page.
+        getBatch: vi.fn(async () => null),
       } as NotificationBlockBundle),
     );
     vi.doMock('../composition/bin/wire-notification-block.js', () => ({

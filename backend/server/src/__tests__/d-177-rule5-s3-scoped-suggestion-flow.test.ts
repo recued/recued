@@ -235,6 +235,7 @@ describe('mintScopedSessionGrant — fail-loud vocabulary + matcher compatibilit
       recipe_id: 'r-any',
       recipe_hash: 'h-any',
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: 'shape-any',
       canonical_payload_hash: 'payload-any',
       destination_emails: ['vendor@x.com'],
@@ -269,7 +270,6 @@ describe('mintScopedSessionGrant — fail-loud vocabulary + matcher compatibilit
     ['unbound ingredient axis', { scope: { ...mintInput().scope, ingredient_ids: [] } }],
     ['unbound operation axis', { scope: { ...mintInput().scope, operation_ids: [] } }],
     ['unbound connection axis', { scope: { ...mintInput().scope, connection_names: [] } }],
-    ['read tier', { risk_tier: 'read' }],
     ['destructive tier', { risk_tier: 'destructive' }],
     [
       'off-vocabulary source',
@@ -285,6 +285,12 @@ describe('mintScopedSessionGrant — fail-loud vocabulary + matcher compatibilit
       ScopedGrantMintError,
     );
   });
+
+  it('D-211 permits a bounded read-tier scoped session grant', () => {
+    expect(defStore.mintScopedSessionGrant(
+      mintInput({ risk_tier: 'read' }),
+    ).risk_tier).toBe('read');
+  });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -297,14 +303,18 @@ describe('resolveScopedCatalogBinding + connection candidates (5.b)', () => {
     });
     // off-catalog action
     expect(resolveScopedCatalogBinding([MAIL_CATALOG], 'mail', 'send')).toBeUndefined();
-    // read-tier op never proposes
+    // D-211 Slice 3: read-tier session grants use the same scoped binding.
     expect(
       resolveScopedCatalogBinding(
         [catalogManifest('c2', 'mail.reply', 'read')],
         'mail',
         'reply',
       ),
-    ).toBeUndefined();
+    ).toEqual({
+      ingredient_id: 'c2',
+      operation_id: 'mail.reply',
+      risk_tier: 'read',
+    });
     // two declaring catalogs — ambiguous, no guess
     expect(
       resolveScopedCatalogBinding(

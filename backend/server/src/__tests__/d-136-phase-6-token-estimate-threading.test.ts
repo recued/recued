@@ -6,7 +6,7 @@
  *  collector reads the stamped value instead of the
  *  `DEFAULT_AI_TOKEN_ESTIMATE = 200` fallback.
  *
- *  Spec: docs/d-136-spec.md §A.7. */
+ *  Spec: D-136 §A.7. */
 
 import { describe, expect, it } from 'vitest';
 

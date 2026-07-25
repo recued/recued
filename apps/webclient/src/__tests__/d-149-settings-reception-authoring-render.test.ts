@@ -202,13 +202,13 @@ describe('D-149 follow-on — renderAuthoringForm: field controls', () => {
     expect(html).toMatch(/data-field-key="min_advance_notice_hours"[^>]*min="0"/);
   });
 
-  it('a toggle field carries data-field-control="toggle"', () => {
+  it('renders the live approval-notification sender instead of dead side-effect toggles', () => {
     const html = renderAuthoringForm(schedulingView());
-    // scheduling_link.create_calendar_event is a toggle.
-    expect(html).toContain('data-field-key="on_booking.create_calendar_event"');
     expect(html).toMatch(
-      /data-field-key="on_booking.create_calendar_event"[^>]*data-field-control="toggle"/,
+      /data-field-key="on_booking.notify_visitor_sender"[^>]*data-field-control="text"/,
     );
+    expect(html).not.toContain('on_booking.create_calendar_event');
+    expect(html).not.toContain('on_booking.create_commitment_entity');
   });
 
   it('a select field carries data-field-control="select" + marks the current option', () => {

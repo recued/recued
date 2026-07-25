@@ -86,9 +86,11 @@ import {
   type ChatDispatchChannel,
   type ChatDispatchContext,
   type ChatDispatchResult,
+  type ChatDataDiagnosisContext,
   type ChatMessage,
   type ChatModelHint,
   type ChatModelRoutingLayer,
+  type ChatPlanExecutionReceipt,
   type ChatPickerTarget,
   type ChatSession,
   type ChatTailMessage,
@@ -115,9 +117,13 @@ import {
   isChatModelRoutingLayer,
   isChatModelSourceId,
   isTier1ToolName,
+  executionSourceHasContract,
   executionSourceContractId,
 } from '@recued/contracts';
 import { planApproval as planApprovalModule, piiEgress } from '@recued/gateway';
+import {
+  runWithExecutionCaseVerificationContext,
+} from './execution-case-verification-context.js';
 import {
   createMiddlewareRegistry,
   runStream,
@@ -125,6 +131,7 @@ import {
   type EntityPromptPart,
   type MiddlewareRegistry,
   type TextPromptPart,
+  type TurnContext,
   type TurnExecutor,
   type TurnOutput,
 } from '@recued/middleware';
@@ -146,7 +153,11 @@ import type {
   ResolvedLlmSystemPrompt,
 } from './llm-system-prompt.js';
 import type { AuditLogStore } from '@recued/storage';
-import { ChatVaultLockedError, type ChatStore } from './storage/chat-store.js';
+import {
+  ChatVaultLockedError,
+  type ChatStore,
+  type RetainedAliasCandidate,
+} from './storage/chat-store.js';
 import type { EventBus } from './events/bus.js';
 import {
   handleFileRead,
@@ -164,6 +175,15 @@ import {
   type RunChatTurnPromptContent,
   type RunChatTurnResult,
 } from './chat-turn-executor.js';
+import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
+import {
+  RECALL_SEARCH_TOOL_NAME,
+  recallJoinedPieces,
+  hasRegisteredRecallResult,
+  registerRecallTurnSource,
+  registerVisibleInteractionItemIds,
+  registerVisibleRecallToolResult,
+} from './chat-recall-search-tool.js';
 import { chatCapacity, createServerChatChannel } from './chat-channel-factory.js';
 // D-160 spec-O-5 Stage 3 — the turn concerns are REGISTERED HOOKS over the
 // shared `state` (N.9): source-binding adapters wrap the real
@@ -196,8 +216,27 @@ import {
   type PiiEgressHookDeps,
 } from './chat-pii-egress.js';
 import type { RecallResolver } from './chat-recall-index.js';
+import {
+  createRetainablePromptPartValidator,
+  projectEntityPromptPartCandidates,
+} from './chat-pii-source.js';
+import { createCandidateContributor } from './chat-pii-candidate-contributor.js';
 import type { SessionForwardedSenderIndex } from './chat-forwarded-sender-index.js';
 import type { ScopedGrantParseDeps } from './chat-scoped-grant-middleware.js';
+import {
+  SPAN_ANCHOR_EXPLICIT_CONTINUATION_STATE_KEY,
+  type SpanAnchorDeps,
+} from './chat-span-anchor-middleware.js';
+import {
+  readExecutionCaseContext,
+  type RequestAugmentationDeps,
+} from './execution-case-retrieval.js';
+import type {
+  ExecutionCaseLifecycle,
+} from './chat-execution-case-tools.js';
+import type {
+  ExecutionCaseProposalCritic,
+} from './execution-case-critic.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -806,6 +845,17 @@ export interface ChatOrchestratorDeps {
    *  late-bound deps. Threaded into `createChatStreamMiddlewares`; absent
    *  (or resolving undefined per turn) → the hook is a faithful no-op. */
   getScopedGrantParseDeps?: () => ScopedGrantParseDeps | undefined;
+  /** D-214 §4.2 — late-bound durable root-request/span anchor deps. */
+  getSpanAnchorDeps?: () => SpanAnchorDeps | undefined;
+  /** D-214 §10.1/§10.4 — optional experiment-gated request augmentation. */
+  getExecutionCaseAugmentationDeps?:
+    () => RequestAugmentationDeps | undefined;
+  /** D-214 §4.3 — report closure and strong-signal finalization. */
+  getExecutionCaseLifecycle?:
+    () => ExecutionCaseLifecycle | undefined;
+  /** D-214 §10.2 — optional pre-dispatch experiment service. */
+  getExecutionCaseProposalCritic?:
+    () => ExecutionCaseProposalCritic | undefined;
   /** Tool-dispatch surface (Tier 1+2+3 via direct function call). */
   registry: InternalToolRegistry;
   /** Lever-2 (2026-07-02) — catalog delivery mode + index-desc cap. Absent
@@ -999,6 +1049,8 @@ export interface ChatOrchestratorDeps {
    *  every outbound packet + restore every returned body. Absent → no PII
    *  bookends + the executor uses the raw `executeAiCall` (PII unwired). */
   piiLedgerStore?: piiEgress.SessionLedgerStore;
+  /** D-213 Track B — RAM-only flat candidates owned by the current session and
+   * keyed by an X1-authorized historical session. */
   /** D-167 P5 S4 — resolves which packet fields carry a `MetaField.privacy`
    *  tag. Defaults to `noopFieldPrivacyResolver` (inert until D-165 supplies
    *  a runtime schema source). */
@@ -1018,6 +1070,16 @@ export interface ChatTurnInput {
   session_id: string;
   message: string;
   picker_state: { current: ChatPickerTarget };
+  /** Explicit same-session conversational lineage. The RPC shell validates
+   * this prior turn and the D-214 middleware resolves it to a durable root;
+   * neither the caller nor the model supplies a root request id. */
+  continuation_of_turn_id?: string;
+  /** A user-reviewed verify-before-retry turn for this consumed action.
+   * It is correlation only; any write call still mints a fresh proposal. */
+  retry_of_plan_id?: string;
+  /** Server-validated evidence grounding for a guided Data explanation.
+   * Persisted on both turn rows; never dispatch or approval authority. */
+  data_diagnosis?: ChatDataDiagnosisContext;
   model_pref?: {
     current: ChatModelRoutingLayer;
     model_hint?: ChatModelHint;
@@ -1254,10 +1316,12 @@ const buildInternalDispatchCtx = (
   execution_source?: ExecutionSource,
   contract_snapshot?: ContractSnapshot,
   dispatch_depth?: number,
+  turn_state?: Map<string, unknown>,
 ): ChatDispatchContext => ({
   channel: 'internal_function_call' as ChatDispatchChannel,
   session_id,
   turn_id,
+  ...(turn_state !== undefined ? { turn_state } : {}),
   // D-177 P5a — the chat turn rides the source (N.10 `turn_id` plumbing),
   // so every commit a Tier 1/2/3 dispatch writes carries its origin turn.
   // (The messenger variant carries no turn_id — its D-177 origin unit is
@@ -1329,6 +1393,12 @@ export interface OrchestratorDispatch {
   dispatchTool(args: {
     session_id: string;
     turn_id: string;
+    /** Correlates a write proposal with an explicit verify-before-retry turn.
+     * Never used as approval or dispatch authority. */
+    retry_of_plan_id?: string;
+    /** Hard dispatch fence for explanation-only turns. Only tools explicitly
+     * classified as reads may cross the registry/peer boundary. */
+    read_only?: boolean;
     tool_name: string;
     arg_values: unknown;
     picker_target: ChatPickerTarget;
@@ -1351,6 +1421,8 @@ export interface OrchestratorDispatch {
      *  THROUGH tool dispatches. Absent → the execute path's depth-0
      *  default. */
     dispatch_depth?: number;
+    /** Framework-owned process-local state for this cooperative turn. */
+    turn_state?: Map<string, unknown>;
   }): Promise<ChatDispatchResult>;
 }
 
@@ -1547,19 +1619,30 @@ const resolveTier = (
  *  issues without losing the turn entirely. */
 const CHAT_TAIL_LIMIT = 3;
 
+interface BuiltChatTail {
+  readonly messages: ReadonlyArray<ChatTailMessage>;
+  /** Exact durable rows represented by `messages`, kept server-private. */
+  readonly item_ids: readonly string[];
+}
+
 const buildChatTail = async (
   chatStore: ChatStore,
   session_id: string,
-): Promise<ReadonlyArray<ChatTailMessage>> => {
+): Promise<BuiltChatTail> => {
   try {
     const messages = await chatStore.listMessages(session_id);
     const conversational = messages.filter(
       (m): m is ChatMessage & { role: 'user' | 'assistant' } =>
         m.role === 'user' || m.role === 'assistant',
     );
-    return conversational
-      .slice(-CHAT_TAIL_LIMIT)
-      .map((m) => ({ role: m.role, content: m.content }));
+    const selected = conversational.slice(-CHAT_TAIL_LIMIT);
+    return {
+      messages: selected.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+      item_ids: selected.map((m) => m.id),
+    };
   } catch (e) {
     if (e instanceof ChatVaultLockedError) {
       // Locked vault is a load-bearing user state, not a transient
@@ -1569,7 +1652,7 @@ const buildChatTail = async (
       // since re-locked.
       throw e;
     }
-    return [];
+    return { messages: [], item_ids: [] };
   }
 };
 
@@ -1675,6 +1758,23 @@ export const createChatOrchestrator = (
         ...(deps.getContactKnownValueIndex
           ? { getContactKnownValueIndex: deps.getContactKnownValueIndex }
           : {}),
+        // D-213 §3.8 — the scoped-join contributor. No cache to wire: a joined
+        // piece is bounded by construction, so the LRU/frontier substrate the
+        // whole-session reharvest needed is gone.
+        createCandidateContributor: (session_id: string) =>
+          createCandidateContributor({
+            owner_session_id: session_id,
+            store: deps.chatStore,
+            now,
+          }),
+        getRecallJoinedPieces: recallJoinedPieces,
+        hasRegisteredRecall: hasRegisteredRecallResult,
+        // D-167 — deterministic slot ordering. Wired off the SAME chat store,
+        // independent of the candidate cache: the numbering must be stable on
+        // every turn, not only on turns that recall.
+        seedAliasSlotOrdering: createChatPiiSlotOrderingSeeder({
+          store: deps.chatStore,
+        }),
       }
     : undefined;
 
@@ -1754,6 +1854,18 @@ export const createChatOrchestrator = (
     ...(deps.getScopedGrantParseDeps
       ? { getScopedGrantParseDeps: deps.getScopedGrantParseDeps }
       : {}),
+    ...(deps.getSpanAnchorDeps
+      ? { getSpanAnchorDeps: deps.getSpanAnchorDeps }
+      : {}),
+    ...(deps.getExecutionCaseAugmentationDeps
+      ? {
+          getExecutionCaseAugmentationDeps:
+            deps.getExecutionCaseAugmentationDeps,
+        }
+      : {}),
+    ...(deps.getExecutionCaseLifecycle
+      ? { getExecutionCaseLifecycle: deps.getExecutionCaseLifecycle }
+      : {}),
     ...(piiHookDeps ? { pii: piiHookDeps } : {}),
     now,
   })) {
@@ -1780,6 +1892,48 @@ export const createChatOrchestrator = (
     };
   };
 
+  const persistPlanExecution = async (
+    plan_id: string | undefined,
+    execution: ChatPlanExecutionReceipt,
+  ): Promise<void> => {
+    if (
+      plan_id === undefined
+      || deps.planApprovalStore?.recordExecution === undefined
+    ) return;
+    try {
+      const persisted = await deps.planApprovalStore.recordExecution(
+        plan_id,
+        execution,
+      );
+      if (persisted === undefined) {
+        console.error(
+          `[chat] approval execution receipt refused for ${plan_id}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[chat] approval execution receipt persistence failed for ${plan_id}`,
+        error,
+      );
+      // If terminal detail cannot be encrypted (for example the vault locked
+      // during an external call), at least close the durable `running` claim
+      // to conservative uncertainty. This fallback carries no sensitive body.
+      if (execution.status !== 'unknown') {
+        try {
+          await deps.planApprovalStore.recordExecution(plan_id, {
+            status: 'unknown',
+            turn_id: execution.turn_id,
+          });
+        } catch (fallbackError) {
+          console.error(
+            `[chat] approval execution recovery fallback failed for ${plan_id}`,
+            fallbackError,
+          );
+        }
+      }
+    }
+  };
+
 
   /** D-137 P4 § A.7 — peer dispatch path. Routes through
    *  `peerDispatcher.dispatch` instead of the local InternalToolRegistry.
@@ -1802,8 +1956,9 @@ export const createChatOrchestrator = (
     tool_name: string;
     arg_values: unknown;
     peerName: string;
+    plan_id?: string;
   }): Promise<ChatDispatchResult> => {
-    const { session_id, turn_id, tool_name, arg_values, peerName } = args;
+    const { session_id, turn_id, tool_name, arg_values, peerName, plan_id } = args;
     const tier: ToolTier = 3;
     if (!deps.peerDispatcher) {
       const result: ChatDispatchResult = {
@@ -1811,6 +1966,12 @@ export const createChatOrchestrator = (
         reason: 'connection_unavailable',
         detail: `peer dispatcher not wired for connection.mcp.${peerName}`,
       };
+      await persistPlanExecution(plan_id, {
+        status: 'failed',
+        turn_id,
+        reason: result.reason,
+        detail: result.detail,
+      });
       safeBroadcast(deps.broadcast, {
         kind: 'chat.tool_call_completed',
         session_id,
@@ -1820,6 +1981,7 @@ export const createChatOrchestrator = (
         status: 'error',
         reason: result.reason,
         detail: result.detail!,
+        ...(plan_id !== undefined ? { plan_id } : {}),
       });
       return result;
     }
@@ -1830,6 +1992,7 @@ export const createChatOrchestrator = (
       tool_name,
       tier,
       args: arg_values,
+      ...(plan_id !== undefined ? { plan_id } : {}),
     });
     const startedAt = now();
     const result = await deps.peerDispatcher.dispatch({
@@ -1843,6 +2006,12 @@ export const createChatOrchestrator = (
       // wrapRecipeRunResult) reads as an ERROR row too, mirroring the local path;
       // the model-facing result stays ok:true (returned unchanged below).
       if (result.run_failed) {
+        await persistPlanExecution(plan_id, {
+          status: 'failed',
+          turn_id,
+          reason: 'execution_error',
+          detail: result.run_failed.detail,
+        });
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -1852,9 +2021,21 @@ export const createChatOrchestrator = (
           status: 'error',
           reason: 'execution_error',
           detail: result.run_failed.detail,
+          ...(plan_id !== undefined ? { plan_id } : {}),
         });
       } else {
         const result_ref = `${session_id}:${turn_id}:${tool_name}`;
+        await persistPlanExecution(
+          plan_id,
+          result.run_held
+            ? {
+                status: 'held',
+                turn_id,
+                result_ref,
+                hold_kind: result.run_held.kind,
+              }
+            : { status: 'completed', turn_id, result_ref },
+        );
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -1863,9 +2044,11 @@ export const createChatOrchestrator = (
           tier,
           status: 'ok',
           result_ref,
+          ...(result.run_held ? { run_held: result.run_held.kind } : {}),
+          ...(plan_id !== undefined ? { plan_id } : {}),
         });
       }
-      void safeLogActivity(
+      await safeLogActivity(
         deps.auditLog,
         'chat_tool_call',
         `${session_id}:${turn_id}:${tool_name}`,
@@ -1879,6 +2062,12 @@ export const createChatOrchestrator = (
       );
       return result;
     }
+    await persistPlanExecution(plan_id, {
+      status: 'failed',
+      turn_id,
+      reason: result.reason,
+      ...(result.detail !== undefined ? { detail: result.detail } : {}),
+    });
     safeBroadcast(deps.broadcast, {
       kind: 'chat.tool_call_completed',
       session_id,
@@ -1888,8 +2077,9 @@ export const createChatOrchestrator = (
       status: 'error',
       reason: result.reason,
       ...(result.detail ? { detail: result.detail } : {}),
+      ...(plan_id !== undefined ? { plan_id } : {}),
     });
-    void safeLogActivity(
+    await safeLogActivity(
       deps.auditLog,
       'chat_tool_call',
       `${session_id}:${turn_id}:${tool_name}`,
@@ -1908,6 +2098,8 @@ export const createChatOrchestrator = (
   const dispatchTool: OrchestratorDispatch['dispatchTool'] = async ({
     session_id,
     turn_id,
+    retry_of_plan_id,
+    read_only,
     tool_name,
     arg_values,
     picker_target,
@@ -1915,6 +2107,7 @@ export const createChatOrchestrator = (
     contract_snapshot,
     llm_gateway_tool_usage,
     dispatch_depth,
+    turn_state,
   }) => {
     // D-137 P4 § A.7 — peer-target detection. Peer-routed dispatches
     // go through the outbound MCP wire; Self-routed go through the
@@ -1945,6 +2138,48 @@ export const createChatOrchestrator = (
     } else {
       entry = deps.registry.getByName(tool_name);
       tier = resolveTier(deps.registry, tool_name);
+    }
+
+    // Guided Data diagnosis is an explanation-only turn. Enforce that at the
+    // final tool boundary, before approval lookup/consumption: prompt wording
+    // alone cannot prevent a model-emitted write from matching an unrelated
+    // still-valid approval for the same arguments. Unknown classifications
+    // fail closed; only an explicit `read` may run.
+    if (read_only === true && entry?.classification !== 'read') {
+      const result: ChatDispatchResult = {
+        ok: false,
+        reason: entry === null ? 'unknown_tool' : 'classification_blocked',
+        detail:
+          entry === null
+            ? 'Guided diagnosis could not resolve this read-only tool.'
+            : 'Guided diagnosis is read-only; this tool was not executed.',
+      };
+      safeBroadcast(deps.broadcast, {
+        kind: 'chat.tool_call_completed',
+        session_id,
+        turn_id,
+        tool_name,
+        tier,
+        status: 'error',
+        reason: result.reason,
+        detail: result.detail!,
+      });
+      await safeLogActivity(
+        deps.auditLog,
+        'chat_tool_call',
+        `${session_id}:${turn_id}:${tool_name}`,
+        JSON.stringify({
+          channel: (
+            peerName === null ? 'internal_function_call' : 'mcp_wire'
+          ) satisfies ChatDispatchChannel,
+          tier,
+          status: 'error',
+          reason: result.reason,
+          read_only: true,
+          ...(peerName !== null ? { peer_name: peerName } : {}),
+        }),
+      );
+      return result;
     }
 
     // D-196 shared-turn hardening — a gateway meter is valid only on a
@@ -1981,6 +2216,11 @@ export const createChatOrchestrator = (
       }
     }
 
+    // Set only when this dispatch consumes an exact reviewed approval. The
+    // link rides every post-gate lifecycle event so clients can update the
+    // original plan card from execution truth rather than `chat.send` ack.
+    let consumedPlanId: string | undefined;
+
     // D-137 P3 § A.11 — plan-approval gate. When a write tool is
     // dispatched, check the plan registry FIRST. Outcomes, in
     // precedence order:
@@ -2010,13 +2250,47 @@ export const createChatOrchestrator = (
     // Mary classified `bob.mail.send` as write in Settings) pause
     // behind the same approval card as Self writes; the gate keys
     // off `entry.classification`, not the channel.
-    if (deps.planApprovalStore && entry && planApprovalModule.requiresPlanApproval(entry)) {
+    const retryOrigin =
+      retry_of_plan_id !== undefined && deps.planApprovalStore !== undefined
+        ? await deps.planApprovalStore.get(retry_of_plan_id)
+        : undefined;
+    const retryTargetsOriginalTool =
+      retryOrigin !== undefined
+      && retryOrigin.session_id === session_id
+      && retryOrigin.tool === tool_name;
+    const argsHash = planApprovalModule.computePlanArgsHash(arg_values);
+    // Normally only write-classified tools can have an approval. Querying
+    // before the classification gate also preserves a freshly-reviewed write
+    // if the catalog later drifts to `read`: the approved payload still has to
+    // be consumed and linked before dispatch.
+    const approvedForCurrentDispatch =
+      retry_of_plan_id === undefined
+      && deps.planApprovalStore !== undefined
+      && entry !== null
+        ? await deps.planApprovalStore.findApprovedForDispatch(
+            session_id,
+            tool_name,
+            argsHash,
+            now(),
+          )
+        : undefined;
+    if (
+      deps.planApprovalStore
+      && entry
+      && (
+        planApprovalModule.requiresPlanApproval(entry)
+        // Classification may drift after the uncertain execution. The exact
+        // original tool must still stop for a fresh plan; a newly-labelled
+        // "read" cannot turn verify-before-retry into an immediate resend.
+        || retryTargetsOriginalTool
+        || approvedForCurrentDispatch !== undefined
+      )
+    ) {
       // Codex P3 review P1 fold #2 — bind the gate lookup to the
       // exact dispatch args. Different args (the main-turn re-invokes
       // with a new recipient on the same tool) mint a fresh proposal
       // rather than silently inheriting the prior approval.
-      const argsHash = planApprovalModule.computePlanArgsHash(arg_values);
-      const sameTurn = deps.planApprovalStore.findLatest(
+      const sameTurn = await deps.planApprovalStore.findLatest(
         session_id,
         turn_id,
         tool_name,
@@ -2040,18 +2314,50 @@ export const createChatOrchestrator = (
         });
         return result;
       }
-      const approved = deps.planApprovalStore.findApprovedForDispatch(
-        session_id,
-        tool_name,
-        argsHash,
-        now(),
-      );
+      // A verify-before-retry turn is deliberately ineligible for every
+      // previously-approved grant, even an unrelated unconsumed card with the
+      // same tool + args. Its first write attempt must stop at a brand-new
+      // proposal so "fresh approval required" cannot race an older permission.
+      const approved =
+        retry_of_plan_id === undefined
+          ? approvedForCurrentDispatch
+          : undefined;
       if (approved) {
         // Spend the approval AT the dispatch decision — before the
         // dispatch runs, so a failed dispatch consumes it too and
         // the retry re-proposes loudly rather than silently
         // re-running on a stale grant. One approve = one execution.
-        deps.planApprovalStore.markConsumed(approved.plan_id, now());
+        const consumedAt = now();
+        const consumed = await deps.planApprovalStore.consumeForDispatch(
+          approved.plan_id,
+          consumedAt,
+          turn_id,
+        );
+        if (
+          consumed === undefined
+          || consumed.plan_id !== approved.plan_id
+          || consumed.consumed_at === undefined
+        ) {
+          const result: ChatDispatchResult = {
+            ok: false,
+            reason: 'execution_error',
+            detail:
+              'The one-time approval could not be confirmed as used; '
+              + 'no tool call was started.',
+          };
+          safeBroadcast(deps.broadcast, {
+            kind: 'chat.tool_call_completed',
+            session_id,
+            turn_id,
+            tool_name,
+            tier,
+            status: 'error',
+            reason: result.reason,
+            detail: result.detail!,
+          });
+          return result;
+        }
+        consumedPlanId = consumed.plan_id;
         void safeLogActivity(
           deps.auditLog,
           'chat_plan_consumed',
@@ -2081,15 +2387,21 @@ export const createChatOrchestrator = (
           planApprovalModule.buildPlanProposal({
             session_id,
             turn_id,
+            ...(retry_of_plan_id !== undefined
+              ? { retry_of_plan_id }
+              : {}),
             tool: tool_name,
             tier,
-            classification: entry.classification,
+            classification:
+              retryTargetsOriginalTool
+                ? retryOrigin.classification
+                : entry.classification,
             args: arg_values,
             mintId,
             now,
           });
         if (!reEmit) {
-          deps.planApprovalStore.put(proposal);
+          await deps.planApprovalStore.put(proposal);
           void safeLogActivity(
             deps.auditLog,
             'chat_plan_proposed',
@@ -2097,7 +2409,10 @@ export const createChatOrchestrator = (
             JSON.stringify({
               plan_id: proposal.plan_id,
               tier,
-              classification: entry.classification,
+              classification: proposal.classification,
+              ...(proposal.retry_of_plan_id !== undefined
+                ? { retry_of_plan_id: proposal.retry_of_plan_id }
+                : {}),
             }),
           );
         }
@@ -2106,9 +2421,14 @@ export const createChatOrchestrator = (
           session_id,
           turn_id,
           plan_id: proposal.plan_id,
+          ...(proposal.retry_of_plan_id !== undefined
+            ? { retry_of_plan_id: proposal.retry_of_plan_id }
+            : {}),
           tool: tool_name,
           tier,
           args: proposal.args,
+          args_hash: proposal.args_hash,
+          created_at: proposal.created_at,
         });
         const result: ChatDispatchResult = {
           ok: false,
@@ -2158,6 +2478,17 @@ export const createChatOrchestrator = (
         };
       }
       if (!admission.admitted) {
+        await persistPlanExecution(
+          consumedPlanId,
+          {
+            status: 'failed',
+            turn_id,
+            reason: admission.result.reason,
+            ...(admission.result.detail !== undefined
+              ? { detail: admission.result.detail }
+              : {}),
+          },
+        );
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -2169,6 +2500,7 @@ export const createChatOrchestrator = (
           ...(admission.result.detail !== undefined
             ? { detail: admission.result.detail }
             : {}),
+          ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
         });
         return admission.result;
       }
@@ -2214,9 +2546,27 @@ export const createChatOrchestrator = (
           tool_name,
           arg_values,
           peerName,
+          ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
         });
       } catch (error) {
         await releaseLlmGatewayToolUsage();
+        if (consumedPlanId !== undefined) {
+          await persistPlanExecution(consumedPlanId, {
+            status: 'failed',
+            turn_id,
+            reason: 'execution_error',
+          });
+          safeBroadcast(deps.broadcast, {
+            kind: 'chat.tool_call_completed',
+            session_id,
+            turn_id,
+            tool_name,
+            tier,
+            status: 'error',
+            reason: 'execution_error',
+            plan_id: consumedPlanId,
+          });
+        }
         throw error;
       }
       if (result.ok && !result.run_held && !result.run_failed) {
@@ -2234,26 +2584,55 @@ export const createChatOrchestrator = (
       tool_name,
       tier,
       args: arg_values,
+      ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
     });
     const startedAt = now();
     let result: ChatDispatchResult;
     try {
-      result = await deps.registry.dispatch(
-        tool_name,
-        arg_values,
-        buildInternalDispatchCtx(
-          session_id,
-          turn_id,
-          execution_source,
-          contract_snapshot,
-          dispatch_depth,
+      result = await runWithExecutionCaseVerificationContext(
+        { session_id, turn_id },
+        () => deps.registry.dispatch(
+          tool_name,
+          arg_values,
+          buildInternalDispatchCtx(
+            session_id,
+            turn_id,
+            execution_source,
+            contract_snapshot,
+            dispatch_depth,
+            turn_state,
+          ),
         ),
       );
     } catch (e) {
       await releaseLlmGatewayToolUsage();
+      if (consumedPlanId !== undefined) {
+        await persistPlanExecution(consumedPlanId, {
+          status: 'failed',
+          turn_id,
+          reason: 'execution_error',
+        });
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: 'execution_error',
+          plan_id: consumedPlanId,
+        });
+      }
       throw e;
     }
     const durationMs = now() - startedAt;
+    registerVisibleRecallToolResult(turn_state, tool_name, result);
+    // Only a SELF dispatch can deep-link into this client's Logs host. Peer
+    // results may carry a run id from the remote executor, but that id is not
+    // addressable through the local Logs route and is deliberately ignored in
+    // `dispatchToolToPeer`.
+    const runAddress =
+      result.run_id !== undefined ? { run_id: result.run_id } : {};
     if (result.ok) {
       // D-182 — a recipe run that FAILED (not held for approval) reads as an ERROR
       // row in the user's activity, even though the model-facing result stays
@@ -2261,6 +2640,13 @@ export const createChatOrchestrator = (
       // errors[] via `return result` below to narrate). Without this, a failed cli
       // run showed a misleading "used X ✓".
       if (result.run_failed) {
+        await persistPlanExecution(consumedPlanId, {
+          status: 'failed',
+          turn_id,
+          reason: 'execution_error',
+          detail: result.run_failed.detail,
+          ...runAddress,
+        });
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -2270,9 +2656,28 @@ export const createChatOrchestrator = (
           status: 'error',
           reason: 'execution_error',
           detail: result.run_failed.detail,
+          ...runAddress,
+          ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
         });
       } else {
         const result_ref = `${session_id}:${turn_id}:${tool_name}`;
+        await persistPlanExecution(
+          consumedPlanId,
+          result.run_held
+            ? {
+                status: 'held',
+                turn_id,
+                result_ref,
+                hold_kind: result.run_held.kind,
+                ...runAddress,
+              }
+            : {
+                status: 'completed',
+                turn_id,
+                result_ref,
+                ...runAddress,
+              },
+        );
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -2281,9 +2686,12 @@ export const createChatOrchestrator = (
           tier,
           status: 'ok',
           result_ref,
+          ...runAddress,
+          ...(result.run_held ? { run_held: result.run_held.kind } : {}),
+          ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
         });
       }
-      void safeLogActivity(
+      await safeLogActivity(
         deps.auditLog,
         'chat_tool_call',
         `${session_id}:${turn_id}:${tool_name}`,
@@ -2298,6 +2706,13 @@ export const createChatOrchestrator = (
       else await recordLlmGatewayToolUsage();
       return result;
     }
+    await persistPlanExecution(consumedPlanId, {
+      status: 'failed',
+      turn_id,
+      reason: result.reason,
+      ...(result.detail !== undefined ? { detail: result.detail } : {}),
+      ...runAddress,
+    });
     safeBroadcast(deps.broadcast, {
       kind: 'chat.tool_call_completed',
       session_id,
@@ -2307,8 +2722,10 @@ export const createChatOrchestrator = (
       status: 'error',
       reason: result.reason,
       ...(result.detail ? { detail: result.detail } : {}),
+      ...runAddress,
+      ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
     });
-    void safeLogActivity(
+    await safeLogActivity(
       deps.auditLog,
       'chat_tool_call',
       `${session_id}:${turn_id}:${tool_name}`,
@@ -2349,6 +2766,10 @@ export const createChatOrchestrator = (
   const buildTurnDriver = (params: {
     readonly session_id: string;
     readonly turn_id: string;
+    readonly continuation_of_turn_id?: string;
+    readonly retry_of_plan_id?: string;
+    /** Explanation-only policy enforced again at dispatch. */
+    readonly read_only?: boolean;
     readonly picker_target: ChatPickerTarget;
     readonly dispatch_peer_name: string | null;
     /** The turn's REAL channel-minted `ExecutionSource` — chat's
@@ -2367,6 +2788,8 @@ export const createChatOrchestrator = (
      *  their true dispatch-tree depth into the Gateway ceiling. */
     readonly dispatch_depth: number;
     readonly content_parts: readonly ContentPromptPart[];
+    /** D-213 — exact source rows already represented in the live prompt. */
+    readonly visible_recall_item_ids?: readonly string[];
     readonly model_layer: ChatModelRoutingLayer;
     readonly model_hint?: ChatModelHint;
     /** D-191 Phase 6 — the picked slot key, threaded so the turn pins it. */
@@ -2382,9 +2805,25 @@ export const createChatOrchestrator = (
     /** The turn's captured egress packets (aliased, per AI call) — read after
      *  the turn to persist as egress history against the assistant message. */
     getEgressPrompts: () => readonly string[];
+    getPlannerRounds: () => number;
+    getRetainedCandidates: () => readonly RetainedAliasCandidate[];
   } => {
     const { session_id, turn_id, picker_target, emit } = params;
     const streamState = new Map<string, unknown>();
+    if (params.continuation_of_turn_id !== undefined) {
+      streamState.set(SPAN_ANCHOR_EXPLICIT_CONTINUATION_STATE_KEY, {
+        origin_turn_id: params.continuation_of_turn_id,
+      });
+    }
+    // D-213 — the interaction lane admits on THIS source, not on the dispatch
+    // ctx's (which defaults an absent source to the owner). Registered by the
+    // two turn surfaces only: chat passes its own, messenger passes its
+    // inbound's, and anything that never opened a turn registers nothing.
+    registerRecallTurnSource(streamState, params.execution_source);
+    registerVisibleInteractionItemIds(
+      streamState,
+      params.visible_recall_item_ids ?? [],
+    );
     // Lever-2 per-slot — resolve the catalog projection ONCE for this turn from
     // the turn's ACTUAL routing (layer + source_id), normalized via
     // `resolveCatalogSource` so the catalog thins the SAME model the executor
@@ -2411,6 +2850,8 @@ export const createChatOrchestrator = (
     // this turn, one per AI call, collected by the PII wrapper's sink and
     // persisted against the assistant message after it's appended.
     const egressPrompts: string[] = [];
+    let plannerRounds = 0;
+    const retainedCandidates = new Map<string, RetainedAliasCandidate>();
     const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
       // ENACT (N.9): read the before-turn hooks' decisions. The
       // `correction-learning` hook contributed its flat "recent
@@ -2428,6 +2869,7 @@ export const createChatOrchestrator = (
             && part.source === CORRECTION_LEARNING_MIDDLEWARE_ID,
         )
         .map((part) => part.text);
+      const executionCaseContext = readExecutionCaseContext(ctx.state);
       const content = assembleChatPromptContent([
         ...params.content_parts,
         ...ctx.prompt.parts().filter((part): part is ContentPromptPart => part.role === 'content'),
@@ -2446,21 +2888,53 @@ export const createChatOrchestrator = (
       // ledger. The wrapper drops them on an inactive / external-egress plan (it
       // returns the raw executor), so no unrequested raw warehouse PII egresses
       // and their raw records never enter the JSON packet. See `aliasChatAiInput`
-      // + docs/d-160-n10-part-pii-pending-design.md.
+      // + D-160.
       const prefetchEntityParts = ctx.prompt
         .parts()
         .filter(
           (part): part is EntityPromptPart =>
-            part.role === 'entity' && part.source === PROMPT_CACHE_MIDDLEWARE_ID,
+            part.role === 'entity'
+            && part.source === PROMPT_CACHE_MIDDLEWARE_ID,
         );
       // ENACT (N.9): the `catalog` before-turn hook DECIDED `available_tools`
       // off the seeded picker target. Fall back to an empty list defensively
       // — in practice the hook always runs (always wired + seeded), so this
       // equals the former inline `availableTools`.
-      const availableTools =
+      const catalogTools =
         (ctx.state.get(CHAT_CATALOG_RESULT_STATE_KEY) as
           | ReadonlyArray<ChatMainTurnTool>
           | undefined) ?? [];
+      // Diagnosis turns present only explicitly-read tools. The dispatch
+      // boundary below remains the authority; this narrower prompt catalog
+      // prevents the model from wasting a round attempting a blocked action.
+      let readOnlyToolNames: ReadonlySet<string> | null = null;
+      if (params.read_only === true) {
+        const readOnlyPeerName = extractPeerName(picker_target);
+        const readOnlyCatalog =
+          readOnlyPeerName === null
+            ? deps.registry.list()
+            : deps.peerDispatcher?.listToolEntries(readOnlyPeerName) ?? [];
+        readOnlyToolNames = new Set(
+          readOnlyCatalog
+            .filter((entry) => entry.classification === 'read')
+            .map((entry) => entry.name),
+        );
+      }
+      const directOwnerRecallSurface =
+        params.execution_source.channel === 'chat'
+        && params.execution_source.actor === 'user_self'
+        && !executionSourceHasContract(params.execution_source);
+      const surfaceCatalogTools = directOwnerRecallSurface
+        ? catalogTools
+        : catalogTools.filter(
+            (tool) => tool.recipe_slug !== RECALL_SEARCH_TOOL_NAME,
+          );
+      const availableTools =
+        readOnlyToolNames === null
+          ? surfaceCatalogTools
+          : surfaceCatalogTools.filter(
+              (tool) => readOnlyToolNames.has(tool.recipe_slug),
+            );
 
       // ENACT (N.9) the PII egress plan (read above): wrap `executeAiCall` so
       // every outbound packet is aliased (incl. the tool loop's per-reinvoke
@@ -2470,17 +2944,40 @@ export const createChatOrchestrator = (
       // egress surface) leaves the raw executor untouched (behavior-preserving).
       // D-191 — aliasing is the sole PII protection; the wrap is aliasing-only
       // (no cloud-egress posture / force-local injection).
+      const trackedExecuteAiCall: ExecuteChatAiCall | undefined =
+        deps.executeAiCall === undefined
+          ? undefined
+          : async (manifest, aiInput) => {
+              plannerRounds += 1;
+              // This is the transport-adjacent event: only advisory ids queued
+              // by augmentation or critique for this exact next packet become
+              // exposed. It is independent of whether PII capture is active.
+              deps.getExecutionCaseLifecycle?.()?.markPlannerEgress(
+                streamState,
+                now(),
+              );
+              return deps.executeAiCall!(manifest, aiInput);
+            };
       const executeAiCallForTurn =
-        deps.executeAiCall !== undefined && piiPlan !== undefined
+        trackedExecuteAiCall !== undefined && piiPlan !== undefined
           ? wrapExecuteAiCallForPii(
-              deps.executeAiCall,
+              trackedExecuteAiCall,
               piiPlan,
               (p) => {
                 egressPrompts.push(p);
               },
               prefetchEntityParts,
+              undefined,
+              (candidates) => {
+                for (const candidate of candidates) {
+                  retainedCandidates.set(
+                    `${candidate.kind}\u0000${candidate.value}`,
+                    candidate,
+                  );
+                }
+              },
             )
-          : deps.executeAiCall;
+          : trackedExecuteAiCall;
 
       // The OWNER surfaces (chat + messenger — `buildTurnDriver`'s only two
       // callers) resolve the `chat` prompt. Absent dep → the built-in default.
@@ -2493,6 +2990,9 @@ export const createChatOrchestrator = (
         {
           session_id,
           turn_id,
+          ...(params.retry_of_plan_id !== undefined
+            ? { retry_of_plan_id: params.retry_of_plan_id }
+            : {}),
           picker_target,
           dispatch_peer_name: params.dispatch_peer_name,
           execution_source: params.execution_source,
@@ -2512,6 +3012,9 @@ export const createChatOrchestrator = (
           available_tools: availableTools,
           content,
           correction_context: correctionContext,
+          ...(executionCaseContext
+            ? { execution_case_context: executionCaseContext }
+            : {}),
           // Lever-2 per-slot — the PER-TURN catalog delivery mode (resolved
           // from the turn's source) drives the system-prompt guidance. Same
           // `perTurnProjection` object that fed the catalog build → presentation
@@ -2529,7 +3032,25 @@ export const createChatOrchestrator = (
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
           registry: deps.registry,
           ...(deps.peerDispatcher ? { peerDispatcher: deps.peerDispatcher } : {}),
-          dispatchTool,
+          dispatchTool: (call) =>
+            dispatchTool({
+              ...call,
+              ...(params.read_only === true ? { read_only: true } : {}),
+              turn_state: streamState,
+            }),
+          ...(deps.getExecutionCaseProposalCritic
+            ? {
+                critiqueProposal: (calls) =>
+                  deps.getExecutionCaseProposalCritic?.()?.critique({
+                    session_id,
+                    turn_id,
+                    prompt: content.user_message,
+                    calls,
+                    state: streamState,
+                    source: params.execution_source,
+                  }) ?? Promise.resolve(null),
+              }
+            : {}),
           emit,
           now,
         },
@@ -2577,6 +3098,8 @@ export const createChatOrchestrator = (
       turnExecutor,
       getCapturedResult: () => capturedTurnResult,
       getEgressPrompts: () => egressPrompts,
+      getPlannerRounds: () => plannerRounds,
+      getRetainedCandidates: () => [...retainedCandidates.values()],
     };
   };
 
@@ -2588,6 +3111,7 @@ export const createChatOrchestrator = (
       );
     }
     const turn_id = mintId();
+    const executionSource = buildChatExecutionSource(input.session_id, turn_id);
     const picker_target = input.picker_state.current as ChatPickerTarget;
     const pickerAtSend = buildPickerAtSend(picker_target);
     const modelLayer = resolveModelPref(session, input.model_pref);
@@ -2605,7 +3129,10 @@ export const createChatOrchestrator = (
     //     `user_message`. If we appended the user row before reading the tail,
     //     the AI would see the current message twice (once as tail-last + once
     //     as user_message). Codex P1.4 review P2 fold — read tail before append.
-    const chat_tail = await buildChatTail(deps.chatStore, input.session_id);
+    const builtChatTail = await buildChatTail(
+      deps.chatStore,
+      input.session_id,
+    );
 
     // 1b) Persist the user turn immediately so reconnect-replay sees
     //     it even if the orchestrator crashes mid-turn.
@@ -2618,7 +3145,11 @@ export const createChatOrchestrator = (
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
+      execution_source: executionSource,
       ts: now(),
+      ...(input.data_diagnosis
+        ? { data_diagnosis: input.data_diagnosis }
+        : {}),
     });
     void safeLogActivity(
       deps.auditLog,
@@ -2691,28 +3222,108 @@ export const createChatOrchestrator = (
     // per-turn `state`). Chat passes its D-121 bus emitter so the rich
     // SI-transparency + tool-call events stream to the webclient; the SAME
     // driver backs `runMessengerTurn` over the SAME `streamRegistry`.
-    const { streamState, turnExecutor, getCapturedResult, getEgressPrompts } = buildTurnDriver({
-      session_id: input.session_id,
-      turn_id,
-      picker_target,
-      dispatch_peer_name: dispatchPeerName,
-      // The same chat source the stream's inbound carries (below) — the
-      // turn's dispatches and its policy-consulting hooks see one identity.
-      execution_source: buildChatExecutionSource(input.session_id, turn_id),
-      // A webclient HID turn is a genuine top-level user action (the chat
-      // channel has no egress→ingress re-trigger path) — depth 0, matching
-      // the stream inbound below.
-      dispatch_depth: 0,
-      content_parts: buildChatContentPromptParts({
-        user_message: input.message,
-        chat_tail,
-      }),
-      model_layer: modelLayer,
-      ...(modelHint ? { model_hint: modelHint } : {}),
-      ...(modelSourceId ? { model_source_id: modelSourceId } : {}),
-      ...(input.time_zone ? { time_zone: input.time_zone } : {}),
-      emit: (event) => safeBroadcast(deps.broadcast, event),
-    });
+    let userSourceClosed = false;
+    const failPendingUserSource = (): void => {
+      if (userSourceClosed) return;
+      userSourceClosed = true;
+      try {
+        deps.chatStore.failMessageSource?.(input.session_id, userMessageId);
+      } catch {
+        // Preserve the originating turn failure. The store relinquishes its
+        // process-local claim in a finally block so a later harvest can retry
+        // reconciliation if the durable transition itself failed.
+      }
+    };
+    let turnDriver: ReturnType<typeof buildTurnDriver>;
+    try {
+      turnDriver = buildTurnDriver({
+        session_id: input.session_id,
+        turn_id,
+        ...(input.continuation_of_turn_id !== undefined
+          ? { continuation_of_turn_id: input.continuation_of_turn_id }
+          : {}),
+        ...(input.retry_of_plan_id !== undefined
+          ? { retry_of_plan_id: input.retry_of_plan_id }
+          : {}),
+        ...(input.data_diagnosis !== undefined ? { read_only: true } : {}),
+        picker_target,
+        dispatch_peer_name: dispatchPeerName,
+        // The same chat source the stream's inbound carries (below) — the
+        // turn's dispatches and its policy-consulting hooks see one identity.
+        execution_source: executionSource,
+        // A webclient HID turn is a genuine top-level user action (the chat
+        // channel has no egress→ingress re-trigger path) — depth 0, matching
+        // the stream inbound below.
+        dispatch_depth: 0,
+        content_parts: buildChatContentPromptParts({
+          user_message: input.message,
+          chat_tail: builtChatTail.messages,
+        }),
+        visible_recall_item_ids: [
+          ...builtChatTail.item_ids,
+          userMessageId,
+        ],
+        model_layer: modelLayer,
+        ...(modelHint ? { model_hint: modelHint } : {}),
+        ...(modelSourceId ? { model_source_id: modelSourceId } : {}),
+        ...(input.time_zone ? { time_zone: input.time_zone } : {}),
+        emit: (event) => safeBroadcast(deps.broadcast, event),
+      });
+    } catch (error) {
+      failPendingUserSource();
+      throw error;
+    }
+    const {
+      streamState,
+      turnExecutor,
+      getCapturedResult,
+      getEgressPrompts,
+      getPlannerRounds,
+      getRetainedCandidates,
+    } = turnDriver;
+    const finalizeUserSource = async (
+      ctx: TurnContext,
+      outcome: 'complete' | 'prompt_error',
+    ): Promise<void> => {
+      if (userSourceClosed) return;
+      if (outcome === 'prompt_error') {
+        failPendingUserSource();
+        return;
+      }
+      userSourceClosed = true;
+      try {
+        const entityParts = ctx.prompt.parts().filter(
+          (part): part is EntityPromptPart => part.role === 'entity',
+        );
+        const candidates = projectEntityPromptPartCandidates(
+          entityParts,
+          deps.fieldPrivacyResolver ?? piiEgress.noopFieldPrivacyResolver,
+        );
+        if (deps.chatStore.finalizeMessageSource === undefined) {
+          throw new Error('source finalizer is not wired');
+        }
+        const finalized = await deps.chatStore.finalizeMessageSource({
+          session_id: input.session_id,
+          message_id: userMessageId,
+          candidates,
+        });
+        if (!finalized) {
+          throw new Error('pending source row was not finalizable');
+        }
+      } catch (error) {
+        try {
+          deps.chatStore.failMessageSource?.(input.session_id, userMessageId);
+        } catch {
+          // The content row is already durable. A later startup/first-harvest
+          // reconciliation closes any still-pending source honestly.
+        }
+        console.error('[chat-orchestrator] D-213 source finalization failed', {
+          session_id: input.session_id,
+          message_id: userMessageId,
+          error: error instanceof Error ? error.message : 'unknown',
+        });
+      }
+    };
 
     // The channel records the triggering user message before the stream;
     // the shell already persisted it durably to the ChatStore (1b), and
@@ -2745,31 +3356,39 @@ export const createChatOrchestrator = (
       surface: 'chat',
       text: input.message,
       from: LOCAL_CHAT_USER_ID,
-      source: buildChatExecutionSource(input.session_id, turn_id),
+      source: executionSource,
       // A webclient HID turn is a genuine top-level user action — the
       // chat channel has no egress→ingress re-trigger path (D-160 P3).
       dispatch_depth: 0,
       ts: now(),
     };
-    const streamSummary = await runStream({
-      registry: streamRegistry,
-      channel: streamChannel,
-      sessionStore: streamSessionStore,
-      inbound,
-      runTurn: turnExecutor,
-      capacity: chatCapacity(),
-      // The shell's own per-turn scratch — the registered hooks DECIDE
-      // into it (the SI Checkpoint 1/2 results, the personal-recipe
-      // matches), the executor reads the before-turn decisions out of it,
-      // and the shell ENACTs the after-turn decisions off it on finalize
-      // (below). Per-turn (never constructor-captured) so concurrent
-      // turns never share scratch.
-      state: streamState,
-      // Pin the framework turn id to the shell's pre-minted id so every
-      // event a turn emits — the rich direct emits AND the framework
-      // out-stream delta — shares one `turn_id`.
-      mintId: () => turn_id,
-    });
+    let streamSummary;
+    try {
+      streamSummary = await runStream({
+        registry: streamRegistry,
+        channel: streamChannel,
+        sessionStore: streamSessionStore,
+        inbound,
+        runTurn: turnExecutor,
+        capacity: chatCapacity(),
+        // The shell's own per-turn scratch — the registered hooks DECIDE
+        // into it (the SI Checkpoint 1/2 results, the personal-recipe
+        // matches), the executor reads the before-turn decisions out of it,
+        // and the shell ENACTs the after-turn decisions off it on finalize
+        // (below). Per-turn (never constructor-captured) so concurrent
+        // turns never share scratch.
+        state: streamState,
+        validatePromptPart: createRetainablePromptPartValidator(),
+        finalizePrompt: finalizeUserSource,
+        // Pin the framework turn id to the shell's pre-minted id so every
+        // event a turn emits — the rich direct emits AND the framework
+        // out-stream delta — shares one `turn_id`.
+        mintId: () => turn_id,
+      });
+    } catch (error) {
+      failPendingUserSource();
+      throw error;
+    }
 
     // D-164 — the prompt-cache before-turn gate may resolve the turn
     // deterministically via `ctx.resolve` (the deterministic short-circuit),
@@ -2778,6 +3397,11 @@ export const createChatOrchestrator = (
     // `streamSummary.final_text`. On every normal turn `getCapturedResult()`
     // is defined and this is behaviour-preserving.
     const capturedResult = getCapturedResult();
+    deps.getExecutionCaseLifecycle?.()?.recordPlannerRounds({
+      session_id: input.session_id,
+      turn_id,
+      rounds: getPlannerRounds(),
+    });
     const turnResult = capturedResult ?? { assistant_content: '' };
     // D-167 P5 S4 — prefer `pii-restore`'s verified-restored assistant text
     // for the durable + broadcast message (the zero-failure total-restore
@@ -2792,6 +3416,7 @@ export const createChatOrchestrator = (
       ?? (capturedResult === undefined ? streamSummary.final_text : undefined)
       ?? turnResult.assistant_content;
     const assistantToolCalls = turnResult.tool_calls;
+    const assistantProvenance = turnResult.provenance;
     const totalUsage = turnResult.usage;
     // D-167 P5 S4 — the per-turn redaction summary the wire seam accumulated
     // across the tool loop's egress packets; stamped on the assistant audit
@@ -2857,9 +3482,32 @@ export const createChatOrchestrator = (
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
+      execution_source: executionSource,
       ts: now(),
       ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
+      retained_alias_candidates: getRetainedCandidates(),
+      ...(assistantProvenance ? { provenance: assistantProvenance } : {}),
+      ...(input.data_diagnosis
+        ? { data_diagnosis: input.data_diagnosis }
+        : {}),
     });
+    // Anchor any plan proposed by this turn to the durable assistant row before
+    // broadcasting completion. Recovery may fail to link, but it must never
+    // fail an otherwise-committed assistant message.
+    if (deps.planApprovalStore?.linkTurnToMessage !== undefined) {
+      try {
+        await deps.planApprovalStore.linkTurnToMessage(
+          input.session_id,
+          turn_id,
+          assistantMessageId,
+        );
+      } catch (error) {
+        console.error(
+          `[chat] approval card message linkage failed for ${input.session_id}:${turn_id}`,
+          error,
+        );
+      }
+    }
     // Persist this turn's egress history (the aliased packets the PII wrapper
     // captured) against the assistant message. Best-effort: the message is
     // already durable, so a capture-store failure must never fail the turn.
@@ -2889,6 +3537,7 @@ export const createChatOrchestrator = (
         target_server: picker_target,
         model_used: modelUsed,
         tool_call_count: assistantToolCalls?.length ?? 0,
+        provenance_count: assistantProvenance?.length ?? 0,
         // D-137 Trio #E follow-on — durable per-turn token usage. The
         // benchmark + future billing surface read this row to compute
         // per-turn cost (tokens × rates at report time). Counts only;
@@ -3010,7 +3659,7 @@ export const createChatOrchestrator = (
     // One conversation: the turn reasons over the SAME durable tail chat
     // reads. Build the tail before appending the current messenger row so
     // the current user message does not appear twice in the AI packet.
-    const chat_tail = await buildChatTail(deps.chatStore, session_id);
+    const builtChatTail = await buildChatTail(deps.chatStore, session_id);
     const pickerAtSend = buildPickerAtSend(picker_target);
     if (!session) {
       deps.chatStore.createSession({
@@ -3044,6 +3693,7 @@ export const createChatOrchestrator = (
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
+      execution_source: inbound.source,
       ts: inbound.ts,
       ...(userAttachments && userAttachments.length > 0
         ? { attachments: userAttachments }
@@ -3075,7 +3725,12 @@ export const createChatOrchestrator = (
     // renders neither token deltas nor transparency notes (N.6), so the rich
     // SI / tool-call emits route to a no-op `emit`; the final answer reaches
     // the user via the framework's `out.message` → the messenger transport.
-    const { streamState, turnExecutor, getCapturedResult } = buildTurnDriver({
+    const {
+      streamState,
+      turnExecutor,
+      getCapturedResult,
+      getPlannerRounds,
+    } = buildTurnDriver({
       session_id,
       turn_id,
       picker_target,
@@ -3092,7 +3747,7 @@ export const createChatOrchestrator = (
       dispatch_depth: inbound.dispatch_depth,
       content_parts: buildChatContentPromptParts({
         user_message: userText,
-        chat_tail,
+        chat_tail: builtChatTail.messages,
       }),
       model_layer: modelLayer,
       ...(modelHint ? { model_hint: modelHint } : {}),
@@ -3117,11 +3772,17 @@ export const createChatOrchestrator = (
       // Per-turn scratch (never constructor-captured) so concurrent turns
       // across surfaces never share state.
       state: streamState,
+      validatePromptPart: createRetainablePromptPartValidator(),
       // Pin the framework turn id to the pre-minted id so the streamed delta
       // + the final message share one `turn_id`.
       mintId: () => turn_id,
     });
 
+    deps.getExecutionCaseLifecycle?.()?.recordPlannerRounds({
+      session_id,
+      turn_id,
+      rounds: getPlannerRounds(),
+    });
     const turnResult = getCapturedResult() ?? { assistant_content: '' };
     const totalUsage = turnResult.usage;
     // A minimal audit row keeps the messenger turn traceable (surface-tagged
@@ -3166,7 +3827,8 @@ export const createChatOrchestrator = (
       .list()
       .filter(
         (entry) =>
-          isLlmGatewayContractSafeToolEntry(entry)
+          entry.name !== RECALL_SEARCH_TOOL_NAME
+          && isLlmGatewayContractSafeToolEntry(entry)
           && allowedNames.has(entry.name),
       )
       .map((entry) => ({

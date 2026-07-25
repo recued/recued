@@ -20,14 +20,21 @@
  *  (`admitContractToolAccess`). What survives here is the decision SHAPE every gate
  *  returns plus the scope fence.
  *
- *  Spec: docs/d-153-spec.md; docs/d-157-spec.md § N.3 / A.2; docs/d-187-spec.md. */
+ *  Spec: D-153; D-157 § N.3 / A.2; D-187. */
 
 import type { IngredientKind, RiskTier } from './ingredient.js';
+import type {
+  AuthorizationProvenance,
+  OperationApproval,
+  OwnerOverridePolicy,
+} from './ingredient-catalog.js';
+import type { PreflightOverrideOffer } from './preflight-signal.js';
 
 /** Kernel slugs whose dispatch scope is the `data.form_response` collection.
  *  Underscore, not the hyphen the generic leading-segment rule would produce.
  *  Every `form-response-*` op belongs here — the read AND every write. */
 const FORM_RESPONSE_SCOPED_SLUGS: ReadonlySet<string> = new Set([
+  'form-response-list',
   'form-response-get',
   'form-response-set-state',
 ]);
@@ -119,16 +126,31 @@ export type AdmissionVerdict = 'admit' | 'deny' | 'ask';
  *    one. The op-risk × stage-trust resolver (`op-risk-admission.ts`)
  *    produces `ask`; the scope fence stays pure pass/fail. */
 export type AdmissionDecision =
-  | { readonly verdict: 'admit' }
+  | {
+      readonly verdict: 'admit';
+      /** Present on op-risk decisions; absent on structural access admits. */
+      readonly authorization_provenance?: AuthorizationProvenance;
+    }
   | {
       readonly verdict: 'deny';
       readonly code: AdmissionDenyCode;
       readonly detail: string;
+      /** Present when an op-risk resolver, rather than an access fence, denied. */
+      readonly authorization_provenance?: AuthorizationProvenance;
     }
   | {
       readonly verdict: 'ask';
       readonly risk_tier: RiskTier;
       readonly detail: string;
+      /** D-209 §1.7 — load-bearing input to grant and quality handling. */
+      readonly authorization_provenance: AuthorizationProvenance;
+      /** D-211 — the exact simple-form owner ruling that produced this ask.
+       * Carried only so the quality-gate authorization recompute applies the
+       * same standing ruling and cannot skip an owner-authored `always`. */
+      readonly owner_override?: OwnerOverridePolicy;
+      readonly owner_override_offer?: PreflightOverrideOffer;
+      /** D-211 — a hand-stored approval was raised to the hard risk floor. */
+      readonly approval_clamped_from?: OperationApproval;
     };
 
 /** Sentinel for the bare admit case; safe to share since the shape is

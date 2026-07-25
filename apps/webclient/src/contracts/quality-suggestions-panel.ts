@@ -16,7 +16,7 @@
  *  decide or govern. Self-contained styles + disposable, mirroring
  *  `suggested-rules-panel.ts`.
  *
- *  Spec: docs/d-202-spec.md §5 / §12.4. */
+ *  Spec: D-202 §5 / §12.4. */
 
 import type {
   ContractDefinitionView,

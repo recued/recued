@@ -357,6 +357,24 @@ describe('D-165 vendor OAuth-start authorize URL builder', () => {
     expect(url.searchParams.get('scope')).toBe(google.oauth.scopes.join(' '));
     expect(url.searchParams.get('state')).toBe('state-token');
   });
+
+  it('requests Dropbox metadata and lazy content-read scopes in the consent URL', () => {
+    const dropbox = provider('dropbox');
+    const url = new URL(buildVendorAuthorizeUrl({
+      provider: dropbox,
+      client_id: 'dbx-cid',
+      redirect_uri: DIRECT_REDIRECT,
+      sandbox: false,
+      state: 'state-token',
+    }));
+
+    expect(url.searchParams.get('scope')?.split(' ')).toEqual([
+      'account_info.read',
+      'files.metadata.read',
+      'files.content.read',
+    ]);
+    expect(url.searchParams.get('token_access_type')).toBe('offline');
+  });
 });
 
 describe('D-165 vendor OAuth-start pending flow store', () => {

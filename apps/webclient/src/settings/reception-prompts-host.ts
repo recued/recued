@@ -95,7 +95,7 @@
  *  rejection paths bail when the token no longer matches the current
  *  submit (state was reset by cancel / new open / dispose).
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX integration). */
+ *  Spec: D-149 § A.9 (Settings UX integration). */
 
 import { e } from '@recued/ui-shared/template';
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';

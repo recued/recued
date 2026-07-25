@@ -1,7 +1,7 @@
 # Batching Hint
 
 > Bench-harvested verbatim from
-> `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts:140-150`.
+> `the benchmark harness compose-agent:140-150`.
 > Mirrored as a string constant in `../templates/render.ts` (the
 > runtime source of truth). The renderer inserts this block after the
 > entity-query section header (where bench places it) so the canonical

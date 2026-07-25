@@ -33,10 +33,12 @@ import {
 import {
   buildPreflightAsk,
   createPreflightAnswerHandler,
+  NEVER_ASK_OPERATION_OPTION_ID,
   PREFLIGHT_ASK_OPTIONS,
   PREFLIGHT_ASK_OPTIONS_WITH_SESSION,
   PREFLIGHT_HANDLER_KIND,
   raisePreflightAsk,
+  RELAX_OPERATION_TO_ASK_OPTION_ID,
   type PreflightAskContext,
   type PreflightNotifier,
   type PreflightResumer,
@@ -90,9 +92,10 @@ const contractSnapshot = (): ContractSnapshot => ({
 const admitDecision: AdmissionDecision = { verdict: 'admit' };
 
 const askDecision: AdmissionDecision = {
-  verdict: 'ask',
-  risk_tier: 'admin',
-  detail: 'admin tier needs approval',
+      verdict: 'ask',
+      risk_tier: 'admin',
+      detail: 'admin tier needs approval',
+      authorization_provenance: { pre_lift_approval: 'ask' },
 };
 const denyDecision: AdmissionDecision = {
   verdict: 'deny',
@@ -262,7 +265,10 @@ describe('evaluatePreflightAdmission', () => {
     expect(evaluatePreflightAdmission({
       source: userSource(),
       tool: tool('read'),
-    })).toEqual({ verdict: 'admit' });
+    })).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 
   it('returns admit for an admin-tier tool on chat and user_self (D-187: contract-less owner ceiling is admin)', () => {
@@ -273,7 +279,10 @@ describe('evaluatePreflightAdmission', () => {
     expect(evaluatePreflightAdmission({
       source: chatSource(),
       tool: tool('admin'),
-    })).toEqual({ verdict: 'admit' });
+    })).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 
   it('returns ask for a destructive tool on chat and user_self (D-177: approval-gated, not hard-denied)', () => {
@@ -325,7 +334,10 @@ describe('evaluatePreflightAdmission', () => {
     expect(evaluatePreflightAdmission({
       source: userSource(),
       tool: tool('read'),
-    })).toEqual({ verdict: 'admit' });
+    })).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 
   it('ignores a scan-seeded cell allowed_kinds — coarse kind access is the Layer-1 gate now', () => {
@@ -335,7 +347,10 @@ describe('evaluatePreflightAdmission', () => {
     expect(evaluatePreflightAdmission({
       source: userSource(),
       tool: tool('read'),
-    })).toEqual({ verdict: 'admit' });
+    })).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 });
 
@@ -350,6 +365,9 @@ describe('raiseOnAsk', () => {
 
     expect(thrown).toBeInstanceOf(PreflightRequiredSignal);
     expect((thrown as Error).name).toBe(PREFLIGHT_REQUIRED_SIGNAL_NAME);
+    expect(thrown).toMatchObject({
+      authorization_provenance: { pre_lift_approval: 'ask' },
+    });
   });
 
   it('is a no-op for admit and deny verdicts', () => {
@@ -739,6 +757,62 @@ describe('buildPreflightAsk', () => {
     expect(present.message.text).not.toContain('risk_tier=');
   });
 
+  it('offers only the paired standing ruling and surfaces floor clamps', () => {
+    const offer = {
+      kind: 'never_ask' as const,
+      ingredient_id: 'recued-core/github',
+      operation_id: 'recued-core/github.issue.read',
+      op_hash: 'a'.repeat(64),
+      approval: 'never' as const,
+    };
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: offer.operation_id,
+        risk_tier: 'read',
+        owner_override_offer: offer,
+      }),
+    });
+
+    expect(ask.options.map((option) => option.id)).toEqual([
+      'approve',
+      NEVER_ASK_OPERATION_OPTION_ID,
+      'deny',
+    ]);
+    expect(ask.handler.payload.owner_override_offer).toEqual(offer);
+    const clamped = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'recued-core/mail.send',
+        risk_tier: 'write',
+        approval_clamped_from: 'never',
+      }),
+    });
+    expect(clamped.message.text).toContain("stored approval 'never'");
+    expect(clamped.message.text).toContain('was clamped');
+  });
+
+  it('renders the authored-always write escape as Relax to ask (grantable)', () => {
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'recued-core/mail.send',
+        risk_tier: 'write',
+        owner_override_offer: {
+          kind: 'relax_to_ask',
+          ingredient_id: 'recued-core/mail',
+          operation_id: 'recued-core/mail.send',
+          op_hash: 'b'.repeat(64),
+          approval: 'ask',
+        },
+      }),
+    });
+    expect(ask.options).toContainEqual({
+      id: RELAX_OPERATION_TO_ASK_OPTION_ID,
+      label: 'Relax to ask (grantable)',
+    });
+  });
+
   it('names the connection the held call would land on', () => {
     // Which account absorbs the write — sandbox or production — is the
     // blast radius, and it was absent from the ask for its whole life.
@@ -835,6 +909,104 @@ describe('buildPreflightAsk', () => {
 });
 
 describe('createPreflightAnswerHandler', () => {
+  it('persists the paired standing ruling before approving the held call', async () => {
+    const cp = checkpoint();
+    const store = checkpointStore(cp);
+    const order: string[] = [];
+    const r = resumer();
+    r.resumeRun.mockImplementation(async () => {
+      order.push('resume');
+    });
+    const upsertOverride = vi.fn(async () => {
+      order.push('override');
+    });
+    const offer = {
+      kind: 'never_ask' as const,
+      ingredient_id: 'recued-core/github',
+      operation_id: 'recued-core/github.issue.read',
+      op_hash: 'a'.repeat(64),
+      approval: 'never' as const,
+    };
+    const handler = createPreflightAnswerHandler({
+      checkpointStore: store,
+      resumer: r,
+      upsertOverride,
+    });
+
+    await handler(
+      payload({ owner_override_offer: offer }),
+      answer(NEVER_ASK_OPERATION_OPTION_ID),
+    );
+
+    expect(upsertOverride).toHaveBeenCalledWith(offer);
+    expect(order).toEqual(['override', 'resume']);
+    expect(store.delete).toHaveBeenCalledWith('checkpoint-1');
+  });
+
+  it('does not persist a standing ruling after its checkpoint was consumed', async () => {
+    const store = checkpointStore(null);
+    const upsertOverride = vi.fn();
+    const r = resumer();
+    const offer = {
+      kind: 'never_ask' as const,
+      ingredient_id: 'recued-core/github',
+      operation_id: 'recued-core/github.issue.read',
+      op_hash: 'a'.repeat(64),
+      approval: 'never' as const,
+    };
+    const handler = createPreflightAnswerHandler({
+      checkpointStore: store,
+      resumer: r,
+      upsertOverride,
+    });
+
+    await handler(
+      payload({ owner_override_offer: offer }),
+      answer(NEVER_ASK_OPERATION_OPTION_ID),
+    );
+
+    expect(upsertOverride).not.toHaveBeenCalled();
+    expect(r.resumeRun).not.toHaveBeenCalled();
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a standing-ruling answer has no valid paired offer', async () => {
+    const store = checkpointStore(checkpoint());
+    const r = resumer();
+    const handler = createPreflightAnswerHandler({
+      checkpointStore: store,
+      resumer: r,
+      upsertOverride: vi.fn(),
+    });
+
+    await expect(handler(
+      payload({
+        owner_override_offer: {
+          kind: 'never_ask',
+          ingredient_id: 'recued-core/github',
+          operation_id: 'recued-core/github.issue.read',
+          op_hash: 'a'.repeat(64),
+          approval: 'ask',
+        },
+      }),
+      answer(NEVER_ASK_OPERATION_OPTION_ID),
+    )).rejects.toThrow(/does not match a valid offer/);
+    await expect(handler(
+      payload({
+        owner_override_offer: {
+          kind: 'never_ask',
+          ingredient_id: 'recued-core/github',
+          operation_id: 'recued-core/github.issue.read',
+          approval: 'never',
+        },
+      }),
+      answer(NEVER_ASK_OPERATION_OPTION_ID),
+    )).rejects.toThrow(/does not match a valid offer/);
+    expect(r.resumeRun).not.toHaveBeenCalled();
+    expect(r.denyRun).not.toHaveBeenCalled();
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
   it('resumes and consumes the checkpoint on approve', async () => {
     const cp = checkpoint();
     const store = checkpointStore(cp);

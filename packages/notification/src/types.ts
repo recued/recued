@@ -6,7 +6,7 @@
  *  `@recued/chat`. Nothing here is recipe-wire shape; it is the
  *  block-internal + flow-controller-facing surface.
  *
- *  Spec: docs/d-158-spec.md § N.1-N.6 / A.1-A.3.
+ *  Spec: D-158 § N.1-N.6 / A.1-A.3.
  */
 
 import {

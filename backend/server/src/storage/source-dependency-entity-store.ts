@@ -1,6 +1,6 @@
 /** D-192 — `source_dependency_entity` store (Slice 2).
  *
- *  Backs the input-dependency graph (`docs/d-192-source-dependencies-design.md`):
+ *  Backs the input-dependency graph (D-192):
  *  the vendor CONTAINER entities (Asana workspace, Linear team, a project) a
  *  Source's ops depend on. Each row is one fetched entity, scoped to its owning
  *  Source + dependency ref; the `selected` row is AUTHORITATIVE for dispatch, the

@@ -13,7 +13,7 @@
  *  pass. It only narrows the work: which span of history NER should
  *  scan, given the anaphor at hand.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 2.
+ *  See: D-164 § 2.
  */
 
 import type { TurnContext } from '@recued/middleware';

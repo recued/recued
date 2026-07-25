@@ -5,7 +5,7 @@
  *  puller / Re-probe), capability tags (Salesforce only), expand /
  *  collapse routing through `engagementHealth.expanded`.
  *
- *  Spec: docs/d-139-spec.md § A.8 + § P2 acceptance. */
+ *  Spec: D-139 § A.8 + § P2 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 import type {

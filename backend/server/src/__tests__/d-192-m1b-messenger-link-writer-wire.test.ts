@@ -7,7 +7,7 @@
  *  a mocked `users.info` and linked, and the same run's proposal carries the
  *  counterparty; a missing-scope response leaves the sender opaque.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` §3a (M-1). */
+ *  Spec: D-192 §3a (M-1). */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

@@ -59,7 +59,7 @@
  *  the generation before awaiting and drops a superseded response, so
  *  two refreshes in flight can't paint the older snapshot last.
  *
- *  Spec: docs/d-145-spec.md § PA11 + § A.2. */
+ *  Spec: D-145 § PA11 + § A.2. */
 
 import {
   WORK_ENTITY_KINDS,

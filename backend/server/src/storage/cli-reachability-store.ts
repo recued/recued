@@ -23,7 +23,7 @@
  *  (`cliPrincipalFromExecutionSource`); the `cli.reachability.*` grid rpc writes
  *  it. It is the connection-less cli analogue of a connection profile.
  *
- *  Spec: docs/d-182-spec.md §7.2; decisions-log D-182 amendment (F1 RESOLVED). */
+ *  Spec: D-182 §7.2; decisions-log D-182 amendment (F1 RESOLVED). */
 
 import type { CliReachabilityState } from '@recued/contracts';
 import type { ContractStore } from './contract-store.js';

@@ -31,7 +31,7 @@
  *  The durable store lives in `@recued/storage` (`batch-asks.ts`); the
  *  join/answer flow in `backend/server/src/batch-approval.ts`.
  *
- *  Spec: docs/d-177-spec.md § N.10 / N.3 / N.4; landing order P5a. */
+ *  Spec: D-177 § N.10 / N.3 / N.4; landing order P5a. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import type { Actor, Channel, ExecutionSource } from './commits.js';

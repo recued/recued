@@ -39,7 +39,7 @@
  *  connection-independent drift that DOES reach the real resumer is recipe
  *  re-authoring, which test 3 drives end-to-end through it.
  *
- *  Spec: docs/d-165-spec.md § Runtime flow / Invariants 1 + 5; the gate
+ *  Spec: D-165 § Runtime flow / Invariants 1 + 5; the gate
  *  is `packages/engine/src/catalog-gateway.ts` (`catalogTargetMatches`).
  */
 

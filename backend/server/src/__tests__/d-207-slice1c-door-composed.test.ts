@@ -18,7 +18,7 @@
  *  door could only ever open for a recipe shaped like a payment, because its safety WAS its
  *  narrowness. This one opens for any recipe whose authority can be honestly described.
  *
- *  Spec: `docs/d-207-spec.md` §5.1 / §5.2 / §5.3. */
+ *  Spec: D-207 §5.1 / §5.2 / §5.3. */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';

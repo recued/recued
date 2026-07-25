@@ -735,7 +735,6 @@ export const handleCalendarReauth = async (
   // collection.mail.enrollOAuth) — the server returns `{ ok: true }`
   // and the UI opens the authorize URL itself so the captured code
   // lands back on `collection.calendar.enrollOAuth` via the usual
-  // flow. Distinct shape from file's reauth which is kinds-without-
-  // oauth — here the distinction is more informational.
+  // flow.
   return { ok: true };
 };

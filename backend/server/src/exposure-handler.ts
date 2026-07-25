@@ -27,7 +27,7 @@
  *           count in the error message so the modal renderer can parse
  *           and surface the right copy without a second round-trip.
  *
- *  Spec: docs/d-148-spec.md § A.7 + Amendment 2026-05-11. */
+ *  Spec: D-148 § A.7 + Amendment 2026-05-11. */
 
 import {
   EXPOSURE_PRESETS,

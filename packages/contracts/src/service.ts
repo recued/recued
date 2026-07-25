@@ -14,7 +14,7 @@
  *      processes. Full supervisor with crash detection, restart
  *      backoff, health polling, permanently-crashed state.
  *
- *  See `docs/d-118-spec.md` — closed registries (install kinds /
+ *  See D-118 — closed registries (install kinds /
  *  check kinds / event names) are a load-bearing security boundary.
  *  Adding a new kind is a Recued-core code change, never a
  *  marketplace template change. Reviewer evaluates structural

@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
 
 import {
+  type Checkpoint,
   type ContractSnapshot,
   type ExecutionSource,
   type IngredientManifest,
@@ -18,6 +19,7 @@ import {
 } from '@recued/contracts';
 import {
   createAuditLogStore,
+  createCheckpointStore,
   createInMemoryCollection,
   type ActivityEntry,
   type AuditEntry,
@@ -716,25 +718,63 @@ describe('D-153 P2.C handleExecute — reactive policy gate wiring', () => {
     expect(executionEvents).toEqual(['start', 'error']);
   });
 
-  it('does not run the system-channel gate for webhook or housekeeping execution sources', async () => {
+  it('⛔ webhook IS gated now — a door-less source cannot drive a destructive op', async () => {
+    // ⚠ SPLIT + INVERTED 2026-07-20 (D-209 #1 W3). This case used to live inside
+    // "does not run the system-channel gate for webhook or housekeeping" and
+    // asserted a `destructive` ingredient EXECUTES on a webhook source. That was
+    // an accurate description of an UNLANDED slice when D-153 P2.C wrote it — and
+    // it hardened into a test that pinned an authorization bypass as correct.
+    //
+    // `webhook` is now in `POLICY_GATED_CONTRACT_CHANNELS`. This fixture carries no
+    // `contract_id`, so it is the DOOR-LESS arm: no snapshot is required (the gate
+    // throws only when `executionSourceHasContract`), the allowlist check is a
+    // no-op, and the D-209 ceiling then refuses `destructive` — which is exactly
+    // what an unstamped trigger row driving a destructive write should get.
+    // ⇒ [[a_documented_deferral_becomes_a_bypass]]
     const recipe = buildRecipe({
-      recipe_id: 'system-channel-passthrough',
+      recipe_id: 'webhook-gated',
       steps: [ingredientStep('destroy_storage', 'danger-storage')],
     });
     const deps = makeDeps(recipe, [
       buildManifest('danger-storage', 'storage', 'destructive'),
     ]);
 
-    for (const executionSource of [webhookSource, housekeepingSource]) {
-      const result = await handleExecute(deps, {
-        recipe_id: recipe.recipe_id,
-        trigger_source: executionSource.channel,
-        execution_source: executionSource,
-      });
+    const result = await handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'webhook',
+      execution_source: webhookSource,
+    });
 
-      expect(result.steps.map((step) => step.id)).toEqual(['destroy_storage']);
-      expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
-    }
+    // ⛔ The bypass: pre-fix this was `['destroy_storage']`.
+    expect(result.steps.map((step) => step.id)).toEqual([]);
+  });
+
+  it('housekeeping with an execution source stays ungated — still deferred, deliberately', async () => {
+    // The surviving half of the original claim. `housekeeping` is in no gated set,
+    // and its source-less branch requires `executionSource === undefined`, so a
+    // housekeeping source passed explicitly still skips the gate.
+    //
+    // ⏭ Not a bypass of the same shape: production housekeeping deliberately
+    // passes NO `execution_source` (`seller-access-reconcile.ts`: "⛔ It must never
+    // pass `execution_source: { channel: 'housekeeping', … }`"), so this fixture is
+    // synthetic. Recorded rather than "fixed" — the day a producer starts minting
+    // one, membership must land in the same change, as the messenger slice states.
+    const recipe = buildRecipe({
+      recipe_id: 'housekeeping-passthrough',
+      steps: [ingredientStep('destroy_storage', 'danger-storage')],
+    });
+    const deps = makeDeps(recipe, [
+      buildManifest('danger-storage', 'storage', 'destructive'),
+    ]);
+
+    const result = await handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'housekeeping',
+      execution_source: housekeepingSource,
+    });
+
+    expect(result.steps.map((step) => step.id)).toEqual(['destroy_storage']);
+    expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 });
 
@@ -1148,14 +1188,17 @@ describe('D-153 P2.C handleExecute — user policy gate wiring', () => {
     expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 
-  it('admits destructive risk_tier ingredients for user_self rpc requests', async () => {
+  it('holds destructive user_self rpc ingredients for approval without a static policy denial', async () => {
     const recipe = buildRecipe({
       recipe_id: 'user-destructive-admit',
       steps: [ingredientStep('destroy_storage', 'danger-storage')],
     });
-    const deps = makeDeps(recipe, [
-      buildManifest('danger-storage', 'storage', 'destructive'),
-    ]);
+    const checkpointStore = createCheckpointStore(createInMemoryCollection<Checkpoint>());
+    const deps = makeDeps(
+      recipe,
+      [buildManifest('danger-storage', 'storage', 'destructive')],
+      { auditLog: mkAuditLog(), checkpointStore },
+    );
 
     const result = await handleExecute(deps, {
       recipe_id: recipe.recipe_id,
@@ -1163,7 +1206,12 @@ describe('D-153 P2.C handleExecute — user policy gate wiring', () => {
       execution_source: userSource,
     });
 
-    expect(result.steps.map((step) => step.id)).toEqual(['destroy_storage']);
+    // Destructive is the always-ask class even at the owner's admin ceiling. The
+    // static recipe walk admits it; the per-call gate pauses before dispatch.
+    expect(result.steps).toEqual([]);
+    expect(result.awaiting_approval).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(await checkpointStore.list()).toHaveLength(1);
     expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 

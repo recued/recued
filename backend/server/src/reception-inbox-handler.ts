@@ -31,7 +31,7 @@
  *  The `resolveArgEditSchema` resolver is injected (Lane P's impl
  *  connects at the integration step; tests inject a stub).
  *
- *  Spec: docs/d-173-spec.md § N.1 / N.2 / N.5 / N.6 / D10 + A.3 / A.6. */
+ *  Spec: D-173 § N.1 / N.2 / N.5 / N.6 / D10 + A.3 / A.6. */
 
 import {
   RpcError,
@@ -258,6 +258,16 @@ export interface ReceptionInboxDeps {
   readonly resolverDeps?: ReceptionInboxResolverDeps;
   /** Join a held op to its source record + redacted preview (N.1). */
   readonly resolveSource: ResolveInboxSource;
+  /** Owner-only reveal for a form_response hold. The source stays sealed for
+   * every visitor/public surface; this admin RPC uses it only to prefill the
+   * approve-time working-record editor. */
+  readonly resolveFormResponseEdit?: (
+    source: InboxItem['source'],
+    args: Readonly<Record<string, unknown>>,
+  ) => Promise<{
+    values: Readonly<Record<string, unknown>>;
+    visitor_email?: string;
+  } | undefined>;
   /** The incoming-trigger-origin filter (N.1). */
   readonly isReceptionOrigin: IsReceptionOriginAnchor;
   /** Release a held op through the EXISTING preflight resume path —
@@ -297,6 +307,12 @@ export interface ReceptionInboxDeps {
    *  calendar at a booking's proposed time, so they can judge. Absent ⇒ no
    *  count is surfaced. */
   readonly countCalendarOverlap?: CountCalendarOverlap;
+  /** Owner-side history enrichment for a scheduling source. The resolver owns
+   *  PII opening and returns only an opaque-contact projection. */
+  readonly lookupBookingHistory?: (
+    source: InboxItem['source'],
+    args: Readonly<Record<string, unknown>>,
+  ) => Promise<InboxItem['booking_history']>;
   /** Emit the `reception_inbox` broadcast (D-121). */
   readonly broadcast: (event: ReceptionInboxBroadcastEvent) => void;
   /** Deterministic clock seam for tests. Production wires `Date.now`. */
@@ -442,9 +458,24 @@ const resolveApprover = (
  *  and dropped. With two authorities now able to approve, "which one" is a
  *  fact the record has to carry, and `detail` is the slot that exists.
  *  ⇒ the declared actor is now a backed one. */
+/** ⛔ D-210 audit finding 16 — the `ask_id` IS the bearer credential, so it must
+ *  not be written verbatim into a durable, reserve-class audit row that outlives
+ *  the ask and travels with `server.archive.export`.
+ *
+ *  This is the same rule the SIBLING public door already states for itself
+ *  (`ports/reception/handler.ts`: "redact the path explicitly, else the live
+ *  single-use link would sit in the access log in plaintext") — the ask door
+ *  simply inverted it. It is also the same class as finding 3b, where a sealed
+ *  recipient reached the `mail_send` audit detail.
+ *
+ *  A short prefix is kept deliberately: the row must still DISTINGUISH two
+ *  approvals from different asks (that is the whole point of 3d-2c's "an audit
+ *  that finally says who"), and a 122-bit id is not recoverable from 8 hex
+ *  characters. Attribution survives; the capability does not. */
+const ASK_CAPABILITY_AUDIT_PREFIX_LEN = 8;
 const describeApprover = (approver: ReceptionInboxApprover): string =>
   approver.kind === 'ask_landing'
-    ? `ask-landing capability ${approver.ask_id}`
+    ? `ask-landing capability ${approver.ask_id.slice(0, ASK_CAPABILITY_AUDIT_PREFIX_LEN)}… (redacted)`
     : `paired admin ${approver.instance_id}`;
 
 // ────────────────────────────────────────────────────────────────
@@ -543,8 +574,29 @@ const COMMITMENT_KIND: ReceptionInboxTopTierKind = 'commitment';
 /** Map a held op's `execution_source` reception channel / recipe id to
  *  the originating `ReceptionInboxSourceKind`. Best-effort; the
  *  integration-step resolver pins it from the trigger. */
+/** True for a hold minted by the `/reception/manage` reschedule door.
+ *
+ *  🔑 Kept SEPARATE from `recoverSourceKind`, which flattens this to
+ *  `scheduling_link`. Both facts are true and both are needed: it IS a
+ *  scheduling-link continuation for labelling, AND it is the one reception
+ *  origin whose gated step is a KERNEL op (`core.work-entity.booking.update`),
+ *  so its args are keyed `id` rather than the drain-stamped
+ *  `booking_request_id` / `booking_id` the other reception kinds carry. Reading
+ *  it as a plain scheduling link silently took the checkpoint fallback. */
+const isManageOrigin = (anchor: AuditEntry): boolean => {
+  const src = anchor.execution_source;
+  return src?.channel === 'reception' && src.reception_id === '__manage__';
+};
+
 const recoverSourceKind = (anchor: AuditEntry): ReceptionInboxSourceKind => {
   const src = anchor.execution_source;
+  // The possession-based manage door is a scheduling-link continuation: it
+  // proposes a new slot for an existing reception booking. Its recipe id does
+  // not contain `scheduling_link`, so recognize the dedicated reception id
+  // before the best-effort token scan below.
+  if (isManageOrigin(anchor)) {
+    return 'scheduling_link';
+  }
   const token =
     (src && 'source_recipe' in src ? src.source_recipe : undefined)
     ?? anchor.recipe_id
@@ -596,19 +648,82 @@ export const defaultResolveInboxSource: ResolveInboxSource = ({ anchor, checkpoi
       ? (argsRaw as Record<string, unknown>)
       : {};
   const kind = recoverSourceKind(anchor);
-  const record_ref = checkpoint.checkpoint_id;
+  const rawMetadata = args.metadata;
+  const metadata =
+    rawMetadata !== null && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)
+      ? rawMetadata as Record<string, unknown>
+      : {};
+  // `record_ref` names the Reception source, not the gate checkpoint. Drains
+  // stamp these ids after visitor content, so a visitor field cannot spoof
+  // them. The checkpoint fallback preserves honest degraded behaviour for a
+  // legacy/custom held op that carries no Reception provenance at all.
+  // ⚠ The manage door is checked FIRST and separately. It flattens to
+  // `scheduling_link` above, but its gated step is the kernel op
+  // `core.work-entity.booking.update`, whose args are keyed `id` — the
+  // SERVER-resolved booking id (the manage handler derives the target from the
+  // credential's scope; the visitor supplies only a slot). The scheduling-link
+  // arm's `booking_request_id`/`booking_id` are absent on this path, so without
+  // this branch the record ref silently degraded to the gate checkpoint id.
+  const manage = isManageOrigin(anchor);
+  // 🔑 The manage door reads a PRE-GATE STEP OUTPUT, not the gated step's args,
+  // and that is the whole reason it works.
+  //
+  // Its gated step is the KERNEL op `core.work-entity.booking.update`. Kernel
+  // ops dispatch through the engine's simple-form branch, which — unlike the
+  // catalog branch — records nothing under the gated step id when it holds. So
+  // `args` is `{}` on this path and always was; reading `args.booking_id` here
+  // would look right and resolve nothing, silently degrading to the checkpoint
+  // id. `reschedule-booking-managed` therefore publishes the server-resolved
+  // target as its own pre-gate step, whose OUTPUT the checkpoint already
+  // captures like any other completed step.
+  //
+  // ⛔ Deliberately NOT fixed by teaching the engine to capture kernel-op args:
+  // that would push every held kernel op's resolved input into the inbox LIST,
+  // and `d-192-e3-propose-inbox-mint-e2e` pins that the list stays PII-free
+  // (D-173 I-3) — a held commitment's args carry a counterparty email and an
+  // evidence snippet. The list is currently PII-free partly BECAUSE this
+  // capture is absent, so widening it there trades one defect for a leak. The
+  // general kernel-op prefill gap is real and stays open; deciding it means
+  // deciding where the list redacts args, which is a separate change.
+  const manageTargetRaw = checkpoint.step_state?.manage_target_booking_id;
+  const recordRefCandidate =
+    manage
+      ? (typeof manageTargetRaw === 'string' && manageTargetRaw.length > 0
+        ? manageTargetRaw
+        : undefined)
+      : kind === 'scheduling_link'
+        ? args.booking_request_id ?? args.booking_id
+        : kind === 'intake_form'
+          ? metadata.reception_form_submission_id
+          : kind === 'drop_link'
+            ? metadata.reception_drop_blob_id
+            : kind === 'approval_link'
+              ? metadata.reception_approval_intent_id
+              : undefined;
+  const record_ref =
+    typeof recordRefCandidate === 'string' && recordRefCandidate.length > 0
+      ? recordRefCandidate
+      : checkpoint.checkpoint_id;
   // The projection payload the drain stamped into the gated step carries the
   // real materialize destination (`top_tier_kind`) — a drop → `task`, a
-  // scheduling booking → `calendar.event`, an approval / intake → `commitment`.
+  // scheduling reservation → `booking`, and an intake → its configured target.
   // Surface it verbatim (when it's a valid kind) so the inbox list honestly
   // labels WHAT each held item will materialize into; fall back to
   // `commitment` only when the payload doesn't carry one. `top_tier_kind` is a
   // non-PII destination class (never a sealed visitor field), so reading it
   // here does not weaken the I-3 redaction the generic preview enforces.
   const argTopTierKind = (args as { top_tier_kind?: unknown }).top_tier_kind;
+  // ⚠ A manage hold moves an EXISTING booking, so it carries no projection
+  // payload and no `top_tier_kind` to read. Falling through to the
+  // `commitment` default mislabelled the item AND — because `projectInboxItem`
+  // gates the counterparty-history lookup on `top_tier_kind === 'booking'` —
+  // silently suppressed the prior-booking history panel on the one surface the
+  // owner most needs it: deciding whether to accept a visitor's new time.
   const top_tier_kind = isReceptionInboxTopTierKind(argTopTierKind)
     ? argTopTierKind
-    : COMMITMENT_KIND;
+    : manage
+      ? 'booking'
+      : COMMITMENT_KIND;
   // D-173 P5 — surface a drop's file as the item `attachment` so the scan gate
   // (N.2) + the inbox warning can act on it. The review payload the drain
   // stamped carries `file_id` + the file metadata under `metadata.reception_*`
@@ -723,24 +838,63 @@ const resolveAllowOffer = async (
   }
 };
 
-const projectInboxItem = (
+const projectInboxItem = async (
   deps: ReceptionInboxDeps,
   anchor: AuditEntry,
   checkpoint: Checkpoint,
   resolved: ResolvedInboxSource,
   allowOffer?: { ttl_ms: number; max_uses: number },
-): InboxItem => {
+): Promise<InboxItem> => {
   const operation_id = heldOperationId(anchor, checkpoint);
   // A store-only acceptance has no materialized title/body/destination to
   // edit. The shared intake operation exposes those fields for entity targets,
   // so suppress them here rather than accepting edits that cannot take effect.
-  const arg_schema = resolved.top_tier_kind === 'form_response'
+  let arg_schema = resolved.top_tier_kind === 'form_response'
     ? { fields: [] }
     : deps.resolveArgEditSchema(
         operation_id,
         resolved.args,
         deps.resolverDeps ?? {},
       );
+  let itemArgs = resolved.args;
+  if (
+    resolved.top_tier_kind === 'form_response'
+    && deps.resolveFormResponseEdit !== undefined
+  ) {
+    try {
+      const editable = await deps.resolveFormResponseEdit(resolved.source, resolved.args);
+      if (editable !== undefined) {
+        itemArgs = {
+          ...resolved.args,
+          form_response_values: editable.values,
+          form_response_visitor_email: editable.visitor_email ?? '',
+        };
+        arg_schema = {
+          fields: [
+            {
+              key: 'form_response_values',
+              type: 'json',
+              label: 'Answers',
+              required: true,
+              privacy: 'content',
+              affects_target: false,
+            },
+            {
+              key: 'form_response_visitor_email',
+              type: 'string',
+              label: 'Visitor email',
+              required: false,
+              privacy: 'email',
+              affects_target: false,
+            },
+          ],
+        };
+      }
+    } catch {
+      // Fail closed: an unreadable source means no editable fields. Approve can
+      // still persist the exact sealed original through the promotion hook.
+    }
+  }
   // D-173 D7 "confirmed at approval" — what else is on the calendar then. Only
   // for time-framed items, only when a counter is wired. A throw is swallowed to
   // absent (never to 0): the count is a claim, and no claim beats a false one.
@@ -760,18 +914,31 @@ const projectInboxItem = (
       calendar_overlap = undefined;
     }
   }
+  let booking_history: InboxItem['booking_history'];
+  if (
+    resolved.top_tier_kind === 'booking'
+    && deps.lookupBookingHistory !== undefined
+  ) {
+    try {
+      booking_history = await deps.lookupBookingHistory(resolved.source, resolved.args);
+    } catch {
+      // Enrichment failure is unknown, never an empty-history claim.
+      booking_history = undefined;
+    }
+  }
   return {
     hold_id: checkpoint.checkpoint_id,
     operation_id,
     top_tier_kind: resolved.top_tier_kind,
     source: resolved.source,
-    args: resolved.args,
+    args: itemArgs,
     arg_schema,
     preview: resolved.preview,
     ...(resolved.attachment !== undefined ? { attachment: resolved.attachment } : {}),
     ...(allowOffer !== undefined ? { allow_offer: allowOffer } : {}),
     proposed_action: resolved.proposed_action,
     ...(calendar_overlap !== undefined ? { calendar_overlap } : {}),
+    ...(booking_history !== undefined ? { booking_history } : {}),
     status: itemStatusFromScan(resolved.attachment),
   };
 };
@@ -811,7 +978,7 @@ export const queryReceptionInboxHeldOps = async (
     held.push({
       anchor,
       checkpoint,
-      item: projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
+      item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
     });
   }
   return held;
@@ -841,7 +1008,7 @@ const findHeldOp = async (
   return {
     anchor,
     checkpoint,
-    item: projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
+    item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
   };
 };
 
@@ -1071,12 +1238,19 @@ const auditApprovedWithEdits = async (
 ): Promise<void> => {
   const diff = computeArgEditsDiff(held.item.args, validatedEdits);
   const editedKeys = diff.map((d) => d.key);
+  const auditDiff = held.item.top_tier_kind === 'form_response'
+    ? diff.map((entry) => ({
+        key: entry.key,
+        old_value: '<redacted form response content>',
+        new_value: '<redacted form response content>',
+      }))
+    : diff;
   // N.14 — allow never combines with edits (the rpc refuses upstream), so
   // the detail vocabulary stays a closed three-way.
   const what = allowedForForm
     ? `approved & allowed for this form on ${held.item.operation_id}`
     : editedKeys.length > 0
-      ? `approved with edits on ${held.item.operation_id}: ${JSON.stringify(diff)}`
+      ? `approved with edits on ${held.item.operation_id}: ${JSON.stringify(auditDiff)}`
       : `approved (no edits) on ${held.item.operation_id}`;
   // WHO, not just what — see `describeApprover`. `ActivityEntry` has no
   // actor column, so `detail` is where it can live at all.
@@ -1252,6 +1426,27 @@ export const handleReceptionInboxApprove = async (
   // anchor with no `ask_id`, which used to report `not_configured` and
   // wait for a boot sweep.)
   const ask_id = held.anchor.ask_id;
+  // ⛔ D-210 audit finding 10 — BIND the presented capability to THIS hold.
+  //
+  // `resolveApprover` runs before `held` is resolved, so it can only check the
+  // `ask_id` is non-empty. `args.hold_id` is caller-supplied and `findHeldOp`
+  // resolves ANY open reception hold, so nothing compared the two: the capability
+  // raised for ask A could name hold B, and the audit row would then attribute
+  // B's release to A. Not exploitable through the one caller that exists today
+  // (the landing port derives `hold_id` from `ask.handler_payload.checkpoint_id`),
+  // but `handleReceptionInboxApprove` is a public export and the invariant lived
+  // one module away in its only caller rather than in the handler that enforces
+  // authority. A second call site would inherit the hole silently.
+  //
+  // ⇒ [[a_capability_derives_its_target]] — a bearer capability must derive its
+  // target from itself, and where it cannot, the act site must re-check the pair.
+  if (approver.kind === 'ask_landing' && approver.ask_id !== ask_id) {
+    throw rpcError(
+      'permission_denied',
+      `${method}: the ask capability was not raised for this held operation`,
+      403,
+    );
+  }
   const hasAsk = typeof ask_id === 'string' && ask_id.length > 0;
   const canAnswerAsk = typeof deps.submitAnswer === 'function' && hasAsk;
   const canReleaseWithoutAsk =

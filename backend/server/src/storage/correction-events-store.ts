@@ -17,7 +17,7 @@
  *  standing_instruction_added retain indefinitely). Housekeeping
  *  task wires this on a periodic cadence.
  *
- *  Spec: `docs/d-145-spec.md` § B.14.2 + § B.14.4. */
+ *  Spec: D-145 § B.14.2 + § B.14.4. */
 
 import type Database from 'better-sqlite3';
 import {

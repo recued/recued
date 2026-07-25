@@ -33,6 +33,7 @@ import {
   ARCHIVE_RESTORE_MANIFEST_ATTR,
   ARCHIVE_RESTORE_REALM_KEY_ATTR,
   ARCHIVE_RESTORE_ARM_ATTR,
+  ARCHIVE_RESTORE_UNCOUNTED_ATTR,
   ARCHIVE_RESTORE_COMMIT_BTN_ATTR,
   ARCHIVE_RESTORE_SCHEMA_WARN_ATTR,
   ARCHIVE_PASSPORT_START_BTN_ATTR,
@@ -540,6 +541,51 @@ describe('R26.4 Delta 2b — restore preview', () => {
     mount.setRestoreMnemonic(KNOWN);
     await mount.clickPreview();
     expect(textOf(host)).toContain('Includes identity passport: yes');
+  });
+
+  it('calls the record count a MINIMUM when tables could not be counted', async () => {
+    // The number is a floor whenever the server reports `uncounted_tables`,
+    // and this preview is where an operator decides to commit a restore.
+    const runImport: ArchiveImportCaller = async (input) => ({
+      manifest: { ...previewOkManifest, uncounted_tables: ['data_file', 'data_link'] },
+      restored_at: input.dry_run ? null : 1,
+      realm: 'same',
+    });
+    const { host, mount } = setupMount({ runImport });
+    mount.clickRestore();
+    mount.setRestorePath(DONE_PATH);
+    mount.setRestoreMnemonic(KNOWN);
+    await mount.clickPreview();
+
+    const text = textOf(host);
+    expect(text).toContain('at least 5 records');
+    expect(findByAttr(host, ARCHIVE_RESTORE_UNCOUNTED_ATTR)).not.toBeNull();
+    expect(text).toContain('2 tables could not be counted');
+    expect(text).toContain('data_file, data_link');
+    // Says what it does NOT mean — the restore copies what is there either way.
+    expect(text).toContain('restore itself is unaffected');
+  });
+
+  it('makes no minimum claim on an ordinary archive', async () => {
+    // Both directions, over the SAME fixture as the test above so the pair
+    // differs in exactly one field: a caveat that shows up everywhere stops
+    // being read.
+    const runImport: ArchiveImportCaller = async (input) => ({
+      manifest: previewOkManifest,
+      restored_at: input.dry_run ? null : 1,
+      realm: 'same',
+    });
+    const { host, mount } = setupMount({ runImport });
+    mount.clickRestore();
+    mount.setRestorePath(DONE_PATH);
+    mount.setRestoreMnemonic(KNOWN);
+    await mount.clickPreview();
+
+    const text = textOf(host);
+    expect(text).toContain('5 records');
+    expect(text).not.toContain('at least');
+    expect(text).not.toContain('could not be counted');
+    expect(findByAttr(host, ARCHIVE_RESTORE_UNCOUNTED_ATTR)).toBeNull();
   });
 
   it('a missing path never reaches the server', async () => {

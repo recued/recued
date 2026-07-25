@@ -82,8 +82,27 @@ export interface ArchiveManifest {
   /** ISO-8601 timestamp the source archive was written. */
   exported_at: string;
   /** Total record count across every table in the archive. Sum of
-   *  per-table counts; useful for the "restoring N records" banner. */
+   *  per-table counts; useful for the "restoring N records" banner.
+   *
+   *  ⚠ Read `uncounted_tables` before presenting this as a total. A table
+   *  the probe cannot read is skipped, so the sum is a FLOOR, not a
+   *  count, whenever that array is non-empty. */
   record_count: number;
+  /** Tables present in the archive that could not be counted (a read
+   *  error on the probe handle). Absent or empty ⇒ `record_count` covers
+   *  every table and may be shown as a total.
+   *
+   *  ⛔ Optional for wire compatibility with servers that predate it, so
+   *  `undefined` means "this server does not report it", NOT "nothing was
+   *  skipped". A renderer may therefore not turn `undefined` into an EXACT
+   *  total ("1,234 records"); it may only decline to add the caveat, which
+   *  is what both of Recued's do. The distinction is real but weaker than
+   *  `keyfile_sealing`'s, where absent and known-good must render
+   *  differently — here they legitimately render the same, because there is
+   *  no honest third thing to say to a user about a server that cannot
+   *  answer. Stated precisely because the first version of this comment
+   *  forbade something the renderers beside it were already doing. */
+  uncounted_tables?: string[];
   /** Per-table row counts. Keys are SQLite table names as they live in
    *  the archive. Lets the ext highlight "0 rows imported from
    *  schedules" if the source server had no schedules configured. */

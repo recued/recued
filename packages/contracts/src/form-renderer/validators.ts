@@ -10,7 +10,7 @@
  *  membership. Async ref-existence is layered on by the host app
  *  through `ValidationHooks.ref_exists`.
  *
- *  Spec: docs/d-145-spec.md § A.3.1 (per-type validation hooks).
+ *  Spec: D-145 § A.3.1 (per-type validation hooks).
  */
 
 import type {

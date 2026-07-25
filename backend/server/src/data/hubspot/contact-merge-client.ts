@@ -20,7 +20,7 @@
  *  401 after refresh surfaces as a terminal failure (vendor auth
  *  expired; user needs to reconnect).
  *
- *  Spec: `docs/d-138-spec.md` § A.7 + § Phase 5. */
+ *  Spec: D-138 § A.7 + § Phase 5. */
 
 import {
   HUBSPOT_API_BASE,

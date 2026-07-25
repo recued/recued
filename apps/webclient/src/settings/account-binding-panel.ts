@@ -115,6 +115,19 @@ const DEFAULT_DASHBOARD_URL = 'https://dashboard.recued.com/';
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
 
+const readErrorMessage = (
+  err: unknown,
+  source: 'server' | 'recued.com',
+): string => {
+  const message = errMessage(err);
+  if (!/(failed to fetch|network request failed|load failed|networkerror)/i.test(message)) {
+    return message;
+  }
+  return source === 'recued.com'
+    ? 'Couldn’t reach recued.com. Your local Recued server is still connected.'
+    : 'Couldn’t load account status from your Recued server. Try again.';
+};
+
 const clearChildren = (el: HTMLElement): void => {
   while (el.firstChild) el.removeChild(el.firstChild);
 };
@@ -610,9 +623,15 @@ export const mountAccountBindingPanel = (
       session: session.status === 'fulfilled' ? session.value : state.session,
       errors: {
         ...state.errors,
-        bindingStatus: binding.status === 'rejected' ? errMessage(binding.reason) : null,
-        proStatus: pro.status === 'rejected' ? errMessage(pro.reason) : null,
-        session: session.status === 'rejected' ? errMessage(session.reason) : null,
+        bindingStatus: binding.status === 'rejected'
+          ? readErrorMessage(binding.reason, 'server')
+          : null,
+        proStatus: pro.status === 'rejected'
+          ? readErrorMessage(pro.reason, 'server')
+          : null,
+        session: session.status === 'rejected'
+          ? readErrorMessage(session.reason, 'recued.com')
+          : null,
       },
     };
     render();

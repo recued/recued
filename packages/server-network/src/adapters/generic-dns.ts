@@ -6,7 +6,7 @@
  *  `{ip_v6}` into the URL template + does the call.
  *
  *  Trade-off: less polished UX than the named adapters but it
- *  always works. The setup guide at `docs/setup-byo-ddns.md`
+ *  always works. The setup guide at internal design notes
  *  documents this fallback for providers like Hurricane Electric,
  *  Namecheap Dynamic DNS, etc.
  */

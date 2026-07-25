@@ -63,7 +63,7 @@
  *  ignore mail invalidation). The work-entity due-status sweep marks
  *  commitment topics stale on every transition.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 753) + A.7.2 +
+ *  Spec: D-145 §§ A.7.1 (line 753) + A.7.2 +
  *        A.7.6 #1 + `ENRICHMENT_REGISTRY.open_loop_pressure` +
  *        `packages/contracts/src/enrichment-declarations/open-loop-pressure.ts`. */
 

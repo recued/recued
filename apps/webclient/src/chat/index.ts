@@ -19,10 +19,12 @@ export {
   isChatThreadEvent,
   applyPlanResolution,
   type ChatThreadState,
+  type ChatThreadSnapshot,
   type InFlightTurn,
   type InFlightToolCall,
   type TurnFailureNotice,
   type PlanApprovalCard,
+  type PlanExecutionReceipt,
 } from './state.js';
 
 export {

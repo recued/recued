@@ -29,7 +29,7 @@
  *  faithfully key a `(recipe, op)` suggestion (mirrors {@link qualityDelegationSignalKey}),
  *  so it is skipped rather than recorded under a partial key.
  *
- *  Spec: docs/d-202-spec.md §2 (signals) + docs/d-202-quality-gate-seams.md §3 (S4). */
+ *  Spec: D-202 §2 (signals) + D-202 §3 (S4). */
 
 import type { Checkpoint, QualityDelegationSignal } from '@recued/contracts';
 import type { AuditEntry } from '@recued/storage';

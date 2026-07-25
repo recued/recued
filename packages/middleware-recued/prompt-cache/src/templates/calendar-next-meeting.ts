@@ -46,10 +46,18 @@
  *  the backend lookup pre-formats `when` (timezone-aware) so the renderer
  *  stays a pure string substitution.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 3. */
+ *  See: D-164 § 3. */
 
 import type { TemplateMatcher } from '../gate/index.js';
 import type { RenderTemplate } from '../types.js';
+import {
+  escapeTemplateRegExp,
+  hasMutationIntent,
+  LOCALIZED_TAIL,
+  normaliseTemplateText,
+  resolveTemplateLocale,
+  type SupportedLocale,
+} from './locales.js';
 
 /** The single render template for the calendar next-meeting class. Keyed
  *  on one `entity.name` slot; the body references the contact display
@@ -64,6 +72,67 @@ export const CALENDAR_NEXT_MEETING_TEMPLATE: RenderTemplate = {
   action_class: 'read',
   short_circuit_eligible: true,
   body: 'Your next meeting with {{name}} is "{{summary}}" on {{when}}.',
+};
+
+const localizedCalendarTemplate = (
+  locale: Exclude<SupportedLocale, 'en'>,
+  body: string,
+): RenderTemplate => ({
+  ...CALENDAR_NEXT_MEETING_TEMPLATE,
+  template_hash: `recued/calendar-next-meeting-with-${locale}@v1`,
+  body,
+});
+
+export const CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE: Readonly<
+  Record<SupportedLocale, RenderTemplate>
+> = {
+  en: CALENDAR_NEXT_MEETING_TEMPLATE,
+  de: localizedCalendarTemplate(
+    'de',
+    'Ihre nächste Besprechung mit {{name}} ist „{{summary}}“ am {{when}}.',
+  ),
+  es: localizedCalendarTemplate(
+    'es',
+    'Tu próxima reunión con {{name}} es “{{summary}}” el {{when}}.',
+  ),
+  fr: localizedCalendarTemplate(
+    'fr',
+    'Votre prochaine réunion avec {{name}} est « {{summary}} » le {{when}}.',
+  ),
+  ja: localizedCalendarTemplate(
+    'ja',
+    '{{name}}との次の会議は「{{summary}}」で、日時は{{when}}です。',
+  ),
+  pt: localizedCalendarTemplate(
+    'pt',
+    'Sua próxima reunião com {{name}} é “{{summary}}” em {{when}}.',
+  ),
+  zh: localizedCalendarTemplate(
+    'zh',
+    '你与{{name}}的下次会议是“{{summary}}”，时间为{{when}}。',
+  ),
+};
+
+const matchesLocalizedCalendar = (
+  locale: SupportedLocale,
+  haystack: string,
+  name: string,
+): boolean => {
+  if (locale === 'en') return false;
+  const n = escapeTemplateRegExp(name);
+  const t = LOCALIZED_TAIL;
+  const pattern = locale === 'de'
+    ? `^(?:wann ist\\s+)?(?:meine?\\s+)?n[aä]chste\\s+(?:besprechung|termin|meeting)\\s+mit\\s+${n}${t}`
+    : locale === 'es'
+      ? `^[¿¡]?\\s*(?:cu[aá]ndo es\\s+)?(?:mi\\s+)?pr[oó]xima\\s+(?:reuni[oó]n|llamada|cita)\\s+con\\s+${n}${t}`
+      : locale === 'fr'
+        ? `^(?:quand est\\s+)?(?:ma\\s+)?prochaine\\s+(?:r[eé]union|visio|appel)\\s+avec\\s+${n}${t}`
+        : locale === 'pt'
+          ? `^(?:quando [eé]\\s+)?(?:(?:a )?minha\\s+)?pr[oó]xima\\s+(?:reuni[aã]o|chamada|consulta)\\s+com\\s+${n}${t}`
+          : locale === 'ja'
+            ? `^${n}との(?:次|今度)の(?:会議|ミーティング|通話|予定)(?:は)?いつ(?:ですか)?${t}`
+            : `^(?:与|和)${n}的?(?:下次|下一次|最近的)(?:会议|通话|会面)(?:是)?(?:什么时候|何时)${t}`;
+  return new RegExp(pattern, 'u').test(haystack);
 };
 
 /** Mutation / imperative verbs that turn a "meeting with `<Name>`" prompt
@@ -171,16 +240,21 @@ const leadIsAllowed = (prefix: string): boolean => {
  *  Whitespace is collapsed + lower-cased on both sides so a double-spaced or
  *  differently-cased prompt still matches the NER slot value. The match is
  *  purely lexical — no warehouse read here (that's the probe). */
-export const matchCalendarNextMeetingTemplate: TemplateMatcher = ({ text, slots }) => {
+export const matchCalendarNextMeetingTemplate: TemplateMatcher = ({ text, slots, locale }) => {
   if (slots.length !== 1) return null;
   const name = slots[0]!;
   if (name.kind !== 'entity.name') return null;
-  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
-  if (CALENDAR_MUTATION_RE.test(haystack)) return null;
-  const needleName = name.value.toLowerCase().replace(/\s+/g, ' ');
+  const templateLocale = resolveTemplateLocale(locale);
+  const haystack = normaliseTemplateText(text);
+  if (hasMutationIntent(haystack) || CALENDAR_MUTATION_RE.test(haystack)) return null;
+  const needleName = normaliseTemplateText(name.raw);
   if (needleName.length === 0) return null;
   const coreStart = coreNextMeetingStart(haystack, needleName);
-  if (coreStart === null) return null;
-  if (!leadIsAllowed(haystack.slice(0, coreStart))) return null;
-  return CALENDAR_NEXT_MEETING_TEMPLATE;
+  if (coreStart !== null && leadIsAllowed(haystack.slice(0, coreStart))) {
+    return CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  if (matchesLocalizedCalendar(templateLocale, haystack, needleName)) {
+    return CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  return null;
 };

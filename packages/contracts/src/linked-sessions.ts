@@ -75,7 +75,7 @@
  *  Cognition-independent. Matches the P1 / P2 / P3 / P8 substrate-first
  *  pattern.
  *
- *  Spec: docs/d-153-spec.md § Linked sessions — one primitive covers
+ *  Spec: D-153 § Linked sessions — one primitive covers
  *  swap / transfer / continuation (lines 507-533). */
 
 // ────────────────────────────────────────────────────────────────

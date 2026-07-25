@@ -38,7 +38,7 @@
  *  HubSpot connection legitimately produces a work-entity Source AND a contact
  *  Source, so the two wires are live on the SAME connection at once.
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 6. */
+ *  Spec: D-192 step 6. */
 
 import type { ConnectionRow, ContactSourceDeclaration } from '@recued/contracts';
 import { CONNECTION_SOURCE_ID, getContactSourceDeclaration } from '@recued/contracts';

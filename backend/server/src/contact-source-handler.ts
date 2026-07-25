@@ -14,7 +14,7 @@
  *
  *  Read-only, and deliberately NOT MCP-reserved — see the registry entry.
  *
- *  Spec: `docs/d-205-contact-surface.md` §4.3. */
+ *  Spec: D-205 §4.3. */
 
 import type {
   ContactSourceHealth,

@@ -38,6 +38,7 @@ import {
   type RecipeDefinition,
   type ToolEntry,
 } from '@recued/contracts';
+import { buildVersionedContractSnapshot } from '../../contract-snapshot-version.js';
 import {
   isLlmGatewayContractSafeToolEntry,
   type ChatOrchestrator,
@@ -1570,17 +1571,13 @@ const createDispatchSnapshotResolver = (
     } catch {
       return null;
     }
-    return Object.freeze({
+    return buildVersionedContractSnapshot({
       contract_id: contractId,
-      // The contracts substrate still uses the same v1 snapshot version as the
-      // MCP door. `updated_at` is intentionally not substituted: it versions
-      // the token checklist, not the governing contract.
-      contract_version: '1',
-      allowed_tools: Object.freeze([...new Set(allowedTools)]),
-      approval_required: Object.freeze([]),
-      scope_restrictions: Object.freeze([...scopeRestrictions]),
+      allowed_tools: allowedTools,
+      approval_required: [],
+      scope_restrictions: scopeRestrictions,
       resolved_at: current,
-    }) satisfies ContractSnapshot;
+    });
   };
 
 const LLM_GATEWAY_FREE_TOOL_NAMES: ReadonlySet<string> = new Set([

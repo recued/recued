@@ -26,7 +26,7 @@
  *  Deps resolve LATE per turn (the wire-chat-orchestrator getter
  *  convention) — absent deps make the hook a faithful no-op.
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.b/5.c); slice C. */
+ *  Spec: D-177 § N.11 rule 5 (5.b/5.c); slice C. */
 
 import type { Middleware, TurnContext } from '@recued/middleware';
 import {

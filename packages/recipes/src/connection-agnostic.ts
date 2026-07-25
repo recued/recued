@@ -24,7 +24,7 @@
  *
  *  Pure + portable (no backend import): the binding / catalog / result-envelope
  *  arrive via the injected `PackResolutionContext`. Design + probe results:
- *  `docs/unified-pack-exploration/connection-agnostic-op-contract.md`.
+ *  internal design notes.
  *
  *  G2 (slice 5 + datetime unify): a `number` canonical field is coerced from a
  *  string vendor value, and a `datetime` (`date_ms`) field is normalized to unix-MS

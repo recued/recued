@@ -1,7 +1,7 @@
 /** D-192 messenger flagship (M1) — the `MessengerVendorDeclaration` registry.
  *
  *  Locks the canonical-vocabulary half of the taxonomy §0 rule
- *  (`docs/d-192-kinds-taxonomy.md` §3a): the declaration shape + validator +
+ *  (D-192 §3a): the declaration shape + validator +
  *  registry + accessors mirroring `CONNECTION_VENDOR_ENTITIES`. Tests cover:
  *    - the shipped registry is well-formed (no dup vendor, every entry valid)
  *    - both vendors carry the substrate-grounded facets (Slack HMAC /
@@ -14,7 +14,7 @@
  *    - `build*` throws on invalid; `assertMessengerVendorRegistry` catches dups
  *    - the socket-mode extension path validates when it omits verification
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` §3a (M-1). */
+ *  Spec: D-192 §3a (M-1). */
 
 import { describe, expect, it } from 'vitest';
 

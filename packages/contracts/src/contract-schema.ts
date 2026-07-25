@@ -16,14 +16,14 @@
  *  dispatcher reads schema + rows through one `scanNamespace` path and future
  *  Ds / packs append more entries as data. D-166 extends this same file with 4
  *  cross-spec entries (connection_record / policy_matrix / preflight_state /
- *  contract_definition) — see `docs/d-166-spec.md` § "Cross-spec composite_keys
+ *  contract_definition) — see D-166 § "Cross-spec composite_keys
  *  entries".
  *
  *  Scope of THIS slice: the schema-entry type system + D-165's 5 entries +
  *  their value_shapes + a pure self-consistency validator. No storage table, no
  *  `composeForRole` dispatcher, no gateway wiring (those are later slices).
  *
- *  Spec: `docs/d-165-spec.md` § "Contract namespace" (Schema entries / Dispatch
+ *  Spec: D-165 § "Contract namespace" (Schema entries / Dispatch
  *  roles / D-165's specific schema entries / Dispatch composition). */
 
 // D-207 — the ONE source of truth for the door-type vocabulary. The
@@ -49,6 +49,10 @@ export const DISPATCH_ROLES = [
   // operation-profile seed + the grant gate, not via composeForRole. Kept ISOLATED
   // from `ingredient_inventory` so binding rows never pollute that inventory query.
   'connection_binding',
+  // D-211 — actorless owner replacements for pack operation defaults. This is
+  // raw owner-authored inventory, read by exact `(ingredient, operation)` key
+  // before the existing admission flow; it is never policy-merged.
+  'owner_operation_defaults',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -126,6 +130,8 @@ export const INVENTORY_DISPATCH_ROLES = [
   // merged policy; its value_shape is therefore NOT policy-projected (exempted by the
   // projection-completeness ratchet, like the other inventory roles).
   'connection_binding',
+  // D-211 — one raw global owner ruling per operation.
+  'owner_operation_defaults',
   // D-166 `contract_definition` returns the contract row (keyed by contract_id),
   // not a merged policy — its value_shape is therefore NOT policy-projected (the
   // projection-completeness ratchet exempts inventory-only scopes).
@@ -401,15 +407,10 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
     },
     required: ['pack_slug', 'group_id', 'resolved_approval'],
   },
-  /** A user override for one (actor, ingredient, [operation]). `tightening_only`
-   *  — every field can only RESTRICT further, so all are optional; a present
-   *  field tightens the running aggregate. One row feeds five roles (denied →
-   *  grant_resolution, approval → approval_composition, max_risk_without_approval
-   *  → risk_override, timeout_ms → timeout_override, cache_ttl_ms →
-   *  cache_ttl_override). D-166 Slice 4a projects `denied`→`allowed` (negated)
-   *  and `max_risk_without_approval` onto its lattice; the field is named for the
-   *  lattice (none|read|write|admin, stricter LOW — destructive always needs
-   *  approval, so it has no place on the ceiling). */
+  /** A user tightening override for one (actor, ingredient, [operation]). Every
+   *  present field can only RESTRICT the existing admission flow. D-211 owner
+   *  operation defaults deliberately do not live here: they are global and use
+   *  the actorless `owner_operation_policy` shape below. */
   override_policy: {
     fields: ['denied', 'approval', 'max_risk_without_approval', 'timeout_ms', 'cache_ttl_ms'],
     types: {
@@ -420,6 +421,17 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       cache_ttl_ms: 'number?',
     },
     required: [],
+  },
+  /** D-211 global owner replacements for one pack operation. `op_hash` is the
+   * server-stamped staleness anchor, not part of the effective pair. */
+  owner_operation_policy: {
+    fields: ['risk', 'approval', 'op_hash'],
+    types: {
+      risk: 'enum:read|write|admin|destructive?',
+      approval: 'enum:never|ask|always?',
+      op_hash: 'string',
+    },
+    required: ['op_hash'],
   },
   // D-166 contract_definition — the (channels × actors × ingredient_ids ×
   // operation_ids × connection_names) scope a minted contract authorizes. Empty
@@ -975,6 +987,17 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     ],
     merge_precedence: 30,
     merge_rule: 'tightening_only',
+    writeable_by: 'user',
+  },
+  owner_operation: {
+    // D-211 — global to the owner. No actor and no contract_id: this replaces
+    // the pack operation default before the unchanged contract/access flow.
+    segments: ['ingredient_id', 'operation_id'],
+    required: ['ingredient_id', 'operation_id'],
+    value_shape: 'owner_operation_policy',
+    applies_to: ['owner_operation_defaults'],
+    merge_precedence: 0,
+    merge_rule: 'override',
     writeable_by: 'user',
   },
   contract_definition: {

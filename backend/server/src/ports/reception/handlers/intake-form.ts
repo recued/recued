@@ -38,18 +38,18 @@
  *  packet boundary; user_only_field_names + per_field_visibility maps
  *  stay server-side at every step.
  *
- *  Spec: docs/d-149-spec.md § A.5.3 + § Must Hold I-12 + I-12b + § N.6. */
+ *  Spec: D-149 § A.5.3 + § Must Hold I-12 + I-12b + § N.6. */
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
 import {
   validateIntakeFormSubmission,
   isReceptionFormPairBinding,
   receptionPairBindingEquals,
   INTAKE_FORM_DEFAULT_SUBMIT_BUTTON_LABEL,
   INTAKE_FORM_DEFAULT_SUCCESS_MESSAGE,
-  type FormResponse,
   type IntakeFormConfigField,
   type IntakeFormSubmissionInput,
   type IntakeFormSubmissionProcessingOutcome,
@@ -80,16 +80,13 @@ import type { ReceptionOutputBlock } from './reception-page-render.js';
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
 import type { ReceptionKindHandler } from './types.js';
 import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
-import type { FormResponseStore } from '../../../storage/form-response-store.js';
 import type { FormSubmissionStore } from '../../../storage/reception-form-store.js';
 import type { ReceptionIntakeRecipePairResolution } from '../intake-recipe-pair.js';
 
 /** Substrate-level submission schema version, stamped on the encrypted
- *  `reception_form_submission` row AND mirrored into the canonical
- *  `form_response` log's metadata. ONE constant because the two must agree:
- *  the approve-time promotion derives the log's `schema_version` from the ROW
- *  (`responseMetadataFor`), so a submit-time literal that drifted from the
- *  row's would make two logs of the same shape disagree about their schema.
+ *  `reception_form_submission` row. Approval-time promotion derives the
+ *  destination record's `schema_version` from this sealed row, so there is
+ *  still one authoritative version literal.
  *  Bumped only when `form_definition` gains versioning (D-149 § A.5.3). */
 const SUBMISSION_SCHEMA_VERSION = 1;
 
@@ -131,7 +128,7 @@ const writeErrorPage = (
 
 /** Per-issued form-nonce stamp. The POST submit handler consumes
  *  these once + cross-checks against the registry. Keys are
- *  `${endpoint_id}|${form_nonce}`; values retain the issue clock and the
+ *  the nonce itself (see `bounded-nonce-store.ts`); the carried value is the
  *  source-checked pair (or explicit unpaired state) seen by GET. */
 export interface IntakeFormNonceStore {
   /** Issue a fresh nonce + return the encoded form-nonce. */
@@ -152,36 +149,34 @@ export interface IntakeFormNonceStamp {
 /** Default TTL — visitors have 30 minutes to submit after loading. */
 export const INTAKE_FORM_NONCE_TTL_MS = 30 * 60 * 1000;
 
-const NONCE_BYTES = 24;
 
+/** ⚠ NO `maxPerScope`: the scope is `endpoint_id`, shared by every concurrent
+ *  visitor to this form. A per-scope cap would let the Nth visitor evict the
+ *  first visitor's nonce. See `bounded-nonce-store.ts`. */
 export const createInMemoryIntakeFormNonceStore = (): IntakeFormNonceStore => {
-  const inner = new Map<string, {
-    readonly issued_at: number;
-    readonly pair_binding: ReceptionFormPairBinding | null;
-  }>();
+  const store = createBoundedNonceStore<ReceptionFormPairBinding | null>({
+    ttlMs: INTAKE_FORM_NONCE_TTL_MS,
+  });
   return {
     issue(endpoint_id, now, pair_binding = null) {
       if (pair_binding !== null
         && !isReceptionFormPairBinding(pair_binding)) {
         throw new Error('intake form nonce: invalid pair binding');
       }
-      const nonce = randomBytes(NONCE_BYTES).toString('hex');
-      inner.set(`${endpoint_id}|${nonce}`, {
-        issued_at: now,
-        pair_binding: pair_binding === null ? null : { ...pair_binding },
-      });
-      return nonce;
+      // Copy IN and OUT — the stamp is immutable render evidence, so a caller
+      // holding the original object must not be able to mutate what a later
+      // consume reads back.
+      return store.issue(
+        endpoint_id,
+        now,
+        pair_binding === null ? null : { ...pair_binding },
+      );
     },
     consume(endpoint_id, nonce, now) {
-      const key = `${endpoint_id}|${nonce}`;
-      const stamp = inner.get(key);
-      if (stamp === undefined) return null;
-      inner.delete(key);
-      if (now - stamp.issued_at > INTAKE_FORM_NONCE_TTL_MS) return null;
+      const hit = store.consume(endpoint_id, nonce, now);
+      if (hit === null) return null;
       return {
-        pair_binding: stamp.pair_binding === null
-          ? null
-          : { ...stamp.pair_binding },
+        pair_binding: hit.value === null ? null : { ...hit.value },
       };
     },
   };
@@ -635,20 +630,10 @@ export const createIntakeFormPacketHandler = (
 export interface IntakeFormSubmitHandlerDeps {
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getSubmissionStore: () => FormSubmissionStore;
-  /** D-210 WS2 — the canonical `form_response` log. REQUIRED, not optional:
-   *  the log is written at submit for every ordinary non-spam intake, so a
-   *  handler that could not write one would accept submissions it cannot
-   *  record. The dispatcher's readiness gate keeps the POST path on the
-   *  kind-registry 503 stub until this store is wired. */
-  readonly getFormResponseStore: () => Pick<FormResponseStore, 'accept'>;
   readonly getFormNonceStore: () => IntakeFormNonceStore;
   readonly getFormSubmissionPiiKey: () => Uint8Array;
   readonly auditLog: AuditLogStore;
   readonly now: () => number;
-  /** D-210 WS2 — best-effort first-create fan-out for the submit-time log,
-   *  the same seam the approve-time promotion uses (owner Data invalidation +
-   *  the warehouse trigger bus). Absent ⇒ the row is still written. */
-  readonly onFormResponseCreated?: (response: FormResponse) => void;
   readonly resolveRecipePair?: ResolveIntakeFormRecipePair;
   readonly coordinatePairedRun?: CoordinateIntakeFormPairedRun;
   /** D-149 § A.20.3 / § A.20.7 — deployment mode for the Public Trust
@@ -926,119 +911,33 @@ export const createIntakeFormSubmitHandler = (
       metadata: metadataPayload,
     });
 
-    // D-210 A.8 slice 2b — the `form_response` DESTINATION, written here at
-    // submit while the plaintext is still live.
+    // D-210 audit finding 3a (2026-07-20) — THE `form_response` WRITE MOVED TO APPROVE.
     //
-    // ⚠ THIS WAS THE ALWAYS-ON LOG UNTIL 2b, and the previous comment said so:
-    // *"it is NOT a destination … `target_kind` no longer decides whether the
-    // submission is recorded at all."* True for WS2's premise — at the time
-    // nothing else universally recorded a submission, so this row had to.
-    // `reception_form_submission` is now exactly that (written first, kept even
-    // for spam, the provenance anchor every surface keys off), which freed
-    // `form_response` to become the generic MUTABLE destination (A.4).
-    // So `target_kind` decides this again — the opposite of the old sentence.
+    // A.8 slice 2b wrote the destination row HERE, at submit, "while the plaintext
+    // is still live" — inside this public visitor POST. The audit found what that
+    // costs: `form_response` is a first-class `data.*` collection with
+    // owner-default grants, so the row existed, and was queryable by the owner's
+    // AI, BEFORE the owner had seen the submission. Approval gated nothing about
+    // its existence, which contradicts A.1: "The inbox HOLDS. Approve is the only
+    // door, and it is where the record becomes real."
     //
-    // ⛔ What did NOT move: this is still written at SUBMIT, not at approval.
-    // The plaintext is live here and needs no decrypt, and the record is of
-    // what was SUBMITTED. It also still closes the hole the approve-time path
-    // has — a row that never reaches the pre-resume hook is logged nowhere.
+    // It now writes in `form-response-promotion.ts`, the shared pre-resume hook
+    // that already owned the paid-pair write — so there is still exactly ONE
+    // writer, and still no dual-write to reconcile. The cost is a decrypt this
+    // path did not need; the sealed submission row is never mutated, so deferring
+    // loses nothing.
     //
-    // Written here because the plaintext is still live — no decrypt, unlike
-    // the approve-time path (`form-response-promotion.ts`). It also closes
-    // that path's gap: an `auto_accept` endpoint never reached the pre-resume
-    // hook, so its submissions were never logged anywhere readable. (D-210
-    // Phase C has since retired `auto_accept` entirely — but submit-time
-    // logging stands on its own: the plaintext is live here, and the log is
-    // the record of what was SUBMITTED, not of what was approved.)
+    // ⛔ WHAT MUST NOT COME BACK. The old comment here said "⛔ Do NOT mirror this
+    // condition into `form-response-promotion.ts`", on the reasoning that gating
+    // the hook on `target_kind` would starve a PAID pair with a task destination
+    // of its paid record. That reasoning is intact and honoured: the hook gates on
+    // the destination ONLY for `pair_binding === null`. A paid pair still writes
+    // regardless of destination.
     //
-    // Two exclusions, and each is a real boundary rather than a convenience:
-    //
-    //  - NON-`pending` outcomes (`spam` / `rejected_domain`) are not logged.
-    //    The encrypted row is still kept for the abuse inbox; the canonical
-    //    log is for submissions the substrate accepted.
-    //  - PAIRED rows (`pair_binding !== null`) are not logged here. A D-200
-    //    direct-checkout submission must not be logged before its payment is
-    //    provider-verified, and its paid-gated write still happens at approve
-    //    (`form-response-promotion.ts`). ⚠ There is deliberately NO
-    //    D-207-vs-D-200 discriminator on a form binding (the `d200-pair-v*`
-    //    prefix is the family's storage spelling, not a payment claim), so
-    //    this exclusion is necessarily wider than the payment rule: a D-207
-    //    door-paired intake gets no log either. That is UNCHANGED from today
-    //    (`rowOwesDefaultDispatch` returns false for it, so it never reached
-    //    the promotion hook) — an unclosed gap, not a regression. Closing it
-    //    needs a discriminator that does not exist yet.
-    //
-    // Ordering: after the submission insert, never before. The encrypted row
-    // is the provenance anchor every other surface keys off (drain, inbox,
-    // audit); a canonical log for a submission the substrate holds no record
-    // of would be provenance that lies. Same database, next statement, so the
-    // window is one synchronous insert wide — and a failure here leaves a
-    // fully reviewable submission, which is why it must not 503 a visitor
-    // whose row is already durable (the same rule the paired-run catch below
-    // states: durable means never invite a second POST).
-    // ── The DESTINATION condition (2b). Both exclusions above are unchanged;
-    // this narrows only WITHIN the pending + unpaired branch.
-    //
-    // A non-`form_response` destination gets no row: its record is the entity
-    // it materializes, and `field_not_placed` (A.8 slice 2b, contracts) now
-    // guarantees that entity carries every visible non-honeypot field — which
-    // is what makes dropping this row safe rather than lossy.
-    //
-    // ⛔ Do NOT mirror this condition into `form-response-promotion.ts`. That
-    // path writes for a D-200 PAID pair, where the row IS the paid deliverable
-    // ("could not be written before payment"); gating it on `target_kind` would
-    // mean a paid intake with a task destination produces no paid record. The
-    // resulting asymmetry — paid pairs always get a row — is the correct
-    // behaviour, not an oversight.
-    //
-    // ⚠ ONE spelling. `target_kind` is REQUIRED as of step 3, and the absent
-    // value that used to mean log-only is now written `'form_response'`.
-    // Nothing here should ever reintroduce an `=== undefined` branch.
-    if (
-      outcome === 'pending'
-      && nonceStamp.pair_binding === null
-      && config.submission_processing_rule.target_kind === 'form_response'
-    ) {
-      try {
-        // Mirrors `responseMetadataFor` in `form-response-promotion.ts`:
-        // everything the submission row carries EXCEPT the frozen definition
-        // snapshot (which is its own column), plus server-owned schema
-        // provenance. Derived from the same object the row was built with so
-        // the two write sites cannot drift into different record shapes.
-        const responseMetadata: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(metadataPayload)) {
-          if (key !== 'definition_snapshot') responseMetadata[key] = value;
-        }
-        responseMetadata.schema_version = SUBMISSION_SCHEMA_VERSION;
-
-        const accepted = deps.getFormResponseStore().accept({
-          submission_id,
-          endpoint_id,
-          form_definition_id: config.form_definition.form_definition_id,
-          definition_snapshot: config.form_definition,
-          values: fields,
-          ...(visitorEmail.length > 0 ? { visitor: { email: visitorEmail } } : {}),
-          submitted_at: now,
-          // Submit IS the acceptance now; there is no earlier moment to clamp
-          // against, so the two timestamps are the same instant.
-          accepted_at: now,
-          metadata: responseMetadata,
-        });
-        if (accepted.status === 'created') {
-          try {
-            deps.onFormResponseCreated?.(accepted.response);
-          } catch {
-            // Fan-out is best-effort. The canonical insert is the authority
-            // and is never rolled back because a bus subscriber threw.
-          }
-        }
-      } catch (e) {
-        console.error(
-          `[d-210] intake_form: canonical form_response log failed for submission '${submission_id}' — the submission is durable and reviewable, but has no canonical record`,
-          e,
-        );
-      }
-    }
+    // ⚠ Still true, and still not closed by this move: a D-207 door-paired intake
+    // reaches neither writer (`rowOwesDefaultDispatch` returns false for it, so it
+    // never reaches the hook). That was already the case; closing it needs the
+    // D-207-vs-D-200 discriminator that a form binding still does not carry.
 
     // The paired row is now durable. Only this exact post-insert position may run the
     // paired recipe, and only a server-derived pending outcome is eligible. Generic, spam,

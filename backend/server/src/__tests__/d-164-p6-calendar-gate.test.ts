@@ -95,11 +95,13 @@ const registry = (...collections: Collection[]): CollectionRegistry =>
 const probeCalendar = async (
   getRegistry: () => CollectionRegistry | undefined,
   store: ContactStore | undefined = PAT_STORE,
+  locale?: string,
 ) => {
   const deps = createPromptCacheGateDeps(() => store, getRegistry);
   return await deps.probeData({
     template: CALENDAR_NEXT_MEETING_TEMPLATE,
     slots: [NAME_SLOT],
+    ...(locale === undefined ? {} : { locale }),
   });
 };
 
@@ -313,5 +315,16 @@ describe('D-164 P6 backend calendar next-meeting lookup', () => {
     // 9:00 (NY) proves the instant was zone-converted (UTC would read 1:00 PM).
     expect(out?.data.when).toContain('9:00');
     expect(out?.data.when).toContain('July 8, 2099');
+  });
+
+  it('formats the factual date in the response locale', async () => {
+    const timedUtc = Date.UTC(2099, 6, 8, 13, 0, 0);
+    const out = await probeCalendar(
+      () => registry(fakeCalendar([event({ start_at: timedUtc })])),
+      PAT_STORE,
+      'es',
+    );
+    expect(out?.data.when).toContain('julio');
+    expect(out?.data.when).not.toContain('July');
   });
 });

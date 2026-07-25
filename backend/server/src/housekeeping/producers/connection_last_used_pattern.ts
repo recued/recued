@@ -65,7 +65,7 @@
  *  virtue of `is_ai_surface: false` + the registry's resolver returning
  *  `'auto'` for non-AI topics.
  *
- *  Spec: `docs/launch-sequence-2026-04-30.md` line 59 +
+ *  Spec: internal design notes line 59 +
  *        `ENRICHMENT_REGISTRY.connection_last_used_pattern`. */
 
 import {

@@ -5,7 +5,7 @@
  *  write, the delete tombstone (drained-only), the opaque-cursor lifecycle through
  *  the harness `delta` hook (cold / warm / hold-on-partial), and reset recovery.
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c2). */
+ *  Spec: D-192 (S4c2). */
 
 import { describe, expect, it } from 'vitest';
 

@@ -133,12 +133,9 @@ export const COLLECTION_DISPLAY_SCHEMAS: Readonly<
     summary_fields: ['state', 'last_activity_at', 'target_completion_at'],
     detail_renderer: 'json',
   },
-  // D-210 — no time field in the summary on purpose: a booking's WHEN
-  // lives on its calendar event, and surfacing a copy here would be the
-  // first place the two could disagree.
   booking: {
     primary_field: 'title',
-    summary_fields: ['lifecycle_state', 'monetary_amount', 'created_at'],
+    summary_fields: ['lifecycle_state', 'slot_start_at', 'monetary_amount', 'created_at'],
     detail_renderer: 'json',
   },
   form_response: {

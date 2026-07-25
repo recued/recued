@@ -13,10 +13,11 @@
  *      (`click` event); `data-entity-id` carries the row id;
  *      `data-source-id` carries the row's Source id.
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (List/search view per Source).
+ *  Spec: D-145 § Phase PA6 (List/search view per Source).
  */
 
 import {
+  BOOKING_LIFECYCLE_STATES,
   type WorkEntity,
   type WorkEntityKind,
   type WorkEntityListRow,
@@ -178,7 +179,11 @@ export const projectRowText = (entity: WorkEntity): RowText => {
 export const renderWorkEntityListView = (
   props: WorkEntityListViewProps,
 ): string => {
-  const search = renderSearchInput(props.search_query, props.kind);
+  const search = renderSearchInput(
+    props.search_query,
+    props.kind,
+    props.booking_lifecycle_filter ?? 'all',
+  );
   const body =
     props.rows.length === 0
       ? renderEmptyState(props.kind, props.empty_state_copy, props.search_query)
@@ -194,6 +199,7 @@ export const renderWorkEntityListView = (
 const renderSearchInput = (
   search_query: string,
   kind: WorkEntityKind,
+  booking_lifecycle_filter: WorkEntityListViewProps['booking_lifecycle_filter'],
 ): string => `
     <div class="work-entity-list-search">
       <input
@@ -205,6 +211,22 @@ const renderSearchInput = (
         value="${e(search_query)}"
         aria-label="Search ${e(kind)}s"
       />
+      ${kind === 'booking' ? `
+        <label class="work-entity-list-filter-label">
+          Status
+          <select
+            class="work-entity-list-filter"
+            data-action="filter-booking-lifecycle"
+            aria-label="Filter bookings by status"
+          >
+            ${['all', ...BOOKING_LIFECYCLE_STATES]
+              .map((state) => `<option value="${state}"${state === booking_lifecycle_filter ? ' selected' : ''}>${
+                state === 'all' ? 'All statuses' : e(state.replace('_', ' '))
+              }</option>`)
+              .join('')}
+          </select>
+        </label>
+      ` : ''}
     </div>
   `;
 
@@ -236,7 +258,7 @@ const renderRow = (row: WorkEntityListRow, show_source_label: boolean): string =
       <button
         type="button"
         class="work-entity-list-row-button"
-        data-action="open-edit-work-entity"
+        data-action="${row.entity._kind === 'booking' ? 'open-work-entity-detail' : 'open-edit-work-entity'}"
         data-entity-id="${e(row.entity.id)}"
         data-source-id="${e(row.entity.source_id)}"
         data-kind="${e(row.entity._kind)}"

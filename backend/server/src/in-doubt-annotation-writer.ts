@@ -23,7 +23,7 @@
  *  answer attempt (rare crash-retry window) is a no-op rather than a
  *  second row.
  *
- *  Spec: docs/d-157-spec.md § A.1 / I-3 / I-9; the gateway-side
+ *  Spec: D-157 § A.1 / I-3 / I-9; the gateway-side
  *  contract is `packages/gateway/src/in-doubt-reconciliation.ts`.
  */
 

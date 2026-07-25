@@ -19,7 +19,8 @@ import Database from 'better-sqlite3';
 import type { IngredientManifest } from '@recued/contracts';
 import { createBoundExecutor, createNamespaceStores, type ServerExecutorConfig } from '../server-executor.js';
 import { createManifestRegistry } from '../manifest-loader.js';
-import { createBlobStore, createSQLiteCacheStore } from '../storage/index.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore } from '../storage/index.js';
 
 let workDir: string;
 

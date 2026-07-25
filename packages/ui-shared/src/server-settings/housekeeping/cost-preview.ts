@@ -9,7 +9,7 @@
  *  preview renders "no token cost" inline and the dialog skips the
  *  dollar-estimate row entirely.
  *
- *  Spec: `docs/d-123-spec.md` §5.3. */
+ *  Spec: D-123 §5.3. */
 
 import type { HousekeepingEnrichmentInfo } from '@recued/contracts';
 

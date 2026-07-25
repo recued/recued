@@ -3,7 +3,7 @@
  * Originally documented the CONFIRMED break: the archive blob path was a keyless
  * passthrough (export streamed on-disk ciphertext; restore asserted
  * written===hash), so an ENCRYPTED blob did NOT round-trip. The fix lands in
- * three phases (docs/archive-blob-encryption-fix.md): Phase 2 makes the export
+ * three phases (internal design notes): Phase 2 makes the export
  * carry PLAINTEXT (decrypt-on-export), Phase 3 makes restore RE-ENCRYPT each
  * blob into its posture-routed target store under the RESTORED realm's key —
  * `putFile` content-addresses over the plaintext, so written===hash holds again

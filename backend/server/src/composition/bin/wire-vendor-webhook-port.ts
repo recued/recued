@@ -36,7 +36,7 @@
  *      messenger vendors, Stripe has no log-and-drop default: its descriptor
  *      is registered only when a real post-verification dispatcher is wired.
  *
- *  Spec: docs/d-148-spec.md § A.13 (vendor webhook port); substrate
+ *  Spec: D-148 § A.13 (vendor webhook port); substrate
  *  commit: 81554dc8 (`feat(d-148.p9): Slack/Telegram inbound (server-
  *  direct) — substrate`). */
 

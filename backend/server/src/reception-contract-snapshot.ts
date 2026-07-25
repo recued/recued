@@ -34,17 +34,12 @@
  *  `PUBLIC_CONTRACT_ID` (which grants nothing) in `resolveGrantGoverningContractId`. Two
  *  axes, two fences, both closed. Neither is load-bearing alone.
  *
- *  Spec: `docs/d-207-spec.md` §5.1 / §5.3. */
+ *  Spec: D-207 §5.1 / §5.3. */
 
 import { isContractActive, type ContractSnapshot, type ExecutionSource } from '@recued/contracts';
 
+import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
-
-/** Stub, as on the MCP path: per-door trust is not yet carried on the snapshot
- *  (`resolveTrustCeiling` reads a constant). A public door does not need it — slice 1a
- *  pins `actor: 'anonymous'` to the contracted `read` ceiling by the ACTOR, which no
- *  contract state can raise. */
-const STUB_CONTRACT_VERSION = 'v1';
 
 export interface ReceptionContractSnapshotDeps {
   readonly definitionStore: ContractDefinitionStore;
@@ -76,19 +71,19 @@ export const buildReceptionContractSnapshot = (
     );
   }
 
+  const resolvedAt = deps.now();
   const def = deps.definitionStore.get(contractId);
-  const live = def !== null && isContractActive(def, deps.now());
+  const live = def !== null && isContractActive(def, resolvedAt);
 
   // A dead / revoked / deleted door authorizes NOTHING. `allowed_tools: []` denies every
   // dispatch (`tool_not_in_contract`) — the live kill-switch over an already-public form.
   const allowed_tools = live ? [...deps.allowedTools(contractId)] : [];
 
-  return Object.freeze({
+  return buildVersionedContractSnapshot({
     contract_id: contractId,
-    contract_version: STUB_CONTRACT_VERSION,
-    allowed_tools: Object.freeze(allowed_tools),
-    approval_required: Object.freeze([]),
-    scope_restrictions: Object.freeze([]),
-    resolved_at: deps.now(),
-  }) as ContractSnapshot;
+    allowed_tools,
+    approval_required: [],
+    scope_restrictions: [],
+    resolved_at: resolvedAt,
+  });
 };

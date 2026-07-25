@@ -15,15 +15,20 @@
  *  is empty, so an in-flight page must be reloaded to obtain a fresh nonce.
  *  The single-use form nonce is defense-in-depth on top of the primary
  *  capability (the 122-bit `ask_id`, emailed only to the user) + the
- *  same-origin POST guard. Spec: docs/d-158-spec.md § P2 / A.4 / N.4. */
+ *  same-origin POST guard. Spec: D-158 § P2 / A.4 / N.4. */
 
-import { randomBytes } from 'node:crypto';
+import { createBoundedNonceStore } from './bounded-nonce-store.js';
 
 /** Form-nonce TTL — the user has 30 minutes to submit after the page loads.
  *  Matches the reception `APPROVAL_LINK_NONCE_TTL_MS`. */
 export const ASK_LANDING_NONCE_TTL_MS = 30 * 60 * 1000;
 
-const NONCE_BYTES = 24;
+export const ASK_LANDING_NONCE_MAX_ENTRIES = 4_096;
+/** Safe HERE and almost nowhere else: an `ask_id` scopes ONE owner's ONE
+ *  decision, so capping concurrent renders at 4 costs nothing. The reception
+ *  doors scope on `endpoint_id` — shared by every concurrent visitor — and must
+ *  NOT set this. See `bounded-nonce-store.ts`. */
+export const ASK_LANDING_NONCE_MAX_PER_ASK = 4;
 
 export interface AskLandingNonceStore {
   /** Mint a single-use nonce bound to `ask_id`, valid for the TTL window. */
@@ -33,21 +38,23 @@ export interface AskLandingNonceStore {
   consume(ask_id: string, nonce: string, now: number): boolean;
 }
 
-export const createInMemoryAskLandingNonceStore = (): AskLandingNonceStore => {
-  const inner = new Map<string, number>();
+export const createInMemoryAskLandingNonceStore = (options: {
+  readonly maxEntries?: number;
+  readonly maxPerAsk?: number;
+} = {}): AskLandingNonceStore => {
+  // One shared implementation with every other public door — the sweep + the
+  // two ceilings live in `bounded-nonce-store.ts`. This file keeps only what is
+  // genuinely ask-specific: the TTL, the per-ask cap, and the boolean shape.
+  const store = createBoundedNonceStore<null>({
+    ttlMs: ASK_LANDING_NONCE_TTL_MS,
+    maxEntries: options.maxEntries ?? ASK_LANDING_NONCE_MAX_ENTRIES,
+    maxPerScope: options.maxPerAsk ?? ASK_LANDING_NONCE_MAX_PER_ASK,
+    // Ask-landing's own posture, preserved verbatim: a nonce presented under
+    // the wrong ask is spent. The reception doors deliberately do NOT do this.
+    spendOnScopeMismatch: true,
+  });
   return {
-    issue(ask_id, now) {
-      const nonce = randomBytes(NONCE_BYTES).toString('hex');
-      inner.set(`${ask_id}|${nonce}`, now);
-      return nonce;
-    },
-    consume(ask_id, nonce, now) {
-      const key = `${ask_id}|${nonce}`;
-      const stamp = inner.get(key);
-      if (stamp === undefined) return false;
-      inner.delete(key);
-      if (now - stamp > ASK_LANDING_NONCE_TTL_MS) return false;
-      return true;
-    },
+    issue: (ask_id, now) => store.issue(ask_id, now, null),
+    consume: (ask_id, nonce, now) => store.consume(ask_id, nonce, now) !== null,
   };
 };

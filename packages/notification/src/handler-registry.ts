@@ -14,7 +14,7 @@
  *  re-dispatch on the next boot (A.2 boot sweep), so a handler may run
  *  again for an answer it already processed — handlers tolerate this.
  *
- *  Spec: docs/d-158-spec.md § A.3 / I-4.
+ *  Spec: D-158 § A.3 / I-4.
  */
 
 import type { AskStore } from './ask-store.js';

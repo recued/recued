@@ -518,10 +518,6 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "slug": "reschedule-booking-managed",
         "version": 1
-      },
-      {
-        "slug": "notify-visitor-on-reschedule",
-        "version": 1
       }
     ],
     "requires": [
@@ -556,13 +552,13 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
                       "field_path": "id",
                       "type": "string",
                       "maps_to": "id",
-                      "description": "Materialized calendar event source_id."
+                      "description": "Materialized booking id."
                     },
                     {
                       "field_path": "summary",
                       "type": "string",
                       "maps_to": "summary",
-                      "description": "Booking calendar event summary."
+                      "description": "Owner-facing booking title."
                     }
                   ]
                 }
@@ -1357,208 +1353,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
-  "notify-visitor-on-reschedule": {
-    "recipe_id": "notify-visitor-on-reschedule",
-    "chat_exposed": false,
-    "version": 1,
-    "ttl": 60,
-    "requires": [
-      "mail_send"
-    ],
-    "metadata": {
-      "name": "Notify a booking's visitor when you reschedule",
-      "description": "D-210 §7 / A.2 — the close half of the reschedule surface. Reacts to a data.booking row whose SLOT actually changed (a title or lifecycle-only edit doesn't fire) and, when that booking came from a reception request, emails the visitor that their appointment moved — old time to new time. The visitor's address is NEVER read by this recipe: notify-booking-visitor resolves it server-side from the booking's own reception_record_id and opens only the sealed email at send-time, so the message goes out without the recipe (or any AI) ever holding the visitor's PII. The send lifts to the approval gate like any outbound mail (you review the booking it is bound to). Bookings you entered yourself — with no visitor behind them — are a silent no-op. A per-booking data.shared marker (keyed on the new slot start) makes re-notifying the same move idempotent; a genuinely new move notifies again. ⚠ It watched data.calendar until A.2: a booking used to materialize a calendar event and this recipe fired on that event's update. A booking is never in the calendar now — it owns its own slot — so the trigger is the booking bus, and the current + prior slot both ride on the event payload (no warehouse re-read needed).",
-      "author": "recued-core",
-      "supported_platforms": [],
-      "tags": [
-        "calendar",
-        "reception",
-        "booking",
-        "notify",
-        "reactive",
-        "mail"
-      ],
-      "budget_ms": 30000,
-      "notes": "D-210 A.8 slice 3d — NO event_triggers, deliberately. This recipe used to be reactive on data.work.booking.item.updated, and event-trigger rows are materialized at install with enabled DEFAULT 1 — so installing the pack armed it and the owner never opted in. Owner-ruled: a message to someone else is a judgement the owner makes per occasion, not one a trigger makes for them. The confirmation at approval time is now a form option (notify_visitor on scheduling.materialize). This recipe remains as a MANUAL reschedule notice; re-adding a trigger here re-arms the auto-fire."
-    },
-    "variables": {
-      "sender_mail_instance": {
-        "label": "Sender mail account (a registered send-capable data.mail.<name>)",
-        "type": "string",
-        "default": ""
-      }
-    },
-    "prefetch_steps": [],
-    "steps": [
-      {
-        "id": "pre_skip",
-        "transform": "any",
-        "conditions": [
-          "{{config.sender_mail_instance}} is_empty",
-          "{{context.event.payload.prev.prior}} is_null"
-        ]
-      },
-      {
-        "id": "new_start",
-        "transform": "default",
-        "value": "{{context.event.payload.prev.record.slot_start_at}}",
-        "fallback": null
-      },
-      {
-        "id": "old_start",
-        "transform": "default",
-        "value": "{{context.event.payload.prev.prior.slot_start_at}}",
-        "fallback": null
-      },
-      {
-        "id": "start_changed",
-        "transform": "compare",
-        "left": "{{step.old_start}}",
-        "operator": "not_equal",
-        "right": "{{step.new_start}}"
-      },
-      {
-        "id": "should_skip",
-        "transform": "any",
-        "conditions": [
-          "{{step.pre_skip}} equal true",
-          "{{step.new_start}} is_null",
-          "{{step.old_start}} is_null",
-          "{{step.start_changed}} not_equal true"
-        ]
-      },
-      {
-        "id": "old_time",
-        "skip_when": "{{step.should_skip}} equal true",
-        "transform": "date_format",
-        "date": "{{step.old_start}}",
-        "format": "YYYY-MM-DD HH:mm"
-      },
-      {
-        "id": "new_time",
-        "skip_when": "{{step.should_skip}} equal true",
-        "transform": "date_format",
-        "date": "{{step.new_start}}",
-        "format": "YYYY-MM-DD HH:mm"
-      },
-      {
-        "id": "dedup_key",
-        "skip_when": "{{step.should_skip}} equal true",
-        "transform": "template",
-        "template": "data.shared.notify_reschedule.{{context.event.payload.record_id}}"
-      },
-      {
-        "id": "seen",
-        "skip_when": "{{step.should_skip}} equal true",
-        "op": "core.storage.shared.read",
-        "args": {
-          "key": "{{step.dedup_key}}"
-        }
-      },
-      {
-        "id": "already_notified",
-        "skip_when": "{{step.should_skip}} equal true",
-        "transform": "compare",
-        "left": "{{step.seen.value.last_notified_start_at}}",
-        "operator": "equal",
-        "right": "{{step.new_start}}"
-      },
-      {
-        "id": "skip_send",
-        "transform": "any",
-        "conditions": [
-          "{{step.should_skip}} equal true",
-          "{{step.already_notified}} equal true"
-        ]
-      },
-      {
-        "id": "subject",
-        "skip_when": "{{step.skip_send}} equal true",
-        "transform": "template",
-        "template": "Your booking has moved to {{step.new_time}}"
-      },
-      {
-        "id": "body",
-        "skip_when": "{{step.skip_send}} equal true",
-        "transform": "template",
-        "template": "Hi — the time for your booking has changed from {{step.old_time}} to {{step.new_time}}. If the new time does not work for you, just reply to this message and we will sort it out."
-      },
-      {
-        "id": "notify",
-        "skip_when": "{{step.skip_send}} equal true",
-        "op": "core.mail.notify-booking-visitor",
-        "args": {
-          "booking_id": "{{context.event.payload.record_id}}",
-          "sender_mail_instance": "{{config.sender_mail_instance}}",
-          "subject": "{{step.subject}}",
-          "body": "{{step.body}}"
-        }
-      },
-      {
-        "id": "was_notified",
-        "transform": "compare",
-        "left": "{{step.notify.notified}}",
-        "operator": "equal",
-        "right": true
-      },
-      {
-        "id": "mark_seen",
-        "skip_when": "{{step.was_notified}} not_equal true",
-        "op": "core.storage.shared.write",
-        "args": {
-          "key": "{{step.dedup_key}}",
-          "value": {
-            "last_notified_start_at": "{{step.new_start}}",
-            "notified_at": "{{context.event.payload.at}}"
-          }
-        }
-      },
-      {
-        "id": "notify_reason",
-        "transform": "default",
-        "value": "{{step.notify.reason}}",
-        "fallback": ""
-      },
-      {
-        "id": "card",
-        "transform": "to_summary",
-        "fields": [
-          {
-            "label": "Booking",
-            "value": "{{context.event.payload.record_id}}"
-          },
-          {
-            "label": "Reschedule detected",
-            "value": "{{step.start_changed}}"
-          },
-          {
-            "label": "Moved from",
-            "value": "{{step.old_time}}"
-          },
-          {
-            "label": "Moved to",
-            "value": "{{step.new_time}}"
-          },
-          {
-            "label": "Visitor notified",
-            "value": "{{step.was_notified}}"
-          },
-          {
-            "label": "Skipped (not a reception booking / already told)",
-            "value": "{{step.notify_reason}}"
-          }
-        ]
-      }
-    ],
-    "output": {
-      "render": [
-        {
-          "type": "summary",
-          "source": "step.card"
-        }
-      ]
-    }
-  },
   "open-commitments": {
     "recipe_id": "open-commitments",
     "chat_exposed": true,
@@ -2097,9 +1891,17 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "requires": [],
     "metadata": {
       "name": "Reschedule a booking",
-      "description": "D-210 R-4 / A.2 — the owner's reschedule ignition for a BOOKING. Moves one data.booking row to a new slot via a single booking-update patch carrying slot_start_at AND slot_end_at. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). A booking owns its own time and is never in the calendar (A.2), so this is how a reservation moves — there is no calendar event to update instead. The pair moves ATOMICALLY: booking-update refuses a half-supplied move, because keeping the old end against a new start would silently change the booking's duration. Triggered manually with config {booking_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a booking record fills them from the row's own slot, computing the new end from the current duration. On approval the reactive notify-visitor-on-reschedule recipe tells the visitor, IF the booking came from a reception request. Re-running the same move is safe (the patch is idempotent and preserves the booking's identity, lifecycle_state and provenance).",
+      "description": "D-210 R-4 / A.2 — the owner's reschedule ignition for a BOOKING. Moves one data.booking row to a new slot via a single booking-update patch carrying slot_start_at AND slot_end_at. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). A booking owns its own time and is never in the calendar (A.2), so this is how a reservation moves — there is no calendar event to update instead. The pair moves ATOMICALLY: booking-update refuses a half-supplied move, because keeping the old end against a new start would silently change the booking's duration. Triggered manually with config {booking_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a booking record fills them from the row's own slot, computing the new end from the current duration. Telling the visitor is an OWNER TICK on this run, not a trigger: set notify_visitor (and sender_mail_instance) and this recipe mails them that the booking moved. It is off unless the owner turns it on for this reschedule — a message to someone else is a judgement the owner makes per occasion. The address is never an argument and never reaches step state: notify-booking-visitor resolves it server-side from the booking's own reception_record_id, and does nothing (notified:false) when the booking did not come from a reception request. ⚠ This REPLACES a claim that a reactive notify-visitor-on-reschedule recipe did it on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). Re-running the same move is safe (the patch is idempotent and preserves the booking's identity, lifecycle_state and provenance).",
       "author": "recued-core",
-      "supported_platforms": []
+      "supported_platforms": [],
+      "tags": [
+        "calendar",
+        "reschedule",
+        "booking",
+        "reception",
+        "notify"
+      ],
+      "budget_ms": 30000
     },
     "variables": {
       "booking_id": {
@@ -2116,6 +1918,16 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "label": "New end (unix ms)",
         "type": "number",
         "default": null
+      },
+      "notify_visitor": {
+        "label": "Tell the visitor their booking moved",
+        "type": "boolean",
+        "default": false
+      },
+      "sender_mail_instance": {
+        "label": "Send from (data.mail account)",
+        "type": "string",
+        "default": ""
       }
     },
     "steps": [
@@ -2145,6 +1957,50 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "operator": "is_not_null"
       },
       {
+        "id": "new_time",
+        "transform": "date_format",
+        "date": "{{config.new_start_at}}",
+        "format": "YYYY-MM-DD HH:mm"
+      },
+      {
+        "id": "notify_ready",
+        "transform": "all",
+        "conditions": [
+          "{{config.notify_visitor}} equal true",
+          "{{step.moved}} equal true",
+          "{{config.sender_mail_instance}} is_not_empty"
+        ]
+      },
+      {
+        "id": "subject",
+        "skip_when": "{{step.notify_ready}} not_equal true",
+        "transform": "template",
+        "template": "Your booking has moved to {{step.new_time}}"
+      },
+      {
+        "id": "body",
+        "skip_when": "{{step.notify_ready}} not_equal true",
+        "transform": "template",
+        "template": "Hi — the time for your booking has changed. It is now {{step.new_time}}. If the new time does not work for you, just reply to this message and we will sort it out."
+      },
+      {
+        "id": "notify",
+        "skip_when": "{{step.notify_ready}} not_equal true",
+        "op": "core.mail.notify-booking-visitor",
+        "args": {
+          "booking_id": "{{config.booking_id}}",
+          "sender_mail_instance": "{{config.sender_mail_instance}}",
+          "subject": "{{step.subject}}",
+          "body": "{{step.body}}"
+        }
+      },
+      {
+        "id": "visitor_told",
+        "transform": "default",
+        "value": "{{step.notify.notified}}",
+        "fallback": false
+      },
+      {
         "id": "card",
         "transform": "to_summary",
         "fields": [
@@ -2163,6 +2019,10 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           {
             "label": "New end",
             "value": "{{config.new_end_at:date}}"
+          },
+          {
+            "label": "Visitor told",
+            "value": "{{step.visitor_told}}"
           }
         ]
       }
@@ -2184,7 +2044,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "requires": [],
     "metadata": {
       "name": "Reschedule a booking (managed door)",
-      "description": "D-210 Appendix B — the RESCHEDULE ignition for the public /reception/manage door. Identical write to reschedule-booking (one core.work-entity.booking.update patching slot_start_at + slot_end_at) but WITHOUT an output.render block, so it can back a public reception door: a door whose recipe renders output cannot carry a write (bindReceptionDoor refuses it — an anonymous write holds and returns no output, so the visitor would get a bare page). Here the manage HANDLER owns the response (the held-request page), not the recipe, so the recipe renders nothing. Run by the manage handler under the anonymous reception actor + the door's minted contract: the booking-update write is pinned to the read ceiling and HOLDS at the D-157 gate — the owner approves it in the Reception Inbox (or on the go). config {booking_id, new_start_at, new_end_at} (unix ms) is supplied per-request by the manage handler — the TARGET (booking_id) is resolved server-side from the credential (a visitor cannot retarget), only the new time comes from the form. On approval the reactive notify-visitor-on-reschedule recipe tells the visitor. The slot pair moves ATOMICALLY: booking-update refuses a half-supplied move, so a re-run of the same times is safe and a partial one is impossible.",
+      "description": "D-210 Appendix B — the RESCHEDULE ignition for the public /reception/manage door. Identical write to reschedule-booking (one core.work-entity.booking.update patching slot_start_at + slot_end_at) but WITHOUT an output.render block, so it can back a public reception door: a door whose recipe renders output cannot carry a write (bindReceptionDoor refuses it — an anonymous write holds and returns no output, so the visitor would get a bare page). Here the manage HANDLER owns the response (the held-request page), not the recipe, so the recipe renders nothing. Run by the manage handler under the anonymous reception actor + the door's minted contract: the booking-update write is pinned to the read ceiling and HOLDS at the D-157 gate — the owner approves it in the Reception Inbox (or on the go). config {booking_id, new_start_at, new_end_at} (unix ms) is supplied per-request by the manage handler — the TARGET (booking_id) is resolved server-side from the credential (a visitor cannot retarget), only the new time comes from the form. ⚠ The visitor is NOT auto-notified here, and that is deliberate: on this door the VISITOR asked for the move, so they already know. This used to claim a reactive notify-visitor-on-reschedule recipe told them on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). If the owner approves a DIFFERENT time than the visitor asked for, telling them is a deliberate act: run reschedule-booking with notify_visitor set. The slot pair moves ATOMICALLY: booking-update refuses a half-supplied move, so a re-run of the same times is safe and a partial one is impossible.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2193,7 +2053,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "booking",
         "reception",
         "managed-door"
-      ]
+      ],
+      "budget_ms": 30000
     },
     "variables": {
       "booking_id": {
@@ -2220,6 +2081,14 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           "{{config.booking_id}} is_not_empty",
           "{{config.new_start_at}} is_not_null",
           "{{config.new_end_at}} is_not_null"
+        ]
+      },
+      {
+        "id": "manage_target_booking_id",
+        "transform": "coalesce",
+        "values": [
+          "{{config.booking_id}}",
+          ""
         ]
       },
       {
@@ -2254,7 +2123,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "booking",
         "reception",
         "owner-action"
-      ]
+      ],
+      "budget_ms": 20000
     },
     "variables": {
       "calendar_slug": {

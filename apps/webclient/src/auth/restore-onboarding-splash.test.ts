@@ -225,6 +225,46 @@ describe('mountRestoreOnboardingSplash — preview', () => {
     expect(html).toContain('data-action="restore-splash-cancel"');
   });
 
+  it('calls the count a MINIMUM when the server could not count every table', () => {
+    // `record_count` is a floor whenever `uncounted_tables` is non-empty, and
+    // this list is the last thing read before committing a restore. Rendering
+    // the bare number there states a total the server did not measure.
+    const { splash } = mountWith({
+      ...preview,
+      manifest: { ...MANIFEST, uncounted_tables: ['data_file'] },
+    });
+    const html = splash.getHtml();
+    expect(html).toContain('at least 1,234 records');
+    expect(html).toContain('could not be counted');
+    expect(html).toContain('data-restore-uncounted');
+  });
+
+  it('counts the uncounted tables in the table total', () => {
+    // `tables` holds only what COULD be counted, so its length alone renders
+    // "across 3 tables (1 could not be counted)" for a four-table archive —
+    // a number that reads as the archive's shape while being short by exactly
+    // the tables the caveat is about.
+    const { splash } = mountWith({
+      ...preview,
+      manifest: { ...MANIFEST, uncounted_tables: ['data_file', 'data_link'] },
+    });
+    const html = splash.getHtml();
+    // 2 counted + 2 uncounted.
+    expect(html).toContain('across 4 tables');
+    expect(html).toContain('2 could not be counted');
+  });
+
+  it('makes no minimum claim when the server reported nothing uncounted', () => {
+    // Both directions: the caveat must not appear on an ordinary archive, or
+    // it stops meaning anything on the one where it matters.
+    const { splash } = mountWith(preview);
+    const html = splash.getHtml();
+    expect(html).toContain('1,234 records across 2 tables');
+    expect(html).not.toContain('at least');
+    expect(html).not.toContain('could not be counted');
+    expect(html).not.toContain('data-restore-uncounted');
+  });
+
   it('two-tap confirm: first tap arms, second tap commits', () => {
     const { splash, onb } = mountWith(preview);
     expect(splash.getHtml()).toContain('Restore this backup');

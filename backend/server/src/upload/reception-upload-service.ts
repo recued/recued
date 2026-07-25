@@ -42,7 +42,7 @@
  *  would blow the drop_link 5/hr + 50/day buckets; the unguessable `upload_id`
  *  + the disk caps bound it instead).
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`
+ *  Spec: internal design notes
  *  (rev 2 protocol + rev 3 shared-split + rev 4 build order + rev 5 transports). */
 
 import { randomUUID } from 'node:crypto';

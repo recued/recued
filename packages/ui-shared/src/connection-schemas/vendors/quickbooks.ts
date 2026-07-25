@@ -16,7 +16,7 @@
  *     response — unlike Salesforce's `instance_url`). `config.base_url` is
  *     captured automatically, same readonly channel as Salesforce.
  *
- *  Spec: `docs/unified-pack-exploration/smb-finance-wedge.spec.md` §3 / 1b. */
+ *  Spec: internal design notes §3 / 1b. */
 
 import {
   CONNECTION_SANDBOX_FLAG_VALUES,

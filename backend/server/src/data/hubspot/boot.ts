@@ -28,7 +28,7 @@
  *       per-task entries. The `housekeeping_state` cursor row survives
  *       so re-enrollment under the same name resumes the cycle.
  *
- *  Spec: `docs/d-129-spec.md` § A.5. */
+ *  Spec: D-129 § A.5. */
 
 import {
   reconciliationTaskId,

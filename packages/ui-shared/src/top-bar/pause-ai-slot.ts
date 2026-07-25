@@ -16,7 +16,7 @@
  *
  *  Duration picker fixed presets: 1h / 4h / 24h / Until I resume.
  *  No free-form input — typo-driven 9999-hour pauses are the failure
- *  mode worth avoiding (per `docs/d-132-spec.md` open question §4).
+ *  mode worth avoiding (per D-132 open question §4).
  *
  *  Wire surface — every click emits `data-action="..."` for the host
  *  dispatcher; the host calls `housekeeping.config.write` with
@@ -25,7 +25,7 @@
  *    - `PAUSE_UNTIL_RESUME_TIMESTAMP` for "Until I resume", or
  *    - `null` for "Resume now".
  *
- *  Spec: `docs/d-132-spec.md` §A.9. */
+ *  Spec: D-132 §A.9. */
 
 import {
   PAUSE_DURATIONS_MS,

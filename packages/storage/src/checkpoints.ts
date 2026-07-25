@@ -31,7 +31,7 @@
  *  pause/resume path (the writer) and the gateway preflight `on_answer`
  *  (the readers) are later D-157 P1 slices.
  *
- *  Spec: docs/d-157-spec.md § A.2 / N.3 / I-4 / I-5.
+ *  Spec: D-157 § A.2 / N.3 / I-4 / I-5.
  */
 
 import type { Collection } from './types.js';

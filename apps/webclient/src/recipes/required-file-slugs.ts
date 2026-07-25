@@ -6,7 +6,7 @@
  *  said "register the result directory as a file slug" in prose. This
  *  mirrors `required-connections.ts` (UX-review flow-10): a pure
  *  derivation the pack-install dialog aggregates for the pre-install
- *  disclosure, pointing at registration (Data → Files /
+ *  disclosure, pointing at registration (Connections → Files /
  *  `collection.file.enroll`).
  *
  *  A recipe declares the need two ways, both surfaced:

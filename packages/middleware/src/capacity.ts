@@ -23,7 +23,7 @@
  *  answers "is this recipe's prerequisite met?"; this envelope answers
  *  "how much may this stream spend, and what may it use?".
  *
- *  Spec: docs/d-160-spec.md § N.4 / A.1 / A.2 / O-1.
+ *  Spec: D-160 § N.4 / A.1 / A.2 / O-1.
  */
 
 /** The capability + cost-ceiling envelope a stream runs within. */

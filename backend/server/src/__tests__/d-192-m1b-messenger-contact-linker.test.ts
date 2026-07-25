@@ -6,7 +6,7 @@
  *  BEFORE the M3 resolve, so a first-time matched sender links + resolves in one
  *  pass, and a throwing writer never blocks the proposal.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` §3a (M-1). */
+ *  Spec: D-192 §3a (M-1). */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

@@ -16,7 +16,7 @@
  *  `ProcessRetireReason`. Non-reactive (cron + manual) snapshot
  *  every run.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import {

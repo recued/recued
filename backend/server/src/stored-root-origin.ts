@@ -50,7 +50,7 @@
  *  better-sqlite3 prepared statements; the annotation read is the
  *  facet-only `latestAnnotationProvenance` (no blob I/O).
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 1; landing order P5 follow-on. */
+ *  Spec: D-177 § N.11 rule 1; landing order P5 follow-on. */
 
 import type { StoredRowProvenance } from '@recued/contracts';
 import { parseAnnotationLinkRef } from '@recued/engine';

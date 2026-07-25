@@ -9,7 +9,7 @@
 /** Closed list of adapter kinds. Adding a new provider requires:
  *    1. Adding to `DDNS_ADAPTER_KINDS`.
  *    2. Implementing `createXAdapter` returning a `DdnsAdapter`.
- *    3. Documenting the setup path in `docs/setup-byo-ddns.md`.
+ *    3. Documenting the setup path in internal design notes.
  *    4. Adding a round-trip test in `__tests__/<kind>.test.ts`. */
 export const DDNS_ADAPTER_KINDS = [
   'recued-cloud',

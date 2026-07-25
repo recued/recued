@@ -33,7 +33,7 @@
  *  against the live registry (is this a REAL op/collection/topic) stays with the
  *  caller that has the registry in hand — this module never throws on a read.
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block; handover
+ *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
 import type { CanonicalCollectionName } from './canonical-record.js';

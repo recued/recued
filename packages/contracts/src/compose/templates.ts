@@ -90,8 +90,8 @@ export const CONTACT_FORM_TEMPLATE_SAFETY_MATRIX = {
   // D-210 WS3 — a contact form's point IS the contact: an approved submission
   // adds or updates one, keyed on the visitor email the substrate already
   // sealed. (WS2 parked this as log-only because `contact` was not yet a
-  // destination; it is now.) The submission is still logged at submit either
-  // way — the destination says what ELSE happens, not whether it is recorded.
+  // destination; it is now.) The sealed submission remains the evidence row;
+  // approval materializes the contact destination.
   processing_target: 'contact',
   rate_limit_policy: RECEPTION_RATE_LIMIT_DEFAULTS,
 } as const satisfies TemplateSafetyMatrix;
@@ -105,8 +105,8 @@ export const FEEDBACK_COLLECT_TEMPLATE_SAFETY_MATRIX = {
   allowed_visitor_pii_classes: ['none', 'visitor_name', 'visitor_email'],
   default_expiry: { mode: 'rolling', rolling_days: 30 },
   long_lived_permitted: false,
-  // D-210 WS2: log-only — feedback collection keeps only the immutable
-  // form_response log (written at submit), no destination entity.
+  // Feedback's answers are the record, so compilation selects the mutable
+  // `form_response` destination and approval creates it.
   rate_limit_policy: RECEPTION_RATE_LIMIT_DEFAULTS,
 } as const satisfies TemplateSafetyMatrix;
 

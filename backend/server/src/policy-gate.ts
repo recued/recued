@@ -24,7 +24,7 @@
  *  reconciles all policy issues at once rather than fix-then-re-run
  *  whack-a-mole.
  *
- *  Spec: docs/d-153-spec.md § (channel × actor) policy matrix lines
+ *  Spec: D-153 § (channel × actor) policy matrix lines
  *  414-445 + § Phase plan sketch (P2.C wiring). */
 
 import type {

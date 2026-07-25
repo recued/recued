@@ -22,7 +22,7 @@
  *      meta refresh + cascade event on every touch; the cascade
  *      should fire only when contact identity changes.
  *
- *  Spec: `docs/d-129-spec.md` § A.3, § Phase 3. */
+ *  Spec: D-129 § A.3, § Phase 3. */
 
 import {
   canonicalizeMailingAddress,

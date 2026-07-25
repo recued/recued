@@ -1,24 +1,26 @@
 /** D-166 override-write path — the rpc DTO types + a pure wire-input
  *  normalizer for the `collection.contract.*` family that authors
- *  `contract.override.*` rows (the editable, user-owned tightening layer the
- *  D-166 Slice 4d.4 catalog gateway reads). One override row is keyed
- *  `(actor:KIND, ingredient_id:slug, operation_id?:<slug>.<op>)` and carries an
- *  `override_policy`-shaped value; every present field can only RESTRICT the
- *  connection-keyed grant floor further, never loosen it (the store enforces
- *  this via `tightening_only` → `ContractWriteLoosensError`).
+ *  actor-scoped `contract.override.*` tightening rows. One row is keyed
+ *  `(actor, ingredient_id, operation_id?)`; every present field can only
+ *  RESTRICT the existing admission flow. D-211's global owner replacement of
+ *  pack operation `{risk, approval}` lives separately in
+ *  `owner-operation-override.ts` and has no actor/contract dimension.
  *
  *  These types are the wire contract shared by the backend handler
- *  (`backend/server/src/contract-handler.ts`) and the future Settings →
- *  Advanced inventory UI (Slice B). The persisted row value's structural shape
- *  is owned by the `override_policy` value_shape in `contract-schema.ts` — this
- *  module mirrors it as a TypeScript surface for the rpc + the picker form.
+ *  (`backend/server/src/contract-handler.ts`) and the Settings → Advanced
+ *  inventory UI. The persisted row value's structural shape is owned by the
+ *  `override_policy` value_shape in `contract-schema.ts` — this module mirrors
+ *  it as a TypeScript surface for the rpc + the picker form.
  *
- *  Spec: `docs/d-166-spec.md`; the read/tightening consumer is
+ *  Spec: D-166; the runtime consumer is
  *  `packages/engine/src/catalog-gateway.ts` (`applyOverrideTightening`). */
 
 import type { Actor } from './commits.js';
-import { isCatalogForm } from './ingredient-catalog.js';
-import type { OperationApproval, OperationRiskTier } from './ingredient-catalog.js';
+import {
+  isCatalogForm,
+  type OperationApproval,
+  type OperationRiskTier,
+} from './ingredient-catalog.js';
 import type { IngredientKind, IngredientManifest } from './ingredient.js';
 import {
   derivePerOpDependencyReads,
@@ -37,17 +39,18 @@ export const OVERRIDE_SCOPE = 'override';
 export type OverrideRiskCeiling = 'read' | 'write' | 'admin' | 'none';
 
 /** A user-authored override policy (the `collection.contract.upsertOverride`
- *  request `policy`). All fields optional — a present field tightens that facet,
- *  an absent field leaves the floor unchanged. Mirrors the `override_policy`
- *  value_shape field-for-field. An all-absent policy is a no-op and is rejected
- *  by the rpc (`deleteOverride` is the clear path). */
+ *  request `policy`). All fields optional — an absent field leaves the
+ *  authored/composed posture unchanged. Mirrors the `override_policy`
+ *  value_shape field-for-field, PLUS the wire-only `confirm_risk_downgrade`
+ *  flag (never stored). An all-absent policy is a no-op and is rejected by the
+ *  rpc (`deleteOverride` is the clear path). */
 export interface OverridePolicyInput {
-  /** Force-deny the operation (projects to `allowed:false` at dispatch). */
+  /** Force-deny the operation (projects to `allowed:false` at dispatch).
+   *  Tighten-only. */
   denied?: boolean;
-  /** Force an approval posture (`always` escalates; `ask`/`never` only tighten
-   *  relative to the floor — the store rejects a net loosening). */
+  /** Tighten the approval posture through the existing stricter-wins lattice. */
   approval?: OperationApproval;
-  /** Force approval for any op at or above this tier. */
+  /** Force approval for any op at or above this tier. Tighten-only. */
   max_risk_without_approval?: OverrideRiskCeiling;
   /** Tighten the per-call timeout (ms). Not yet consumed at dispatch (D-166
    *  Inv 6 — no `CatalogOperationResolution` slot); persisted forward-compat. */
@@ -70,10 +73,10 @@ export interface OverrideView {
 
 /** Normalize a wire policy object into the row value the store persists: drop
  *  `null`/`undefined` fields (clean rows — a cleared facet is simply absent, not
- *  an explicit null) while PRESERVING any unknown keys so the store's
- *  `validateContractWrite` rejects them loudly (`unknown_field`) rather than the
- *  handler silently swallowing a client typo. Types are NOT checked here — the
- *  store's value_shape validator is the single structural gate. */
+ *  an explicit null), while PRESERVING any other unknown keys so the store's `validateContractWrite`
+ *  rejects them loudly (`unknown_field`) rather than the handler silently
+ *  swallowing a client typo. Types are NOT checked here — the store's
+ *  value_shape validator is the single structural gate. */
 export const overrideRowValue = (
   input: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> => {
@@ -85,8 +88,8 @@ export const overrideRowValue = (
 };
 
 /** True when a policy carries no effective (non-null) field — a meaningless
- *  upsert the rpc rejects so override rows always tighten something and clearing
- *  routes through `deleteOverride`. */
+ *  upsert the rpc rejects so override rows always rule on something and
+ *  clearing routes through `deleteOverride`. */
 export const isEmptyOverridePolicy = (
   input: Readonly<Record<string, unknown>>,
 ): boolean => Object.keys(overrideRowValue(input)).length === 0;
@@ -96,8 +99,8 @@ export const isEmptyOverridePolicy = (
 // ════════════════════════════════════════════════════════════════
 
 /** One declared operation of a catalog-form ingredient, projected for the
- *  Settings → Advanced override picker. `operation_id` is the fully-qualified
- *  `<slug>.<op>` the picker passes straight to `upsertOverride.operation_id`. */
+ * owner operation-default editor and the legacy Settings restriction picker.
+ * `operation_id` is the fully-qualified `<slug>.<op>` both writers use. */
 export interface CatalogOperationView {
   operation_id: string;
   /** The manifest `operations` MAP KEY (the short `op`, e.g. `audio.transcribe`)
@@ -107,6 +110,9 @@ export interface CatalogOperationView {
    *  a cli-op grant toggle MUST use THIS, not the qualified `operation_id`. */
   operation_key: string;
   risk_tier: OperationRiskTier;
+  /** Author-declared approval, when the op carries one. Absent means the
+   * resolver's existing provider/risk fallback remains in force. */
+  approval?: OperationApproval;
   groups: string[];
   /** D-192 Slice 7 — the container reads granting THIS op transitively admits
    *  (`work_entity_sources[].source_dependencies[]`): granting a write op like
@@ -170,6 +176,7 @@ export const catalogIngredientViews = (
               operation_id: op.operation_id,
               operation_key,
               risk_tier: op.risk_tier,
+              ...(op.approval !== undefined ? { approval: op.approval } : {}),
               groups: [...(op.groups ?? [])],
               ...(also_reads !== undefined ? { also_reads } : {}),
             };

@@ -1,5 +1,5 @@
 /** D-210 Appendix B — `reception.manage.mint`: the owner mints an on-the-go
- *  reschedule link for one booking's calendar event.
+ *  reschedule link for one canonical booking.
  *
  *  Reserved admin-only rpc (the whole `reception.` prefix is in
  *  `MCP_RESERVED_RPC_PREFIXES`), so this is a paired-client-only surface and
@@ -15,7 +15,7 @@
  *  constraint — LAN benefits" ruling: the link works on the LAN listener with no
  *  public domain.
  *
- *  Spec: `docs/d-210-spec.md` Appendix B. */
+ *  Spec: D-210 Appendix B. */
 
 export interface ReceptionManageMintInput {
   /** The `data.booking` row to mint a reschedule link for. Its originating

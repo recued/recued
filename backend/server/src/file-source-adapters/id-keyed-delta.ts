@@ -30,7 +30,7 @@
  *  primitive, not an id-keyed delta. OneDrive's full walk IS a from-scratch
  *  `/delta`, so it rides this kernel via `shapeFullFromDeltaDrain`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; taxonomy §0. */
+ *  Spec: D-192; taxonomy §0. */
 
 import type { ImportScope } from '@recued/contracts';
 

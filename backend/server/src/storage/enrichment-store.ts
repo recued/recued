@@ -26,7 +26,7 @@
  *  validator failures throw `EnrichmentValueInvalidError` carrying the
  *  issue list.
  *
- *  Spec: `docs/d-122-spec.md` §"Enrichment substrate" — Storage. */
+ *  Spec: D-122 §"Enrichment substrate" — Storage. */
 
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';

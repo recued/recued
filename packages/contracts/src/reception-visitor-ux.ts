@@ -25,7 +25,7 @@
  *  `reception_ip_block_list` store; the visitor renderers' integration
  *  of the footer / labels / receipt is follow-on UI work.
  *
- *  Spec: docs/d-149-spec.md § A.20.1-A.20.7 + § N.7 (MUST list). */
+ *  Spec: D-149 § A.20.1-A.20.7 + § N.7 (MUST list). */
 
 import type { ReceptionEndpointKind } from './reception.js';
 import {

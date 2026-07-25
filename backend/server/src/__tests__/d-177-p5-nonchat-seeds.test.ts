@@ -94,6 +94,7 @@ const mintContext = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ttl_ms: 60_000,
@@ -108,11 +109,16 @@ describe('resolveSessionGrantOffer over the in-code non-chat seeds', () => {
   // no longer tunes it — the runtime-tightened / runtime-removed cases the
   // matrix once supported are gone with the substrate).
   it.each(SEEDED_CELLS)(
-    'offers seeded write and admin bounds for $name',
+    'offers seeded read, write, and admin bounds for $name',
     ({ channel, actor, seedDefaults }) => {
-      for (const risk_tier of ['write', 'admin'] as const) {
+      for (const risk_tier of ['read', 'write', 'admin'] as const) {
         expect(
-          resolveSessionGrantOffer({ channel, actor, risk_tier }),
+          resolveSessionGrantOffer({
+            channel,
+            actor,
+            risk_tier,
+            pre_lift_approval: 'ask',
+          }),
         ).toEqual({
           ttl_ms: seedDefaults.ttl_ms,
           max_uses: seedDefaults.max_uses,

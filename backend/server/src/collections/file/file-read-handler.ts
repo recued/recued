@@ -155,7 +155,7 @@ export const handleFileRead = async (
   if (storageRef.kind === 'remote') {
     throw new RpcError(
       'file_remote_unsupported',
-      'file.read: remote file storage references are reserved but not readable in v1',
+      'file.read: a remote reference in the CAS collection cannot be resolved; use its file_meta_ref record id',
       501,
     );
   }

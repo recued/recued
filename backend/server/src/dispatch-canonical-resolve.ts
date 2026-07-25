@@ -1,7 +1,7 @@
 /** Build step 2 (R2 dispatch) — resolve a canonical recipe's op-steps to concrete,
  *  vendor-bound form AT DISPATCH, from the connection(s) the run supplies.
  *
- *  Spec: docs/unified-pack-exploration/recipe-identity-and-dependency-resolution.md
+ *  Spec: internal design notes
  *  §2–3 (R2). The R2 dispatch probe (`__tests__/r2-dispatch-resolve-then-execute-probe
  *  .test.ts`) proved the *downstream* path (gate/audit/engine) reuses unchanged when
  *  fed a pre-resolved recipe with NO persistence coupling; this is the missing

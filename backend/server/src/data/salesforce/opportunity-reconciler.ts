@@ -16,7 +16,7 @@
  *       `EnrichmentMeta` snapshot the cascade engine + Memory tab
  *       both read.
  *
- *  Spec: `docs/d-130-spec.md` § A.3. */
+ *  Spec: D-130 § A.3. */
 
 import {
   PLATFORM_REFERENCE_BATCH_SIZE,

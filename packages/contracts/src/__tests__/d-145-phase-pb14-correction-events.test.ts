@@ -15,7 +15,7 @@
  *      CORRECTION_EVENT_KINDS).
  *    - Ladder + window + retention constants well-formed.
  *
- *  Spec: `docs/d-145-spec.md` § B.14. */
+ *  Spec: D-145 § B.14. */
 
 import { describe, expect, it } from 'vitest';
 

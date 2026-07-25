@@ -35,7 +35,7 @@ export const requirePin = (
       'This Source is PINNED by its pack, but its declaration carries no contract_source. '
       + 'The D-192 authority ladder made that field optional (an unpinned Source is legal and '
       + 'proves its ops empirically), so pin-equality must ASSERT the pin rather than assume '
-      + 'it. See docs/d-192-authority-ladder.md §3.',
+      + 'it. See the D-192 authority ladder §3.',
     );
   }
   return cs;

@@ -98,14 +98,26 @@ export const fsAdapterFactory: FileAdapterFactory = {
       async start() {
         if (started) return;
         started = true;
+        const watchMode = ctx.caps === undefined || ctx.caps.watch === 'realtime'
+          ? 'realtime'
+          : 'none';
         watcher = createFsWatcher({
           root,
           ignore: config.ignore ?? [],
           debounceMs: config.debounceMs,
+          watchMode,
+          onUnavailable: (error) => ctx.onDegraded?.(error),
           log,
           onEvent: (event) => ctx.onEvent(event),
         });
-        await watcher.start();
+        try {
+          await watcher.start();
+        } catch (err) {
+          try { await watcher.stop(); } catch { /* start error is authoritative */ }
+          watcher = undefined;
+          started = false;
+          throw err;
+        }
       },
       async stop() {
         if (!started) return;

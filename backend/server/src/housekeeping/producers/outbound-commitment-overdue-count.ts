@@ -36,7 +36,7 @@
  *  harness's stale-sweep re-runs `produce()` against the affected
  *  contact on the next cycle. No reactive harness needed.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 + A.7.3 + A.7.5 +
+ *  Spec: D-145 §§ A.7.1 + A.7.3 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.outbound_commitment_overdue_count` +
  *        `packages/contracts/src/enrichment-declarations/outbound-commitment-overdue-count.ts`. */
 

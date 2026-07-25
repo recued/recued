@@ -61,7 +61,7 @@
  *  `ASK_LANDING_RESPONSE_HEADERS`; POST → `parseAskLandingSubmission` →
  *  consume the `form_nonce` → `block.submitAnswer`.
  *
- *  Spec: docs/d-158-spec.md § P2 / A.4 / A.6 / N.4 / I-9.
+ *  Spec: D-158 § P2 / A.4 / A.6 / N.4 / I-9.
  */
 
 import { htmlEscape, safeHttpUrl } from '../html.js';
@@ -75,7 +75,29 @@ import type {
 /** The channel a landing-page answer is attributed to. The landing page
  *  is the email channel's HTTP answer surface (N.4 — a public-reachable
  *  server's additional email-channel path), so a reply through it counts
- *  as a reply `via` the `email` channel. */
+ *  as a reply `via` the `email` channel.
+ *
+ *  ⚠ D-210 audit finding 15 — THAT PREMISE IS NO LONGER TRUE, and the constant
+ *  did not follow it. The answer link is now attached to EVERY inline channel
+ *  (`index.ts`: `if (deps.askAnswerLink === undefined || channel.capability !==
+ *  'inline') return message`), so an approval tapped from a Slack card is
+ *  durably recorded as an email reply — on the ask row and in the answer-audit
+ *  activity row (`… via ${record.answered_via}`). The attribution is simply
+ *  wrong for every non-email inline channel.
+ *
+ *  ⛔ NOT fixed by swapping the constant. The page cannot know which channel the
+ *  reader came from — the URL is identical on all of them — so a truthful value
+ *  has to be carried IN the link, which is exactly the per-link attribution
+ *  Appendix B already names as an open carry. And a new `ask_landing` channel
+ *  name is not a drop-in either: `ChannelName` is a closed set that also drives
+ *  readiness probes, the user-togglable `RemoteChannelName` subset, and the
+ *  fan-out matrix.
+ *
+ *  ⏭ The fix is: stamp the originating channel into the answer link at fan-out,
+ *  parse it back at the port, and attribute the reply to it — defaulting to
+ *  `email` only when absent (an old link). Left NAMED rather than half-done,
+ *  because a wrong attribution that looks deliberate is worse than one that is
+ *  documented as wrong. ⇒ [[a_reversed_rulings_reasoning_outlives_its_location]] */
 const LANDING_REPLY_VIA: ChannelName = 'email';
 
 /** The closed list of form keys the POST decoder accepts — any other key

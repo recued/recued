@@ -126,7 +126,7 @@ const requireLiveRead = (
   if (row.auth_state !== 'healthy') {
     throw new RpcError(
       'unauthorized',
-      `FILE_INSTANCE_DEGRADED: instance '${slug}' auth_state=${row.auth_state} — re-auth required`,
+      `FILE_INSTANCE_DEGRADED: instance '${slug}' auth_state=${row.auth_state} — configuration or credential recovery required`,
       401,
     );
   }

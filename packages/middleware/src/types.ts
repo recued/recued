@@ -10,7 +10,7 @@
  *  framework concepts; handler names (`config` / `prompt` / `update`)
  *  are middleware concepts — both naming sets are normative (N.2).
  *
- *  Spec: docs/d-160-spec.md § N.2 / A.1 / A.2.
+ *  Spec: D-160 § N.2 / A.1 / A.2.
  */
 
 import type { ChannelOutbound, SessionEntry, SurfaceTag } from '@recued/chat';
@@ -82,7 +82,7 @@ export interface ContentPromptPart {
  *  aliases and the same record renders to the same alias everywhere it
  *  appears (tool results, the user message). The gather calls `render` on
  *  the aliased payload; with no privacy plan it renders the raw payload
- *  (behaviour-preserving). See `docs/d-160-n10-part-pii-pending-design.md`. */
+ *  (behaviour-preserving). See D-160. */
 export interface EntityPromptPart {
   readonly source: string;
   readonly role: 'entity';

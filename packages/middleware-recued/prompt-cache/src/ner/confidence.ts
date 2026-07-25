@@ -20,10 +20,10 @@
  *      ranges (`[0-2]\d:[0-5]\d`) and rejects fractional-seconds
  *      prefixes via lookahead. The gate adds a `HH <= 23` check
  *      because `[0-2]\d` admits `24..29`. Out-of-range → drop.
- *    - **entity.name** — gate has no extra rule; the language module
- *      is responsible for emitting only certain name spans (a sentence-
- *      initial `Find` is the language module's problem, not the
- *      certainty gate's).
+ *    - **entity.name** — gate has no extra rule; the language module or
+ *      caller-supplied known-name recovery is responsible for emitting only
+ *      certain spans. A recovered span may carry the local index's canonical
+ *      display spelling; otherwise the value stays verbatim.
  *
  *  Why drop instead of "any uncertainty → null whole extraction":
  *  the certainty gate is local to each span. A prompt like
@@ -34,21 +34,27 @@
  *  date drops silently; the email survives. The caller in `index.ts`
  *  decides whether an empty filtered set should become `null`.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 3 Invariant 5 (binary certainty), § 3 Invariant 7 (safe small
  *  gains). */
 
-import type { RawSlot, SlotKind } from './extract.js';
+import type { EntityReferenceEvidence, RawSlot, SlotKind } from './extract.js';
 
 /** A certainty-gated slot — guaranteed clean per the per-kind rules.
  *  `value` is the canonical form (email lower-cased; date / time
- *  passed through unchanged once range-validated; name verbatim).
+ *  passed through unchanged once range-validated; name verbatim unless a
+ *  known-name candidate supplied its canonical display spelling).
  *  `raw` retains the original span for audit / debugging. */
 export interface SlotValue {
   readonly kind: SlotKind;
   readonly value: string;
   readonly raw: string;
   readonly position: number;
+  /** Opaque exact-reference identity, present only for caller-proved contact
+   *  identifiers. The warehouse probe re-verifies it before rendering. */
+  readonly referenceKey?: string;
+  /** Typed class used with `raw` to re-attest the key at the data probe. */
+  readonly referenceEvidence?: EntityReferenceEvidence;
 }
 
 /** Supported year window for the `date` certainty check. Years outside
@@ -123,9 +129,13 @@ export const gateOne = (slot: RawSlot): SlotValue | null => {
     case 'entity.name':
       return {
         kind: 'entity.name',
-        value: slot.raw,
+        value: slot.canonicalValue ?? slot.raw,
         raw: slot.raw,
         position: slot.position,
+        ...(slot.referenceKey !== undefined ? { referenceKey: slot.referenceKey } : {}),
+        ...(slot.referenceEvidence !== undefined
+          ? { referenceEvidence: slot.referenceEvidence }
+          : {}),
       };
   }
 };

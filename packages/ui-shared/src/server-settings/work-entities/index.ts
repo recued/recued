@@ -1,6 +1,6 @@
 /** D-145 PA11 — Settings → Work Entities barrel.
  *
- *  Spec: docs/d-145-spec.md § PA11. */
+ *  Spec: D-145 § PA11. */
 
 export {
   renderWorkEntitiesPanel,

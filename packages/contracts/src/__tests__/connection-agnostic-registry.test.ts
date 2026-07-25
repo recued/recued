@@ -10,7 +10,7 @@
  *   - PROJECTS computed fields via their `derivation` (`close_state` closed_state,
  *     `name` concat — D-190) and SKIPS the still-source-less `mailing_address` (G3);
  *   - returns `[]` for a non-CRM vendor.
- * Spec: docs/unified-pack-exploration/connection-agnostic-op-contract.md.
+ * Spec: internal design notes.
  */
 import { describe, it, expect } from 'vitest';
 import {

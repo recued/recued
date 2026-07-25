@@ -1,6 +1,6 @@
 /** R2 dispatch probe — resolve-then-execute-transient (the empirical seal).
  *
- *  Spec: docs/unified-pack-exploration/recipe-identity-and-dependency-resolution.md §3
+ *  Spec: internal design notes §3
  *  (and connection-agnostic-op-contract.md §3, which DECIDED R1 / deferred R2).
  *
  *  The op-contract's two probes proved **R1** (install-time bake) at the ENGINE

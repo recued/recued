@@ -45,7 +45,7 @@
  *  D-173 N.2) — the P3 drop-processor holds the attach until `clean`
  *  and warns on `flagged`. The writer is a pure mechanism.
  *
- *  Spec: docs/d-172-spec.md § A.3 / N.3 / D2 / I-1.
+ *  Spec: D-172 § A.3 / N.3 / D2 / I-1.
  */
 
 import { RpcError } from '@recued/contracts';

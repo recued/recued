@@ -13,7 +13,7 @@
  *     on one path (hash-on-plaintext) so the second reader got the wrong on-disk
  *     format. Split roots → two independent files, each read in its own posture.
  *
- * See docs/archive-blob-encryption-fix.md. */
+ * See internal design notes. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';

@@ -23,7 +23,7 @@
  *  suggestion store (`scoped-grant-suggestion-store.ts`), and the accept rpc
  *  (`contract-handler.ts` → `mintScopedSessionGrant`).
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.b / 5.c); slice C. */
+ *  Spec: D-177 § N.11 rule 5 (5.b / 5.c); slice C. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import { sha256Hex } from '@recued/crypto/hash';

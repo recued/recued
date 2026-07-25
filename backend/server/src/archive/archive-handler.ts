@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import {
   RpcError,
   type ArchiveImportRebind,
@@ -389,13 +389,36 @@ export const makeArchiveHandlers = (
   };
 
   const resolveImportPath = (raw: string): string => {
-    if (raw.startsWith('/')) return raw;
-    // Relative paths resolve under `{data_path}/exports/` per the
-    // export convention. Keeps the rpc surface safe against path
-    // traversal from an attacker-controlled client — the server only
-    // ever touches files inside its own data directory unless the
-    // user explicitly passes an absolute path.
-    return join(deps.dataPath, 'exports', raw);
+    // An absolute path is the owner's explicit escape hatch — `import` is
+    // owner-only (a paired-client WS rpc; it does not reach MCP / doors), so a
+    // self-hosting owner naming a backup file anywhere on their own box is
+    // by-design. Relative paths are the normal upload flow (archives land under
+    // `{data_path}/exports/`) and MUST stay confined there.
+    //
+    // ⛔ `isAbsolute`, not `startsWith('/')`. D-212 ships Windows keyfile
+    // support, so the server runs on Windows — where an absolute backup path is
+    // `C:\…`, `C:/…` or a `\\host\share` UNC, none of which start with `/`. The
+    // old prefix test read those as RELATIVE and confined/rejected the owner's
+    // own absolute path. `path.isAbsolute` uses the running platform's rules
+    // (which is exactly the box resolving the path), so `/…` still works on
+    // POSIX and the Windows forms work on Windows.
+    if (isAbsolute(raw)) return raw;
+    // ⛔ CONFINE, don't just `join`. `join(dataPath,'exports','../../etc/x')`
+    // normalises straight out of the exports dir — so the traversal-safety this
+    // comment used to CLAIM was never enforced, turning a relative name into an
+    // arbitrary-path existence probe (the pre-validation `stat` below is the
+    // oracle). Resolve, then require the result to be inside the exports root;
+    // `${root}${sep}` (not a bare prefix) stops the `exports-evil` sibling.
+    const exportsRoot = resolve(deps.dataPath, 'exports');
+    const resolved = resolve(exportsRoot, raw);
+    if (resolved !== exportsRoot && !resolved.startsWith(`${exportsRoot}${sep}`)) {
+      throw new RpcError(
+        'bad_request',
+        'relative archive path must stay within the exports directory',
+        400,
+      );
+    }
+    return resolved;
   };
 
   const handleImport = async (
@@ -469,6 +492,26 @@ export const makeArchiveHandlers = (
         'this archive belongs to a different identity — restoring it over this ' +
           "server requires THIS server's recovery key to authorize the replacement",
         403,
+      );
+    }
+
+    // ⛔ A CROSS-REALM restore must run OFFLINE. The online path stages while the
+    // server keeps serving: it overlays the archive's blobs into the LIVE CAS,
+    // re-encrypted under the RESTORED realm's key, BEFORE the drain quiesces the
+    // engine. For a FOREIGN realm (a different blob key) that overwrites the
+    // canonical objects the running server still references, so its live reads
+    // of any overlapping hash fail (`aead: decryption failed`) for the whole
+    // staging window — a mid-restore corruption of a server that is still up.
+    // Same-realm restore is safe (same key ⇒ the re-encryption stays readable),
+    // so only the cross-realm case is refused. The offline `archive import` runs
+    // on a STOPPED server, where there are no live reads to break.
+    if (realm === 'cross') {
+      throw new RpcError(
+        'archive_cross_realm_needs_offline',
+        "restoring a DIFFERENT realm's backup over a running server would corrupt " +
+          'its live blob reads mid-restore. Stop the server and run ' +
+          '`recued archive import <path>` instead.',
+        409,
       );
     }
 

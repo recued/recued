@@ -10,7 +10,7 @@
  *  Idempotent by construction — `attachFile` reuses an existing edge, so a
  *  re-release lands no duplicate link.
  *
- *  Spec: docs/d-172-spec.md § A.3 / N.3 (attachFile) + docs/d-173-spec.md § A.1 / P5. */
+ *  Spec: D-172 § A.3 / N.3 (attachFile) + D-173 § A.1 / P5. */
 
 import {
   attachFile as attachFileHelper,

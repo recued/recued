@@ -1,6 +1,6 @@
 /** D-160 P1 -- stream turn pipeline.
  *
- *  Spec: docs/d-160-spec.md sections N.2 / A.2 / N.3 / N.4 / A.4.
+ *  Spec: D-160 sections N.2 / A.2 / N.3 / N.4 / A.4.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -15,7 +15,9 @@ import {
   createCapacity,
   createMiddlewareRegistry,
   runStream,
+  type EntityPromptPart,
   type Middleware,
+  type PromptPart,
   type TurnExecutor,
   type TurnOutput,
 } from '@recued/middleware';
@@ -599,5 +601,180 @@ describe('D-160 P1 runStream error path', () => {
     await expect(run(h, async () => output('unreached'))).rejects.toThrow(
       /resolve called twice/,
     );
+  });
+});
+
+describe('D-213 Track B — framework source-finalization seam', () => {
+  it('finalizes after prompt contributions and before the provider turn', async () => {
+    const h = createHarness();
+    const order: string[] = [];
+    h.registry.register({
+      id: 'source',
+      prompt(ctx): void {
+        ctx.prompt.contribute({
+          role: 'entity',
+          entity: 'contact',
+          payload: [{ email: 'alice@example.com' }],
+          render: () => '',
+        });
+        order.push('prompt');
+      },
+    });
+    await run(
+      h,
+      async () => {
+        order.push('turn');
+        return output('done');
+      },
+      {
+        finalizePrompt(ctx): void {
+          expect(ctx.prompt.parts()).toHaveLength(1);
+          order.push('finalize');
+        },
+      },
+    );
+    expect(order).toEqual(['prompt', 'finalize', 'turn']);
+  });
+
+  it('still finalizes when a prompt hook resolves deterministically', async () => {
+    const h = createHarness();
+    let finalized = 0;
+    let turns = 0;
+    h.registry.register({
+      id: 'gate',
+      prompt(ctx): void {
+        ctx.prompt.contribute({ role: 'context', text: 'source' });
+        ctx.resolve('local answer');
+      },
+    });
+    const summary = await run(
+      h,
+      async () => {
+        turns += 1;
+        return output('unreached');
+      },
+      {
+        finalizePrompt(): void {
+          finalized += 1;
+        },
+      },
+    );
+    expect(finalized).toBe(1);
+    expect(turns).toBe(0);
+    expect(summary.final_text).toBe('local answer');
+  });
+
+  it('validates the source-stamped part at contribution time', async () => {
+    const h = createHarness();
+    h.registry.register({
+      id: 'producer',
+      prompt(ctx): void {
+        ctx.prompt.contribute({ role: 'context', text: 'candidate' });
+      },
+    });
+    const seen: string[] = [];
+    await run(h, async () => output('done'), {
+      validatePromptPart(part): void {
+        seen.push(part.source);
+      },
+    });
+    expect(seen).toEqual(['producer']);
+  });
+
+  it('owns a frozen validated entity projection after contribution', async () => {
+    const h = createHarness();
+    const payload = [{ email: 'alice@example.com' }];
+    h.registry.register({
+      id: 'producer',
+      prompt(ctx): void {
+        ctx.prompt.contribute({
+          role: 'entity',
+          entity: 'contact',
+          payload,
+          render: () => '',
+        });
+        payload[0]!.email = 'mutated@example.com';
+        payload.push({ email: 'injected@example.com' });
+        expect(() => {
+          (ctx.prompt.parts() as PromptPart[]).push({
+            source: 'forged',
+            role: 'context',
+            text: 'bypass',
+          });
+        }).toThrow();
+      },
+    });
+    let finalized: readonly PromptPart[] = [];
+    await run(h, async () => output('done'), {
+      validatePromptPart(): void {
+        // Presence activates the framework-owned projection.
+      },
+      finalizePrompt(ctx): void {
+        finalized = ctx.prompt.parts();
+      },
+    });
+    expect(finalized).toHaveLength(1);
+    expect((finalized[0] as EntityPromptPart).payload).toEqual([
+      { email: 'alice@example.com' },
+    ]);
+    expect(Object.isFrozen((finalized[0] as EntityPromptPart).payload)).toBe(
+      true,
+    );
+  });
+
+  it('closes contributed source state before rethrowing a prompt-hook failure', async () => {
+    const h = createHarness();
+    let finalized = 0;
+    let outcome: 'complete' | 'prompt_error' | undefined;
+    let turns = 0;
+    h.registry.register({
+      id: 'broken-source',
+      prompt(ctx): void {
+        ctx.prompt.contribute({ role: 'context', text: 'committed source' });
+        throw new Error('prompt hook failed');
+      },
+    });
+
+    await expect(
+      run(
+        h,
+        async () => {
+          turns += 1;
+          return output('unreached');
+        },
+        {
+          finalizePrompt(ctx, finalizedOutcome): void {
+            finalized += 1;
+            outcome = finalizedOutcome;
+            expect(ctx.prompt.parts()).toHaveLength(1);
+          },
+        },
+      ),
+    ).rejects.toThrow('prompt hook failed');
+    expect(finalized).toBe(1);
+    expect(outcome).toBe('prompt_error');
+    expect(turns).toBe(0);
+  });
+
+  it('preserves the prompt-hook error when failure finalization also throws', async () => {
+    const h = createHarness();
+    h.registry.register({
+      id: 'broken-source',
+      prompt(): void {
+        throw new Error('originating prompt failure');
+      },
+    });
+
+    await expect(
+      run(
+        h,
+        async () => output('unreached'),
+        {
+          finalizePrompt(): void {
+            throw new Error('cleanup failure');
+          },
+        },
+      ),
+    ).rejects.toThrow('originating prompt failure');
   });
 });

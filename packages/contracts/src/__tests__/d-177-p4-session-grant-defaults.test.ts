@@ -17,13 +17,14 @@ import {
 
 describe('resolveSessionGrantOffer', () => {
   it('resolves the in-code seed (the policy-matrix override row was retired)', () => {
-    expect(SESSION_GRANT_RISK_TIERS).toEqual(['write', 'admin']);
-    for (const risk_tier of ['write', 'admin'] as const) {
+    expect(SESSION_GRANT_RISK_TIERS).toEqual(['read', 'write', 'admin']);
+    for (const risk_tier of ['read', 'write', 'admin'] as const) {
       expect(
         resolveSessionGrantOffer({
           channel: 'chat',
           actor: 'user_self',
           risk_tier,
+          pre_lift_approval: 'ask',
         }),
       ).toEqual({
         ttl_ms: CHAT_SESSION_GRANT_DEFAULTS.ttl_ms,
@@ -31,12 +32,13 @@ describe('resolveSessionGrantOffer', () => {
         risk_tier,
       });
     }
-    for (const risk_tier of ['read', 'destructive', undefined, 'bogus'] as const) {
+    for (const risk_tier of ['destructive', undefined, 'bogus'] as const) {
       expect(
         resolveSessionGrantOffer({
           channel: 'chat',
           actor: 'user_self',
           risk_tier,
+          pre_lift_approval: 'ask',
         }),
       ).toBeUndefined();
     }
@@ -45,6 +47,15 @@ describe('resolveSessionGrantOffer', () => {
         channel: 'messenger',
         actor: 'contracted_user',
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveSessionGrantOffer({
+        channel: 'chat',
+        actor: 'user_self',
+        risk_tier: 'write',
+        pre_lift_approval: 'always',
       }),
     ).toBeUndefined();
   });
@@ -55,6 +66,7 @@ describe('resolveSessionGrantOffer', () => {
         channel: 'messenger',
         actor: 'user_self',
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
       }),
     ).toEqual({
       ttl_ms: MESSENGER_SESSION_GRANT_DEFAULTS.ttl_ms,
@@ -66,6 +78,7 @@ describe('resolveSessionGrantOffer', () => {
         channel: 'mcp',
         actor: 'contracted_user',
         risk_tier: 'admin',
+        pre_lift_approval: 'ask',
       }),
     ).toEqual({
       ttl_ms: MCP_SESSION_GRANT_DEFAULTS.ttl_ms,

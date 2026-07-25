@@ -19,7 +19,7 @@
  *    - OUTBOUND → 'outbound'
  *    - empty → 'unknown'
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.2, § A.3.3, § A.3.6,
+ *  Spec: D-139 § A.1, § A.3, § A.3.2, § A.3.3, § A.3.6,
  *  § A.4. */
 
 import {

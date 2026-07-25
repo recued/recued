@@ -5,7 +5,7 @@
  *  resolution, active-tree quiescence, debounce and plan-completion
  *  evaluators, scheduling classification, and derived-session links.
  *
- *  Spec: docs/d-153-spec.md § Cut models — three modes (lines
+ *  Spec: D-153 § Cut models — three modes (lines
  *  535-551). */
 
 import { describe, expect, it } from 'vitest';

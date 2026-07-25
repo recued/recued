@@ -25,9 +25,13 @@ import {
   type BulkPackIssue,
   type BulkPackManifest,
 } from '@recued/contracts';
-import { fetchRecipeBySlug, MARKETPLACE_APEX_URL, type MarketplaceRecipeResult } from './client.js';
-
-const jsonHeaders = { 'Accept': 'application/json' };
+import {
+  fetchRecipeBySlug,
+  manifestFetchHeaders,
+  MARKETPLACE_APEX_URL,
+  type ManifestFetchOptions,
+  type MarketplaceRecipeResult,
+} from './client.js';
 
 /** Errors `fetchBulkPackBySlug` raises so install paths can render
  *  targeted messages.
@@ -58,11 +62,12 @@ export class BulkPackFetchError extends Error {
 export const fetchBulkPackBySlug = async (
   slug: string,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  opts: ManifestFetchOptions = {},
 ): Promise<BulkPackManifest | null> => {
   const url = `${MARKETPLACE_APEX_URL}/packs/${encodeURIComponent(slug)}.json`;
   let res: Response;
   try {
-    res = await fetchFn(url, { headers: jsonHeaders });
+    res = await fetchFn(url, { headers: manifestFetchHeaders(opts.install === true) });
   } catch (e) {
     throw new BulkPackFetchError(
       'network',
@@ -150,7 +155,9 @@ export const fetchBulkPackByUrl = async (
 ): Promise<BulkPackManifest> => {
   let res: Response;
   try {
-    res = await fetchFn(url, { headers: jsonHeaders });
+    // Never marked: this is a local/side-loaded import from a user-supplied URL,
+    // not an apex marketplace install, and the target is not ours to signal to.
+    res = await fetchFn(url, { headers: manifestFetchHeaders(false) });
   } catch (e) {
     throw new BulkPackFetchError(
       'network',

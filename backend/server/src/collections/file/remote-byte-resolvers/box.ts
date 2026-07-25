@@ -10,7 +10,7 @@
  *  comes purely from the download response `Content-Type`; the filename rides the
  *  mirror `meta`.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';

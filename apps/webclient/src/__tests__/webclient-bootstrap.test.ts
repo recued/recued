@@ -55,6 +55,10 @@ import {
   DATA_ROUTE_FORM_RESPONSE_RUN_ATTR,
   DATA_ROUTE_FORM_RESPONSE_RUN_PICKER_ATTR,
   DATA_ROUTE_HOST_ATTR,
+  DATA_ROUTE_LOGS_RETURN_ATTR,
+  DATA_ROUTE_TAB_ATTR,
+  DATA_ROUTE_VERIFICATION_ACTION_ATTR,
+  DATA_ROUTE_VERIFICATION_NEXT_ATTR,
 } from '../data/bootstrap-data-route.js';
 import {
   RECIPE_EDITOR_FORM_RESPONSE_READER_ATTR,
@@ -88,6 +92,15 @@ import {
   ATTENTION_TOPBAR_HOST_ATTR,
 } from '../attention/approval-attention-popover.js';
 import {
+  CHAT_ROUTE_INPUT_ATTR,
+  CHAT_ROUTE_PLAN_CONTINUE_ATTR,
+  CHAT_ROUTE_PLAN_TARGET_ATTR,
+} from '../chat/bootstrap-chat-route.js';
+import {
+  LOGS_ROUTE_CHAT_RETURN_ATTR,
+  LOGS_ROUTE_HOST_ATTR,
+} from '../logs/bootstrap-logs-route.js';
+import {
   SELLER_CUSTOMER_LIFECYCLE_FIELD_ATTR,
   SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR,
   SELLER_CUSTOMER_FORM_FIELD_ATTR,
@@ -107,7 +120,9 @@ interface FakeElement extends HTMLElement {
   attrs: Map<string, string>;
   childList: FakeElement[];
   parentRef: FakeElement | null;
+  value: string;
   fireAttributeClick(attrs: Record<string, string>): void;
+  fireInput(value: string): void;
   /** Synthesize a delegated click on this element, matching the
    *  `createActionDispatcher` listener contract: the target carries
    *  the supplied dataset + its `closest()` returns itself. Used by
@@ -128,6 +143,7 @@ const makeFakeElement = (tag: string): FakeElement => {
     attrs,
     childList,
     parentRef: null,
+    value: '',
     get children(): HTMLCollection {
       return childList as unknown as HTMLCollection;
     },
@@ -215,6 +231,12 @@ const makeFakeElement = (tag: string): FakeElement => {
       } as unknown as HTMLElement;
       for (const fn of [...click]) {
         fn({ target, preventDefault: (): void => {} } as unknown as Event);
+      }
+    },
+    fireInput: (value: string): void => {
+      (el as FakeElement & { value: string }).value = value;
+      for (const fn of [...listeners.input ?? []]) {
+        fn({ target: el as FakeElement } as unknown as Event);
       }
     },
     // Slice 110 — the settings route's Privacy panel uses native
@@ -979,6 +1001,166 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(
       findChildByAttr(routeContentRoot(fixture.root), 'data-recued-chat-route'),
     ).not.toBeNull();
+    await handle.dispose();
+  });
+
+  it('lands an approval deep link on its exact resolved Chat action card', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#chat/session/chat_1/plan/plan_approved/answer/msg_action',
+    );
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+
+    const rpcCalls = (): Array<{
+      method?: unknown;
+      request_id?: unknown;
+      args?: unknown;
+    }> => fixture.transportControls.sendCalls().filter(
+      (call): call is {
+        method?: unknown;
+        request_id?: unknown;
+        args?: unknown;
+      } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { type?: unknown }).type === 'rpc',
+    );
+    const sessionsList = rpcCalls().find(
+      (call) => call.method === 'chat.sessions.list',
+    );
+    expect(typeof sessionsList?.request_id).toBe('string');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessionsList!.request_id,
+      result: {
+        sessions: [{
+          id: 'chat_1',
+          title: 'Ops chat',
+          created_at: 1_000,
+          last_active_at: 2_000,
+          message_count: 1,
+          archived: false,
+          picker_state: { current: 'self' },
+          model_routing: {
+            current: 'byok',
+            provider: 'local',
+            overridden: false,
+          },
+        }],
+      },
+    });
+    await flush();
+
+    const sessionGet = rpcCalls().find(
+      (call) => call.method === 'chat.session.get',
+    );
+    expect(sessionGet?.args).toEqual({ session_id: 'chat_1' });
+    expect(typeof sessionGet?.request_id).toBe('string');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessionGet!.request_id,
+      result: {
+        id: 'chat_1',
+        title: 'Ops chat',
+        created_at: 1_000,
+        last_active_at: 2_000,
+        archived: false,
+        picker_state: { current: 'self' },
+        model_routing: {
+          current: 'byok',
+          provider: 'local',
+          model_id: 'local-default',
+          overridden: false,
+        },
+        messages: [{
+          id: 'msg_action',
+          session_id: 'chat_1',
+          role: 'assistant',
+          content: 'The reviewed action is ready.',
+          target_server: 'self',
+          picker_at_send: {
+            display_name: 'This server',
+            signature: {
+              server_kind: 'recued',
+              version: '1',
+              instance_id: 'server_1',
+            },
+          },
+          model_used: { provider: 'local', model_id: 'local-default' },
+          contributor: 'assistant',
+          ts: 2_000,
+        }],
+        plans: [{
+          plan: {
+            plan_id: 'plan_approved',
+            session_id: 'chat_1',
+            turn_id: 'turn_action',
+            tool: 'mail.send',
+            tier: 2,
+            classification: 'write',
+            args: { to: 'mary@example.com', subject: 'Hello' },
+            args_hash: 'hash-approved',
+            status: 'approved',
+            created_at: 1_700_000_000_000,
+            resolved_at: 1_700_000_001_000,
+          },
+          message_id: 'msg_action',
+          payload_available: true,
+        }, {
+          plan: {
+            plan_id: 'plan_cancelled',
+            session_id: 'chat_1',
+            turn_id: 'turn_cancelled',
+            tool: 'mail.send',
+            tier: 2,
+            classification: 'write',
+            args: { to: 'mary@example.com', subject: 'Never mind' },
+            args_hash: 'hash-cancelled',
+            status: 'cancelled',
+            created_at: 1_700_000_002_000,
+            resolved_at: 1_700_000_003_000,
+          },
+          message_id: 'msg_action',
+          payload_available: true,
+        }],
+      },
+    });
+    await flush();
+
+    const content = routeContentRoot(fixture.root);
+    const exactCard = findChildByAttr(content, CHAT_ROUTE_PLAN_TARGET_ATTR);
+    expect(exactCard?.getAttribute('data-plan-id')).toBe('plan_approved');
+    expect(
+      findChildByAttr(exactCard!, CHAT_ROUTE_PLAN_CONTINUE_ATTR),
+    ).not.toBeNull();
+    expect(
+      rpcCalls().some((call) => call.method === 'chat.send'),
+    ).toBe(false);
+
+    const chatRoute = findChildByAttr(content, 'data-recued-chat-route');
+    const draft = findChildByAttr(content, CHAT_ROUTE_INPUT_ATTR);
+    expect(draft).not.toBeNull();
+    draft!.fireInput('Keep this draft while I inspect the action');
+    const sessionReads = rpcCalls().filter(
+      (call) => call.method === 'chat.session.get',
+    ).length;
+    fixture.hashSource.setHash(
+      '#chat/session/chat_1/plan/plan_cancelled/answer/msg_action',
+    );
+    const nextTarget = findChildByAttr(content, CHAT_ROUTE_PLAN_TARGET_ATTR);
+    expect(nextTarget?.getAttribute('data-plan-id')).toBe('plan_cancelled');
+    expect(findChildByAttr(content, 'data-recued-chat-route')).toBe(chatRoute);
+    expect(findChildByAttr(content, CHAT_ROUTE_INPUT_ATTR)?.value).toBe(
+      'Keep this draft while I inspect the action',
+    );
+    expect(
+      rpcCalls().filter((call) => call.method === 'chat.session.get'),
+    ).toHaveLength(sessionReads);
+    expect(
+      rpcCalls().some((call) => call.method === 'chat.send'),
+    ).toBe(false);
+
     await handle.dispose();
   });
 
@@ -2112,6 +2294,127 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
+  it('hydrates a Logs run with its exact Chat-plan return after reload', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#logs/run%2Fone/return/chat/session/chat%2Fone/plan/plan%20one/'
+      + 'answer/answer%20%231',
+    );
+    const handle = await bootstrapWebclient(fixture.opts);
+
+    const logs = findChildByAttr(
+      routeContentRoot(fixture.root),
+      LOGS_ROUTE_HOST_ATTR,
+    );
+    expect(logs).not.toBeNull();
+    expect(logs!.innerHTML).toContain(LOGS_ROUTE_CHAT_RETURN_ATTR);
+    expect(logs!.innerHTML).toContain(
+      'href="#chat/session/chat%2Fone/plan/plan%20one/answer/answer%20%231"',
+    );
+    expect(logs!.innerHTML).toContain('Back to this Chat action');
+
+    await handle.dispose();
+  });
+
+  it('hydrates a source-record verification handoff with its exact run return after reload', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#data/calendar/verify/event-1/relationship/involved/return/logs/'
+      + 'run%2Fone/return/chat/session/chat%2Fone/plan/plan%20one/'
+      + 'answer/answer%20%231',
+    );
+    const handle = await bootstrapWebclient(fixture.opts);
+
+    const data = findChildByAttr(
+      routeContentRoot(fixture.root),
+      DATA_ROUTE_HOST_ATTR,
+    );
+    expect(data).not.toBeNull();
+    expect(data!.innerHTML).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(data!.innerHTML).toContain(
+      'Check the item involved in the change',
+    );
+    expect(data!.innerHTML).toContain(DATA_ROUTE_VERIFICATION_NEXT_ATTR);
+    expect(data!.innerHTML).toContain(
+      'Loading the linked item before next steps become available',
+    );
+    expect(data!.innerHTML).not.toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+
+    const answerRpc = (method: string, result: unknown): void => {
+      const call = fixture.transportControls.sendCalls().find(
+        (candidate) =>
+          candidate !== null
+          && typeof candidate === 'object'
+          && (candidate as { method?: unknown }).method === method,
+      ) as { request_id?: unknown } | undefined;
+      expect(call, `missing ${method} request`).toBeDefined();
+      expect(typeof call?.request_id).toBe('string');
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: call!.request_id,
+        result,
+      });
+    };
+    await flush();
+    answerRpc('collection.listInstances', {
+      instances: [{
+        slug: 'work',
+        platform: 'calendar',
+        adapter_type: 'gcal',
+        caps: {},
+        auth_state: 'healthy',
+        last_synced_at: 1,
+      }],
+    });
+    await flush();
+    answerRpc('collection.list', {
+      records: [{
+        record_id: 'event-1',
+        received_at: 1,
+        modified_at: 1,
+        hot_fields: { summary: 'Customer review' },
+        size_bytes: 0,
+        source_id: 'provider-event-1',
+      }],
+    });
+    await flush();
+    answerRpc('collection.get', {
+      record: {
+        record_id: 'event-1',
+        received_at: 1,
+        modified_at: 1,
+        hot_fields: { summary: 'Customer review' },
+        size_bytes: 0,
+        source_id: 'provider-event-1',
+      },
+    });
+    await flush();
+    await flush();
+
+    expect(data!.innerHTML).toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+    expect(data!.innerHTML).toContain(
+      'href="#chat/session/chat%2Fone/plan/plan%20one/answer/'
+      + 'answer%20%231/verification/reviewed/run/run%2Fone/'
+      + 'relationship/involved"',
+    );
+    expect(data!.innerHTML).toContain(
+      'href="#logs/run%2Fone/return/chat/session/chat%2Fone/plan/'
+      + 'plan%20one/answer/answer%20%231"',
+    );
+    expect(data!.innerHTML).toContain('Back to run outcome');
+    expect(data!.innerHTML).toMatch(
+      new RegExp(
+        `${DATA_ROUTE_TAB_ATTR}="calendar"[\\s\\S]*?aria-selected="true"`,
+      ),
+    );
+
+    await handle.dispose();
+  });
+
   it('threads cryptoKeysWiper through to the Settings route Privacy panel', async () => {
     let wiped = 0;
     const fixture = buildOpts();
@@ -2908,8 +3211,11 @@ describe('Data accepted response → manual automation run', () => {
           visitor: { email: 'visitor@example.test' },
           submitted_at: 1_000,
           accepted_at: 2_000,
+          updated_at: 2_000,
           origin_actor: 'anonymous',
           origin_surface: 'system',
+          lifecycle_state: 'new',
+          state_changed_at: 2_000,
           metadata: { private_plan: 'owner-only plan' },
         },
       },
@@ -3107,10 +3413,10 @@ describe('Data → Kitchen accepted-response automation handoff', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────
-// Leave guard — unsaved Kitchen work vs hash navigation + tab close.
+// Leave guard — unsaved route work vs hash navigation + tab close.
 // ──────────────────────────────────────────────────────────────────
 
-describe('leave guard — unsaved Kitchen work', () => {
+describe('leave guard — unsaved route work', () => {
   const buildGuardFixture = () => {
     const fixture = buildOpts();
     const confirmFn = vi.fn(() => false);
@@ -3181,6 +3487,42 @@ describe('leave guard — unsaved Kitchen work', () => {
     fixture.hashSource.setHash('#recipes');
     expect(confirmFn).toHaveBeenCalledTimes(1);
     expect(handle.activeRoute()).toBe('recipes');
+
+    await handle.dispose();
+  });
+
+  it('keeps a typed Chat draft when cross-route navigation is declined', async () => {
+    const { fixture, confirmFn, location } = buildGuardFixture();
+    fixture.hashSource.setHash('#chat');
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+
+    const sessionsList = fixture.transportControls.sendCalls().find(
+      (call) =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { type?: unknown }).type === 'rpc'
+        && (call as { method?: unknown }).method === 'chat.sessions.list',
+    ) as { request_id?: unknown } | undefined;
+    expect(typeof sessionsList?.request_id).toBe('string');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessionsList!.request_id,
+      result: { sessions: [] },
+    });
+    await flush();
+
+    const input = findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR);
+    expect(input).not.toBeNull();
+    input!.fireInput('Keep this unfinished Chat thought');
+    fixture.hashSource.setHash('#reception');
+
+    expect(confirmFn).toHaveBeenCalledTimes(1);
+    expect(handle.activeRoute()).toBe('chat');
+    expect(location.hash).toBe('#chat');
+    expect(
+      findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)?.value,
+    ).toBe('Keep this unfinished Chat thought');
 
     await handle.dispose();
   });

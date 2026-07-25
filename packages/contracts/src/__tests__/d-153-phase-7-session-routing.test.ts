@@ -5,7 +5,7 @@
  *  deterministic message routing, routing-classifier output narrowing,
  *  routing-effect consequences, and the lifecycle broadcast registration.
  *
- *  Spec: docs/d-153-spec.md § Routing — what happens when a new message
+ *  Spec: D-153 § Routing — what happens when a new message
  *  arrives (lines 553-573). */
 
 import { describe, expect, it } from 'vitest';

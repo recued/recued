@@ -299,14 +299,29 @@ describe('D-149 P5 § A.5.2 — validateSchedulingLinkConfig', () => {
     ).toBe(true);
   });
 
-  it('rejects on_booking with empty auto_confirm_via_standing_instruction', () => {
+  it('rejects retired auto_confirm_via_standing_instruction for every value', () => {
     const c = {
       ...goodConfig,
-      on_booking: { ...goodConfig.on_booking, auto_confirm_via_standing_instruction: '' },
+      on_booking: {
+        ...goodConfig.on_booking,
+        auto_confirm_via_standing_instruction: 'standing.always-confirm',
+      },
     };
     expect(
       validateSchedulingLinkConfig(c).some((f) => f.code === 'auto_confirm_ref_invalid'),
     ).toBe(true);
+  });
+
+  it('bounds and rejects blank approval-notification sender ids', () => {
+    for (const notify_visitor_sender of ['   ', 'x'.repeat(201)]) {
+      const c = {
+        ...goodConfig,
+        on_booking: { ...goodConfig.on_booking, notify_visitor_sender },
+      };
+      expect(
+        validateSchedulingLinkConfig(c).some((f) => f.code === 'on_booking_flag_invalid'),
+      ).toBe(true);
+    }
   });
 });
 

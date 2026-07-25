@@ -20,10 +20,8 @@
  */
 
 import {
-  byDateDesc,
-  byNumberDesc,
-  byStringAsc,
-  type DiscoverSpec,
+  runDiscover,
+  type DiscoverQuery,
 } from './discover-model.js';
 import {
   DISCOVER_PANEL_STYLES,
@@ -33,9 +31,12 @@ import {
 } from './discover-panel.js';
 import {
   fetchPackCatalog,
+  fetchPackSearch,
   type CatalogPackRow,
+  type CatalogPageResult,
   type CatalogResult,
 } from './catalog-client.js';
+import { makeUpdateVersionResolver } from './update-versions.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 
 /** One roster pack the union corpus + install-state join read. Only the display
@@ -83,6 +84,20 @@ export interface MountPackDiscoveryOptions {
    *  permissions so it can't be one-click). Navigate mode: no inline install. */
   onSelect: (slug: string) => void;
   listInstalled: PackInstalledListCaller;
+  /** Server-side search (`/catalog/search?kind=pack`) — the browse path. When
+   *  present the panel pages the catalogue from the server instead of
+   *  downloading + reducing over the whole corpus; `fetchCatalog` becomes the
+   *  offline / failure fallback. Injected in tests; defaults to the real
+   *  endpoint (unless a corpus is injected — a self-contained test seam). */
+  search?: (query: DiscoverQuery) => Promise<CatalogPageResult<CatalogPackRow>>;
+  /** Resolve current catalogue versions for a bounded id set — drives BOTH the
+   *  update badge (installed roster) and the pinned-row detection (a BUNDLED
+   *  pack absent from the published catalogue is one the server never returns).
+   *  Injected in tests; defaults to the real `/catalog/versions`. */
+  fetchVersions?: (ids: readonly string[]) => Promise<
+    | { status: 'ok'; versions: Map<string, number> }
+    | { status: 'error'; message: string }
+  >;
   fetchCatalog?: (origin?: string) => Promise<CatalogResult<CatalogPackRow>>;
   origin?: string;
   subscribe?: BroadcastSubscriber['on'];
@@ -138,20 +153,10 @@ const SERVICE_KIND_LABEL: Record<string, string> = {
   reception: 'Reception',
 };
 
-export const packSpec: DiscoverSpec<CatalogPackRow> = {
-  searchableText: (r) =>
-    `${r.name} ${r.description} ${r.tags.join(' ')} ${r.publisher_id} ${r.service_kind ?? ''}`,
-  facets: [
-    { key: 'service_kind', values: (r) => (r.service_kind !== undefined ? [r.service_kind] : []) },
-    { key: 'pack_kind', values: (r) => (r.pack_kind !== '' ? [r.pack_kind] : []) },
-    { key: 'tag', values: (r) => r.tags },
-  ],
-  sorters: {
-    downloads: byNumberDesc((r) => r.download_count, (r) => r.slug),
-    newest: byDateDesc((r) => r.created_at, (r) => r.slug),
-    name: byStringAsc((r) => r.name),
-  },
-};
+// Lives in `discover-specs.ts` alongside `recipeSpec` — see the note there.
+import { packSpec } from './discover-specs.js';
+
+export { packSpec };
 
 export const packBadges = (r: CatalogPackRow): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
@@ -163,7 +168,10 @@ export const packBadges = (r: CatalogPackRow): DiscoverBadge[] => {
 };
 
 export const packMeta = (r: CatalogPackRow): string => {
-  const parts = [r.publisher_id, `${r.download_count} install${r.download_count === 1 ? '' : 's'}`];
+  // Installs omitted at 0 — see `recipeMeta`: `download_count` has no writer, so
+  // an unconditional chip asserted "0 installs" with nothing behind it.
+  const parts = [r.publisher_id];
+  if (r.download_count > 0) parts.push(`${r.download_count} install${r.download_count === 1 ? '' : 's'}`);
   parts.push(`${r.item_count} item${r.item_count === 1 ? '' : 's'}`);
   return parts.join(' · ');
 };
@@ -179,6 +187,16 @@ export const mountPackDiscovery = (
 
   const fetchCatalog = opts.fetchCatalog ?? ((origin?: string) => fetchPackCatalog(origin !== undefined ? { origin } : {}));
 
+  // Server-side search is the browse path — unless a corpus is injected (a
+  // self-contained test/private-mirror seam), matching the recipe surface. In
+  // corpus mode `loadUnion` stays the load path and behaviour is unchanged.
+  const searchFn = opts.search
+    ?? (opts.fetchCatalog === undefined
+      ? ((query: DiscoverQuery) =>
+          fetchPackSearch(query, opts.origin !== undefined ? { origin: opts.origin } : {}))
+      : undefined);
+  const serverMode = searchFn !== undefined;
+
   // Install-state lookup — a live-read indirection over `currentLookup` so the
   // FIRST render (before any `setInstalled`) already sees the version map the
   // union load builds, and a broadcast just swaps the closure + re-renders.
@@ -188,6 +206,9 @@ export const mountPackDiscovery = (
   // install-state + roster-only rows keep their last-known values rather than
   // collapsing to "everything available" / dropping installed packs.
   let lastRoster: { packs: ReadonlyArray<RosterPack>; installed_versions?: ReadonlyArray<{ slug: string; version: number }> } | null = null;
+  // Last-known bundled roster — the packs the server MIGHT not know about. Used
+  // to detect the ones it definitely doesn't (pinned rows, below).
+  let bundledRoster: ReadonlyArray<RosterPack> = [];
 
   /** Build the slug→installed-version map from a roster snapshot. A pack is
    *  installed when `installed` (owned at disk version) OR `installed_any_version`
@@ -223,24 +244,80 @@ export const mountPackDiscovery = (
     return (slug) => m.get(slug) ?? null;
   };
 
-  // The union load — the SINGLE corpus source the panel fetches on load /
-  // refresh. Fetches the catalog + the roster together, rebuilds the install
-  // lookup, and returns catalog ∪ roster-not-in-catalog. Offline-resilient: a
-  // catalog fetch failure degrades to the roster-only corpus (status 'ok') so a
-  // LAN-paired / offline webclient still lists the packs it has installed rather
-  // than blanking to an error. Both failing surfaces the catalog error.
+  // Apply a roster snapshot: cache it, rebuild the install-state lookup, and (in
+  // server mode) resolve catalogue versions for the bundled ∪ inventory slug set
+  // — one bounded lookup that answers BOTH the update badge AND which bundled
+  // packs the marketplace doesn't list (pinned, below). Installing a BUNDLED
+  // pack doesn't grow that set, so the common case re-uses the memoised probe;
+  // only a marketplace-pack install (a new inventory slug) re-probes.
+  let panelRef: DiscoverPanelMount | null = null;
+  const updates = serverMode
+    ? makeUpdateVersionResolver({
+        kind: 'pack',
+        // Re-run the current query so the pinned set recomputes AND the badge
+        // re-reads once versions land.
+        onChange: () => void panelRef?.refresh(),
+        ...(opts.origin !== undefined ? { origin: opts.origin } : {}),
+        ...(opts.fetchVersions !== undefined ? { fetchVersions: opts.fetchVersions } : {}),
+      })
+    : null;
+
+  const applyRoster = (
+    src: { packs: ReadonlyArray<RosterPack>; installed_versions?: ReadonlyArray<{ slug: string; version: number }> } | null,
+  ): ReadonlyArray<RosterPack> => {
+    const roster = src?.packs ?? [];
+    bundledRoster = roster;
+    currentLookup = buildLookup(roster, src?.installed_versions);
+    const ids = [
+      ...roster.map((p) => p.slug),
+      ...(src?.installed_versions ?? []).map((iv) => iv.slug),
+    ];
+    void updates?.resolve(ids);
+    return roster;
+  };
+
+  /** Fetch the roster fresh (broadcast / return-visit path). A transient
+   *  `packs.list` failure falls back to the last-known snapshot — never to an
+   *  empty roster, which would regress install-state on a refresh. */
+  const refreshRoster = async (): Promise<ReadonlyArray<RosterPack>> => {
+    const rosterRes = await opts.listInstalled().catch(() => null);
+    if (rosterRes !== null) lastRoster = rosterRes;
+    return applyRoster(rosterRes ?? lastRoster);
+  };
+
+  // Load the roster once before the first server render so install-state is
+  // right from the start (the panel reads `currentLookup` live); later calls
+  // reuse it. A broadcast forces a fresh fetch via `refreshRoster`.
+  let rosterLoad: Promise<ReadonlyArray<RosterPack>> | null = null;
+  const ensureRoster = (): Promise<ReadonlyArray<RosterPack>> => {
+    if (rosterLoad === null) rosterLoad = refreshRoster();
+    return rosterLoad;
+  };
+
+  /** Bundled packs the marketplace catalogue doesn't carry — projected as
+   *  browse rows. A published pack's slug is present in the versions map; an
+   *  absent one is unpublished, so the server search will never return it and it
+   *  would silently vanish from Discover. `null` map (probe not yet landed /
+   *  failed) → none yet; they pop in on the probe's `onChange` refresh. */
+  const pinnedCandidates = (): CatalogPackRow[] => {
+    const map = updates?.read();
+    if (map === null || map === undefined) return [];
+    return bundledRoster
+      .filter((p) => !map.has(p.slug))
+      .map(projectRosterPackRow);
+  };
+
+  // The union load — the fallback corpus source (offline / a failed search).
+  // Fetches the catalog + roster together and returns catalog ∪ roster-not-in-
+  // catalog. Offline-resilient: a catalog failure degrades to the roster-only
+  // corpus so a LAN-paired webclient still lists its installed packs.
   const loadUnion = async (): Promise<CatalogResult<CatalogPackRow>> => {
     const [catalogRes, rosterRes] = await Promise.all([
       fetchCatalog(opts.origin),
       opts.listInstalled().catch(() => null),
     ]);
-    // A successful roster fetch updates the last-known snapshot; a transient
-    // failure falls back to it (never to an empty roster — that would regress
-    // install-state on a refresh, showing installed packs as "Install").
     if (rosterRes !== null) lastRoster = rosterRes;
-    const rosterSource = rosterRes ?? lastRoster;
-    const roster = rosterSource?.packs ?? [];
-    currentLookup = buildLookup(roster, rosterSource?.installed_versions);
+    const roster = applyRoster(rosterRes ?? lastRoster);
     if (catalogRes.status === 'ok') {
       return { status: 'ok', rows: unionCorpus(catalogRes.rows, roster) };
     }
@@ -256,6 +333,33 @@ export const mountPackDiscovery = (
     document: doc,
     spec: packSpec,
     fetchCatalog: loadUnion,
+    ...(searchFn !== undefined
+      ? {
+          search: async (query: DiscoverQuery) => {
+            // Install-state must be ready before the first page renders, so the
+            // roster load blocks the first search only (memoised thereafter).
+            await ensureRoster();
+            const res = await searchFn(query);
+            if (res.status !== 'ok') return { status: 'error' as const, message: res.message };
+            // Pinned: the bundled-but-unpublished packs that match THIS query.
+            // Run them through the SAME engine the server reproduces, over their
+            // bounded set, so their search/facet behaviour matches the page.
+            // Only on page 1 — they're a featured strip atop the first page of
+            // results (they have no rank among catalogue rows), not a header
+            // repeated on every deep page.
+            const cands = res.page.page <= 1 ? pinnedCandidates() : [];
+            const pinnedMatched = cands.length > 0
+              ? runDiscover(cands, packSpec, query).matched
+              : [];
+            // Defensive dedupe: an unpublished pack should never be in the server
+            // page, but never show a slug twice if that assumption ever breaks.
+            const pageSlugs = new Set(res.page.rows.map((r) => r.slug));
+            const pinned = pinnedMatched.filter((r) => !pageSlugs.has(r.slug));
+            return { status: 'ok' as const, page: { ...res.page, pinned } };
+          },
+        }
+      : {}),
+    ...(updates !== null ? { updateVersions: () => updates.read() } : {}),
     identity: (r) => r.slug,
     catalogVersion: (r) => r.version,
     installedVersion: (slug) => currentLookup(slug),
@@ -278,16 +382,22 @@ export const mountPackDiscovery = (
       key === 'service_kind' ? (SERVICE_KIND_LABEL[value] ?? value) : value,
     // Navigate mode owns every click → the detail; inline install never runs.
     install: { label: 'Install', run: async () => ({ ok: true as const, handedOff: true }) },
-    copy: { searchPlaceholder: 'Search packs…', kindPlural: 'packs' },
+    copy: { searchPlaceholder: 'Search packs…', kindPlural: 'packs', pinnedLabel: 'On this server' },
   });
+  panelRef = panel;
 
-  // A pack install / uninstall (from the detail, or another device) re-runs the
-  // union — its badges flip AND a newly-installed pack absent from the catalog
-  // joins the corpus (or a fully-uninstalled roster-only one drops out).
+  // A pack install / uninstall (from the detail, or another device) re-fetches
+  // the roster (flipping install-state, re-probing versions if the inventory
+  // grew) and re-runs the browse so a newly-installed pack absent from the
+  // catalog joins as a pinned row (or a fully-uninstalled one drops out).
+  const onBroadcast = (): void => {
+    if (serverMode) void refreshRoster();
+    void panel.refresh();
+  };
   const unsubs: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
-    unsubs.push(opts.subscribe('pack_installed', () => void panel.refresh()));
-    unsubs.push(opts.subscribe('pack_uninstalled', () => void panel.refresh()));
+    unsubs.push(opts.subscribe('pack_installed', onBroadcast));
+    unsubs.push(opts.subscribe('pack_uninstalled', onBroadcast));
   }
 
   return {
@@ -300,6 +410,7 @@ export const mountPackDiscovery = (
           /* teardown best-effort */
         }
       }
+      updates?.dispose();
       panel.dispose();
     },
   };

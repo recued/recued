@@ -34,7 +34,7 @@
  *    - Section toggle closed shape — defense in depth against caller-
  *      supplied extra keys at the rpc edge.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.1 + § Must Hold I-1 + § A.11 (TR-8). */
+ *  Spec: D-149 § A.5.1 + § Must Hold I-1 + § A.11 (TR-8). */
 
 import {
   RECEPTION_PAGE_PREFERRED_CONTACT_METHOD_SET,

@@ -3,7 +3,9 @@
  *  ONE interactive primitive both the webclient and the bridge side panel
  *  render for a pending D-158 `notification.ask` (I-12 / TR-9 / O-3 — no
  *  per-client copy). It renders the ask's title / body + one button per
- *  option; clicking a button fires `onAnswer(optionId)`. The host owns the
+ *  option; safe answers fire `onAnswer(optionId)` directly, while an
+ *  approving answer on a generated write/admin/destructive ask requires a
+ *  deliberate confirmation click. The host owns the
  *  actual submit — the bridge side panel round-trips to its service worker,
  *  which calls the `notification.submitAnswer` rpc; the webclient (a
  *  Slice-3b follow-on) will call the same rpc — and the notification block
@@ -24,7 +26,7 @@
  *  contracts `ServerPendingAsk` wire type satisfy `AskCardModel`
  *  (`AskOption` is just `{ id, label }`).
  *
- *  Spec: docs/d-169-spec.md § N.5 #4 / I-11 / I-12 / TR-9. */
+ *  Spec: D-169 § N.5 #4 / I-11 / I-12 / TR-9. */
 
 /** One answer choice — mirrors the D-158 `AskOption` ({ id, label }) and
  *  the `ServerPendingAsk.options[]` wire shape without importing either. */
@@ -63,12 +65,94 @@ export const ASK_CARD_ATTR = 'data-recued-ask-card';
 export const ASK_CARD_OPTION_ATTR = 'data-recued-ask-option';
 /** Stable hook on the inline submit-error line (hidden until a submit fails). */
 export const ASK_CARD_ERROR_ATTR = 'data-recued-ask-error';
+/** Concise action/target/highlight projection for generated write asks. */
+export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
+/** Collapsed technical details for generated write asks. */
+export const ASK_CARD_DETAILS_ATTR = 'data-recued-ask-details';
+/** Deliberate second-step prompt for an externally mutating answer. */
+export const ASK_CARD_CONFIRM_ATTR = 'data-recued-ask-confirm';
 
 /** Treat a blank / whitespace-only title as absent (matches the bridge
  *  side panel's `nonBlankTitle`) so a present-but-empty title doesn't
  *  render a blank heading line. */
 const nonBlankAskTitle = (title: string | undefined): string | undefined =>
   title !== undefined && title.trim() !== '' ? title : undefined;
+
+interface ProjectedApprovalAsk {
+  operation: string;
+  target: string | null;
+  recipe: string;
+  step: string;
+  reason: string | null;
+  fields: ReadonlyArray<{ key: string; value: string }>;
+  highlights: ReadonlyArray<{ key: string; value: string }>;
+}
+
+/** The notification block's generated approval prose has a stable first line
+ *  followed by an indented key/value payload. Project it conservatively; an
+ *  arbitrary/custom ask that does not match keeps its original text verbatim. */
+const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null => {
+  const lines = text.split(/\r?\n/);
+  const first = lines[0]?.trim() ?? '';
+  const operation = first.match(
+    /^Recipe (.+?) wants to run (.+?)(?: on (.+?))? \(step (.+?)\)\.$/,
+  );
+  if (operation === null) return null;
+
+  const fields: Array<{ key: string; value: string }> = [];
+  let reason: string | null = null;
+  for (const line of lines.slice(1)) {
+    const field = line.match(/^\s{2,}([^:]+):\s*(.*)$/);
+    if (field !== null) {
+      fields.push({ key: field[1]!.trim(), value: field[2]!.trim() });
+      continue;
+    }
+    const reasonLine = line.trim().match(/^Reason:\s*(.+)$/i);
+    if (reasonLine !== null) reason = reasonLine[1]!.trim();
+  }
+
+  const fieldByKey = new Map(fields.map((field) => [field.key, field.value]));
+  const highlights: Array<{ key: string; value: string }> = [];
+  for (const key of ['to', 'subject', 'title', 'body', 'top_tier_kind']) {
+    const value = fieldByKey.get(key);
+    if (value !== undefined && value !== '' && value !== '(null)') {
+      highlights.push({ key, value });
+    }
+    if (highlights.length === 3) break;
+  }
+
+  return {
+    recipe: operation[1]!,
+    operation: operation[2]!,
+    target: operation[3] ?? null,
+    step: operation[4]!,
+    reason,
+    fields,
+    highlights,
+  };
+};
+
+const humanizeAskField = (key: string): string => {
+  const withoutMetadata = key.replace(/^metadata\./, '');
+  const words = withoutMetadata.replace(/[._-]+/g, ' ');
+  return words.charAt(0).toLocaleUpperCase() + words.slice(1);
+};
+
+type AskOptionIntent = 'approve' | 'reject' | 'neutral';
+
+const askOptionIntent = (option: AskCardOption): AskOptionIntent => {
+  const value = `${option.id} ${option.label}`.toLocaleLowerCase();
+  if (/\b(approve|allow|accept|send|confirm|yes)\b/.test(value)) return 'approve';
+  if (/\b(deny|reject|decline|discard|cancel|no)\b/.test(value)) return 'reject';
+  return 'neutral';
+};
+
+const askRisk = (title: string | undefined): 'write' | 'admin' | 'destructive' | null => {
+  const match = title?.match(/\((write|admin|destructive)\)\s*$/i);
+  return match === undefined || match === null
+    ? null
+    : match[1]!.toLocaleLowerCase() as 'write' | 'admin' | 'destructive';
+};
 
 /** Render one pending ask as an interactive card. Returns a detached
  *  `HTMLElement` the host appends into its panel. */
@@ -81,7 +165,11 @@ export const renderAskCard = (
   card.className = 'rx-ask-card';
   card.setAttribute(ASK_CARD_ATTR, model.ask_id);
 
-  const title = nonBlankAskTitle(model.title);
+  const projected = projectGeneratedApprovalAsk(model.text);
+  const risk = askRisk(model.title);
+  const title = projected !== null && risk !== null
+    ? `Approve ${risk} action`
+    : nonBlankAskTitle(model.title);
   if (title !== undefined) {
     const heading = doc.createElement('div');
     heading.className = 'rx-ask-card-title';
@@ -89,10 +177,70 @@ export const renderAskCard = (
     card.appendChild(heading);
   }
 
-  const body = doc.createElement('div');
-  body.className = 'rx-ask-card-text';
-  body.textContent = model.text;
-  card.appendChild(body);
+  if (projected === null) {
+    const body = doc.createElement('div');
+    body.className = 'rx-ask-card-text';
+    body.textContent = model.text;
+    card.appendChild(body);
+  } else {
+    const consequence = doc.createElement('p');
+    consequence.className = 'rx-ask-card-consequence';
+    consequence.textContent = 'This action changes data outside Recued.';
+    card.appendChild(consequence);
+
+    const summary = doc.createElement('dl');
+    summary.className = 'rx-ask-card-summary';
+    summary.setAttribute(ASK_CARD_SUMMARY_ATTR, '');
+    const appendSummaryRow = (labelText: string, valueText: string): void => {
+      const row = doc.createElement('div');
+      row.className = 'rx-ask-card-summary-row';
+      const label = doc.createElement('dt');
+      label.textContent = labelText;
+      const value = doc.createElement('dd');
+      value.textContent = valueText;
+      row.appendChild(label);
+      row.appendChild(value);
+      summary.appendChild(row);
+    };
+    appendSummaryRow('Action', projected.operation);
+    if (projected.target !== null) appendSummaryRow('Target', projected.target);
+    for (const field of projected.highlights) {
+      appendSummaryRow(humanizeAskField(field.key), field.value);
+    }
+    card.appendChild(summary);
+
+    const details = doc.createElement('details');
+    details.className = 'rx-ask-card-details';
+    details.setAttribute(ASK_CARD_DETAILS_ATTR, '');
+    const detailsSummary = doc.createElement('summary');
+    const technicalDetailCount = projected.fields.length
+      + 2
+      + (projected.target === null ? 0 : 1)
+      + (projected.reason === null ? 0 : 1);
+    detailsSummary.textContent = `Technical details (${technicalDetailCount})`;
+    details.appendChild(detailsSummary);
+    const detailsList = doc.createElement('dl');
+    const appendDetail = (labelText: string, valueText: string): void => {
+      const row = doc.createElement('div');
+      row.className = 'rx-ask-card-detail-row';
+      const label = doc.createElement('dt');
+      label.textContent = labelText;
+      const value = doc.createElement('dd');
+      value.textContent = valueText;
+      row.appendChild(label);
+      row.appendChild(value);
+      detailsList.appendChild(row);
+    };
+    appendDetail('Recipe', projected.recipe);
+    appendDetail('Step', projected.step);
+    if (projected.target !== null) appendDetail('Target', projected.target);
+    if (projected.reason !== null) appendDetail('Reason', projected.reason);
+    for (const field of projected.fields) {
+      appendDetail(humanizeAskField(field.key), field.value);
+    }
+    details.appendChild(detailsList);
+    card.appendChild(details);
+  }
 
   // Inline error line — hidden until a submit fails. Created up front so
   // the click handlers can toggle it; appended after the action row.
@@ -105,19 +253,53 @@ export const renderAskCard = (
   const actions = doc.createElement('div');
   actions.className = 'rx-ask-card-actions';
 
+  const confirmation = doc.createElement('div');
+  confirmation.className = 'rx-ask-card-confirm';
+  confirmation.setAttribute(ASK_CARD_CONFIRM_ATTR, model.ask_id);
+  confirmation.setAttribute('role', 'status');
+  confirmation.textContent = 'Confirm this change. It may affect data outside Recued.';
+  confirmation.hidden = true;
+
   const buttons: HTMLButtonElement[] = [];
+  const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
   let pending = false;
+  let armedOptionId: string | null = null;
   const setDisabled = (disabled: boolean): void => {
     for (const b of buttons) b.disabled = disabled;
+  };
+  const resetOptionButtons = (): void => {
+    for (const row of buttonOptions) {
+      const intent = askOptionIntent(row.option);
+      row.button.className = `rx-ask-card-btn rx-ask-card-btn--${intent}`;
+      row.button.textContent = row.option.label;
+      row.button.setAttribute('aria-pressed', 'false');
+    }
   };
   for (const option of model.options) {
     const btn = doc.createElement('button');
     btn.type = 'button';
-    btn.className = 'rx-ask-card-btn';
+    const intent = askOptionIntent(option);
+    btn.className = `rx-ask-card-btn rx-ask-card-btn--${intent}`;
     btn.setAttribute(ASK_CARD_OPTION_ATTR, option.id);
+    btn.setAttribute('data-intent', intent);
+    btn.setAttribute('aria-pressed', 'false');
     btn.textContent = option.label;
     btn.addEventListener('click', () => {
-      // First click wins on this surface: disable while the submit is in
+      if (risk !== null && intent === 'approve' && armedOptionId !== option.id) {
+        armedOptionId = option.id;
+        resetOptionButtons();
+        btn.className = 'rx-ask-card-btn rx-ask-card-btn--confirming';
+        btn.textContent = `Confirm ${option.label}`;
+        btn.setAttribute('aria-pressed', 'true');
+        confirmation.hidden = false;
+        return;
+      }
+      if (intent !== 'approve' && armedOptionId !== null) {
+        armedOptionId = null;
+        confirmation.hidden = true;
+        resetOptionButtons();
+      }
+      // First submitted answer wins on this surface: disable while it is in
       // flight so a double-tap can't fire two answers (the server block
       // also dedups first-answer-wins, D-158 I-6). On a SUCCESSFUL submit
       // the host removes the card (the answered ask drops out of the
@@ -143,8 +325,10 @@ export const renderAskCard = (
       })();
     });
     buttons.push(btn);
+    buttonOptions.push({ button: btn, option });
     actions.appendChild(btn);
   }
+  card.appendChild(confirmation);
   card.appendChild(actions);
   card.appendChild(errorEl);
   return card;
@@ -452,9 +636,15 @@ export const renderApprovalCard = (
  *  webclient's `PendingChatPlan` satisfies it without importing chat types. */
 export interface ChatPlanCardModel {
   plan_id: string;
+  /** Server-stamped lineage for a fresh approval after an uncertain action. */
+  retry_of_plan_id?: string;
   tool: string;
   tier: 1 | 2 | 3;
   args: unknown;
+  /** False when recovery can identify the pending plan but cannot recover the
+   * exact reviewed payload. The card keeps safe rejection available while
+   * withholding approval authority. Defaults to true for older consumers. */
+  payload_available?: boolean;
 }
 
 export type ChatPlanCardDecision = 'approve' | 'reject';
@@ -470,6 +660,8 @@ export interface ChatPlanCardHandlers {
 export interface ChatPlanCardOptions {
   disabled?: boolean;
   errorMessage?: string | null;
+  /** Durable address for reviewing the plan in its originating Chat. */
+  chatHref?: string;
 }
 
 /** Stable hook on the chat-plan card root (value = plan_id). */
@@ -478,6 +670,15 @@ export const CHAT_PLAN_CARD_ATTR = 'data-recued-chat-plan-card';
 export const CHAT_PLAN_CARD_ACTION_ATTR = 'data-recued-chat-plan-action';
 /** Stable hook on the inline resolve-error line. */
 export const CHAT_PLAN_CARD_ERROR_ATTR = 'data-recued-chat-plan-error';
+/** Stable hook on the fresh-review explanation. */
+export const CHAT_PLAN_CARD_RETRY_NOTICE_ATTR =
+  'data-recued-chat-plan-retry-notice';
+/** Stable hook on the non-executable recovered-payload explanation. */
+export const CHAT_PLAN_CARD_UNAVAILABLE_NOTICE_ATTR =
+  'data-recued-chat-plan-unavailable-notice';
+/** Stable hook on the durable route back to the originating Chat message. */
+export const CHAT_PLAN_CARD_CHAT_LINK_ATTR =
+  'data-recued-chat-plan-chat-link';
 
 const formatPlanArgs = (args: unknown): string => {
   try {
@@ -498,24 +699,68 @@ export const renderChatPlanCard = (
   handlers: ChatPlanCardHandlers,
   options: ChatPlanCardOptions = {},
 ): HTMLElement => {
+  const payloadAvailable = model.payload_available !== false;
   const card = doc.createElement('div');
   card.className = 'rx-approval-card';
   card.setAttribute(CHAT_PLAN_CARD_ATTR, model.plan_id);
+  if (model.retry_of_plan_id !== undefined) {
+    card.setAttribute('data-retry-of-plan-id', model.retry_of_plan_id);
+  }
 
   const heading = doc.createElement('div');
   heading.className = 'rx-approval-card-title';
-  heading.textContent = `Run ${model.tool}`;
+  heading.textContent =
+    model.retry_of_plan_id === undefined
+      ? `Run ${model.tool}`
+      : `Fresh review: ${model.tool}`;
   card.appendChild(heading);
 
   const meta = doc.createElement('div');
   meta.className = 'rx-approval-card-meta';
-  meta.textContent = `chat plan · tier ${model.tier}`;
+  meta.textContent =
+    model.retry_of_plan_id === undefined
+      ? `chat plan · tier ${model.tier}`
+      : `new permission after an uncertain outcome · tier ${model.tier}`;
   card.appendChild(meta);
+
+  if (model.retry_of_plan_id !== undefined) {
+    const notice = doc.createElement('p');
+    notice.className = 'rx-approval-card-retry-notice';
+    notice.setAttribute(CHAT_PLAN_CARD_RETRY_NOTICE_ATTR, '');
+    notice.textContent =
+      'The earlier permission was already used. Review these details again; '
+      + 'approving this card grants new one-time permission but does not run it.';
+    card.appendChild(notice);
+  }
+
+  if (!payloadAvailable) {
+    const notice = doc.createElement('p');
+    notice.className =
+      'rx-approval-card-retry-notice rx-approval-card-unavailable-notice';
+    notice.setAttribute(CHAT_PLAN_CARD_UNAVAILABLE_NOTICE_ATTR, '');
+    notice.textContent =
+      'The exact reviewed details are unavailable after recovery. '
+      + 'This plan cannot be approved, but you can safely reject it.';
+    card.appendChild(notice);
+  }
 
   const input = doc.createElement('pre');
   input.className = 'rx-approval-card-input';
-  input.textContent = formatPlanArgs(model.args);
+  input.textContent = payloadAvailable
+    ? formatPlanArgs(model.args)
+    : 'Reviewed arguments unavailable.';
   card.appendChild(input);
+
+  if (options.chatHref !== undefined) {
+    const links = doc.createElement('div');
+    links.className = 'rx-approval-card-links';
+    const link = doc.createElement('a');
+    link.setAttribute('href', options.chatHref);
+    link.setAttribute(CHAT_PLAN_CARD_CHAT_LINK_ATTR, '');
+    link.textContent = 'Review in Chat';
+    links.appendChild(link);
+    card.appendChild(links);
+  }
 
   const errorEl = doc.createElement('div');
   errorEl.className = 'rx-approval-card-error';
@@ -528,8 +773,16 @@ export const renderChatPlanCard = (
 
   const buttons: HTMLButtonElement[] = [];
   let pending = false;
-  const setDisabled = (disabled: boolean): void => {
-    for (const b of buttons) b.disabled = disabled;
+  const setDisabled = (resolvePending: boolean): void => {
+    for (const b of buttons) {
+      b.disabled =
+        resolvePending
+        || options.disabled === true
+        || (
+          b.getAttribute(CHAT_PLAN_CARD_ACTION_ATTR) === 'approve'
+          && !payloadAvailable
+        );
+    }
   };
   const makeButton = (
     decision: ChatPlanCardDecision,
@@ -541,7 +794,12 @@ export const renderChatPlanCard = (
     btn.className = className;
     btn.setAttribute(CHAT_PLAN_CARD_ACTION_ATTR, decision);
     btn.textContent = label;
-    btn.disabled = options.disabled === true;
+    btn.disabled =
+      options.disabled === true
+      || (decision === 'approve' && !payloadAvailable);
+    if (decision === 'approve' && !payloadAvailable) {
+      btn.title = 'Exact reviewed details are required before approval.';
+    }
     btn.addEventListener('click', () => {
       if (pending || btn.disabled) return;
       pending = true;
@@ -552,7 +810,7 @@ export const renderChatPlanCard = (
           await handlers.onResolve(decision);
         } catch {
           pending = false;
-          setDisabled(options.disabled === true);
+          setDisabled(false);
           errorEl.textContent =
             options.errorMessage ?? 'Could not resolve plan - try again.';
           errorEl.hidden = false;
@@ -581,15 +839,15 @@ export const renderChatPlanCard = (
 export const ASK_CARD_STYLES = `
 .rx-ask-card {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin: 6px 0;
+  border-radius: 10px;
+  padding: 14px;
+  margin: 8px 0;
   background: var(--surface);
 }
 .rx-ask-card-title {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 4px;
+  font-weight: 650;
+  font-size: 15px;
+  margin-bottom: 6px;
   color: var(--fg);
 }
 .rx-ask-card-text {
@@ -599,24 +857,103 @@ export const ASK_CARD_STYLES = `
   margin-bottom: 8px;
   white-space: pre-wrap;
 }
+.rx-ask-card-consequence {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--danger);
+  font-weight: 600;
+}
+.rx-ask-card-summary,
+.rx-ask-card-details dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.rx-ask-card-summary { margin-bottom: 10px; }
+.rx-ask-card-summary-row,
+.rx-ask-card-detail-row {
+  display: grid;
+  grid-template-columns: minmax(72px, .35fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.rx-ask-card-summary dt,
+.rx-ask-card-detail-row dt {
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .035em;
+}
+.rx-ask-card-summary dd,
+.rx-ask-card-detail-row dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.rx-ask-card-details {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunk);
+}
+.rx-ask-card-details summary {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rx-ask-card-details[open] summary { margin-bottom: 10px; }
+.rx-ask-card-confirm {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--danger);
+  background: var(--danger-weak, var(--surface-sunk));
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.rx-ask-card-confirm[hidden] { display: none; }
 .rx-ask-card-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 12px;
 }
 .rx-ask-card-btn {
-  padding: 6px 12px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 12px;
-  font-weight: 500;
+  min-height: 44px;
+  padding: 9px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
   font-family: inherit;
   line-height: 1.2;
   cursor: pointer;
 }
-.rx-ask-card-btn:hover:not(:disabled) { opacity: 0.9; }
+.rx-ask-card-btn--approve {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.rx-ask-card-btn--reject {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.rx-ask-card-btn--confirming {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger, #fff);
+}
+.rx-ask-card-btn:hover:not(:disabled) { filter: brightness(.96); }
 .rx-ask-card-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .rx-ask-card-error {
   margin-top: 6px;
@@ -646,6 +983,19 @@ export const APPROVAL_CARD_STYLES = `
   line-height: 1.35;
   color: var(--muted);
   margin-bottom: 5px;
+}
+.rx-approval-card-retry-notice {
+  margin: 7px 0;
+  padding: 7px 8px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-subtle, #f7f8f8);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.rx-approval-card-unavailable-notice {
+  border-left-color: var(--danger, var(--fail));
+  color: var(--danger, var(--fail));
 }
 .rx-approval-card-input {
   margin: 8px 0;

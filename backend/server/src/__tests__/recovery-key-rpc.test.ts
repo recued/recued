@@ -12,12 +12,19 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import WebSocket from 'ws';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { generateRecoveryKey } from '@recued/crypto';
 import {
   startServer,
   type RunningServer,
   createRecoveryKeyCheckStore,
 } from '../index.js';
+import { createKeyManager } from '../key-manager.js';
+import { createInMemoryServerKeyStore } from '../keys/index.js';
+import { createServerBundleStore } from '../server-bundle-store.js';
+import { openDatabase } from '../open-database.js';
 
 const KEY_A = generateRecoveryKey().mnemonic;
 let KEY_B = generateRecoveryKey().mnemonic;
@@ -113,6 +120,76 @@ describe('pair.registerRecoveryKey rpc — wired', () => {
       const result = await callRpc(ws, 'pair.registerRecoveryKey', {});
       expect(result.ok).toBe(false);
       expect(result.error?.code).toBe('bad_request');
+    } finally {
+      ws.close();
+    }
+  });
+});
+
+describe('pair.registerRecoveryKey rpc — vault deps wired', () => {
+  let server: RunningServer;
+  let db: Database.Database;
+  let dir: string;
+  let keys: ReturnType<typeof createKeyManager>;
+  let keyStore: ReturnType<typeof createInMemoryServerKeyStore>;
+  let serverBundleStore: ReturnType<typeof createServerBundleStore>;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'recovery-rpc-vault-'));
+    const dbPath = join(dir, 'realm.db');
+    db = await openDatabase(dbPath, { databaseKey: null });
+    serverBundleStore = createServerBundleStore(dbPath);
+    keys = createKeyManager({
+      loadBundle: () => null,
+      saveBundle: () => {},
+      loadServerBundle: () => serverBundleStore.load(),
+      saveServerBundle: (b) => serverBundleStore.save(b),
+    });
+    keyStore = createInMemoryServerKeyStore();
+    server = await startServer(0, {
+      recoveryKeyCheck: createRecoveryKeyCheckStore(db),
+      recoveryVaultDeps: { keys, database: db, getServerKeyStore: () => keyStore },
+    });
+  });
+
+  afterAll(async () => {
+    await server.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The bypass this pins: enrolling over WS used to write the sentinel and
+  // nothing else, so the gate opened over a plaintext database — while the
+  // server's own `server_not_encrypted` error told clients to call exactly
+  // this method to become encrypted.
+  it('enrolling over WS turns at-rest encryption ON, not just the sentinel', async () => {
+    const ws = await connectWs(server.port, 'test-realm');
+    try {
+      expect(keys.state()).toBe('uninitialized');
+      expect(serverBundleStore.exists()).toBe(false);
+
+      const key = generateRecoveryKey().mnemonic;
+      const res = await callRpc(ws, 'pair.registerRecoveryKey', { recoveryKey: key });
+      expect(res.ok).toBe(true);
+      expect((res.result as { outcome: string }).outcome).toBe('enrolled');
+
+      expect(keys.state()).toBe('unlocked');
+      expect(serverBundleStore.exists()).toBe(true);
+      expect(keyStore.loadServerVaultKey()).not.toBeNull();
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('a mismatched key on an enrolled realm never reaches the vault step', async () => {
+    const ws = await connectWs(server.port, 'test-realm');
+    try {
+      // Enrolled by the test above; a stranger's key must not re-key anything.
+      const before = serverBundleStore.load();
+      const res = await callRpc(ws, 'pair.registerRecoveryKey', { recoveryKey: KEY_B });
+      expect(res.ok).toBe(false);
+      expect(res.error?.code).toBe('mismatch');
+      expect(serverBundleStore.load()).toEqual(before);
     } finally {
       ws.close();
     }

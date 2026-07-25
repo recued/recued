@@ -28,7 +28,7 @@
  *  Third-party recipes are unaffected — only `metadata.author` of
  *  `recued` or `recued-core` triggers the rule.
  *
- *  Spec: docs/d-125-spec.md §"Phase 6.3 — Kernel + recued-core lint
+ *  Spec: D-125 §"Phase 6.3 — Kernel + recued-core lint
  *  rule". */
 
 import { collectRefs, type RecipeDefinition, type RecipeStep } from '@recued/contracts';

@@ -17,7 +17,7 @@
  *  flags `coverage.sources_unavailable: ['salesforce.email_message_relation']`
  *  on every downstream enrichment.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
+ *  Spec: D-139 § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
  *  § A.3.5, § A.3.6, § A.3.7. */
 
 import {

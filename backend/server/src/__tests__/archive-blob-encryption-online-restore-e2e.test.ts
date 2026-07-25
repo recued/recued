@@ -12,20 +12,23 @@
  * — and proves the rebooted db + its re-encrypted cache/memory blobs are
  * intact under the restored realm's key. The restart drain + supervisor exit
  * are injected as a spy (nothing drains/exits the process), exactly as the
- * sibling online-runtime suite does. See docs/archive-blob-encryption-fix.md
+ * sibling online-runtime suite does. See internal design notes
  * (deferred #2). No mocks below the runtime — real sqlite, crypto, blob-store. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import Database from 'better-sqlite3';
-import { generateRecoveryKey, generateServerKey } from '@recued/crypto';
+import type Database from 'better-sqlite3';
+import { createBundle, createServerBundle, generateRecoveryKey, generateServerKey } from '@recued/crypto';
 
 import { createKeyManager, type KeyManager } from '../key-manager.js';
 import { createServerBundleStore } from '../server-bundle-store.js';
-import { createArchiveRuntime } from '../archive/archive-runtime.js';
-import { createBlobStore } from '../storage/blob-store.js';
+import { createBundleStore } from '../bundle-store.js';
+import { createArchiveRuntime, composeArchiveRpcDeps } from '../archive/archive-runtime.js';
+import { createEncryptedBlobStore } from '../storage/blob-store.js';
+import { openDatabase, rekeyDatabase } from '../open-database.js';
+import type { Lifecycle } from '../lifecycle/index.js';
 
 const SERVER_VERSION = '0.2.0';
 const FIXED_NOW = 1_700_000_000_000;
@@ -56,6 +59,7 @@ interface Harness {
   db: Database.Database;
   km: KeyManager;
   blobKey: Buffer;
+  databaseKey: Buffer;
   mnemonic: string;
   runtime: ReturnType<typeof createArchiveRuntime>;
   cachePlaintext: Buffer; cacheHash: string;
@@ -65,21 +69,21 @@ interface Harness {
   takeOnDrained(): (drainOk: boolean) => Promise<void>;
 }
 
-/** A running ENCRYPTED server: db enrolled with a server vault bundle (via a
- *  real KeyManager persisting into the db's server_config), encrypted
- *  cache/memory blobs + a keyless shared blob on disk, and the concrete archive
+/** A running ENCRYPTED server: db-adjacent sidecar enrolled with a server vault
+ *  bundle via a real KeyManager, encrypted
+ *  cache/memory/shared blobs on disk, and the concrete archive
  *  runtime wired with `getKeys` (live decrypt-on-export) + a spied restart. */
 const newEncryptedServer = async (): Promise<Harness> => {
   const { mnemonic } = generateRecoveryKey();
   const dir = newDir('online-enc-');
   const dbPath = join(dir, 'recued-server.db');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath, { databaseKey: null });
   db.pragma('journal_mode = WAL');
 
-  // Real KeyManager enrolled first-boot; its server bundle persists into the
-  // db's server_config (so the archived db carries it → restore re-derives the
-  // same blob key). blobKey = keyProvider('blob-store') = the at-rest key.
-  const bundleStore = createServerBundleStore(db);
+  // Real KeyManager enrolled first-boot; its server bundle persists in the
+  // D-212 sidecar (which the archive carries as its own record). blobKey =
+  // keyProvider('blob-store') = the at-rest key.
+  const bundleStore = createServerBundleStore(dbPath);
   const km = createKeyManager({
     loadBundle: () => null,
     saveBundle: () => { /* password bundle unused on a server-vault realm */ },
@@ -87,13 +91,15 @@ const newEncryptedServer = async (): Promise<Harness> => {
     saveServerBundle: (b) => bundleStore.save(b),
   });
   await km.initServerVault({ recoveryKey: mnemonic, serverKey: generateServerKey() });
+  const databaseKey = Buffer.from(km.getSubDEK('database'));
+  rekeyDatabase(db, databaseKey);
   const rawBlobKey = km.keyProvider('blob-store')();
   if (!rawBlobKey) throw new Error('blob-store key unexpectedly null after enrollment');
   const blobKey = Buffer.from(rawBlobKey); // stable copy for on-disk enc + verify
 
   // A marker table to prove the db SWAP, plus the blob-ref tables the export
   // scans (cache_entries → cache_blobs, user_memory → memory_blobs, shared_store
-  // → keyless blobs).
+  // → the encrypted shared blobs root).
   db.exec(`
     CREATE TABLE example (k TEXT PRIMARY KEY, v TEXT);
     CREATE TABLE cache_entries (key TEXT PRIMARY KEY, blob_hash TEXT);
@@ -105,9 +111,9 @@ const newEncryptedServer = async (): Promise<Harness> => {
   const cachePlaintext = randomBytes(80_000); // > 64 KB → multi-chunk stream
   const memoryPlaintext = randomBytes(70_000);
   const sharedPlaintext = randomBytes(3_000);
-  const cacheHash = await createBlobStore(join(dir, 'cache_blobs'), { getEncryptionKey: () => blobKey }).put(cachePlaintext);
-  const memoryHash = await createBlobStore(join(dir, 'memory_blobs'), { getEncryptionKey: () => blobKey }).put(memoryPlaintext);
-  const sharedHash = await createBlobStore(join(dir, 'blobs')).put(sharedPlaintext);
+  const cacheHash = await createEncryptedBlobStore(join(dir, 'cache_blobs'), () => blobKey).put(cachePlaintext);
+  const memoryHash = await createEncryptedBlobStore(join(dir, 'memory_blobs'), () => blobKey).put(memoryPlaintext);
+  const sharedHash = await createEncryptedBlobStore(join(dir, 'blobs'), () => blobKey).put(sharedPlaintext);
   db.prepare('INSERT INTO cache_entries (key, blob_hash) VALUES (?, ?)').run('c1', cacheHash);
   db.prepare('INSERT INTO user_memory (key, data) VALUES (?, ?)').run('m1', JSON.stringify({ blob_hash: memoryHash }));
   db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('s1', sharedHash);
@@ -126,7 +132,7 @@ const newEncryptedServer = async (): Promise<Harness> => {
   });
 
   return {
-    dir, dbPath, db, km, blobKey, mnemonic, runtime,
+    dir, dbPath, db, km, blobKey, databaseKey, mnemonic, runtime,
     cachePlaintext, cacheHash, memoryPlaintext, memoryHash, sharedPlaintext, sharedHash,
     restartCount: () => restarts,
     takeOnDrained: () => {
@@ -173,7 +179,11 @@ describe('online archive restore E2E — ENCRYPTED blobs through the restart-swa
     await s.takeOnDrained()(true);
 
     // The db is now the archived snapshot (1 row 'hello', no 'foo') → swap landed.
-    const restored = new Database(s.dbPath, { readonly: true });
+    const restored = await openDatabase(s.dbPath, {
+      readonly: true,
+      fileMustExist: true,
+      keyEnvironment: {},
+    });
     try {
       expect((restored.prepare('SELECT COUNT(*) AS n FROM example').get() as { n: number }).n).toBe(1);
       expect((restored.prepare("SELECT v FROM example WHERE k = 'hello'").get() as { v: string }).v).toBe('world');
@@ -182,19 +192,19 @@ describe('online archive restore E2E — ENCRYPTED blobs through the restart-swa
 
     // The re-encrypted cache + memory blobs decrypt (under the restored realm's
     // blob key) back to the originals AND are genuinely ciphertext at rest.
-    const tgtCache = createBlobStore(join(s.dir, 'cache_blobs'), { getEncryptionKey: () => s.blobKey });
+    const tgtCache = createEncryptedBlobStore(join(s.dir, 'cache_blobs'), () => s.blobKey);
     expect((await tgtCache.get(s.cacheHash))!.equals(s.cachePlaintext)).toBe(true);
     expect(readFileSync(pathFor(join(s.dir, 'cache_blobs'), s.cacheHash)).equals(s.cachePlaintext)).toBe(false);
 
-    const tgtMemory = createBlobStore(join(s.dir, 'memory_blobs'), { getEncryptionKey: () => s.blobKey });
+    const tgtMemory = createEncryptedBlobStore(join(s.dir, 'memory_blobs'), () => s.blobKey);
     expect((await tgtMemory.get(s.memoryHash))!.equals(s.memoryPlaintext)).toBe(true);
     expect(readFileSync(pathFor(join(s.dir, 'memory_blobs'), s.memoryHash)).equals(s.memoryPlaintext)).toBe(false);
     expect(await tgtCache.has(s.memoryHash)).toBe(false); // routed to memory_blobs, not cache_blobs
 
-    // The keyless shared blob round-trips as plaintext in the keyless root.
-    const tgtShared = createBlobStore(join(s.dir, 'blobs'));
+    // The shared blob round-trips encrypted in the historical `blobs` root.
+    const tgtShared = createEncryptedBlobStore(join(s.dir, 'blobs'), () => s.blobKey);
     expect((await tgtShared.get(s.sharedHash))!.equals(s.sharedPlaintext)).toBe(true);
-    expect(readFileSync(pathFor(join(s.dir, 'blobs'), s.sharedHash)).equals(s.sharedPlaintext)).toBe(true);
+    expect(readFileSync(pathFor(join(s.dir, 'blobs'), s.sharedHash)).equals(s.sharedPlaintext)).toBe(false);
 
     // Staging consumed; the prior db was backed up (rollback safety net).
     expect(stagedFiles(s.dir)).toHaveLength(0);
@@ -217,8 +227,220 @@ describe('online archive restore E2E — ENCRYPTED blobs through the restart-swa
     expect((s.db.prepare('SELECT COUNT(*) AS n FROM example').get() as { n: number }).n).toBe(2); // live db intact
     expect(readdirSync(s.dir).some((f) => f.startsWith('recued-server.db.bak-'))).toBe(false); // never swapped
     // The live encrypted cache blob is still readable (untouched by the abandon).
-    const liveCache = createBlobStore(join(s.dir, 'cache_blobs'), { getEncryptionKey: () => s.blobKey });
+    const liveCache = createEncryptedBlobStore(join(s.dir, 'cache_blobs'), () => s.blobKey);
     expect((await liveCache.get(s.cacheHash))!.equals(s.cachePlaintext)).toBe(true);
     s.db.close();
+  });
+});
+
+describe('online export refuses a key that cannot restore the backup', () => {
+  /** The rpc layer validates BIP39 well-formedness only, and this path —
+   *  unlike the CLI, which must derive the database key to open the db at
+   *  all — reuses the already-open boot handle. A different-but-valid
+   *  mnemonic therefore sealed the outer archive under key B while the
+   *  embedded database and bundle still needed key A. Every restore route
+   *  fails closed on it, so no data was lost; what was lost is the truth of
+   *  the success message, and the only signal arrived at disaster-recovery
+   *  time. */
+  it('a valid mnemonic that is not THIS realm\'s is rejected at export', async () => {
+    const s = await newEncryptedServer();
+    let stranger = generateRecoveryKey().mnemonic;
+    while (stranger === s.mnemonic) stranger = generateRecoveryKey().mnemonic;
+
+    await expect(
+      s.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: stranger }),
+    ).rejects.toThrow(/does not open this server's vault/);
+
+    // …and nothing was written: a refused export leaves no half-archive.
+    expect(readdirSync(s.dir).filter((f) => f.endsWith('.recued-archive'))).toEqual([]);
+  });
+
+  it('the realm\'s own key still exports', async () => {
+    const s = await newEncryptedServer();
+    const { path } = await s.runtime.runExport({
+      includeBlobs: false, includePassport: false, recoveryKey: s.mnemonic,
+    });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('an encrypted realm whose bundle sidecar vanished refuses to export', async () => {
+    const s = await newEncryptedServer();
+    // Keys stay in RAM, so the server keeps running — but the archive would
+    // carry an encrypted database and nothing able to open it.
+    unlinkSync(createServerBundleStore(s.dbPath).path);
+
+    await expect(
+      s.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: s.mnemonic }),
+    ).rejects.toThrow(/vault bundle sidecar is\s+missing/);
+  });
+
+  // ⛔ The mnemonic→sidecar check alone is not enough. The live db was opened at
+  // boot under bundle A; a sidecar that has DRIFTED to a different valid bundle
+  // B (same mnemonic, different Master DEK) still unwraps under the mnemonic, so
+  // the old check passes — but its derived key cannot open the database bytes
+  // the export snapshots, and restore (which derives from the embedded sidecar)
+  // gets an unrestorable archive. Export must prove the sidecar opens the LIVE
+  // DB, not just itself.
+  it('refuses to export when the sidecar has drifted from the live database', async () => {
+    const s = await newEncryptedServer();
+    // A different valid bundle under the SAME recovery phrase: `createServerBundle`
+    // mints a fresh Master DEK, so B unwraps under s.mnemonic yet keys a
+    // different database than the running one (still under A).
+    const driftedB = await createServerBundle({
+      recoveryKey: s.mnemonic,
+      serverKey: generateServerKey(),
+    });
+    driftedB.masterDEK.fill(0);
+    createServerBundleStore(s.dbPath).save(driftedB.bundle);
+
+    await expect(
+      s.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: s.mnemonic }),
+    ).rejects.toThrow(/no longer opens the running database/);
+
+    // Refused before writing: no half-archive left behind.
+    expect(readdirSync(s.dir).filter((f) => f.endsWith('.recued-archive'))).toEqual([]);
+  });
+
+  /** The refusal above must read the DATABASE, not the vault. A realm carrying
+   *  only the legacy D-081 password bundle — a row inside SQLite, a different
+   *  artifact from the D-212 sidecar — puts the KeyManager in `locked`, and
+   *  keying the refusal off that state refused every export on a realm whose
+   *  database is plain and whose backup would have restored perfectly, telling
+   *  the operator to go find a sidecar that had never existed. The offline CLI
+   *  exports the same realm without complaint; the two doors have to agree. */
+  it('a plaintext realm with only a legacy password bundle still exports', async () => {
+    const { mnemonic } = generateRecoveryKey();
+    const dir = newDir('online-legacy-');
+    const dbPath = join(dir, 'recued-server.db');
+    const db = await openDatabase(dbPath, { databaseKey: null });
+    db.exec('CREATE TABLE example (k TEXT PRIMARY KEY, v TEXT)');
+    db.prepare('INSERT INTO example VALUES (?, ?)').run('hello', 'world');
+
+    // The legacy bundle lives in `server_config`; no D-212 sidecar is written,
+    // so the database on disk stays plain. Cheap Argon2 — this is about which
+    // signal the probe reads, not about the KDF.
+    const { bundle } = await createBundle({ password: 'pw', argon2: { t: 1, m: 8, p: 1 } });
+    createBundleStore(db).save(bundle);
+    const km = createKeyManager({
+      loadBundle: () => createBundleStore(db).load(),
+      saveBundle: (b) => createBundleStore(db).save(b),
+    });
+    expect(km.state()).toBe('locked'); // the signal the old probe trusted
+    expect(createServerBundleStore(dbPath).exists()).toBe(false);
+
+    const runtime = createArchiveRuntime({
+      db, dbPath, dataPath: dir, configPath: null,
+      serverVersion: SERVER_VERSION, now: () => FIXED_NOW,
+      getKeys: () => km,
+      requestRestart: () => { /* no restart in an export test */ },
+    });
+
+    const res = await runtime.runExport({
+      includeBlobs: false, includePassport: false, recoveryKey: mnemonic,
+    });
+    expect(existsSync(res.path)).toBe(true);
+    expect(res.bytes_written).toBeGreaterThan(0);
+    db.close();
+  });
+});
+
+describe('cross-realm restore does not corrupt the live realm on abort', () => {
+  /** A CAS path is the PLAINTEXT hash, so identical content in two realms
+   *  collides. Slice 4 made every production root keyed, which turned that
+   *  collision destructive: the overlay rewrites the live object under the
+   *  ARCHIVE's key, and if the drain then aborts, the OLD database survives
+   *  still referencing an object only the foreign key opens.
+   *
+   *  The existing aborted-drain case cannot see this — it exports and imports
+   *  with the SAME mnemonic, so the overwrite is same-key and harmless. Only a
+   *  cross-realm pair exposes it. */
+  it('an aborted drain leaves a collided blob readable under the LIVE realm key', async () => {
+    const source = await newEncryptedServer();
+    const target = await newEncryptedServer();
+
+    // The same plaintext in both realms — the collision. Its CAS path is
+    // identical; its ciphertext is not, because the realm keys differ.
+    const shared = Buffer.from('the same bytes live in both realms');
+    const hash = await createEncryptedBlobStore(join(source.dir, 'blobs'), () => source.blobKey).put(shared);
+    const targetHash = await createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey).put(shared);
+    expect(targetHash).toBe(hash);
+    source.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+    target.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+
+    const { path } = await source.runtime.runExport({
+      includeBlobs: true, includePassport: false, recoveryKey: source.mnemonic,
+    });
+
+    // Restore the SOURCE realm's archive onto the TARGET server, then abort
+    // the drain — the supported cross-realm flow, failing partway.
+    await target.runtime.runImport({ path, force: false, recoveryKey: source.mnemonic });
+    expect(target.restartCount()).toBe(1);
+    await target.takeOnDrained()(false);
+
+    // The target's database was never swapped, so it still references `hash`.
+    // That object must still open under the TARGET's key, not the source's.
+    const live = createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey);
+    expect((await live.get(hash))!.equals(shared)).toBe(true);
+
+    // And no parked copy is left lying around once the discard has run.
+    const objectsDir = join(target.dir, 'blobs', 'objects', hash.slice(0, 2));
+    expect(readdirSync(objectsDir).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
+  });
+
+  /** The same corruption, reached by the other door. `composeArchiveRpcDeps`
+   *  wires the drain, and the abandon path hangs off the drain RESOLVING with
+   *  a bad result — so a drain that REJECTS skipped it entirely and exited
+   *  straight to the supervisor, which then rebooted on the original database
+   *  over the archive realm's ciphertext. Not hypothetical: `requestDrain`
+   *  writes its clean-shutdown marker around the drain, and doing that after
+   *  `close_db` threw on the closed connection and aborted a restore commit. */
+  it('a REJECTED drain still rolls the displaced blob back', async () => {
+    const source = await newEncryptedServer();
+    const target = await newEncryptedServer();
+
+    const shared = Buffer.from('the same bytes live in both realms');
+    const hash = await createEncryptedBlobStore(join(source.dir, 'blobs'), () => source.blobKey).put(shared);
+    await createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey).put(shared);
+    source.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+    target.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+
+    const { path } = await source.runtime.runExport({
+      includeBlobs: true, includePassport: false, recoveryKey: source.mnemonic,
+    });
+
+    // Compose the target's deps for real — the defect lives in the promise
+    // chain that `composeArchiveRpcDeps` builds, not in the runtime it wraps.
+    let exitCode: number | undefined;
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    const drainRejection = new Error('drain rejected: attempted a write on a closed database');
+    const deps = composeArchiveRpcDeps({
+      db: target.db,
+      dbPath: target.dbPath,
+      configPath: null,
+      serverVersion: SERVER_VERSION,
+      now: () => FIXED_NOW,
+      getKeys: () => target.km,
+      lifecycle: {
+        requestDrain: () => Promise.reject(drainRejection),
+        supervisor: { handoff: () => 0 },
+      } as unknown as Lifecycle,
+      exit: (code) => { exitCode = code; markExited(); },
+    });
+    if (!deps) throw new Error('archive deps did not compose');
+
+    await deps.runtime.runImport({ path, force: false, recoveryKey: source.mnemonic });
+    await exited;
+
+    // The process still goes down — the point is what it leaves behind. The
+    // target's database was never swapped, so it still references `hash`; that
+    // object must open under the TARGET's key, not the source's.
+    expect(exitCode).toBe(1);
+    const live = createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey);
+    expect((await live.get(hash))!.equals(shared)).toBe(true);
+
+    const objectsDir = join(target.dir, 'blobs', 'objects', hash.slice(0, 2));
+    expect(readdirSync(objectsDir).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
+    expect(stagedFiles(target.dir)).toHaveLength(0);
   });
 });

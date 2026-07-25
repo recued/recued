@@ -341,19 +341,19 @@ describe('D-149 follow-on — applyFieldDelegateEvent', () => {
     expect(config.max_lead_time_days).toBe(45);
   });
 
-  it('a toggle field edit writes the boolean', () => {
+  it('the approval-notification sender writes through the nested field path', () => {
     const config = seedWorkingConfig('scheduling_link', null);
     applyFieldDelegateEvent(
       'scheduling_link',
       config,
       fieldEvent({
-        control: 'toggle',
-        fieldKey: 'on_booking.create_calendar_event',
-        checked: false,
+        control: 'text',
+        fieldKey: 'on_booking.notify_visitor_sender',
+        value: 'mail.owner',
       }),
     );
-    expect((config.on_booking as Record<string, unknown>).create_calendar_event).toBe(
-      false,
+    expect((config.on_booking as Record<string, unknown>).notify_visitor_sender).toBe(
+      'mail.owner',
     );
   });
 

@@ -20,7 +20,7 @@
  *  byte-unchanged (N.7); batch mode is purely opt-in, keyed on
  *  `llm.id_field`.
  *
- *  Spec: docs/d-162-spec.md. */
+ *  Spec: D-162. */
 
 import { stripCorePrefix } from './core-pack.js';
 

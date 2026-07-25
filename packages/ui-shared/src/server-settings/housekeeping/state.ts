@@ -8,9 +8,9 @@
  *  D-132 P5 widens the state with the per-topic detail-drawer slots
  *  (trust rows, recent runs, error history, sparkline series) so the
  *  enrichment producer table can expand into a drawer per spec
- *  `docs/d-132-spec.md` §A.7.
+ *  D-132 §A.7.
  *
- *  Spec: `docs/d-123-spec.md` §5.2 + `docs/d-132-spec.md` §A.7. */
+ *  Spec: D-123 §5.2 + D-132 §A.7. */
 
 import type {
   ConfidenceDriftSignal,

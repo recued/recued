@@ -12,7 +12,7 @@
  *  (absence-based tombstoning is fail-closed, and it must NEVER withdraw an
  *  identifier).
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 6. */
+ *  Spec: D-192 step 6. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

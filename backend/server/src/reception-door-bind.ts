@@ -33,7 +33,7 @@
  *  `PUBLIC_CONTRACT_ID`, which grants nothing, so the door DENIES until the owner
  *  re-binds. There is no window in which a half-bound door is open.
  *
- *  Spec: `docs/d-207-spec.md` §5.1a / §5.1b / §5.2. */
+ *  Spec: D-207 §5.1a / §5.1b / §5.2. */
 
 import { getKernelOp, recipeOutputSections, type RecipeDefinition } from '@recued/contracts';
 

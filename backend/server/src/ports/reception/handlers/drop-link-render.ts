@@ -10,7 +10,7 @@
  *  limited" from "config missing" from "vault locked" from the rendered
  *  HTML alone.
  *
- *  Spec: docs/d-149-spec.md § A.5.4. */
+ *  Spec: D-149 § A.5.4. */
 
 import {
   DROP_LINK_VISITOR_DESCRIPTION_MAX,

@@ -34,7 +34,7 @@
  *  Pure(ish) module — no SQL; the filesystem + BlobStore are the only
  *  external surfaces. Tests drive against tmp directories.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.4 + § Must Hold I-7. */
+ *  Spec: D-149 § A.5.4 + § Must Hold I-7. */
 
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, unlink } from 'node:fs/promises';
@@ -209,7 +209,11 @@ export const writeDropBlobStream = async (
   options: BlobWriteOptions,
 ): Promise<BlobWriteResult> => {
   const tmpDir = join(options.drop_blobs_root, DROP_BLOBS_TMP_SUBDIR);
-  await mkdir(tmpDir, { recursive: true });
+  // The scratch carries the visitor's file in PLAINTEXT until the CAS write
+  // encrypts it, on the same volume as the encrypted database. Node's defaults
+  // (0777 / 0666 & umask) would leave the tree traversable and the streaming
+  // file readable by every local account, so both are created owner-only.
+  await mkdir(tmpDir, { recursive: true, mode: 0o700 });
 
   const tmpName = randomUUID();
   const tmpPath = join(tmpDir, tmpName);
@@ -219,7 +223,7 @@ export const writeDropBlobStream = async (
   let head: Buffer = Buffer.alloc(0);
   const HEAD_CAPTURE_BYTES = 16;
 
-  const out = createWriteStream(tmpPath);
+  const out = createWriteStream(tmpPath, { mode: 0o600 });
   let writeError: Error | null = null;
   let aborted = false;
   const cleanupTmp = async (): Promise<void> => {

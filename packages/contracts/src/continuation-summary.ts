@@ -58,7 +58,7 @@
  *  summary *text* is an LLM call (`summarize_for_handoff()` — spec line
  *  589), not deterministic Engine logic, and no cognition component
  *  runs in the default Recued runtime per the 2026-05-19 cognition
- *  downscope (recued-bench Path B Stage 4 verdict; cognition is
+ *  downscope (internal benchmarks Path B Stage 4 verdict; cognition is
  *  pluggable, DEFAULT DISABLED). P9 ships the *summarizer API* —
  *  `HandoffSummarizationInput`, `HandoffSummarizationResult`, the
  *  `HandoffSummarizer` slot type — but no summarizer *implementation*.
@@ -99,7 +99,7 @@
  *  No tests in this file per the test-after-review workflow; tests land
  *  in a separate post-review step.
  *
- *  Spec: docs/d-153-spec.md § Memory continuity — no intent stored, but
+ *  Spec: D-153 § Memory continuity — no intent stored, but
  *  summaries are (lines 587-597); § Linked sessions (lines 518-523);
  *  phase plan line 655. */
 

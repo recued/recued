@@ -3,25 +3,25 @@
     "source": {
       "kind": "openapi",
       "url": "https://openapi.vercel.sh/",
-      "sha256": "02fa73d555db67b80af9b36e878c776c0cf0ef032a13cdb46903a757237ea090",
-      "bytes": 9267078,
+      "sha256": "e9ff511abde02251ecd81b191f10d5ac1b04274cecd62403a1f20942bf2aaa44",
+      "bytes": 9592381,
       "openapi": "3.0.3",
       "info_version": "0.0.1",
       "server": "https://api.vercel.com",
       "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
     },
-    "official_path_count": 253,
-    "official_operation_count": 346,
+    "official_path_count": 262,
+    "official_operation_count": 357,
     "admitted_operation_count": 336,
-    "excluded_operation_count": 10,
+    "excluded_operation_count": 21,
     "unique_admitted_operation_id_count": 336,
     "unique_admitted_method_path_count": 336,
     "official_method_counts": {
-      "GET": 144,
-      "POST": 99,
-      "DELETE": 47,
+      "GET": 149,
+      "POST": 103,
+      "DELETE": 48,
       "PATCH": 39,
-      "PUT": 15,
+      "PUT": 16,
       "HEAD": 2
     },
     "admitted_method_counts": {
@@ -98,8 +98,8 @@
         "bearerToken",
         "oauth2"
       ],
-      "authenticated_operations": 337,
-      "no_security_declared_operations": 9
+      "authenticated_operations": 340,
+      "no_security_declared_operations": 17
     },
     "source_decision": {
       "admitted": false,
@@ -132,6 +132,109 @@
         "reason": "The composition REST binding admits GET, POST, PUT, PATCH, and DELETE but not HEAD. GET /v8/artifacts/{hash} remains available as the documented companion."
       },
       {
+        "operation_id": "createObservabilityQuery",
+        "method": "POST",
+        "path": "/v2/observability/query",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream observability query POST. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "createSecurityFirewallConfigByConfigVersionActivate",
+        "method": "POST",
+        "path": "/v1/security/firewall/config/{configVersion}/activate",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream POST that activates a firewall config version on production traffic (semantic-destructive candidate); its api-security tag is unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "deleteSecurityFirewallConfigByConfigVersion",
+        "method": "DELETE",
+        "path": "/v1/security/firewall/config/{configVersion}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream firewall-config version DELETE; its api-security tag is unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "generateFirewallRule",
+        "method": "POST",
+        "path": "/v1/security/firewall/config/generate-rule",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream firewall rule-generation POST; its firewall tag is unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getCerts",
+        "method": "GET",
+        "path": "/v8/certs",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream certificates read. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getDomainsRecordsByRecordId",
+        "method": "GET",
+        "path": "/domains/records/{recordId}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream unversioned DNS read. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getObservabilitySchema",
+        "method": "GET",
+        "path": "/v2/observability/schema",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream observability schema read. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getObservabilitySchemaByMetricId",
+        "method": "GET",
+        "path": "/v2/observability/schema/{metricId}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream observability per-metric schema read. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getProjectToken",
+        "method": "POST",
+        "path": "/v1/projects/{idOrName}/token",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream POST that mints a project credential. Deferred pending policy curation (credential-minting classification); D-209 blocker resolution 2026-07-20."
+      },
+      {
         "operation_id": "getRuntimeLogs",
         "method": "GET",
         "path": "/v1/projects/{projectId}/deployments/{deploymentId}/runtime-logs",
@@ -141,6 +244,17 @@
         ],
         "category": "unbounded_stream_response",
         "reason": "The only success media is application/stream+json and the endpoint returns a real-time stream. The current adapter buffers response text after clearing its header timeout, so this route could wait or grow memory without bound."
+      },
+      {
+        "operation_id": "getSecurityFirewallConfig",
+        "method": "GET",
+        "path": "/v1/security/firewall/config",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream read returning the full firewall configuration (sensitive-read candidate); its api-security tag is also unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
       },
       {
         "operation_id": "getSessionCommandLogs",
@@ -198,6 +312,17 @@
         ],
         "category": "binary_post_response",
         "reason": "The route returns application/octet-stream from POST. Response file capture is deliberately limited to read-tier GET operations, so raw sandbox bytes cannot safely enter recipe values."
+      },
+      {
+        "operation_id": "replaceDomainsByDomainRecords",
+        "method": "PUT",
+        "path": "/domains/{domain}/records",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "deferred_admission",
+        "reason": "New upstream route (PUT /domains/{domain}/records replaces ALL DNS records for a domain — destructive-shaped under a generic verb). Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
       },
       {
         "operation_id": "uploadArtifact",
@@ -509,6 +634,16 @@
     "/v1/domains/records/{recordId}": {
       "patch": {
         "operationId": "updateRecord"
+      }
+    },
+    "/domains/{domain}/records": {
+      "put": {
+        "operationId": "replaceDomainsByDomainRecords"
+      }
+    },
+    "/domains/records/{recordId}": {
+      "get": {
+        "operationId": "getDomainsRecordsByRecordId"
       }
     },
     "/v2/domains/{domain}/records/{recordId}": {
@@ -1107,6 +1242,21 @@
         "operationId": "updateObservabilityConfigurationProject"
       }
     },
+    "/v2/observability/query": {
+      "post": {
+        "operationId": "createObservabilityQuery"
+      }
+    },
+    "/v2/observability/schema": {
+      "get": {
+        "operationId": "getObservabilitySchema"
+      }
+    },
+    "/v2/observability/schema/{metricId}": {
+      "get": {
+        "operationId": "getObservabilitySchemaByMetricId"
+      }
+    },
     "/v1/projects/{idOrName}/members": {
       "get": {
         "operationId": "getProjectMembers"
@@ -1165,6 +1315,11 @@
     "/v11/projects": {
       "post": {
         "operationId": "createProject"
+      }
+    },
+    "/v1/projects/{idOrName}/token": {
+      "post": {
+        "operationId": "getProjectToken"
       }
     },
     "/v1/projects/traces/session": {
@@ -1474,6 +1629,9 @@
       }
     },
     "/v1/security/firewall/config": {
+      "get": {
+        "operationId": "getSecurityFirewallConfig"
+      },
       "put": {
         "operationId": "putFirewallConfig"
       },
@@ -1484,6 +1642,14 @@
     "/v1/security/firewall/config/{configVersion}": {
       "get": {
         "operationId": "getFirewallConfig"
+      },
+      "delete": {
+        "operationId": "deleteSecurityFirewallConfigByConfigVersion"
+      }
+    },
+    "/v1/security/firewall/config/{configVersion}/activate": {
+      "post": {
+        "operationId": "createSecurityFirewallConfigByConfigVersionActivate"
       }
     },
     "/v1/security/firewall/attack-status": {
@@ -1505,6 +1671,11 @@
     "/v1/security/firewall/events": {
       "get": {
         "operationId": "getSecurityFirewallEvents"
+      }
+    },
+    "/v1/security/firewall/config/generate-rule": {
+      "post": {
+        "operationId": "generateFirewallRule"
       }
     },
     "/speed-insights/toggle": {
@@ -1672,10 +1843,12 @@
         "operationId": "getRepositoryTag"
       }
     },
-    "/v1/vcr/repository/{idOrName}/images/{imageId}": {
+    "/v1/vcr/repository/{idOrName}/images/{imageIdOrDigest}": {
       "get": {
         "operationId": "getRepositoryImage"
-      },
+      }
+    },
+    "/v1/vcr/repository/{idOrName}/images/{imageId}": {
       "delete": {
         "operationId": "deleteRepositoryImage"
       }
@@ -1758,6 +1931,9 @@
       }
     },
     "/v8/certs": {
+      "get": {
+        "operationId": "getCerts"
+      },
       "post": {
         "operationId": "issueCert"
       },
@@ -2949,7 +3125,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.get_auth_token": {
@@ -2995,7 +3171,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.get_bypass_ip": {
@@ -3121,7 +3297,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.get_firewall_config": {
@@ -3239,7 +3415,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.get_observability_configuration_projects": {
@@ -3375,7 +3551,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.get_team_access_request": {
@@ -4221,7 +4397,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.list_event_types": {
@@ -4426,7 +4602,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-account-security.patch_team": {
@@ -7793,7 +7969,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_custom_environment": {
@@ -8165,7 +8341,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_edge_config_backups": {
@@ -8380,7 +8556,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_edge_config_items": {
@@ -8444,7 +8620,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_edge_config_schema": {
@@ -8602,7 +8778,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_edge_config_tokens": {
@@ -8685,7 +8861,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.get_edge_configs": {
@@ -9289,8 +9465,8 @@
       "op": "get_repository_image",
       "operation_id": "getRepositoryImage",
       "method": "GET",
-      "path": "/v1/vcr/repository/{idOrName}/images/{imageId}",
-      "wire_path": "/v1/vcr/repository/{{id_or_name}}/images/{{image_id}}",
+      "path": "/v1/vcr/repository/{idOrName}/images/{imageIdOrDigest}",
+      "wire_path": "/v1/vcr/repository/{{id_or_name}}/images/{{image_id_or_digest}}",
       "tags": [
         "vcr"
       ],
@@ -9318,12 +9494,12 @@
           "fixed": false
         },
         {
-          "name": "imageId",
-          "wire_name": "imageId",
+          "name": "imageIdOrDigest",
+          "wire_name": "imageIdOrDigest",
           "in": "path",
           "official_type": "string",
           "admitted_type": "string",
-          "admitted_name": "image_id",
+          "admitted_name": "image_id_or_digest",
           "required": true,
           "exposed": true,
           "fixed": false
@@ -9651,7 +9827,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.invalidate_by_src_images": {
@@ -10833,7 +11009,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-data-configuration.list_team_flag_settings": {
@@ -15989,7 +16165,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-delivery-runtime.get_named_sandbox": {
@@ -16424,7 +16600,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-delivery-runtime.get_project_members": {
@@ -16635,7 +16811,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-delivery-runtime.get_rolling_release": {
@@ -22306,6 +22482,9 @@
           "externalSubject": {
             "type": "string"
           },
+          "claims": {
+            "type": "object"
+          },
           "metadata": {
             "type": "object"
           }
@@ -22496,7 +22675,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-domains-networking.get_domain_availability": {
@@ -22718,7 +22897,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-domains-networking.get_domain_price": {
@@ -27209,7 +27388,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_all_log_drains": {
@@ -27299,7 +27478,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_billing_plans": {
@@ -27497,7 +27676,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_configuration": {
@@ -27637,7 +27816,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_configuration_products": {
@@ -27711,7 +27890,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_configurations": {
@@ -27925,7 +28104,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_drains": {
@@ -28004,7 +28183,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_edge_config": {
@@ -28070,7 +28249,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_integration_log_drains": {
@@ -28123,7 +28302,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_integration_resource": {
@@ -28204,7 +28383,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_integration_resources": {
@@ -28250,7 +28429,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_invoice": {
@@ -28355,7 +28534,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_member": {
@@ -28421,7 +28600,7 @@
       "response_capture": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel-integrations-observability.get_microfrontends_config": {
@@ -30892,7 +31071,7 @@
         "follow": "0"
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "vercel.deployment.promote": {

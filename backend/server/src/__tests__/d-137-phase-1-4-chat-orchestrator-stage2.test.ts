@@ -42,6 +42,10 @@ import {
   type ExecuteChatAiCall,
 } from '../chat-orchestrator.js';
 import {
+  CHAT_RECORD_PROVENANCE_LIMIT,
+  recordProvenanceFromSearchResult,
+} from '../chat-turn-executor.js';
+import {
   createChatStore,
   ensureChatSchema,
   type ChatStore,
@@ -77,6 +81,54 @@ const mkRegistry = (
   dispatch: dispatchImpl
     ?? (async () => ({ ok: false, reason: 'not_implemented' })),
   subscribeRefresh: () => () => undefined,
+});
+
+describe('record-search provenance projection', () => {
+  it('persists only bounded, deduplicated local record locators', () => {
+    const matches = Array.from(
+      { length: CHAT_RECORD_PROVENANCE_LIMIT + 3 },
+      (_, index) => ({
+        collection_slug: 'gmail-work',
+        record_id: index === 0 ? ' mail:0 ' : `mail:${index}`,
+        hot_fields: {
+          subject: `Private subject ${index}`,
+          snippet: `Private snippet ${index}`,
+        },
+      }),
+    );
+    matches.splice(1, 0, matches[0]!);
+
+    const references = recordProvenanceFromSearchResult(
+      'mail.search',
+      { ok: true, result: { matches } },
+    );
+
+    expect(references).toHaveLength(CHAT_RECORD_PROVENANCE_LIMIT);
+    expect(new Set(references.map((reference) => reference.record_id)).size)
+      .toBe(CHAT_RECORD_PROVENANCE_LIMIT);
+    expect(references[0]).toEqual({
+      source: 'local',
+      collection_platform: 'mail',
+      collection_slug: 'gmail-work',
+      record_id: ' mail:0 ',
+    });
+    expect(JSON.stringify(references)).not.toContain('Private');
+  });
+
+  it('fails closed for unsuccessful, unrelated, or malformed search results', () => {
+    expect(recordProvenanceFromSearchResult(
+      'mail.search',
+      { ok: false, reason: 'not_implemented' },
+    )).toEqual([]);
+    expect(recordProvenanceFromSearchResult(
+      'work.search',
+      { ok: true, result: { matches: [] } },
+    )).toEqual([]);
+    expect(recordProvenanceFromSearchResult(
+      'calendar.search',
+      { ok: true, result: { matches: [{ collection_slug: '', record_id: 'x' }] } },
+    )).toEqual([]);
+  });
 });
 
 /** D-137 Trio #B / D-164 P6.3 — `mkExecuteAiCall` models the
@@ -186,7 +238,23 @@ describe('D-137 P1.4 — main-turn executor wired', () => {
       expect(ctx.session_id).toBe('sess-2');
       expect(ctx.mcp_token_id).toBeUndefined();
       expect(name).toBe('mail.search');
-      return { ok: true, result: { hits: ['m1', 'm2'] } };
+      return {
+        ok: true,
+        result: {
+          matches: [
+            {
+              collection_slug: 'gmail-work',
+              record_id: 'mail:one',
+              hot_fields: { subject: 'Private subject stays out' },
+            },
+            {
+              collection_slug: 'gmail-work',
+              record_id: 'mail:two',
+              hot_fields: { subject: 'Another private subject' },
+            },
+          ],
+        },
+      };
     };
     const aiOutput: AIOutput = {
       response: 'Searched mail for you.',
@@ -226,6 +294,23 @@ describe('D-137 P1.4 — main-turn executor wired', () => {
     expect(assistant?.tool_calls).toBeDefined();
     expect(assistant?.tool_calls?.[0]?.tool_name).toBe('mail.search');
     expect(assistant?.tool_calls?.[0]?.status).toBe('ok');
+    expect(assistant?.provenance).toEqual([
+      {
+        source: 'local',
+        collection_platform: 'mail',
+        collection_slug: 'gmail-work',
+        record_id: 'mail:one',
+      },
+      {
+        source: 'local',
+        collection_platform: 'mail',
+        collection_slug: 'gmail-work',
+        record_id: 'mail:two',
+      },
+    ]);
+    expect(JSON.stringify(assistant?.provenance)).not.toContain(
+      'Private subject',
+    );
   });
 
   it('records tool_call error status when dispatch returns ok: false', async () => {

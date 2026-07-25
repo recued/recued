@@ -17,7 +17,7 @@
  *
  *  Pure render module. The host wires data-action clicks to the
  *  rpcs + dialog state; this module just shapes the surface. Spec:
- *  `docs/d-138-spec.md` § A.9 + § P4. */
+ *  D-138 § A.9 + § P4. */
 
 import { e } from '../template.js';
 import { button } from '../primitives/button.js';

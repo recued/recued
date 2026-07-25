@@ -40,7 +40,7 @@
  *    operators worried about per-process growth can recreate the
  *    tracker on a periodic boundary today.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/audit-grow / O-6 (user-promoted only, default N=3). */
 
 import type { SlotName } from '../../types.js';

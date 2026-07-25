@@ -106,6 +106,9 @@ describe('D-148 P7 — master_dek rotation', () => {
         },
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         // Codex P1 #3 fold — the reencryptor invokes the install
         // callback inside its transactional boundary so re-encryption
         // + active-key flip happen atomically.
@@ -142,6 +145,9 @@ describe('D-148 P7 — master_dek rotation', () => {
         install: async () => {},
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           await start;
           await installNewMaster();
@@ -496,6 +502,9 @@ describe('D-148 P7 — compromise cascade', () => {
         },
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           await installNewMaster();
           return { reencrypted_blob_count: 42 };
@@ -583,6 +592,9 @@ describe('D-148 P7 — compromise cascade', () => {
         },
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           await installNewMaster();
           return { reencrypted_blob_count: 7 };

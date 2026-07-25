@@ -7,7 +7,7 @@
  *  row has been written yet — `bin.ts` doesn't need to seed; first
  *  read does it implicitly.
  *
- *  Spec: `docs/d-123-spec.md` §1.2 + §1.4. */
+ *  Spec: D-123 §1.2 + §1.4. */
 
 import type Database from 'better-sqlite3';
 

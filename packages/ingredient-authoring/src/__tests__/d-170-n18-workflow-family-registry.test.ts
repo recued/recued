@@ -1,3 +1,13 @@
+/** D-210 audit finding 24 — the fixture named a DROPPED table.
+ *
+ *  `reception_booking_request` was merged away in A.8 slice 4c and
+ *  `booking_request.materialize` exists nowhere in the repo. This is the CANONICAL
+ *  TEMPLATE fixture for the D-170 N.18 workflow family, so a copy-forward would have
+ *  reintroduced a dead name into new packs — and the reception core-pack ratchet added
+ *  the same session only reads `community/packs/recued-core/*`, so it could never see
+ *  this file. Its own comment states the hazard: a trigger naming a table that no
+ *  longer exists fails OPEN, and the dead name rides along as the fired run's
+ *  `event_kind` provenance. ⇒ [[a_closed_vocabulary_lives_in_data_too]] */
 import { describe, expect, it } from 'vitest';
 import type {
   ArgEditField,
@@ -39,11 +49,11 @@ const editableArgs = [
 const recipeTemplateRow = {
   template: 'review-then-approve',
   trigger: {
-    entity: 'reception_booking_request',
+    entity: 'reception_form_submission',
     field: 'status',
     value: 'pending',
   },
-  operation: 'booking_request.materialize',
+  operation: 'form_submission.materialize',
   sync_target: {
     source_id: 'google-calendar-primary',
     write_back_op: 'calendar.event.create',
@@ -80,7 +90,7 @@ const twoOperationCompositionWithWorkflow = (): CompositionIngredient => ({
   ],
   operations: [
     {
-      op: 'booking_request.materialize',
+      op: 'form_submission.materialize',
       ingredient: 'reception-booking',
       risk: 'write',
       approval: 'ask',
@@ -98,11 +108,11 @@ const twoOperationCompositionWithWorkflow = (): CompositionIngredient => ({
     {
       template: 'review-then-approve',
       trigger: {
-        entity: 'reception_booking_request',
+        entity: 'reception_form_submission',
         field: 'status',
         value: 'pending',
       },
-      operation: 'booking_request.materialize',
+      operation: 'form_submission.materialize',
       sync_target: {
         source_id: '{{vault.calendar}}',
         write_back_op: 'calendar.event.create',
@@ -137,7 +147,7 @@ describe('D-170 N.18 workflow-family type registry', () => {
       ],
       operations: [
         {
-          op: 'booking_request.materialize',
+          op: 'form_submission.materialize',
           ingredient: 'reception-booking',
           risk: 'write',
           approval: 'ask',

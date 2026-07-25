@@ -25,13 +25,14 @@
  *  operation's `ArgEditSchema` allowlist, writes them to the checkpoint,
  *  and releases the held op through the EXISTING preflight resume path.
  *
- *  Spec: docs/d-173-spec.md § N.1 / N.2 / N.5 / N.6 / D10. */
+ *  Spec: D-173 § N.1 / N.2 / N.5 / N.6 / D10. */
 
 import type { ArgEditField } from './bulk-pack.js';
 import {
   isSourceTopTierKind,
   type SourceTopTierKind,
 } from './source-primitive.js';
+import type { BookingHistorySummary } from './work-entities.js';
 
 /** Reception review destinations include every Source-routed top-tier kind
  * plus the canonical `form_response` terminal, which deliberately creates no
@@ -194,6 +195,9 @@ export interface InboxItem {
      *  disclose the gap rather than imply completeness. */
     unreadable_calendars: number;
   };
+  /** Owner-only prior completed/no-show history for the opaque contact linked
+   *  to a scheduling request. Never projected onto visitor/public surfaces. */
+  booking_history?: BookingHistorySummary;
   /** D-177 N.14 — the "allow for this form" offer AS RAISED on the hold's
    *  ask (the `(reception, anonymous)` seed's bounds), read off the real
    *  ask row — a rendering hint for the "Approve & allow" affordance.

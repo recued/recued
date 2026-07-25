@@ -2,7 +2,7 @@
  *
  *  Parts A/B (`2e5a978d` + `9b7ba0b8`) made a preflight-HELD run a clean
  *  third-state to agents — a model is TOLD the action is queued for
- *  approval and to NOT resend (`docs/chat-prompt-optimization-log.md`,
+ *  approval and to NOT resend (internal design notes,
  *  2026-06-08). Part C makes a resend HARMLESS for a weaker / local model
  *  that resends anyway: an identical action already held awaiting approval
  *  in the SAME channel session COLLAPSES onto the live hold instead of
@@ -58,6 +58,7 @@ import type { ExecutionSource } from '@recued/contracts';
 import { extractVariableDefault } from '@recued/engine';
 import type { AuditEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 
+import { stampExecuteResponseAuditRun } from './types.js';
 import type { ExecuteResponse } from './types.js';
 
 /** The agent-resend surfaces the held-action dedup applies to — the chat
@@ -214,7 +215,10 @@ export const buildHeldResponseForRecipe = (
 /** The collapse response for a run deduped onto an existing live (durable)
  *  hold — mirrors the twin's `recipe_id` / `recipe_hash`. */
 export const buildHeldTwinResponse = (twin: AuditEntry): ExecuteResponse =>
-  buildHeldResponseForRecipe(twin.recipe_id, twin.recipe_hash);
+  stampExecuteResponseAuditRun(
+    buildHeldResponseForRecipe(twin.recipe_id, twin.recipe_hash),
+    twin.run_id,
+  );
 
 // ── Concurrent TOCTOU backstop ────────────────────────────────────────────
 //
@@ -229,9 +233,10 @@ export const buildHeldTwinResponse = (twin: AuditEntry): ExecuteResponse =>
 //
 // This module-private registry records, per identity key, a LEADER's
 // hold-creation IN PROGRESS as a promise of its OUTCOME. A second concurrent
-// send (a follower) finds the leader's promise and AWAITS it: `'durable'` (the
-// leader's audit anchor is written → collapse) or `'failed'` (the hold was NOT
-// created → the follower re-attempts). Awaiting the outcome — rather than
+// send (a follower) finds the leader's promise and AWAITS it: `status:
+// 'durable'` (the leader's audit anchor is written → collapse) or `status:
+// 'failed'` (the hold was NOT created → the follower re-attempts). Awaiting the
+// outcome — rather than
 // collapsing on the bare presence of a claim — is what prevents a FALSE
 // "queued": a leader can still fail to create the hold (e.g. a checkpoint-store
 // write error), and a follower must not report a hold that never materialised.
@@ -240,14 +245,17 @@ export const buildHeldTwinResponse = (twin: AuditEntry): ExecuteResponse =>
 // finishes. In-process only — a hold can't span a restart, and post-restart
 // dedup is the durable anchor's job.
 
-/** The leader's hold-creation outcome a follower awaits: `'durable'` (the
- *  audit anchor was written and `findLiveHeldTwin` will see it → collapse) or
- *  `'failed'` (the hold was not created → re-attempt). */
-export type HoldOutcome = 'durable' | 'failed';
+/** The leader's hold-creation outcome a follower awaits. A durable outcome
+ * carries the exact host-minted audit address so the collapsed response can
+ * preserve its Logs handoff without a second/racy store lookup. */
+export type HoldOutcome =
+  | { status: 'durable'; run_id: string }
+  | { status: 'failed' };
 
 /** A leader's claim handle. `settle` MUST be called EXACTLY ONCE — with
- *  `'durable'` once the hold's audit anchor is durable, or `'failed'` if the
- *  hold was not created — to release every follower awaiting this hold. */
+ *  the durable run identity once the hold's audit anchor is written, or
+ *  `{ status: 'failed' }` if the hold was not created — to release every
+ *  follower awaiting this hold. */
 export interface InflightHoldClaim {
   settle: (outcome: HoldOutcome) => void;
 }
@@ -278,7 +286,7 @@ export const computeHeldActionKey = (
 };
 
 /** If a concurrent leader is creating an identical hold, the promise of its
- *  outcome — `await` it: `'durable'` ⇒ collapse, `'failed'` ⇒ re-attempt.
+ *  outcome — `await` it: `status: 'durable'` ⇒ collapse, `'failed'` ⇒ re-attempt.
  *  `null` when no leader is in flight (proceed to claim). */
 export const awaitInflightHold = (key: string): Promise<HoldOutcome> | null =>
   inflightHolds.get(key) ?? null;

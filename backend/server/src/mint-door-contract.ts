@@ -57,7 +57,7 @@
  *  identical ⇒ **silent**; different ⇒ the owner is re-prompted, and the **diff IS the
  *  prompt** ("adds: mail-send"). {@link doorCapabilityChanged} is that comparison.
  *
- *  Spec: `docs/d-207-spec.md` §5.1b / §5.1d / §5.2; `docs/d-209-spec.md` §1.4. */
+ *  Spec: D-207 §5.1b / §5.1d / §5.2; D-209 §1.4. */
 
 import { opGrantEntry, type ContractDefinition } from '@recued/contracts';
 

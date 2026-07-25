@@ -40,7 +40,7 @@
  *  `isEnrichmentTopic(topic)` before {@link ReadGrantChecker.isTopicReadGranted}, the
  *  identical contract the retired `isTopicMcpPrivate` required.
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block §3; handover
+ *  Spec: D-187 AMENDMENT block §3; handover
  *  `handover_grant_slice3_session1_backend_3a_3b.md`. */
 
 import {
@@ -95,7 +95,7 @@ export const AUTHOR_DEFAULT_ONLY_RESOLVER: GrantEntryResolver = {
  *  Tier-1 outcome carries (`HELD_FOR_APPROVAL_MESSAGE`, `emptyMemoryResult`,
  *  `RECALL_WITHHELD_MESSAGE`): a refusal a reasoning model reads as a transient failure
  *  gets retried to timeout. Pinned by tests; see the D-205 entry in
- *  `docs/chat-prompt-optimization-log.md` before rewording. */
+ *  internal design notes before rewording. */
 export const collectionReadFencedHint = (collection: string): string =>
   `the ${collection} collection is not read-granted to this contract (data.${collection}). `
   + `This is NOT an empty result and NOT "not found" — matching records may well exist, but `
@@ -121,7 +121,7 @@ export const collectionReadFencedHint = (collection: string): string =>
  *  SUCCESS envelope (`ok: true`) for that last reason.
  *
  *  Pinned by tests; see the 2026-07-16 entry in
- *  `docs/chat-prompt-optimization-log.md` before rewording. */
+ *  internal design notes before rewording. */
 export const workEntityReadVerbOpFencedHint = (): string =>
   `reading work items is not granted to this contract (core.work-entity.read). `
   + `This is NOT an empty result and NOT "not found" — matching tasks, notes, `

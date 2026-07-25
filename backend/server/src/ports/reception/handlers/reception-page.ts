@@ -27,7 +27,7 @@
  *       Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control:
  *       no-store`).
  *
- *  Spec: docs/d-149-spec.md § A.5.1 + § Must Hold I-1 / I-12b. */
+ *  Spec: D-149 § A.5.1 + § Must Hold I-1 / I-12b. */
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';

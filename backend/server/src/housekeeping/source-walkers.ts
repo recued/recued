@@ -14,7 +14,7 @@
  *  housekeeping producers in subsequent Ds — adding a new scope is
  *  one entry on `createSourceWalkerRegistry`.
  *
- *  Spec: `docs/d-123-spec.md` §4.2. */
+ *  Spec: D-123 §4.2. */
 
 import type { ContactRecord, EnrichmentScope, Note, Project, Task } from '@recued/contracts';
 

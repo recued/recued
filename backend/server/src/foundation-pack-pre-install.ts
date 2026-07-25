@@ -35,7 +35,7 @@
  *  would mark the pack `not_ready` — first-party foundation packs ship
  *  every recipe alongside the pack manifest by convention).
  *
- *  Spec: docs/d-145-spec.md § Phase PA10 + § A.6.3.
+ *  Spec: D-145 § Phase PA10 + § A.6.3.
  *
  *  Substrate layering:
  *  - Read manifests via `parseBulkPackManifest` (contracts validator).

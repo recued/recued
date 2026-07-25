@@ -33,7 +33,7 @@
  *  owner approves — I-4). Do not fold the two together; one wants the owner's attention here,
  *  the other wants it in the Inbox.
  *
- *  Spec: `docs/d-210-spec.md` §2.2 + Appendix A; contract: `packages/contracts/src/reception-record.ts`. */
+ *  Spec: D-210 §2.2 + Appendix A; contract: `packages/contracts/src/reception-record.ts`. */
 
 import type {
   IntakeFormSubmissionProcessingOutcome,
@@ -129,16 +129,11 @@ const OUTCOME_TERMINAL: Readonly<
 const isTerminalOutcome = (outcome: string): boolean =>
   (OUTCOME_TERMINAL as Readonly<Record<string, boolean>>)[outcome] ?? false;
 
-/** The `resolved` pointer's kind, as a human phrase. Open vocabulary by contract (a booking
- *  derives `calendar.event` / `commitment` from which column is set; an intake carries its own
- *  `resolved_target_kind` verbatim), so this maps what we know and passes through the rest. */
+/** The `resolved` pointer's kind, as a human phrase. Open vocabulary by
+ *  contract, so this maps what we know and passes through the rest. */
 const RESOLUTION_KIND_LABELS: Readonly<Record<string, string>> = {
   'calendar.event': 'Calendar event',
-  // D-210 slice 3 — an approved reservation now resolves to BOTH a calendar
-  // event and a booking. ⚠ This map is keyed by open `string` with a `?? kind`
-  // fallback, so a missing member typechecks and silently renders the raw slug
-  // ('booking') beside a properly-labelled 'Calendar event'. It fails soft,
-  // which is exactly why it needs a test rather than the compiler.
+  // An approved reservation resolves to its canonical booking.
   booking: 'Booking',
   // Still reachable: an INTAKE's generic `resolved_target_kind` may name a
   // commitment. Only SCHEDULING stopped resolving to one.

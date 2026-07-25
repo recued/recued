@@ -47,6 +47,7 @@ import {
   CLEAR_THIS_BROWSER_PANEL_STYLES,
   CLEAR_THIS_BROWSER_RELOAD_BTN_ATTR,
 } from '../settings/clear-this-browser-panel.js';
+import { AI_MODELS_CHAT_SETUP_ATTR } from '../settings/ai-models-page.js';
 import type {
   TransparencyPrefsGetCaller,
   TransparencyPrefsSetCaller,
@@ -324,6 +325,34 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
     expect(privacy).not.toBeNull();
     const h2 = privacy?.children.find((c) => c.tagName === 'H2');
     expect(h2?.textContent).toBe('Privacy');
+    route.dispose();
+  });
+
+  it('mounts the intent-specific Set up Chat view for the AI deep link', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'ai-models',
+      initialAiModelsView: 'chat-setup',
+      aiModelsDefaultModelPrefGetCaller: async () => ({
+        source_id: null,
+        updated_at: 0,
+      }),
+      aiModelsGetLLMConfigCaller: async () => ({ config: {} }),
+      aiModelsSetLLMSlotCaller: async () => ({ ok: true }),
+      aiModelsDefaultModelPrefSetCaller: async ({ source_id }) => ({
+        source_id,
+        updated_at: 1,
+      }),
+    });
+    await route.aiModelsPage()!.whenLoaded();
+
+    const section = findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'ai-models')!;
+    expect(section.children[0]?.textContent).toBe('Set up Chat');
+    expect(findByAttr(section, AI_MODELS_CHAT_SETUP_ATTR)).not.toBeNull();
     route.dispose();
   });
 

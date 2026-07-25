@@ -44,7 +44,7 @@ export const resumeCollectionSync = async (
  *  NOTE: this stops FUTURE ticks; a tick already mid-fetch at the lock edge is
  *  not cancelled, so that one in-flight item can still be dropped (a narrow
  *  residual, auto-lock only — the primary locked-boot path never starts a tick).
- *  See `handovers/handover_vault_lock_execution_gaps.md`. */
+ *  See internal design notes. */
 export const pauseCollectionSync = async (
   collections: Iterable<SyncableCollection>,
   onError: (message: string, err: unknown) => void,

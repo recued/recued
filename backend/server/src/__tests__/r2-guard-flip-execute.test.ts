@@ -1,6 +1,6 @@
 /** Build step 2 (R2) — the execute-handler guard-flip, end-to-end.
  *
- *  Spec: docs/unified-pack-exploration/recipe-identity-and-dependency-resolution.md §3.
+ *  Spec: internal design notes §3.
  *  The `r2-dispatch-resolve-then-execute-probe` test fed a PRE-resolved recipe inline;
  *  this proves the wiring: `handleExecute` given a *canonical* recipe (op-step + a
  *  `type:'connection'` variable) RESOLVES it at dispatch from the connection the run

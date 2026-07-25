@@ -6,6 +6,11 @@ import {
   listMessengerVendors,
 } from '@recued/contracts';
 import type { ConnectionAuth, ConnectionHealth, ConnectionKind } from '@recued/contracts';
+import type {
+  McpStreamHandle,
+  StdioSpawn,
+  WsConnect,
+} from '@recued/ingredients';
 
 import {
   encodeAuthForStorage,
@@ -88,6 +93,7 @@ const probe = async (
   kind: ConnectionKind,
   name: string,
   fetcher: HttpFetcher,
+  streamDeps: { wsConnect?: WsConnect; spawnStdioMcp?: StdioSpawn } = {},
 ): Promise<ConnectionHealth> => {
   const result = await handleConnectionProbe(
     {
@@ -95,6 +101,7 @@ const probe = async (
       now: () => NOW + 1_000,
       getEncryptionKey,
       fetcher,
+      ...streamDeps,
     },
     { kind, name },
   );
@@ -103,6 +110,34 @@ const probe = async (
 
 const storedHealth = (kind: ConnectionKind, name: string): ConnectionHealth =>
   JSON.parse(store.get(kind, name)!.health_json!) as ConnectionHealth;
+
+const makeMcpStream = (
+  responseFor: (request: Record<string, unknown>) => Record<string, unknown> =
+    (request) => request.method === 'initialize'
+      ? { result: { protocolVersion: '2024-11-05' } }
+      : { result: { tools: [{ name: 'search' }, { name: 'write-note' }] } },
+): { handle: McpStreamHandle; sent: Record<string, unknown>[]; close: ReturnType<typeof vi.fn> } => {
+  let onMessage: ((data: string) => void) | undefined;
+  const sent: Record<string, unknown>[] = [];
+  const close = vi.fn();
+  const handle: McpStreamHandle = {
+    send: (data) => {
+      const request = JSON.parse(data) as Record<string, unknown>;
+      sent.push(request);
+      if (typeof request.id !== 'number') return;
+      onMessage?.(JSON.stringify({
+        jsonrpc: '2.0',
+        id: request.id,
+        ...responseFor(request),
+      }));
+    },
+    onMessage: (listener) => { onMessage = listener; },
+    onClose: () => {},
+    onError: () => {},
+    close,
+  };
+  return { handle, sent, close };
+};
 
 describe('handleConnectionProbe real health probes', () => {
   it('classifies an authed api HEAD response as ok and preserves row fields', async () => {
@@ -262,6 +297,262 @@ describe('handleConnectionProbe real health probes', () => {
     expect(health.tools).toEqual(['search', 'write-note']);
     expect(storedHealth('mcp', name).tools).toEqual(['search', 'write-note']);
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains every paginated SSE tools/list page, including an empty-string cursor', async () => {
+    const name = await enroll('mcp', { subtype: 'sse' });
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
+      const body = JSON.parse(init?.body ?? '{}') as {
+        id?: number;
+        method?: string;
+        params?: { cursor?: string };
+      };
+      if (body.method === 'initialize') {
+        return jsonResponse(200, { jsonrpc: '2.0', id: body.id, result: {} });
+      }
+      if (body.params?.cursor === undefined) {
+        return jsonResponse(200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: { tools: [{ name: 'first-page' }], nextCursor: '' },
+        });
+      }
+      expect(body.params.cursor).toBe('');
+      return jsonResponse(200, {
+        jsonrpc: '2.0',
+        id: body.id,
+        result: { tools: [{ name: 'second-page' }] },
+      });
+    });
+
+    const health = await probe('mcp', name, fetcher);
+
+    expect(health).toMatchObject({
+      status: 'ok',
+      tools: ['first-page', 'second-page'],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('probes MCP websocket through the live connector and caches tool names', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+    const stream = makeMcpStream();
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+    const fetcher = vi.fn<HttpFetcher>();
+
+    const health = await probe('mcp', name, fetcher, { wsConnect });
+
+    expect(health).toMatchObject({ status: 'ok', tools: ['search', 'write-note'] });
+    expect(storedHealth('mcp', name).tools).toEqual(['search', 'write-note']);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(wsConnect).toHaveBeenCalledTimes(1);
+    const [url, opts] = wsConnect.mock.calls[0]!;
+    expect(url).toBe('wss://mcp.example.test/socket');
+    expect(opts.headers).toEqual({ Authorization: 'Bearer secret' });
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+    expect(stream.sent.map((message) => message.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+    ]);
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the row subtype when legacy config.transport disagrees with live execution', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'sse' },
+    });
+    const stream = makeMcpStream();
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+    const fetcher = vi.fn<HttpFetcher>();
+
+    const health = await probe('mcp', name, fetcher, { wsConnect });
+
+    expect(health.status).toBe('ok');
+    expect(wsConnect).toHaveBeenCalledTimes(1);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('falls back to config.transport for a legacy row with an invalid subtype', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'sse',
+      config: { endpoint: 'https://mcp.example.test/rpc', transport: 'sse' },
+    });
+    const row = store.get('mcp', name)!;
+    store.upsert({ ...row, subtype: 'legacy-invalid' });
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
+      const body = JSON.parse(init?.body ?? '{}') as { id?: number; method?: string };
+      return body.method === 'initialize'
+        ? jsonResponse(200, { jsonrpc: '2.0', id: body.id, result: {} })
+        : jsonResponse(200, {
+            jsonrpc: '2.0',
+            id: body.id,
+            result: { tools: [{ name: 'legacy-tool' }] },
+          });
+    });
+    const wsConnect = vi.fn<WsConnect>();
+
+    const health = await probe('mcp', name, fetcher, { wsConnect });
+
+    expect(health).toMatchObject({ status: 'ok', tools: ['legacy-tool'] });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(wsConnect).not.toHaveBeenCalled();
+  });
+
+  it('drains every paginated websocket tools/list page before caching', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+    const stream = makeMcpStream((request) => {
+      if (request.method === 'initialize') return { result: {} };
+      const cursor = (request.params as { cursor?: unknown } | undefined)?.cursor;
+      return cursor === undefined
+        ? { result: { tools: [{ name: 'page-one' }], nextCursor: 'next' } }
+        : { result: { tools: [{ name: 'page-two' }] } };
+    });
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
+
+    expect(health).toMatchObject({ status: 'ok', tools: ['page-one', 'page-two'] });
+    expect(stream.sent.filter((message) => message.method === 'tools/list')).toMatchObject([
+      { params: {} },
+      { params: { cursor: 'next' } },
+    ]);
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a malformed tools/list page instead of caching an incomplete allow-list', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+    const stream = makeMcpStream((request) => request.method === 'initialize'
+      ? { result: {} }
+      : { result: { nextCursor: 'more-but-tools-is-missing' } });
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
+
+    expect(health).toMatchObject({
+      status: 'unreachable',
+      last_error: 'jsonrpc_tools_list_invalid_response',
+    });
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails cyclic websocket pagination without looping or caching a partial allow-list', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+    const stream = makeMcpStream((request) => request.method === 'initialize'
+      ? { result: {} }
+      : { result: { tools: [{ name: 'partial' }], nextCursor: 'repeat' } });
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
+
+    expect(health).toMatchObject({
+      status: 'unreachable',
+      last_error: 'jsonrpc_tools_list_pagination_cycle',
+    });
+    expect(health.tools).toBeUndefined();
+    expect(stream.sent.filter((message) => message.method === 'tools/list')).toHaveLength(2);
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes MCP stdio through the hardened spawner and closes the child', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'stdio',
+      config: {
+        transport: 'stdio',
+        command: '/usr/local/bin/example-mcp',
+        args: ['--mode', 'probe'],
+        env: { MCP_PROFILE: 'test' },
+      },
+      auth: { type: 'none' },
+    });
+    const stream = makeMcpStream();
+    const spawnStdioMcp = vi.fn<StdioSpawn>(async () => stream.handle);
+    const fetcher = vi.fn<HttpFetcher>();
+
+    const health = await probe('mcp', name, fetcher, { spawnStdioMcp });
+
+    expect(health).toMatchObject({ status: 'ok', tools: ['search', 'write-note'] });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(spawnStdioMcp).toHaveBeenCalledTimes(1);
+    const [spec, opts] = spawnStdioMcp.mock.calls[0]!;
+    expect(spec).toEqual({
+      command: '/usr/local/bin/example-mcp',
+      args: ['--mode', 'probe'],
+      env: { MCP_PROFILE: 'test' },
+    });
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+    expect(stream.sent.map((message) => message.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+    ]);
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a websocket JSON-RPC initialize error to auth_failed and closes', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+    const stream = makeMcpStream(() => ({
+      error: { code: -32_001, message: 'unauthorized' },
+    }));
+    const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
+
+    expect(health).toMatchObject({
+      status: 'auth_failed',
+      last_error: 'jsonrpc_initialize_error',
+    });
+    expect(stream.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('never persists a query credential echoed by a websocket connect error', async () => {
+    const secret = 'top secret/123';
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+      auth: { type: 'query', param_name: 'access_token', value: secret },
+    });
+    const wsConnect = vi.fn<WsConnect>(async (url) => {
+      throw new Error(`connect failed for ${url}`);
+    });
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
+
+    expect(health.status).toBe('unreachable');
+    expect(health.last_error).toContain('***');
+    expect(health.last_error).not.toContain(secret);
+    expect(health.last_error).not.toContain('top+secret%2F123');
+    expect(storedHealth('mcp', name).last_error).toBe(health.last_error);
+  });
+
+  it('reports an unavailable stream capability honestly instead of not_implemented', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'websocket',
+      config: { endpoint: 'wss://mcp.example.test/socket', transport: 'websocket' },
+    });
+
+    const health = await probe('mcp', name, vi.fn<HttpFetcher>());
+
+    expect(health).toMatchObject({
+      status: 'unknown',
+      last_error: 'transport_websocket_probe_unavailable',
+    });
   });
 
   it('maps mcp JSON-RPC error envelopes to auth_failed', async () => {

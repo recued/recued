@@ -29,7 +29,7 @@
  *  Modelled on `reception-recipe-runner.ts`; the difference is per-REQUEST
  *  config (a specific booking, not a dish overlay) and a fixed reception id.
  *
- *  Spec: docs/d-210-spec.md Appendix B. */
+ *  Spec: D-210 Appendix B. */
 
 import {
   type ContractSnapshot,

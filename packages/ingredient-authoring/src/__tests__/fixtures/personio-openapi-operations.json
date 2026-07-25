@@ -4,20 +4,20 @@
     "product": "Public API v2",
     "official_index": {
       "url": "https://developer.personio.de/llms.txt",
-      "bytes": 23673,
-      "sha256": "15a8f090adc49b66e87028c009dd20d2263713add64e235cf3748856449d2136"
+      "bytes": 23820,
+      "sha256": "87b528f6220c7f260fabad791bac6df4b26a76fb8ee160bc29958e4d48669306"
     },
     "reference_documents": {
-      "count": 77,
-      "openapi_count": 71,
-      "aggregate_sha256": "7a3adbc74a6ab354bcccf27a54f1d47911ce15022112e11a5e6d4c6a0972b347",
+      "count": 78,
+      "openapi_count": 72,
+      "aggregate_sha256": "f0769111169565f2cf4aeef3e715ecc2046b7e7b35356ea9d0220a256abfadcf",
       "aggregate_algorithm": "sha256 of sorted lines: url, markdown byte count, markdown sha256",
       "server": "https://api.personio.de",
       "versions": [
         "2.0.0",
         "2.0.1"
       ],
-      "retrieved_on": "2026-07-15"
+      "retrieved_on": "2026-07-20"
     },
     "overview_pages": [
       {
@@ -47,8 +47,8 @@
       },
       {
         "url": "https://developer.personio.de/reference/webhooks.md",
-        "bytes": 11221,
-        "sha256": "5fbb025231a8b18aa0bd3f442c64fedb759159aea70034cc6580e0dc9b46b9e9"
+        "bytes": 14296,
+        "sha256": "bbfe93a58dd554fd29356acc483a985d82fe2e285f246423939da317d4486464"
       }
     ],
     "supplemental_guides": [
@@ -66,8 +66,8 @@
       },
       {
         "url": "https://developer.personio.de/reference/webhooks.md",
-        "bytes": 11221,
-        "sha256": "5fbb025231a8b18aa0bd3f442c64fedb759159aea70034cc6580e0dc9b46b9e9",
+        "bytes": 14296,
+        "sha256": "bbfe93a58dd554fd29356acc483a985d82fe2e285f246423939da317d4486464",
         "purpose": "webhook delivery, retries, event payloads, and HTTPS callback behavior"
       },
       {
@@ -89,9 +89,9 @@
     }
   },
   "inventory": {
-    "endpoint_pages": 71,
+    "endpoint_pages": 72,
     "selected_operations": 69,
-    "excluded_operations": 2,
+    "excluded_operations": 3,
     "by_pack": {
       "personio-compensation-reports-documents": 11,
       "personio-people-organization": 18,
@@ -103,7 +103,7 @@
       "DELETE": 7,
       "GET": 44,
       "PATCH": 7,
-      "POST": 13
+      "POST": 14
     },
     "by_tag": {
       "Absence Periods": 5,
@@ -135,20 +135,21 @@
       "write": 5
     },
     "by_approval": {
-      "always": 52,
+      "always": 25,
+      "ask": 27,
       "never": 17
     },
     "operations_with_scopes": 31,
     "cursor_paginations": 25,
     "raw_json_request_bodies": 11,
     "binary_response_captures": 1,
-    "beta_header_operations": 12,
+    "beta_header_operations": 9,
     "workflows": 29
   },
   "authentication": {
     "personnel": "Personio client credentials produce a stable personnel bearer for 24 hours. The pack enrolls the bearer manually because the connection auth union has no client-credentials renewal mode.",
     "recruiting": "Personio documentation describes a separately provisioned Recruiting API access token. Recruiting operations use a distinct connection and permission.",
-    "credential_lifecycle": "POST /v2/auth/token and POST /v2/auth/revoke are excluded so client IDs, client secrets, requested scopes, tokens, and revocation remain connection-owned.",
+    "credential_lifecycle": "POST /v2/auth/token, POST /v2/auth/revoke, and POST /v2/webhooks/{id}/signing-secret are excluded so client IDs, client secrets, requested scopes, tokens, revocation, and webhook signing-secret material remain connection-owned. The signing-secret route mints and returns active_secret.value in plaintext exactly once; it joined the credential-lifecycle exclusion class on 2026-07-20 pending owner review.",
     "token_substitution": "The pack does not claim that either enrolled bearer can substitute for the other credential context."
   },
   "operational_notes": {
@@ -179,7 +180,7 @@
       "kind": "project",
       "eligible": true,
       "declared": false,
-      "evidence": "GET /v2/projects and GET /v2/projects/{id} document a genuine time-tracking Project with stable id, name, status, description, and updated_at fields. Declaration is deferred because docs/d-192-work-entity-sources-fanout-authoring-brief.md requires a separate human field-path verification gate before commit, and the user requested an autonomous committed pack."
+      "evidence": "GET /v2/projects and GET /v2/projects/{id} document a genuine time-tracking Project with stable id, name, status, description, and updated_at fields. Declaration is deferred because the D-192 work-entity-sources authoring brief requires a separate human field-path verification gate before commit, and the user requested an autonomous committed pack."
     }
   ],
   "operations": [
@@ -945,7 +946,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -1130,7 +1131,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -1484,7 +1485,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -1917,7 +1918,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -2372,7 +2373,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -2761,7 +2762,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -2853,7 +2854,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -3102,7 +3103,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -3320,7 +3321,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -3626,7 +3627,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -3955,7 +3956,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -4400,7 +4401,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -4555,7 +4556,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -5277,7 +5278,7 @@
       "result_path": "_data",
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -5636,7 +5637,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -5894,7 +5895,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -6096,7 +6097,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -6364,7 +6365,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -7436,7 +7437,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -7673,7 +7674,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -7682,10 +7683,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks-id.md",
-      "source_markdown_bytes": 11352,
-      "source_markdown_sha256": "41bf10b7f8516f2cea21d2c212b792758a7e714e3bc11af63ca8e1f77c1544fa",
-      "source_openapi_bytes": 11225,
-      "source_openapi_sha256": "a3e348a47696e09e792e301160ed27d5c293973c3cce8b9bcabfc0874dcfb191",
+      "source_markdown_bytes": 12806,
+      "source_markdown_sha256": "758bc10884aea1286d8f15f3beb2eecb9a2c526706a7ae5229c16effd72e783f",
+      "source_openapi_bytes": 12679,
+      "source_openapi_sha256": "543aa2e347e6626038f310f07bfb00c2998605aa9a2d716cc654003b99ec6dcf",
       "source_operation_count": 1,
       "page": "get_v2-webhooks-id",
       "tag": "Webhooks",
@@ -7799,6 +7800,42 @@
           "custom_headers": {
             "type": "object",
             "additionalProperties": true
+          },
+          "signing": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "active_secret": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "retiring_secret": {
+                "type": "object",
+                "nullable": true,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
           }
         },
         "required": [
@@ -7820,7 +7857,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -7829,10 +7866,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks.md",
-      "source_markdown_bytes": 17663,
-      "source_markdown_sha256": "cdf9ccc96b534ca2bf373f9ef992cdf69ac844effcf1d9e9b5e5c7d2c2127c27",
-      "source_openapi_bytes": 17523,
-      "source_openapi_sha256": "855868fa17fe91a9baa9ed13748bb3a1c7132a5754e4d105fe39c6fd35eb527e",
+      "source_markdown_bytes": 19939,
+      "source_markdown_sha256": "983e579fc070978b2cea1a46a15dffc2ce68d6c04f9209e76aec452f73343d0b",
+      "source_openapi_bytes": 19799,
+      "source_openapi_sha256": "1febd10b5e22959226a77237d43a4d2007458eb274e2c05fe11f91cea8f45ae0",
       "source_operation_count": 1,
       "page": "get_v2-webhooks",
       "tag": "Webhooks",
@@ -7995,6 +8032,11 @@
                 "custom_headers": {
                   "type": "object",
                   "additionalProperties": true
+                },
+                "signing": {
+                  "type": "object",
+                  "nullable": true,
+                  "additionalProperties": true
                 }
               },
               "required": [
@@ -8044,7 +8086,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -9218,7 +9260,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -9363,7 +9405,7 @@
       "result_path": "_data",
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -9557,7 +9599,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -9566,10 +9608,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listcostcenters.md",
-      "source_markdown_bytes": 16261,
-      "source_markdown_sha256": "9e93520245924f7bc95803bab34750f11402bc3cd40e9d01fbbdcc71efe7297c",
-      "source_openapi_bytes": 15756,
-      "source_openapi_sha256": "1f649a1123af9ed6baada6bacd20fccb9d29fb3d70c7eeed23240fa8d2c696e8",
+      "source_markdown_bytes": 15746,
+      "source_markdown_sha256": "1189ada21b1d1eb934c8c9ef93efc2e3d3aee3ddcb2306ce197e286db40c4506",
+      "source_openapi_bytes": 15346,
+      "source_openapi_sha256": "900624e67da5dcc0a63d24618f622b9aad05c81e552e1cc231bb8a5b6fa8439c",
       "source_operation_count": 1,
       "page": "listcostcenters",
       "tag": "Cost Centers",
@@ -9653,17 +9695,6 @@
           "pagination_owned": false,
           "credential_or_static_owned": false,
           "emitted_key": "query.sort"
-        },
-        {
-          "name": "Beta",
-          "in": "header",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_static_owned": true,
-          "emitted_key": null
         }
       ],
       "emitted_args": [
@@ -9750,8 +9781,7 @@
       "request_json": null,
       "static_headers": {
         "Accept": "application/json",
-        "X-Personio-App-ID": "RECUED",
-        "Beta": "true"
+        "X-Personio-App-ID": "RECUED"
       },
       "result_path": "_data",
       "pagination": {
@@ -10374,10 +10404,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listorgunits.md",
-      "source_markdown_bytes": 24910,
-      "source_markdown_sha256": "152fb49344624508871974a11656cb299e870153911485af07dfb7044e0c413c",
-      "source_openapi_bytes": 24334,
-      "source_openapi_sha256": "426807a587418b78a6d52cfe5518bc26f14db749f5d3bc58b6d056d2542ad160",
+      "source_markdown_bytes": 24372,
+      "source_markdown_sha256": "b60651e5ef63dbab9b3111d7abe907bcac9aa473e25bc48cf7ef848680d8774a",
+      "source_openapi_bytes": 23901,
+      "source_openapi_sha256": "681c8f3cb2eaee8209eb929cf9732f151a50d9ad0d439199a8f83e6d954886f0",
       "source_operation_count": 1,
       "page": "listorgunits",
       "tag": "Org Units",
@@ -10460,17 +10490,6 @@
           "serialization": "scalar",
           "pagination_owned": true,
           "credential_or_static_owned": false,
-          "emitted_key": null
-        },
-        {
-          "name": "Beta",
-          "in": "header",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_static_owned": true,
           "emitted_key": null
         }
       ],
@@ -10593,8 +10612,7 @@
       "request_json": null,
       "static_headers": {
         "Accept": "application/json",
-        "X-Personio-App-ID": "RECUED",
-        "Beta": "true"
+        "X-Personio-App-ID": "RECUED"
       },
       "result_path": "_data",
       "pagination": {
@@ -10749,7 +10767,7 @@
       "result_path": "_data",
       "pagination": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -10930,7 +10948,7 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
       "idempotency": "safe",
       "error_contract": {
         "transport": "non-2xx responses fail the step",
@@ -10939,10 +10957,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listworkplaces.md",
-      "source_markdown_bytes": 16163,
-      "source_markdown_sha256": "9c3e262fdfb44576a50a6cb4caa2246aa1608fea3c066479e04aad40597251ba",
-      "source_openapi_bytes": 15662,
-      "source_openapi_sha256": "4321389144e5c8850509563b159f0a87713df06cbcdbc738b4a30bf3ce547db4",
+      "source_markdown_bytes": 15648,
+      "source_markdown_sha256": "87b8554848cd264864295d6349e2ad4321d0473353ac89070ec27dd22ec6403a",
+      "source_openapi_bytes": 15252,
+      "source_openapi_sha256": "0e351de14f87f54fdae59a00b1e74fe5ce8c0fd54d47e2a4fb7d92581ae16a98",
       "source_operation_count": 1,
       "page": "listworkplaces",
       "tag": "Workplaces",
@@ -11026,17 +11044,6 @@
           "pagination_owned": false,
           "credential_or_static_owned": false,
           "emitted_key": "query.sort"
-        },
-        {
-          "name": "Beta",
-          "in": "header",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_static_owned": true,
-          "emitted_key": null
         }
       ],
       "emitted_args": [
@@ -11123,8 +11130,7 @@
       "request_json": null,
       "static_headers": {
         "Accept": "application/json",
-        "X-Personio-App-ID": "RECUED",
-        "Beta": "true"
+        "X-Personio-App-ID": "RECUED"
       },
       "result_path": "_data",
       "pagination": {
@@ -11901,10 +11907,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-webhooks-id.md",
-      "source_markdown_bytes": 21065,
-      "source_markdown_sha256": "de854327f78cbaef9a00a3823a566eb43772f78d5d2c2bec8c3e21099f485d8b",
-      "source_openapi_bytes": 20931,
-      "source_openapi_sha256": "97ce787453c5a7f3d520d63215e3235ec66c7292dad1c65352bd66688444318a",
+      "source_markdown_bytes": 21418,
+      "source_markdown_sha256": "67819ca73826c15671f642713e6b34ee91a66302f9c81e2416feff937cb03b44",
+      "source_openapi_bytes": 21284,
+      "source_openapi_sha256": "694d595f91c914ebc09cf3716b2790d26bb023629c5a19f5d68d1ffaf3a2e3ea",
       "source_operation_count": 1,
       "page": "patch_v2-webhooks-id",
       "tag": "Webhooks",
@@ -13443,6 +13449,71 @@
       }
     },
     {
+      "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-signing-secret.md",
+      "source_markdown_bytes": 8794,
+      "source_markdown_sha256": "0f3c7868a54471a602364b7d5261455f75caa3afc6627e8b9e0df56f6351edac",
+      "source_openapi_bytes": 8429,
+      "source_openapi_sha256": "4b112ba43a7936008942a1479a6d1baef20819dc3d09855d5d067958218490e3",
+      "source_operation_count": 1,
+      "page": "post_v2-webhooks-id-signing-secret",
+      "tag": "Webhooks",
+      "method": "POST",
+      "path": "/v2/webhooks/{id}/signing-secret",
+      "operation_id": null,
+      "api_version": "2.0.0",
+      "selected": false,
+      "exclusion_reason": "Credential lifecycle is connection-owned: client IDs, client secrets, access tokens, scopes, and revocation must not become operation arguments.",
+      "security": "personnel_bearer",
+      "scopes": [
+        "personio:webhooks:write"
+      ],
+      "pack": "personio-compensation-reports-documents",
+      "op": null,
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_shape": "object",
+      "request_presence": "projected_top_level",
+      "request_nullable_paths": [],
+      "request_read_only_paths": [],
+      "request_write_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_shape": "object",
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": "uuid",
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "credential_or_static_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "response_schema": null,
+      "response_json": null,
+      "response_capture": null,
+      "request_json": null,
+      "static_headers": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "error_contract": null
+    },
+    {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-test-event.md",
       "source_markdown_bytes": 10777,
       "source_markdown_sha256": "aca8ca0009f823433d0a8f20c09f6c6f45b1f8fa1c49e6febcc6362a77f4c74f",
@@ -13580,10 +13651,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks.md",
-      "source_markdown_bytes": 23051,
-      "source_markdown_sha256": "5d6968aaa77e4b44d71c46c05ce056e3c059316b9d27db3aa755d3e9f4b6f7cf",
-      "source_openapi_bytes": 22911,
-      "source_openapi_sha256": "5a3b91ef0efceda10d278fe75ae7d3a89a46e582e67c1f71540770a6d725893d",
+      "source_markdown_bytes": 22759,
+      "source_markdown_sha256": "c17d0aaf4ff82515e3f18ce1831c1dddd3750007c7031ba53a39dbebf39bca9e",
+      "source_openapi_bytes": 22619,
+      "source_openapi_sha256": "ba81194e6f028f03e7236d4e1254e5c61dd845bb999e27002342b6ddd55b69c2",
       "source_operation_count": 1,
       "page": "post_v2-webhooks",
       "tag": "Webhooks",
@@ -13715,14 +13786,29 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "format": "uuid"
           },
-          "_meta": {
+          "signing": {
             "type": "object",
+            "nullable": true,
             "properties": {
-              "links": {
+              "active_secret": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "value": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "additionalProperties": false

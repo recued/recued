@@ -1,0 +1,142 @@
+{
+  "manifest_version": 2,
+  "slug": "reception-approval",
+  "publisher": "recued-core",
+  "name": "Reception — Approval",
+  "description": "Review-by-default approval reception. An incoming scoped approval (approve / confirm / pick a time / answer) lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the resulting commitment first) or reject. Materializes a commitment to your local warehouse by default — no external connection required.",
+  "version": 1,
+  "pre_install": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:reception",
+    "reception",
+    "reception-approval",
+    "l2"
+  ],
+  "pack_kind": "app_pack",
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "reception-approval",
+        "catalog_kind": "private_byo",
+        "ingredients": [
+          {
+            "slug": "reception-approval",
+            "kind": "http",
+            "http": {
+              "base": "https://reception.local",
+              "connection": "reception-approval"
+            },
+            "entities": {
+              "approval": {
+                "fields": [
+                  {
+                    "field_path": "id",
+                    "type": "string",
+                    "maps_to": "id",
+                    "description": "Materialized commitment id."
+                  },
+                  {
+                    "field_path": "statement",
+                    "type": "string",
+                    "maps_to": "statement",
+                    "description": "Commitment statement."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "approval.materialize",
+            "ingredient": "reception-approval",
+            "risk": "write",
+            "approval": "ask",
+            "out": "result",
+            "args": [
+              "title",
+              "body",
+              "promised_for_at",
+              {
+                "key": "source_id",
+                "affects_target": true
+              }
+            ],
+            "description": "Materialize a consumed approval into an inbound commitment in the local warehouse (the review-then-approve projection). Approval-required: the Gateway gate holds it pending so the user reviews + edits before it runs. The `https://reception.local` base url (surfaces_seed) is a LOCAL-DISPATCH sentinel, not a reachable endpoint — on approve-resume the ingredient executor routes this op to the in-process `reception-materialize` kernel ingredient (runReceptionProjection), so the materialize never makes an HTTP call (D-173 I-2 / P1-dispatch).",
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/reception/approval/materialize"
+            },
+            "request_schema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "promised_for_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "source_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "editable_args": [
+              {
+                "key": "title",
+                "type": "string",
+                "label": "Summary",
+                "required": true
+              },
+              {
+                "key": "body",
+                "type": "string",
+                "label": "Commitment statement"
+              },
+              {
+                "key": "promised_for_at",
+                "type": "datetime",
+                "label": "Due"
+              },
+              {
+                "key": "source_id",
+                "type": "string",
+                "label": "Destination",
+                "options_source": "reception_destination_sources",
+                "affects_target": true
+              }
+            ]
+          }
+        ],
+        "default_grants": [
+          "reception-approval.approval.write"
+        ],
+        "recipe_templates": [
+          {
+            "template": "review-then-approve",
+            "trigger": {
+              "entity": "reception_approval_intent",
+              "field": "processing_outcome",
+              "value": "pending"
+            },
+            "operation": "approval.materialize"
+          }
+        ]
+      }
+    }
+  ]
+}

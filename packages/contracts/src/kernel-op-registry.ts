@@ -36,8 +36,8 @@
  *  slice). Every `core.ai.*` backing slug strips (via `stripCorePrefix`) to a
  *  member of `CORE_CAPABILITY_SLUGS` — a drift guard the test pins.
  *
- *  Spec: docs/d-182-spec.md §3 (Tier-K), §4 (kernel ops are NOT pack rows),
- *  §10 step 2. Pickup: recued-project/handovers/handover_d182_s2_done_s3_start.md.
+ *  Spec: D-182 §3 (Tier-K), §4 (kernel ops are NOT pack rows),
+ *  §10 step 2. Pickup: internal design notes.
  */
 import { parseOpId } from './op-model.js';
 import { getKernelDomain } from './kernel-ops.js';
@@ -314,12 +314,13 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // operation is recipe-runnable, but its author default is owner-only (see
   // OWNER_DEFAULT_ONLY_GRANT_ENTRIES) and its dispatch scope is additionally
   // fenced to the exact `data.form_response` collection.
+  op('core.data.form-response.list', 'data', 'form-response-list', 'read'),
   op('core.data.form-response.get', 'data', 'form-response-get', 'read'),
   // D-210 A.8 slice 2 — advance the owner-authored lifecycle. Named
   // `set-state`, NOT `update`: it can change `lifecycle_state` and nothing
   // else, and a model reading `update` would go looking for the answer fields
   // it cannot touch. The same reason the `booking-*` manifests state what they
-  // do not carry (see docs/chat-prompt-optimization-log.md).
+  // do not carry (see internal design notes).
   op('core.data.form-response.set-state', 'data', 'form-response-set-state', 'write'),
   op('core.data.webhook.get', 'data', 'webhook-get', 'read'),
   op('core.data.webhook.list', 'data', 'webhook-list', 'read'),

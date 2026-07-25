@@ -11,7 +11,7 @@
  *       cascade events propagate through to the housekeeping state
  *       store with the right hint shape per cascade reason.
  *
- *  Spec: `docs/d-123-spec.md` §6. */
+ *  Spec: D-123 §6. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

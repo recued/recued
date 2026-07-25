@@ -23,7 +23,7 @@
  *  user data to anonymous visitors; an MCP-channel mutation would be
  *  catastrophic.
  *
- *  Spec: docs/d-149-spec.md § A.3 + § N.3 + § Must Hold I-1 / I-5 /
+ *  Spec: D-149 § A.3 + § N.3 + § Must Hold I-1 / I-5 /
  *  I-10. */
 
 import { randomUUID } from 'node:crypto';
@@ -3486,8 +3486,7 @@ const composeSafetyMatrix = (kind: (typeof COMPOSE_INTENT_ALLOWED_KINDS)[number]
     : { mode: 'never' },
   long_lived_permitted: kind !== 'intake_form',
   // An unconstrained intake can represent anything. D-210 WS2: default it to
-  // LOG-ONLY (no destination entity — the immutable form_response log written at
-  // submit is the record); named templates may deliberately opt into a
+  // FORM-RESPONSE (the owner-approved working record is the destination); named templates may deliberately opt into a
   // task/commitment/calendar/contact target through their own safety matrix.
   //
   // Spread rather than `? undefined :` so the key is genuinely ABSENT. This
@@ -3824,11 +3823,12 @@ const composeSafetyMatrixPacket = (
     : undefined,
   default_expiry: matrix.default_expiry,
   long_lived_permitted: matrix.long_lived_permitted,
-  // D-210 WS2 — `processing_target` is optional (absent = log-only). Spread it
+  // `processing_target` is optional on a TEMPLATE. Absence means the compiler
+  // selects the explicit `form_response` destination. Spread it
   // so an absent target OMITS the key from the model-facing packet instead of
   // stating `processing_target: undefined`, which reads to a model as a
   // declared-but-empty capability rather than "this template names no
-  // destination". Logged in `docs/chat-prompt-optimization-log.md`.
+  // destination". Logged in internal design notes.
   ...(matrix.processing_target !== undefined
     ? { processing_target: matrix.processing_target }
     : {}),

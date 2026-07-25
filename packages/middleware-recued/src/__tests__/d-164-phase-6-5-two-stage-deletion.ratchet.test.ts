@@ -23,7 +23,7 @@
  *      `../two-stage-archive/`). This file ratchets the *exact* P6.5
  *      deletion set; the final grep-negative acceptance sweep that
  *      catches semantic resurrection under new names belongs to P6.8
- *      (see docs/d-164-prompt-cache-consolidation-pending-design.md
+ *      (see D-164
  *      § P6 table line 522 — Open Q1 resolved + grep-negative slice).
  *
  *  Grep technique caveats (Codex test-review MINOR #4 fold):
@@ -37,7 +37,7 @@
  *      count assertions are how the (few) intentional comment mentions
  *      stay quarantined.
  *
- *  Spec: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  Spec: D-164
  *  line 519 (P6.5 row). Prior slice: D-164 P6.4 chat-stage adapter
  *  delete (commit `2a4c24e1`).
  */
@@ -55,6 +55,7 @@ import {
   createMiddlewareRegistry,
   type Middleware,
 } from '@recued/middleware';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 // ── Absolute path resolution ─────────────────────────────────────────
 
@@ -118,7 +119,7 @@ const REPO_SCAN_SKIP_DIR = new Set([
 const REPO_SCAN_SKIP_FILE_SUFFIX = ['.d.ts', '.d.ts.map', '.js.map'];
 
 const isScannableFile = (filePath: string): boolean => {
-  if (!filePath.endsWith('.ts')) {
+  if (!isTypeScriptSource(filePath)) {
     return false;
   }
   for (const suffix of REPO_SCAN_SKIP_FILE_SUFFIX) {

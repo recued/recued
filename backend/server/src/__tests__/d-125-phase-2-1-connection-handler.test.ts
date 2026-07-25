@@ -66,7 +66,7 @@ describe('handleConnectionEnroll', () => {
     ).rejects.toBeInstanceOf(RpcError);
   });
 
-  it('inserts a new row + returns auth-excluded view + placeholder probe', async () => {
+  it('inserts a new row + returns auth-excluded view + an unstamped pre-probe baseline', async () => {
     const result = await handleConnectionEnroll(
       { store, now: tickNow },
       {
@@ -85,10 +85,8 @@ describe('handleConnectionEnroll', () => {
     // raw token via any field key.
     const flat = JSON.stringify(result.connection);
     expect(flat.includes('SECRET-TOKEN-DO-NOT-LEAK')).toBe(false);
-    expect(result.probe).toEqual({
-      status: 'unknown',
-      last_probed_at: 1_700_000_000_000,
-    });
+    expect(result.probe).toEqual({ status: 'unknown' });
+    expect(store.get('api', 'hubspot')?.health_json).toBe('{"status":"unknown"}');
   });
 
   it('enrolls a MULTI-header auth (Plaid PLAID-CLIENT-ID + PLAID-SECRET); view leaks neither value', async () => {

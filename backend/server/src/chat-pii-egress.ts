@@ -57,7 +57,7 @@
  *  the no-op invariant holds until a D-170-authored schema tags fields; the
  *  middleware still falls back to the noop resolver only when none is injected.
  *
- *  Spec: docs/d-167-spec.md §"Runtime flow", §"Policy modes", §P5; D-160 §N.9.
+ *  Spec: D-167 §"Runtime flow", §"Policy modes", §P5; D-160 §N.9.
  */
 
 import type { SurfaceTag } from '@recued/chat';
@@ -77,6 +77,10 @@ import type {
   ExecuteChatAiCall,
 } from './chat-orchestrator.js';
 import { RECALL_WITHHELD_MESSAGE, type RecallResolver } from './chat-recall-index.js';
+import { projectToolDispatchCandidates } from './chat-pii-source.js';
+import type { CandidateContributor } from './chat-pii-candidate-contributor.js';
+import type { RecallJoinRef } from './chat-recall-search-tool.js';
+import type { RetainedAliasCandidate } from './storage/chat-store.js';
 
 /** The session alias-ledger handle — inferred off the gateway store so the
  *  backend stays on the `piiEgress` consumer surface (no direct
@@ -109,6 +113,10 @@ export interface PiiEgressPlan {
    *  rounds so the same real value renders as the same alias every time
    *  (spec §"Ledger persistence across packets"). */
   readonly ledger: SessionLedger;
+  /** D-167 — awaited ONCE inside the per-ledger request lease, before staging.
+   *  Nullary so the plan carries no session/store knowledge. Absent → unseeded
+   *  (today's behaviour). */
+  readonly seedSlotOrdering?: () => Promise<void>;
   /** Resolves which packet fields carry a `MetaField.privacy` tag — the
    *  `noopFieldPrivacyResolver` default until D-165 supplies a real one. */
   readonly resolver: piiEgress.FieldPrivacyResolver;
@@ -117,6 +125,31 @@ export interface PiiEgressPlan {
    *  row. Held behind a 1-field box so the by-reference plan in `state` keeps
    *  accumulating across the tool loop's rounds. */
   readonly summary: { value: RedactionSummary };
+  /** D-167 P3 — reverse authority from the most recent successfully sent
+   * provider request. The update-hook backstop must never use the wider
+   * session ledger for restore. */
+  readonly restoreAuthority?: {
+    value?: piiEgress.RequestRestoreAuthority;
+  };
+  /** Exact response text already restored by the most recent successful wire
+   * call. The final update hook uses this provenance to avoid a second restore
+   * pass over an escaped alias literal. */
+  readonly restoredAssistantText?: {
+    value?: string;
+  };
+  /** Flat schema-attested values from tool feedback in this staged request.
+   * They are published to the assistant source only after send success. */
+  readonly retainedCandidates?: {
+    value: readonly RetainedAliasCandidate[];
+  };
+  /** D-213 §3.8 — the recalling session's own source read, plus the SCOPED JOIN
+   * of each piece recall returned. It has no store-discovery API of its own:
+   * X1 hands it the returned pieces, never a session id it could widen. */
+  readonly candidateReharvest?: {
+    readonly contributor: CandidateContributor;
+    readonly getJoinedPieces: () => readonly RecallJoinRef[];
+    readonly hasRegisteredRecall: () => boolean;
+  };
   /** D-167 (recall path) — per-turn memoized contact recall RESOLVER provider. The
    *  egress aliases a `memory.*` result against the resolver's whole-warehouse
    *  name/org automaton + text-resolved identifiers so a contact recalled from a
@@ -295,6 +328,23 @@ export interface PiiEgressHookDeps {
    *  most once per recalling turn. Absent → recall aliasing off (the ledger-only scan
    *  still runs); returns undefined for an empty / unwired warehouse. */
   readonly getContactKnownValueIndex?: () => RecallResolver | undefined;
+  readonly createCandidateContributor?: (
+    session_id: string,
+  ) => CandidateContributor;
+  readonly getRecallJoinedPieces?: (
+    state: TurnContext['state'],
+  ) => readonly RecallJoinRef[];
+  readonly hasRegisteredRecall?: (
+    state: TurnContext['state'],
+  ) => boolean;
+  /** D-167 — fix this session's alias slot ordering from its durable rows before
+   *  the turn allocates anything, so a restart cannot renumber `pii.Person1`
+   *  onto a different person (`chat-pii-slot-ordering.ts`). Absent → today's
+   *  allocation-order numbering. */
+  readonly seedAliasSlotOrdering?: (
+    ledger: SessionLedger,
+    session_id: string,
+  ) => Promise<void>;
 }
 
 const defaultOwnsLlmEgress = (surface: SurfaceTag): boolean =>
@@ -329,18 +379,48 @@ export const createPiiEgressPlanForSession = (
   deps: PiiEgressHookDeps,
   sessionId: string,
   surface: SurfaceTag = 'chat',
+  state?: TurnContext['state'],
 ): PiiEgressPlan => {
   const resolver = deps.resolver ?? piiEgress.noopFieldPrivacyResolver;
   const ownsLlmEgress = (deps.ownsLlmEgress ?? defaultOwnsLlmEgress)(surface);
+  const ledger = deps.ledgerStore.getOrCreate(sessionId);
+  let slotOrderingAttempted = false;
   const recall = buildRecallProvider(deps.getContactKnownValueIndex);
+  const candidateReharvest =
+    state !== undefined
+    && deps.createCandidateContributor !== undefined
+    && deps.getRecallJoinedPieces !== undefined
+    && deps.hasRegisteredRecall !== undefined
+      ? {
+          contributor: deps.createCandidateContributor(sessionId),
+          getJoinedPieces: () => deps.getRecallJoinedPieces!(state),
+          hasRegisteredRecall: () => deps.hasRegisteredRecall!(state),
+        }
+      : undefined;
   return {
     active: piiEgress.shouldAliasForEgress({
       owns_llm_egress: ownsLlmEgress,
     }),
-    ledger: deps.ledgerStore.getOrCreate(sessionId),
+    ledger: ledger,
+    ...(deps.seedAliasSlotOrdering !== undefined
+      ? {
+          seedSlotOrdering: async (): Promise<void> => {
+            // At most once per TURN even when the harvest fails (the plan is
+            // per-turn); at most once per SESSION on the happy path, because a
+            // seeded ledger keeps its reservation entries as the marker.
+            if (slotOrderingAttempted) return;
+            slotOrderingAttempted = true;
+            await deps.seedAliasSlotOrdering!(ledger, sessionId);
+          },
+        }
+      : {}),
     resolver,
     summary: { value: emptyRedactionSummary() },
+    restoreAuthority: {},
+    restoredAssistantText: {},
+    retainedCandidates: { value: [] },
     ...(recall ? { recall } : {}),
+    ...(candidateReharvest ? { candidateReharvest } : {}),
   };
 };
 
@@ -354,28 +434,41 @@ export const createPiiProtectMiddleware = (
   prompt(ctx: TurnContext): void {
     ctx.state.set(
       CHAT_PII_EGRESS_PLAN_STATE_KEY,
-      createPiiEgressPlanForSession(deps, ctx.session_id, ctx.surface),
+      createPiiEgressPlanForSession(
+        deps,
+        ctx.session_id,
+        ctx.surface,
+        ctx.state,
+      ),
     );
   },
 });
 
-/** The `pii-restore` source-binding adapter — the LAST `update` hook. The
- *  zero-failure total-restore backstop: re-restore the assistant text against
- *  the session ledger and stash the verified result for the shell. */
+/** The `pii-restore` source-binding adapter — the LAST `update` hook. It
+ * stashes the exact response already verified/restored at the wire seam. If an
+ * unverified output reaches this point, it applies one request-authorized
+ * restore pass as the final backstop. */
 export const createPiiRestoreMiddleware = (): Middleware => ({
   id: PII_RESTORE_MIDDLEWARE_ID,
   update(ctx: TurnResult): void {
     const plan = readPiiEgressPlan(ctx.state);
     if (plan === undefined || !plan.active) return;
-    // The wire seam already restored each returned body, so `output.text` is
-    // real by now; this is the LAST-LINE guarantee that no alias survived
-    // into the user-facing assistant text. Idempotent — restoring real text
-    // is a no-op — and skipped entirely when nothing aliased this session
-    // (an empty ledger), so the noop-resolver path is behavior-preserving.
+    // A restore is not generally idempotent: an escaped Person2 may restore to
+    // the user's literal "pii.Person1", and a second pass would turn that into
+    // Person1's real mapping. Exact response provenance distinguishes the
+    // already-restored wire result from an unverified output that still needs
+    // the backstop.
+    const authority = plan.restoreAuthority?.value;
+    const verified = plan.restoredAssistantText?.value;
     const restored =
-      plan.ledger.byKindBaseAlias.size === 0
-        ? ctx.output.text
-        : piiEgress.restoreForDisplay(plan.ledger, ctx.output.text);
+      verified !== undefined && verified === ctx.output.text
+        ? verified
+        : authority === undefined
+          ? ctx.output.text
+          : piiEgress.restoreForDisplayWithAuthority(
+              authority,
+              ctx.output.text,
+            );
     ctx.state.set(CHAT_PII_RESTORED_TEXT_STATE_KEY, restored);
   },
 });
@@ -462,7 +555,7 @@ const stripEntityMarkers = (root: unknown): boolean => {
  *  the redaction counts, and returns the aliased records for the part's
  *  `render`. Marker-stamping lives HERE — not in the generic producer — so the
  *  prompt-cache package stays free of the privacy-substrate constant
- *  (`docs/d-160-n10-part-pii-pending-design.md` N.10.2 ①).
+ *  (D-160 N.10.2 ①).
  *
  *  The returned records still carry the `__entity` marker, but `render` reads
  *  them by field name and drops it, so only aliased text — never the marker key
@@ -543,6 +636,77 @@ const hasRecallContext = (packet: unknown): boolean => {
   return Array.isArray(entries) && entries.length > 0;
 };
 
+export class ChatPiiPrivacyError extends Error {
+  readonly code = 'chat_pii_privacy_failed';
+  readonly retryable = false;
+
+  constructor(detail: string) {
+    super(`chat privacy protection failed: ${detail}`);
+    this.name = 'ChatPiiPrivacyError';
+  }
+}
+
+const REHARVEST_STATIC_FIELDS: ReadonlySet<string> = new Set([
+  // The byte-stable prompt-cache head. Candidate protection is deliberately
+  // confined to the per-turn suffix so the reusable catalog prefix cannot
+  // drift based on recalled history.
+  'available_tools',
+  'commitment_context',
+  // A control value, not owner/provider prose. Excluding it also prevents an
+  // identifier-shaped date from colliding with a retained external id.
+  'current_date',
+]);
+
+const aliasReharvestCandidatesInPlace = (
+  packet: Record<string, unknown>,
+  plan: PiiEgressPlan,
+  candidates: readonly piiEgress.CandidateValueSeed[],
+  disclosedTexts: readonly string[],
+): boolean => {
+  if (candidates.length === 0) return false;
+  const dynamic: Array<readonly [string, unknown]> = [];
+  for (const [key, value] of Object.entries(packet)) {
+    if (!REHARVEST_STATIC_FIELDS.has(key)) dynamic.push([key, value]);
+  }
+  const values = dynamic.map(([, value]) => value);
+  const original = JSON.stringify(values);
+  const { aliased, summary } = piiEgress.aliasCandidateValuesForEgress(
+    plan.ledger,
+    values,
+    candidates,
+    disclosedTexts,
+  );
+  const changed = JSON.stringify(aliased) !== original;
+  if (!changed) return false;
+  // The array root above deliberately keeps protocol field names stable while
+  // the candidate pass remains key-aware inside each dynamic data value. No
+  // field may disappear merely because its value came back `undefined` —
+  // `JSON.stringify` drops such a key from the wire even though the object
+  // still has it.
+  //
+  // ⛔ CHECK BEFORE THE WRITE-BACK. The earlier version asserted
+  // `Object.hasOwn` AFTER assigning, and an assignment always establishes an
+  // own property — including for `undefined` — so the guard could never fire
+  // while the loss it names sailed through re-serialization. Measured:
+  // `hasOwnProperty('correction_context')` true, `JSON.stringify` → the key
+  // gone. Assert on the VALUE, and assert it before mutating anything.
+  if (aliased.length !== dynamic.length) {
+    throw new ChatPiiPrivacyError('candidate pass lost a dynamic field');
+  }
+  dynamic.forEach(([key, original], index) => {
+    if (aliased[index] === undefined && original !== undefined) {
+      throw new ChatPiiPrivacyError(
+        `candidate pass lost the dynamic field ${key}`,
+      );
+    }
+  });
+  dynamic.forEach(([key], index) => {
+    packet[key] = aliased[index];
+  });
+  plan.summary.value = mergeRedactionSummary(plan.summary.value, summary);
+  return true;
+};
+
 /** Collect the raw USER-authored disclosure texts from the packet — the current
  *  `user_message` + each user-role `chat_tail` entry. Assistant entries are
  *  excluded (see `RecallScanContext.disclosedTexts`). */
@@ -575,12 +739,13 @@ const disclosedTextsFromPacket = (packet: unknown): string[] => {
 const resolveRecallScanContext = (
   packet: unknown,
   plan: PiiEgressPlan,
+  disclosedTexts: readonly string[] = disclosedTextsFromPacket(packet),
 ): RecallScanContext | undefined => {
   if (typeof plan.recall?.getIndex !== 'function') return undefined;
   if (!hasRecallContext(packet)) return undefined;
   const resolver = plan.recall.getIndex();
   if (resolver === undefined) return undefined;
-  return { resolver, disclosedTexts: disclosedTextsFromPacket(packet) };
+  return { resolver, disclosedTexts };
 };
 
 /** The `prior_tool_calls[]` entry subfields the uniform content pass substring-scans
@@ -709,6 +874,12 @@ const uniformContentScanDataFields = (
     }
   }
   if (aliasLedgerFieldInPlace(record, 'correction_context', plan)) changed = true;
+  // D-214 cards are scope-checked typed projections, but their request-shape
+  // facets can still echo the owner's own entity tokens. Keep them on the same
+  // single egress boundary as every other dynamic context field.
+  if (aliasLedgerFieldInPlace(record, 'execution_case_context', plan)) {
+    changed = true;
+  }
   return changed;
 };
 
@@ -746,9 +917,10 @@ const aliasRecallContextField = (
  *  The orchestrator composed `input['llm.prompt']` as a JSON packet
  *  (`composeChatMainTurnPromptParts(...).body`); parse it, run the gateway
  *  egress alias pass over its privacy-tagged fields against the session ledger,
- *  strip any `__entity` markers, and re-serialize. Fail-open: a non-string /
- *  non-JSON prompt (never produced by the composer) passes through raw rather
- *  than failing the turn. With the noop resolver and no markers the
+ *  strip any `__entity` markers, and re-serialize. A non-string / non-JSON
+ *  prompt (never produced by the composer) preserves the legacy unchanged-input
+ *  path only when no recall result was registered. Recall-bearing packets fail
+ *  closed before provider egress. With the noop resolver and no markers the
  *  parse→re-serialize round-trips the prompt unchanged.
  *
  *  D-164 prompt-cache restructure — every return spreads `...input`, so the
@@ -759,7 +931,7 @@ const aliasRecallContextField = (
  *  starts with `cache_prefix`, and the LLM layer's `buildUserTurn` split holds.
  *  (A `pii.`-literal pre-scan that rewrote the catalog would drift the head;
  *  `buildUserTurn` fails open to a single unsplit block in that case.) */
-const aliasChatAiInput = (
+const aliasChatAiInput = async (
   input: Record<string, unknown>,
   plan: PiiEgressPlan,
   /** D-167 — the prompt-cache prefetch's STRUCTURED entity parts, threaded from
@@ -770,7 +942,7 @@ const aliasChatAiInput = (
    *  before the user_message scan + recall, and one contact renders to one alias
    *  everywhere. Absent / empty → no prefetch block (pre-wiring behaviour). */
   entityParts?: readonly EntityPromptPart[],
-): Record<string, unknown> => {
+): Promise<Record<string, unknown>> => {
   // ── D-208 — COLLISION-PROOF THE SYSTEM PROMPT TOO ────────────────────────
   // Until D-208 `llm.system_prompt` was Recued-authored static text, so the
   // Slice-3 pre-scan only ever needed to cover the packet. It now carries the
@@ -788,12 +960,16 @@ const aliasChatAiInput = (
   //
   // Runs FIRST, before the alias pass below can hand a real value that slot, and
   // before the `llm.prompt` early-returns — a malformed packet must not become a
-  // way to skip it. Same cheap `/pii\./i` gate as the packet: Recued's own blocks
-  // carry no `pii.` substring, so they stay byte-identical and the prompt-cache
-  // is untouched. Reserving leaves the text as-is; only an ESCAPE rewrites it.
+  // way to skip it. The cheap conservative gate covers readable aliases plus
+  // email/domain `.invalid` surfaces; Recued's own blocks ordinarily carry none,
+  // so they stay byte-identical and the prompt-cache is untouched. Reserving
+  // leaves the text as-is; only an ESCAPE rewrites it.
   const systemPromptRaw = input['llm.system_prompt'];
   let systemPatch: Record<string, unknown> | undefined;
-  if (typeof systemPromptRaw === 'string' && /pii\./i.test(systemPromptRaw)) {
+  if (
+    typeof systemPromptRaw === 'string'
+    && piiEgress.hasPotentialPiiAliasLiteral(systemPromptRaw)
+  ) {
     const pre = piiEgress.preScanPacketForEgress(plan.ledger, { s: systemPromptRaw });
     if (pre.escaped) {
       systemPatch = { 'llm.system_prompt': (pre.value as { s: string }).s };
@@ -803,31 +979,86 @@ const aliasChatAiInput = (
     systemPatch ? { ...next, ...systemPatch } : next;
 
   const prompt = input['llm.prompt'];
-  if (typeof prompt !== 'string') return withSystem(input);
+  const recallRegistered =
+    plan.candidateReharvest?.hasRegisteredRecall() === true;
+  if (typeof prompt !== 'string') {
+    if (recallRegistered) {
+      throw new ChatPiiPrivacyError('recall-bearing llm.prompt is missing');
+    }
+    return withSystem(input);
+  }
   let packet: unknown;
   try {
     packet = JSON.parse(prompt);
   } catch {
+    if (recallRegistered) {
+      throw new ChatPiiPrivacyError('recall-bearing llm.prompt is malformed');
+    }
     return withSystem(input);
   }
-  if (packet === null || typeof packet !== 'object') return withSystem(input);
+  if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) {
+    if (recallRegistered) {
+      throw new ChatPiiPrivacyError('recall-bearing llm.prompt is not an object');
+    }
+    return withSystem(input);
+  }
+  // Preserve the actual owner-authored disclosure before any exact-path or
+  // candidate alias pass rewrites it. Overlap suffixes are a local
+  // coreference aid; deriving them from an already-aliased packet silently
+  // loses what the owner really typed.
+  const rawDisclosedTexts = disclosedTextsFromPacket(packet);
   // D-167 Slice 3 — collision-proof the WHOLE packet against any user-typed
   // `pii.*` literal (e.g. a note anonymizing a friend as "pii.Person1") BEFORE
   // the alias pass: reserve a free slot (self-map) or escape a colliding one so
   // the literal round-trips through restore instead of un-aliasing into whatever
   // real value holds that slot. Run ONCE here on the whole packet — never inside
   // the per-field aliasers, which the path below invokes more than once (a second
-  // pass would re-escape an escaped token). Gated on the cheap `pii.` substring so
-  // a packet with no such literal keeps the byte-identity fast path; an ESCAPE
-  // rewrites a token (packet changed → re-serialize), a reserve only updates the
-  // ledger (slot-claim + restore self-map), leaving the packet text identical.
-  // The gate is case-INSENSITIVE to match the pre-scan + restore — a case-mutated
-  // `PII.Person1` literal must not skip the pass here yet still un-alias on restore.
+  // pass would re-escape an escaped token). The conservative gate covers both
+  // readable and `.invalid` alias families so a packet with no possible literal
+  // keeps the byte-identity fast path; an ESCAPE rewrites a token (packet changed
+  // → re-serialize), while a reserve only updates the ledger (slot-claim +
+  // restore self-map), leaving the packet text identical.
   let preScanEscaped = false;
-  if (/pii\./i.test(prompt)) {
+  if (piiEgress.hasPotentialPiiAliasLiteral(prompt)) {
     const pre = piiEgress.preScanPacketForEgress(plan.ledger, packet);
     packet = pre.value;
     preScanEscaped = pre.escaped;
+  }
+  // Structured entity payloads enter the provider packet only after their
+  // local renderer runs, so they are not present in `llm.prompt` above. Scan
+  // their JSON data separately before any identifier allocation; otherwise a
+  // source value literally equal to `pii.Person1` could collide with a real
+  // Person1 allocated by this request and become restorable as that person.
+  let protectedEntityParts = entityParts;
+  if (entityParts && entityParts.length > 0) {
+    const payloads = entityParts.map((part) => part.payload);
+    const serializedPayloads = JSON.stringify(payloads);
+    if (piiEgress.hasPotentialPiiAliasLiteral(serializedPayloads)) {
+      const pre = piiEgress.preScanPacketForEgress(plan.ledger, payloads);
+      protectedEntityParts = entityParts.map((part, index) => ({
+        ...part,
+        payload: pre.value[index] ?? [],
+      }));
+      if (pre.escaped) preScanEscaped = true;
+    }
+  }
+  const recallContext = (packet as Record<string, unknown>).recall_context;
+  if (
+    recallRegistered
+    && (
+      !Array.isArray(recallContext)
+      || recallContext.length === 0
+      || !recallContext.every(
+        (entry: unknown) =>
+          entry !== null
+          && typeof entry === 'object'
+          && !Array.isArray(entry),
+      )
+    )
+  ) {
+    throw new ChatPiiPrivacyError(
+      'recall-bearing packet has invalid recall_context',
+    );
   }
   // D-167 — ENACT the prompt-cache prefetch at the SINGLE seam (was an eager
   // SECOND alias pass at the orchestrator gather, which raced the seam over the
@@ -840,11 +1071,76 @@ const aliasChatAiInput = (
   // records arrive via the wrapper closure, NEVER the JSON packet, so an inactive
   // plan (wrapper returns `real`, never reaching here) can't ship them raw.
   let prefetchInjected = false;
-  if (entityParts && entityParts.length > 0) {
-    const blocks = renderEntityPartsForEgress(entityParts, plan);
+  if (protectedEntityParts && protectedEntityParts.length > 0) {
+    const blocks = renderEntityPartsForEgress(protectedEntityParts, plan);
     if (blocks.length > 0) {
       (packet as Record<string, unknown>).prefetch_context = blocks;
       prefetchInjected = true;
+    }
+  }
+  // Resolve the main packet's structural tags once, before any candidate pass
+  // replaces raw tool-feedback values. The same resolved paths drive final
+  // direct protection and the flat assistant-source projection.
+  const rawFields = plan.resolver(packet as PiiAliasableData);
+  if (plan.retainedCandidates !== undefined) {
+    try {
+      plan.retainedCandidates.value = projectToolDispatchCandidates(
+        packet as PiiAliasableData,
+        () => rawFields,
+      );
+    } catch {
+      plan.retainedCandidates.value = [];
+    }
+  }
+  // Mandatory exact-path protection runs while the resolver's paths still
+  // address the raw structure. The candidate pass below is intentionally
+  // key-aware inside dynamic data; running it first could rename a nested key
+  // and make a schema path miss its value. User prose is normalized to a
+  // content field here so a resolver cannot allocate one malformed whole-value
+  // identifier for a sentence.
+  const directFields = normalizeChatUserMessagePiiFields(
+    packet as PiiAliasableData,
+    rawFields,
+    false,
+  );
+  let directlyProtected = false;
+  if (directFields.length > 0) {
+    const direct = piiEgress.aliasPacketForEgress({
+      ledger: plan.ledger,
+      packet: packet as PiiAliasableData,
+      resolver: () => directFields,
+      mode: 'alias',
+    });
+    packet = direct.aliased;
+    plan.summary.value = mergeRedactionSummary(
+      plan.summary.value,
+      direct.summary,
+    );
+    directlyProtected = true;
+  }
+  let reharvestChanged = false;
+  if (hasRecallContext(packet) && plan.candidateReharvest !== undefined) {
+    try {
+      const contribution = await plan.candidateReharvest.contributor.contribute({
+        joined_pieces: plan.candidateReharvest.getJoinedPieces(),
+      });
+      reharvestChanged = aliasReharvestCandidatesInPlace(
+        packet as Record<string, unknown>,
+        plan,
+        contribution.candidates,
+        rawDisclosedTexts,
+      );
+    } catch (error) {
+      // ⛔ An integrity failure is NOT a coverage miss. This catch exists for
+      // the CONTRIBUTOR's bounded source reads, but its scope also covers the
+      // alias pass — so the pass's own "lost a dynamic field" guard was being
+      // swallowed even once it could fire. A privacy failure keeps its
+      // fail-closed contract; the wire wrapper turns it into a non-retry local
+      // failure rather than sending the packet.
+      if (error instanceof ChatPiiPrivacyError) throw error;
+      // Candidate reharvest is additive over the existing mandatory D-167
+      // baseline. A bounded read miss weakens enhancement coverage but cannot
+      // make direct protection fail open.
     }
   }
   // D-167 (recall path) — resolve the recall context ONCE: undefined unless the
@@ -855,7 +1151,11 @@ const aliasChatAiInput = (
   // it (the cross-session leak). Resolved AFTER the pre-scan reassigns `packet`.
   // The index builds lazily (only because there IS a `recall_context` field), so a
   // non-recall turn pays nothing and keeps the byte-identity fast path below.
-  const recallCtx = resolveRecallScanContext(packet, plan);
+  const recallCtx = resolveRecallScanContext(
+    packet,
+    plan,
+    rawDisclosedTexts,
+  );
   // D-167 — the data-field aliasing for one packet (the owned parsed packet, or its
   // aliased clone): recall FIRST (the typed `recall_context` field, aliased against
   // the contact index — this SEEDS the ledger), THEN the uniform ledger scan over
@@ -873,17 +1173,11 @@ const aliasChatAiInput = (
     }
     return changed;
   };
-  // Resolve the privacy-tagged fields FIRST. No tagged field → there is nothing
-  // to alias; the alias pass deep-clones the packet (dropping prototype-unsafe
-  // keys like `__proto__` / `constructor` / `prototype` a tool result could
-  // legitimately carry) and re-serializes, which would alter a packet it should
-  // leave alone. So on the no-field path we ONLY strip `__entity` markers in
-  // place (defence-in-depth: a marker present without a recognized entity tag
-  // must still never egress) and re-serialize the OWNED parsed packet — but
-  // only if a marker was actually removed. With no marker present (the
-  // noop-resolver path, production today) this returns the ORIGINAL input
-  // untouched — the load-bearing byte-identity invariant.
-  const rawFields = plan.resolver(packet as PiiAliasableData);
+  // Mandatory structural fields were protected above, before candidate
+  // key-rewriting could invalidate their paths. This final pass handles the
+  // whole-packet free-text surfaces against the now-complete staged ledger.
+  // With no direct fields, no ledger seeds, and no markers, the original input
+  // still takes the byte-identity fast path.
   // D-167 N.10.2 ② — run the ledger-anchored content pass over the free-text
   // chat fields (`user_message` + `chat_tail`) whenever the session ledger
   // ALREADY holds aliases (seeded earlier this turn — e.g. by the prefetch
@@ -900,10 +1194,11 @@ const aliasChatAiInput = (
   // packet off the byte-identity fast path (a deep-clone there would drop a
   // legitimate `__proto__`/`constructor` arg key). An escape forces re-serialize
   // via `preScanEscaped` instead.
-  const scanContent = rawFields.length > 0 || plan.ledger.byKindRealValue.size > 0;
+  const scanContent =
+    directlyProtected || plan.ledger.byKindRealValue.size > 0;
   const userMessageFields = normalizeChatUserMessagePiiFields(
     packet as PiiAliasableData,
-    rawFields,
+    [],
     scanContent,
   );
   const fields = scanContent
@@ -933,7 +1228,12 @@ const aliasChatAiInput = (
     // empty user_message + chat_tail can leave `fields` empty even with prefetch
     // seeding), so it too forces the re-serialize.
     return withSystem(
-      removed || scanned || preScanEscaped || prefetchInjected
+      removed
+        || scanned
+        || preScanEscaped
+        || prefetchInjected
+        || directlyProtected
+        || reharvestChanged
         ? { ...input, 'llm.prompt': JSON.stringify(packet) }
         : input,
     );
@@ -1028,7 +1328,10 @@ const ROUTABLE_CONTACT_SEARCH_ARGS = ['query', 'email', 'phone', 'company'] as c
  *  received result body (a local the caller discards) — the same mutate-via-cast
  *  pattern as `restoreToolCallArgKeys`; the subsequent value-restore reads the
  *  routed args. Runs BEFORE restore (the only point the value is still an alias). */
-const routeEntityRefSearchArgs = (body: unknown): void => {
+const routeEntityRefSearchArgs = (
+  authority: piiEgress.RequestRestoreAuthority,
+  body: unknown,
+): void => {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return;
   const toolCalls = (body as Record<string, unknown>).tool_calls;
   if (!Array.isArray(toolCalls)) return;
@@ -1043,6 +1346,17 @@ const routeEntityRefSearchArgs = (body: unknown): void => {
     for (const arg of ROUTABLE_CONTACT_SEARCH_ARGS) {
       const value = a[arg];
       if (typeof value !== 'string' || value.length === 0) continue;
+      // Route only a request-authorized alias that restores to real data.
+      // A hallucinated session alias is not authority, while a Slice-3 escape
+      // restores to the user's alias-shaped literal; neither may change fields.
+      const restored = piiEgress.restoreForDisplayWithAuthority(
+        authority,
+        value,
+      );
+      if (
+        restored === value
+        || piiEgress.hasPotentialPiiAliasLiteral(restored)
+      ) continue;
       const kind = piiEgress.ledgerKindForAlias(value);
       if (kind === undefined) continue;                       // raw / non-alias → leave
       const target = CONTACT_SEARCH_ARG_FOR_LEDGER_KIND[kind];
@@ -1060,12 +1374,16 @@ const routeEntityRefSearchArgs = (body: unknown): void => {
 
 /** D-167 N.10 — key-restore the model's `tool_calls[].args` maps ONLY. The uniform
  *  egress aliases result-map KEYS, so the model can copy an aliased key into a tool
- *  call's args; restore those KEYS (and values) to real so dispatch + the
- *  approval preview see the real key. Scoped here, NOT in the shared value-only
- *  body restore, so a legitimate alias-shaped key elsewhere is never rewritten
- *  (codex adversarial-review). Mutates the OWNED (already deep-copied) restored
- *  body in place. */
-const restoreToolCallArgKeys = (ledger: PiiEgressPlan['ledger'], body: unknown): void => {
+ *  call's args; restore those KEYS so dispatch + the approval preview see the
+ *  real key. Values have already been restored by the enclosing body pass and
+ *  MUST NOT be scanned again: an escaped literal could otherwise cascade into
+ *  the real mapping it collided with. Scoped here, NOT in the shared value-only
+ *  body restore, so a legitimate alias-shaped key elsewhere is never rewritten.
+ *  Mutates the OWNED (already deep-copied) restored body in place. */
+const restoreToolCallArgKeys = (
+  authority: piiEgress.RequestRestoreAuthority,
+  body: unknown,
+): void => {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return;
   const toolCalls = (body as Record<string, unknown>).tool_calls;
   if (!Array.isArray(toolCalls)) return;
@@ -1073,7 +1391,10 @@ const restoreToolCallArgKeys = (ledger: PiiEgressPlan['ledger'], body: unknown):
     if (tc === null || typeof tc !== 'object' || Array.isArray(tc)) continue;
     const entry = tc as Record<string, unknown>;
     if (!('args' in entry)) continue;
-    entry.args = piiEgress.restoreArgsAndKeysForApproval(ledger, entry.args);
+    entry.args = piiEgress.restoreArgKeysForApprovalWithAuthority(
+      authority,
+      entry.args,
+    );
   }
 };
 
@@ -1099,13 +1420,42 @@ const restoreToolCallArgKeys = (ledger: PiiEgressPlan['ledger'], body: unknown):
  *  run pre-restore (restore erases the alias shape). */
 const restoreChatAiResult = (
   result: ChatAiCallResult,
-  plan: PiiEgressPlan,
+  authority: piiEgress.RequestRestoreAuthority,
 ): ChatAiCallResult => {
-  if (plan.ledger.byKindBaseAlias.size === 0) return result;
-  routeEntityRefSearchArgs(result.body);
-  const body = piiEgress.restoreArgsForApproval(plan.ledger, result.body);
-  restoreToolCallArgKeys(plan.ledger, body);
+  if (authority.ledger.byKindBaseAlias.size === 0) return result;
+  routeEntityRefSearchArgs(authority, result.body);
+  const body = piiEgress.restoreArgsForApprovalWithAuthority(
+    authority,
+    result.body,
+  );
+  restoreToolCallArgKeys(authority, body);
   return { ...result, body };
+};
+
+/** A session ledger is shared by concurrent chat turns. Staging prevents a
+ * failed request from publishing unseen aliases, but two overlapping clones
+ * could otherwise allocate the same next alias to different people and then
+ * overwrite one another at commit. Serialize the complete provider-request
+ * lease per live ledger; different sessions remain fully concurrent. */
+const LEDGER_REQUEST_TAILS = new WeakMap<
+  PiiEgressPlan['ledger'],
+  Promise<unknown>
+>();
+
+const withSerializedLedgerRequest = async <T>(
+  ledger: PiiEgressPlan['ledger'],
+  work: () => Promise<T>,
+): Promise<T> => {
+  const previous = LEDGER_REQUEST_TAILS.get(ledger) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  LEDGER_REQUEST_TAILS.set(ledger, current);
+  try {
+    return await current;
+  } finally {
+    if (LEDGER_REQUEST_TAILS.get(ledger) === current) {
+      LEDGER_REQUEST_TAILS.delete(ledger);
+    }
+  }
 };
 
 /** Wrap the orchestrator's `executeAiCall` with the per-call PII enactment
@@ -1134,16 +1484,132 @@ export const wrapExecuteAiCallForPii = (
    * The llm_gateway uses it for final context-window validation because short
    * real values can expand into longer aliases after ordinary prompt packing. */
   validateEgress?: (aliasedInput: Record<string, unknown>) => void,
+  /** Receives only candidates from tool feedback in a successfully sent
+   * request. The caller unions them into the eventual assistant source. */
+  onRetainedCandidates?: (
+    candidates: readonly RetainedAliasCandidate[],
+  ) => void,
 ): ExecuteChatAiCall => {
   if (!plan.active) return real;
-  return async (manifest, input) => {
-    const aliasedInput = dropStaleCachePrefix(aliasChatAiInput(input, plan, entityParts));
+  return (manifest, input) => withSerializedLedgerRequest(
+    plan.ledger,
+    async () => {
+    // D-167 — fix the slot ordering BEFORE anything in this request allocates:
+    // the pre-scan, the prefetch entity parts, the recall seed and the packet
+    // pass all allocate below, and whichever runs first would otherwise own slot
+    // 1. Inside the lease, so two concurrent turns cannot both seed. Writes to
+    // the LIVE ledger, not the staged clone — a reservation is not an allocation
+    // and must survive a request that never commits.
+    if (plan.seedSlotOrdering !== undefined) await plan.seedSlotOrdering();
+    const stagedLedger = piiEgress.stageLedgerForRequest(plan.ledger);
+    const stagedPlan: PiiEgressPlan = {
+      ...plan,
+      ledger: stagedLedger,
+      summary: { value: emptyRedactionSummary() },
+      restoreAuthority: {},
+      restoredAssistantText: {},
+      retainedCandidates: { value: [] },
+    };
+    let aliasedInput: Record<string, unknown>;
+    let serializedAliasedInput: string;
+    let authority: piiEgress.RequestRestoreAuthority;
+    try {
+      aliasedInput = dropStaleCachePrefix(
+        await aliasChatAiInput(input, stagedPlan, entityParts),
+      );
+    } catch (error) {
+      if (error instanceof ChatPiiPrivacyError) throw error;
+      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+        throw new ChatPiiPrivacyError(
+          'recall-bearing packet could not be protected',
+        );
+      }
+      throw error;
+    }
+    try {
+      serializedAliasedInput = JSON.stringify(aliasedInput);
+    } catch (error) {
+      if (error instanceof ChatPiiPrivacyError) throw error;
+      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+        throw new ChatPiiPrivacyError(
+          'recall-bearing packet could not be protected',
+        );
+      }
+      throw error;
+    }
+    // Validation errors preserve their own public contract. The callback is an
+    // enforcement observer, not a packet transformer.
     validateEgress?.(aliasedInput);
-    if (onEgress) onEgress(JSON.stringify(aliasedInput));
+    try {
+      const afterValidation = JSON.stringify(aliasedInput);
+      if (afterValidation !== serializedAliasedInput) {
+        throw new Error('egress validator mutated the protected packet');
+      }
+      // This exact byte projection is both what transparency captures and what
+      // grants reverse authority.
+      serializedAliasedInput = afterValidation;
+      authority = piiEgress.deriveRequestRestoreAuthority(
+        stagedLedger,
+        serializedAliasedInput,
+      );
+      piiEgress.restrictStagedLedgerForRequest(
+        plan.ledger,
+        stagedLedger,
+        authority,
+      );
+    } catch (error) {
+      if (error instanceof ChatPiiPrivacyError) throw error;
+      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+        throw new ChatPiiPrivacyError(
+          'recall-bearing packet could not be protected',
+        );
+      }
+      throw error;
+    }
     // D-191 — aliasing-only: the wrap aliases the outbound packet + restores the
     // returned body. Force-local routing is retired — aliasing is the sole PII
     // protection; routing is the user's slot_1/slot_2/free_pool choice.
     const result = await real(manifest, aliasedInput);
-    return restoreChatAiResult(result, plan);
-  };
+    piiEgress.commitLedgerForRequest(plan.ledger, stagedLedger);
+    plan.summary.value = mergeRedactionSummary(
+      plan.summary.value,
+      stagedPlan.summary.value,
+    );
+    if (plan.restoreAuthority !== undefined) {
+      plan.restoreAuthority.value = authority;
+    }
+    if (plan.retainedCandidates !== undefined) {
+      plan.retainedCandidates.value = stagedPlan.retainedCandidates?.value ?? [];
+    }
+    if (onRetainedCandidates) {
+      try {
+        onRetainedCandidates(stagedPlan.retainedCandidates?.value ?? []);
+      } catch {
+        // Source projection capture is best-effort after a successful send;
+        // source finalization will honestly retain fewer candidates.
+      }
+    }
+    if (onEgress) {
+      try {
+        onEgress(serializedAliasedInput);
+      } catch {
+        // A transparency sink cannot invalidate a provider send that already
+        // succeeded.
+      }
+    }
+    const restoredResult = restoreChatAiResult(result, authority);
+    if (plan.restoredAssistantText !== undefined) {
+      const body = restoredResult.body;
+      const response =
+        body !== null
+        && typeof body === 'object'
+        && !Array.isArray(body)
+        && typeof (body as Record<string, unknown>).response === 'string'
+          ? (body as Record<string, unknown>).response as string
+          : undefined;
+      plan.restoredAssistantText.value = response;
+    }
+    return restoredResult;
+    },
+  );
 };

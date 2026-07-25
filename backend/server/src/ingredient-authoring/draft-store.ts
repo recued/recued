@@ -18,7 +18,7 @@
  *  (`INGREDIENT_DRAFT_MAX_COUNT`). Both live in contracts so the store and the
  *  wire result codes agree.
  *
- *  Spec: `docs/d-170-spec.md` § N.4 (test-before-save), N.15 (rpc surface). */
+ *  Spec: D-170 § N.4 (test-before-save), N.15 (rpc surface). */
 
 import type Database from 'better-sqlite3';
 import {

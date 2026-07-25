@@ -5,7 +5,7 @@
 // `Promise.all`). A call is classified statically by its ingredient `kind`
 // (the same deterministic walk the publish gate runs over the manifest op-set),
 // into one of two concurrency **lanes** — or bypassed entirely when it is
-// provably cheap. See `docs/d-181-spec.md` §3b/§4.
+// provably cheap. See D-181 §3b/§4.
 
 import type { IngredientKind } from './ingredient.js';
 

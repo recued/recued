@@ -4,7 +4,7 @@
  *  engine->middleware coupling (TR-3). Pin `packages/engine/src/index.ts`
  *  to the N.3 keep-list and assert the runtime value surface stays narrow.
  *
- *  Spec: docs/d-159-spec.md section N.3 + I-7 + A.3. */
+ *  Spec: D-159 section N.3 + I-7 + A.3. */
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

@@ -16,7 +16,7 @@
  *  entities (email/appointment/phonecall/task) share `activityid` as their primary
  *  key (they are `activitypointer` subtypes), so the classify is uniform across them.
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c3); survey Wall-D leaf. */
+ *  Spec: D-192 (S4c3); survey Wall-D leaf. */
 
 import type { Classify, DeltaPage, IdKeyedDeltaDeps, ItemClass } from '../../file-source-adapters/id-keyed-delta.js';
 

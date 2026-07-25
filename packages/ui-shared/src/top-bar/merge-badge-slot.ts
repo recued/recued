@@ -15,7 +15,7 @@
  *  -open-review"` for the host to translate into "open the dialog
  *  with the pending queue."
  *
- *  Spec: `docs/d-138-spec.md` § A.9 Notification surfaces, § P4. */
+ *  Spec: D-138 § A.9 Notification surfaces, § P4. */
 
 import { e } from '../template.js';
 

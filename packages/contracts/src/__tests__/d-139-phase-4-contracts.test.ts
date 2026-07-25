@@ -9,7 +9,7 @@
  *    - champion_deal_count (contact-scoped aggregate_window × perspective)
  *    - multi_account_contact (contact-scoped time_bound × perspective)
  *
- *  Spec: docs/d-139-spec.md § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

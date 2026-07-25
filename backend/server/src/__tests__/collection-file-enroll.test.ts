@@ -20,7 +20,6 @@ import {
   handleFileDelete,
   handleFileEnroll,
   handleFileResync,
-  handleFileReauth,
   handleFileUpdate,
   handleListInstances,
   type EnrollDeps,
@@ -207,7 +206,7 @@ describe('collection.file.update (Phase 7 / D-110)', () => {
   });
 });
 
-describe('collection.file.delete + resync + reauth (Phase 7 / D-110)', () => {
+describe('collection.file.delete + resync (Phase 7 / D-110)', () => {
   let ctx: ReturnType<typeof setup>;
   beforeEach(async () => {
     ctx = setup();
@@ -234,9 +233,13 @@ describe('collection.file.delete + resync + reauth (Phase 7 / D-110)', () => {
   });
 
   it('resync refreshes caps + flips auth_state on probe failure', async () => {
+    let rescanCalls = 0;
+    ctx.deps.onResync = () => { rescanCalls++; };
     // First resync with healthy probe.
     const ok = await handleFileResync(ctx.deps, { slug: 'primary' });
     expect(ok.auth_state).toBe('healthy');
+    expect(rescanCalls).toBe(1);
+    expect(ctx.instances.get('file', 'primary')?.last_synced_at).toBe(1_700_000_000_000);
 
     // Mutate config to make probe throw, then resync again — caps
     // are preserved from the prior run, auth_state flips.
@@ -248,28 +251,86 @@ describe('collection.file.delete + resync + reauth (Phase 7 / D-110)', () => {
 
     const degraded = await handleFileResync(ctx.deps, { slug: 'primary' });
     expect(degraded.auth_state).toBe('degraded');
+    expect(rescanCalls).toBe(1);
     // Caps preserved from the last successful probe.
     expect(degraded.probe_result.write).toBe('yes');
   });
 
-  it('reauth returns ok for non-oauth adapters', async () => {
-    const res = await handleFileReauth(ctx.deps, { slug: 'primary' });
-    expect(res).toEqual({ ok: true });
+  it('does not claim a sync timestamp when no lifecycle hook ran', async () => {
+    const result = await handleFileResync(ctx.deps, { slug: 'primary' });
+
+    expect(result.auth_state).toBe('healthy');
+    expect(ctx.instances.get('file', 'primary')?.last_synced_at).toBeNull();
   });
 
-  it('reauth 501s for oauth-flagged adapters', async () => {
-    // Re-probe with caps.auth = oauth to simulate an oauth adapter.
-    ctx.instances.updateCaps('file', 'primary', {
-      ...ctx.instances.get('file', 'primary')!.caps,
-      auth: 'oauth',
-    });
-    try {
-      await handleFileReauth(ctx.deps, { slug: 'primary' });
-      throw new Error('expected throw');
-    } catch (err) {
-      expect(asRpc(err).status).toBe(501);
-    }
+  it('does not resurrect an instance deleted while its probe is in flight', async () => {
+    let releaseProbe!: () => void;
+    let markProbeStarted!: () => void;
+    const probeStarted = new Promise<void>((resolve) => { markProbeStarted = resolve; });
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const factory = ctx.adapters.get('fs')!;
+    factory.probeCaps = async (config) => {
+      markProbeStarted();
+      await probeGate;
+      return nullAdapterFactory.probeCaps(config);
+    };
+
+    const pending = handleFileResync(ctx.deps, { slug: 'primary' });
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'not_found' });
+    await probeStarted;
+    await handleFileDelete(ctx.deps, { slug: 'primary' });
+    releaseProbe();
+
+    await rejected;
+    expect(ctx.instances.get('file', 'primary')).toBeNull();
   });
+
+  it('does not overwrite configuration changed while its probe is in flight', async () => {
+    let releaseProbe!: () => void;
+    let markProbeStarted!: () => void;
+    const probeStarted = new Promise<void>((resolve) => { markProbeStarted = resolve; });
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const factory = ctx.adapters.get('fs')!;
+    factory.probeCaps = async (config) => {
+      markProbeStarted();
+      await probeGate;
+      return nullAdapterFactory.probeCaps(config);
+    };
+
+    const pending = handleFileResync(ctx.deps, { slug: 'primary' });
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'conflict' });
+    await probeStarted;
+    await handleFileUpdate(ctx.deps, {
+      slug: 'primary',
+      config_patch: { generation: 2 },
+      reprobe: false,
+    });
+    releaseProbe();
+
+    await rejected;
+    expect(ctx.instances.get('file', 'primary')?.config).toMatchObject({ generation: 2 });
+  });
+
+  it('does not report success when deletion wins during lifecycle restart', async () => {
+    ctx.deps.onResync = () => {
+      ctx.instances.delete('file', 'primary');
+    };
+
+    await expect(
+      handleFileResync(ctx.deps, { slug: 'primary' }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('resync reports degraded when the one-shot restart fails', async () => {
+    ctx.deps.onResync = () => { throw new Error('watch attach failed'); };
+
+    const result = await handleFileResync(ctx.deps, { slug: 'primary' });
+
+    expect(result.auth_state).toBe('degraded');
+    expect(ctx.instances.get('file', 'primary')?.auth_state).toBe('degraded');
+    expect(ctx.instances.get('file', 'primary')?.last_synced_at).toBeNull();
+  });
+
 });
 
 describe('collection.listInstances (Phase 7 / D-110)', () => {

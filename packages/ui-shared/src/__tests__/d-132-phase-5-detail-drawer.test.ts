@@ -3,7 +3,7 @@
  *
  *  Pure-render coverage. The drawer + section components emit string
  *  HTML; tests assert the render output against the spec wireframe in
- *  `docs/d-132-spec.md` §A.7. The host wires `data-action` clicks back
+ *  D-132 §A.7. The host wires `data-action` clicks back
  *  to `housekeeping.trust.{read,write,dismiss_promotion}` rpcs (P4
  *  shipped) — these tests pin the data-action selectors so the host
  *  binding stays stable. */

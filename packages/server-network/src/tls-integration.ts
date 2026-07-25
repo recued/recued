@@ -10,11 +10,11 @@
  *      nginx (or Apache). The server's `tls_private_key` slot is
  *      empty; the WS / Webhook / MCP / Reception listeners bind
  *      to plaintext and trust the upstream proxy. Setup guide:
- *      `docs/setup-byo-tls.md`.
+ *      internal design notes.
  *
  *    `caddy` (free) — TLS terminated upstream by Caddy. Caddy
  *      auto-handles ACME (DNS-01 or HTTP-01 if publicly reachable).
- *      Same shape as `certbot`. Setup guide: `docs/setup-byo-tls.md`.
+ *      Same shape as `certbot`. Setup guide: internal design notes.
  *
  *  The mode discriminator gates which P5 substrate paths run:
  *  `recued-acme` runs the cert-renewal task against the cloud ACME

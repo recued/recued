@@ -21,7 +21,7 @@
  *  hole was exactly the two policies D-208 added — which is precisely why the
  *  test that would have caught it had to be written against the new path.
  *
- *  Spec: docs/d-167-spec.md (Slice 3 pre-scan) + the D-208 decisions-log entry. */
+ *  Spec: D-167 (Slice 3 pre-scan) + the D-208 decisions-log entry. */
 
 import { piiEgress } from '@recued/gateway';
 import { describe, expect, it } from 'vitest';

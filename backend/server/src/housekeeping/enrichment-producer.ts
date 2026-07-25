@@ -26,7 +26,7 @@
  *  partner to the eager cascade engine — eager marks-stale; harness
  *  sweeps + re-derives.
  *
- *  Spec: `docs/d-123-spec.md` §4.1. */
+ *  Spec: D-123 §4.1. */
 
 import {
   ENRICHMENT_REGISTRY,

@@ -6,7 +6,7 @@ import {
 } from '@recued/middleware-prompt-cache';
 
 import { createPromptCacheGateDeps } from '../chat-prompt-cache-gate.js';
-import type { ContactStore } from '../storage/contact-store.js';
+import { PREFETCH_FTS_LIMIT, type ContactStore } from '../storage/contact-store.js';
 
 const CONTACT_NAME_LOOKUP_LIMIT = 50;
 
@@ -101,5 +101,38 @@ describe('D-164 P5 prompt-cache gate backend contact lookup', () => {
 
     await expect(probeContactAttribute(() => store)).resolves.toBeNull();
     expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed instead of sampling a capped contextual-name index read', async () => {
+    const indexed = Array.from({ length: PREFETCH_FTS_LIMIT }, (_unused, idx) => ({
+      email: `candidate-${idx}@x.com`,
+      name: idx === 0 ? 'Alice Bond' : `Alice Candidate ${idx}`,
+    }));
+    const prefetchCandidates = vi.fn<ContactStore['prefetchCandidates']>(() => indexed);
+    const list = vi.fn<ContactStore['list']>(() => [contact()]);
+    const store = {
+      prefetchCandidates,
+      list,
+      get: () => contact(),
+      addressSet: (email: string) => [email],
+    } as unknown as ContactStore;
+    const deps = createPromptCacheGateDeps(() => store, () => undefined);
+
+    expect(await deps.lookupKnownEntityNames?.("what is alice bond's email?")).toEqual([]);
+    await expect(probeContactAttribute(() => store)).resolves.toBeNull();
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a stale indexed name row instead of trusting the legacy list fallback', async () => {
+    const list = vi.fn<ContactStore['list']>(() => [contact()]);
+    const store = {
+      prefetchCandidates: () => [{ email: 'stale@x.com', name: 'Alice Bond' }],
+      get: () => null,
+      list,
+      addressSet: (email: string) => [email],
+    } as unknown as ContactStore;
+
+    await expect(probeContactAttribute(() => store)).resolves.toBeNull();
+    expect(list).not.toHaveBeenCalled();
   });
 });

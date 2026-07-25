@@ -11,7 +11,7 @@
  *  emission, the `shouldLink` skip predicate, and the per-step
  *  `classifyKind` classifier all land in Phase 3.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 /** Engine-emitted link kind taxonomy. Aggressive default emission;

@@ -23,7 +23,7 @@
  *  registry `aggregate_window_ms` removed for thread_signals; concrete
  *  `ThreadSignalsSchema` replaces `acceptObject`.
  *
- *  Spec: `docs/d-136-spec.md` §A.10. */
+ *  Spec: D-136 §A.10. */
 
 import { describe, expect, it } from 'vitest';
 

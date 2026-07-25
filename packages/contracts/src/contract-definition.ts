@@ -18,7 +18,7 @@
  *  The predicates here — `contractLifecycleState` / `isContractActive` /
  *  `contractScopeMatches` — are what those slices call.
  *
- *  Spec: `docs/d-166-spec.md` §"contract_definition (new — contract_id lifecycle)". */
+ *  Spec: D-166 §"contract_definition (new — contract_id lifecycle)". */
 
 import type { Actor, Channel } from './commits.js';
 import type { RiskTier } from './ingredient.js';

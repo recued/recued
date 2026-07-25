@@ -28,7 +28,7 @@
  *  leaves the grace store empty; the in-memory implementation here is
  *  the kit Gateway will plug into when the dispatch outbox lands.
  *
- *  Spec: docs/d-153-spec.md § Cancellation grace window +
+ *  Spec: D-153 § Cancellation grace window +
  *  compensating commits (lines 467-485). */
 
 import type { IngredientManifest } from './ingredient.js';

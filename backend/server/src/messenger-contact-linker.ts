@@ -24,7 +24,7 @@
  *  re-link a no-op, and an already-linked sender skips the network round-trip
  *  entirely.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` § 3a (M-1). */
+ *  Spec: D-192 § 3a (M-1). */
 
 import {
   getMessengerVendorDeclaration,

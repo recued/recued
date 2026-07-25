@@ -4,7 +4,9 @@
  *  post-unlock re-load reaches recipes without an executor rebuild). */
 
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveValue } from '@recued/contracts';
 import { generateRecoveryKey } from '@recued/crypto';
 import { createKeyManager } from '../key-manager.js';
@@ -15,9 +17,10 @@ import {
   enrollServerVaultFromRecoveryKey,
   autoUnlockServerVaultFromKeyfile,
 } from '../server-vault-enrollment.js';
+import { openDatabase } from '../open-database.js';
 
-const mkKeyManager = (db: Database.Database) => {
-  const sb = createServerBundleStore(db);
+const mkKeyManager = (dbPath: string) => {
+  const sb = createServerBundleStore(dbPath);
   return createKeyManager({
     loadBundle: () => null,
     saveBundle: () => {},
@@ -28,14 +31,16 @@ const mkKeyManager = (db: Database.Database) => {
 
 describe('vault credential survives a restart under the Master DEK', () => {
   it('enroll → set cred → restart → keyfile auto-unlock → read it back (no plaintext DEK)', async () => {
-    const db = new Database(':memory:');
+    const dir = mkdtempSync(join(tmpdir(), 'server-vault-restart-'));
+    const dbPath = join(dir, 'realm.db');
+    const db = await openDatabase(dbPath, { databaseKey: null });
     try {
       const keyStore = createInMemoryServerKeyStore();
 
       // First boot: enrol (mints the keyfile server key + bundle, unlocks).
-      const km1 = mkKeyManager(db);
+      const km1 = mkKeyManager(dbPath);
       await enrollServerVaultFromRecoveryKey({
-        keys: km1, keyStore, recoveryKey: generateRecoveryKey().mnemonic,
+        keys: km1, keyStore, database: db, recoveryKey: generateRecoveryKey().mnemonic,
       });
       const vault1 = await createServerVaultStore(db, {
         getEncryptionKey: () => km1.keyProvider('vault')(),
@@ -47,9 +52,9 @@ describe('vault credential survives a restart under the Master DEK', () => {
         db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='server_dek'`).get(),
       ).toBeUndefined();
 
-      // Restart: fresh KeyManager over the SAME db (bundle persisted) + the
-      // SAME keyfile. Headless auto-unlock — no recovery key.
-      const km2 = mkKeyManager(db);
+      // Restart: fresh KeyManager over the SAME db-adjacent bundle sidecar +
+      // the SAME keyfile. Headless auto-unlock — no recovery key.
+      const km2 = mkKeyManager(dbPath);
       expect(km2.state()).toBe('locked');
       expect(await autoUnlockServerVaultFromKeyfile({ keys: km2, keyStore })).toBe('unlocked');
 
@@ -60,6 +65,7 @@ describe('vault credential survives a restart under the Master DEK', () => {
       expect(await vault2.get('mypub', 'hubspot_token')).toBe('pat-abc-123');
     } finally {
       db.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

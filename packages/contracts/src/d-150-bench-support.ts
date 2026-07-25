@@ -1,4 +1,4 @@
-/** D-150 — extraction support facade for `recued-bench`.
+/** D-150 — extraction support facade for internal benchmarks.
  *
  *  This file is intentionally dependency-free. It carries only the
  *  small routing / standing-instruction support surface that D-150 needs

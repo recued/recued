@@ -30,7 +30,7 @@
  *  the same posture because their free-form contents have no field-level
  *  sensitivity declaration.
  *
- *  Spec: docs/d-177-spec.md § N.12 (read-side analog); D-187 AMENDMENT (read-scope
+ *  Spec: D-177 § N.12 (read-side analog); D-187 AMENDMENT (read-scope
  *  folded into the unified `(contract × grant)` matrix). */
 
 import type { CanonicalCollectionName } from './canonical-record.js';

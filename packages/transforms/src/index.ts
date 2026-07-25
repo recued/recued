@@ -44,13 +44,24 @@ export {
 // These named exports are the substrate; the registered transforms are below.
 export {
   createLedger,
+  cloneLedger,
+  commitLedger,
+  restrictStagedLedgerToRestoreAuthority,
   createCounters,
   summarizeRedactions,
+  aliasIdentifierField,
   aliasFields,
   aliasFieldsBatch,
   restoreInString,
+  restoreInStringWithAuthority,
   restoreArgs,
+  restoreArgsWithAuthority,
   restoreArgsAndKeys,
+  restoreArgsAndKeysWithAuthority,
+  restoreArgKeys,
+  restoreArgKeysWithAuthority,
+  derivePiiRestoreAuthority,
+  containsPotentialPiiAliasLiteral,
   aliasArgs,
   // D-167 (recall path) — value-walk that aliases a memory.* result against the
   // contact known-value index (seed ⊇ scan) + overlap-decorates each name/org
@@ -65,6 +76,17 @@ export {
   buildKnownValueIndex,
   aliasKnownValuesInContent,
   seedKnownValuesFromContent,
+  // D-167 — deterministic per-session alias slot ordering, so a restart cannot
+  // renumber `pii.Person1` onto a different person.
+  reserveAliasSlotOrdering,
+  // D-167 — the structured-address substrate. `ADDRESS_COARSE_KEYS` is the ONE
+  // definition of "coarse" (city / state / country stay visible; the postcode is
+  // NOT coarse and IS aliased); `addressMatchForms` derives the composite prose
+  // targets that give a postcode its neighbours — never a bare postcode.
+  // Exported so a second producer derives them instead of restating them.
+  ADDRESS_COARSE_KEYS,
+  readAddressComponents,
+  addressMatchForms,
   // D-167 (recall↔PII) — overlap-reveal: decorate a recalled name/org alias
   // with the user-disclosed overlap fragment (`pii.Person1.sarah`) so a partial
   // reference re-binds without leaking the unrevealed rest.
@@ -76,12 +98,15 @@ export {
 } from './pii-alias.js';
 export type {
   Ledger,
+  PiiRestoreAuthority,
   AliasNamespace,
   RedactionCounters,
   PiiLedgerStore,
   KnownValueIndex,
   KnownValueSeed,
   KnownValueIdentifierSeed,
+  AliasSlotSeed,
+  AddressComponents,
 } from './pii-alias.js';
 export {
   buildAhoCorasick,

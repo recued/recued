@@ -6,7 +6,7 @@
  *  pure, deterministic helpers as it runs each step — `@recued/engine`
  *  imports `@recued/provenance`, never the reverse.
  *
- *  Spec: docs/d-159-spec.md § N.2 + O-2; docs/d-120-spec.md.
+ *  Spec: D-159 § N.2 + O-2; D-120.
  */
 
 // D-120 Phase 3 — engine-facing provenance link classification.

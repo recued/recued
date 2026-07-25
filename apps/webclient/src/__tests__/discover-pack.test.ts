@@ -88,6 +88,11 @@ describe('pack-discovery config', () => {
     expect(packMeta(pr({ publisher_id: 'x', download_count: 1, item_count: 1 }))).toBe('x · 1 install · 1 item');
     expect(packMeta(pr({ publisher_id: 'x', download_count: 3, item_count: 5 }))).toBe('x · 3 installs · 5 items');
   });
+  it('omits the installs chip entirely at 0 — never renders "0 installs"', () => {
+    // See `recipeMeta`'s twin: absent, not zero-valued. Whole-string assert so
+    // the items chip cannot mask a reappearing installs chip.
+    expect(packMeta(pr({ publisher_id: 'x', download_count: 0, item_count: 5 }))).toBe('x · 5 items');
+  });
 
   it('a row click navigates to the detail (does not flip state) + joins installed versions from packs.list', async () => {
     const host = makeEl('div');

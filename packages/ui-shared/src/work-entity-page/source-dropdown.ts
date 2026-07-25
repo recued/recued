@@ -5,7 +5,7 @@
  *  surfaces small affordance chips (read-only / write / mcp) so the
  *  user knows what each Source can do without opening Settings.
  *
- *  Spec: docs/d-145-spec.md § A.2.2 (resolver behavior — `data.<kind>.*`
+ *  Spec: D-145 § A.2.2 (resolver behavior — `data.<kind>.*`
  *  polymorphic / scoped) + § Phase PA6 (Source dropdown component).
  */
 

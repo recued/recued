@@ -73,7 +73,7 @@
  *  enrichment; the stale-sweep re-derives within the next eligible
  *  cycle.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 744) + A.7.2 + A.7.5 +
+ *  Spec: D-145 §§ A.7.1 (line 744) + A.7.2 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.project_velocity` +
  *        `packages/contracts/src/enrichment-declarations/project-velocity.ts`. */
 

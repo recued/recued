@@ -107,7 +107,7 @@ describe('same-named tombstone — survivor stands in, addresses union', () => {
       template: MAIL_FROM_COUNT_TEMPLATE,
       slots: [slot('Pat Lee')],
     });
-    expect(snap?.data).toEqual({ name: 'Pat Lee', count_phrase: '5 emails' });
+    expect(snap?.data).toEqual({ name: 'Pat Lee', count: '5', count_phrase: '5 emails' });
     expect(countFrom.mock.calls.map((c) => c[0]).sort()).toEqual([
       'pat-old@x.com',
       'pat@x.com',
@@ -126,7 +126,7 @@ describe('same-named tombstone — survivor stands in, addresses union', () => {
       template: MAIL_FROM_COUNT_TEMPLATE,
       slots: [slot('Pat Lee')],
     });
-    expect(snap?.data).toEqual({ name: 'Pat Lee', count_phrase: '3 emails' });
+    expect(snap?.data).toEqual({ name: 'Pat Lee', count: '3', count_phrase: '3 emails' });
   });
 });
 
@@ -189,7 +189,7 @@ describe('differently-named tombstone — non-renderable ambiguity sentinel', ()
       template: MAIL_FROM_COUNT_TEMPLATE,
       slots: [slot('Patricia New')],
     });
-    expect(snap?.data).toEqual({ name: 'Patricia New', count_phrase: '3 emails' });
+    expect(snap?.data).toEqual({ name: 'Patricia New', count: '3', count_phrase: '3 emails' });
   });
 });
 

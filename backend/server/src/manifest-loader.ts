@@ -91,7 +91,7 @@ const unionSlugs = (
 /** Resolve the community/ingredients directory relative to the project root.
  *  Walks up from the server src dir to find the workspace root. */
 const findCommunityDir = (): string => {
-  // backend/server/src/ → recued-dev/
+  // backend/server/src/ → the repository root
   const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
   return join(projectRoot, 'community', 'ingredients');
 };

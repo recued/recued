@@ -31,7 +31,7 @@
  *  `purpose` / `summary` / `action_items` clear both gates (the post-
  *  D-136 PSI-eligible 3 from `confidenceEmittingEnrichmentTopics()`).
  *
- *  Spec: `docs/d-133-spec.md`, `docs/d-136-spec.md` §P4 + §A.11. */
+ *  Spec: D-133, D-136 §P4 + §A.11. */
 
 import {
   ENRICHMENT_REGISTRY,

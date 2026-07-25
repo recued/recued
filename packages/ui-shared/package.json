@@ -33,6 +33,7 @@
     "./marketplace": "./src/marketplace/index.ts",
     "./server-settings/housekeeping": "./src/server-settings/housekeeping/index.ts",
     "./server-settings/work-entities": "./src/server-settings/work-entities/index.ts",
+    "./pairing": "./src/pairing/index.ts",
     "./account": "./src/account/index.ts",
     "./account/devices-page": "./src/account/devices-page.ts"
   },

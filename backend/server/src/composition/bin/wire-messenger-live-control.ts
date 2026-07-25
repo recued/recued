@@ -54,8 +54,8 @@
  *  execute-handler + cli executor feed; the same one the `execution.*` rpc wraps
  *  for the webclient / bridge). It never reaches the WS rpc layer.
  *
- *  Spec: docs/d-181-spec.md § 7 / § 8 (messenger row); docs/d-160-spec.md
- *  § A.5 (transport); docs/d-163-spec.md § N.5 (inbound dispatch). */
+ *  Spec: D-181 § 7 / § 8 (messenger row); D-160
+ *  § A.5 (transport); D-163 § N.5 (inbound dispatch). */
 
 import {
   type OutboundPromptOption,

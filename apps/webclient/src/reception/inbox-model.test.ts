@@ -156,6 +156,27 @@ describe('D-173 P6 reception inbox - projection model', () => {
     });
   });
 
+  it('uses a multiline control for long or body-like string fields', () => {
+    const args = {
+      body: 'First line\nSecond line',
+      notes: 'A'.repeat(140),
+      title: 'Short title',
+    };
+
+    expect(buildReceptionInboxFieldModel(
+      { key: 'body', type: 'string', label: 'Details' },
+      args,
+    ).input_kind).toBe('textarea');
+    expect(buildReceptionInboxFieldModel(
+      { key: 'notes', type: 'string', label: 'Notes' },
+      args,
+    ).input_kind).toBe('textarea');
+    expect(buildReceptionInboxFieldModel(
+      { key: 'title', type: 'string', label: 'Title' },
+      args,
+    ).input_kind).toBe('text');
+  });
+
   it('marks a pending attachment approval-blocking (a self-clearing hold)', () => {
     const detail = buildReceptionInboxDetailModel(
       item({

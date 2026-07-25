@@ -38,7 +38,7 @@
  *  + the P3/P4 deterministic siblings; integration lands when the
  *  engagement-aggregate reactive harness ships.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2 + § A.9.5 + § P5 acceptance. */
+ *  Spec: D-139 § A.9.2 + § A.9.5 + § P5 acceptance. */
 
 import {
   ENRICHMENT_REGISTRY,

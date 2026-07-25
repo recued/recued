@@ -20,7 +20,7 @@
  *  preview / install its own capability surface. Settings / Kitchen is the
  *  sole writer.
  *
- *  Spec: `docs/d-170-spec.md` § N.4 (test-before-save), N.15 (rpc surface). */
+ *  Spec: D-170 § N.4 (test-before-save), N.15 (rpc surface). */
 
 import {
   type HandlerSlice,

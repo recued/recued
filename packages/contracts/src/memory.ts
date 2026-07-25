@@ -10,7 +10,7 @@
  *  trigger — retired by D-153 P10), and Phase 7 (UI rename + unified
  *  export) build on top.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 /** Default retention window for memory entries. Pre-D-120 this was a

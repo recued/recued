@@ -14,7 +14,7 @@
  *  mid-session revoke / template edit / kill-switch flip takes effect on the next
  *  ask (§3/§4).
  *
- *  Spec: `docs/d-202-spec.md` + `docs/d-202-quality-gate-seams.md` (§4). */
+ *  Spec: D-202 + D-202 (§4). */
 
 import {
   matchesQualityDelegation,

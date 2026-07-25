@@ -151,6 +151,7 @@ const matchCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -423,6 +424,30 @@ describe('createSessionGrantResolver - delegation pass', () => {
       .toBe('ct_delegation_cross_session');
     expect(resolver.match(matchCtx({ channel_session_id: 's-2' })))
       .toBe('ct_delegation_cross_session');
+  });
+
+  it('D-211 monthly statement: always skips the session row but permits the standing delegation', () => {
+    putDefinition(delegationRow({ contract_id: 'ct_monthly_statement_delegation' }));
+    putDefinition(sessionRow({ contract_id: 'ct_monthly_statement_session' }));
+    const resolver = createSessionGrantResolver({ definitionStore: defStore, now: () => NOW });
+
+    expect(resolver.match(matchCtx({ pre_lift_approval: 'always' })))
+      .toBe('ct_monthly_statement_delegation');
+  });
+
+  it('D-211 read ladder: read+ask matches its origin-unit session row; read+always does not', () => {
+    putDefinition(sessionRow({
+      contract_id: 'ct_read_session',
+      risk_tier: 'read',
+    }));
+    const resolver = createSessionGrantResolver({ definitionStore: defStore, now: () => NOW });
+    const read = matchCtx({
+      risk_tier: 'read',
+      pre_lift_approval: 'ask',
+    });
+
+    expect(resolver.match(read)).toBe('ct_read_session');
+    expect(resolver.match({ ...read, pre_lift_approval: 'always' })).toBeNull();
   });
 
   it('returns null when neither session grants nor delegation rules match', () => {

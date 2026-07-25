@@ -14,7 +14,7 @@
  *    - retry-armed rows retried once their wake-time has passed
  *    - permanently-failed rows skipped indefinitely
  *
- *  Spec: docs/d-136-spec.md §A.6 + audit §9.1. */
+ *  Spec: D-136 §A.6 + audit §9.1. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

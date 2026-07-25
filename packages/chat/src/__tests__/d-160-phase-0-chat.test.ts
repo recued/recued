@@ -4,7 +4,7 @@
  *  history, while every outbound event still reaches the injected bus
  *  sink for live rendering.
  *
- *  Spec: docs/d-160-spec.md sections N.5 / N.6 / A.5.
+ *  Spec: D-160 sections N.5 / N.6 / A.5.
  */
 
 import { describe, expect, it } from 'vitest';

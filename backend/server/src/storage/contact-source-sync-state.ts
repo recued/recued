@@ -42,7 +42,7 @@
  *
  *  Lifecycle mirrors the file store: seeded at task registration, `markStarted` /
  *  `markCompleted` per cycle, `deleteForSource` on unregister (runtime state, not
- *  preserved history). Spec: `docs/d-205-contact-surface.md` §9.1. */
+ *  preserved history). Spec: D-205 §9.1. */
 
 import type Database from 'better-sqlite3';
 import type { ContactSourceCycleCounts } from '@recued/contracts';

@@ -16,6 +16,9 @@ import type {
   GatewayCallAudit,
   PiiLedgerStoreSnapshot,
   PreflightApprovedTarget,
+  PreflightOverrideOffer,
+  OperationApproval,
+  AuthorizationProvenance,
   RiskTier,
   RunDegradation,
   ScanFn,
@@ -168,9 +171,11 @@ export interface CatalogGrantCall {
   readonly operation_id: string;
   readonly connection_name?: string;
   /** The operation's effective risk tier (`resolution.effective_risk_tier`).
-   *  Only `write` / `admin` are grantable (D7); a `read` op never asks and a
-   *  `destructive` op never grants — the match / mint fail closed on both. */
+   *  Read / write / admin are session-grantable (D-211 Slice 3);
+   *  `destructive` never grants. */
   readonly risk_tier: RiskTier;
+  /** D-209 §1.7 — approval captured before later review/quality lifts. */
+  readonly pre_lift_approval: OperationApproval;
   readonly arg_shape_hash: string;
   readonly canonical_payload_hash: string;
   /** D-177 catalog open mode (N.11) — the FIRE's recomputed open-projection
@@ -666,7 +671,7 @@ export interface ExecutionContext {
    *  run was paused. `vault` never persists to the checkpoint (D-157
    *  § N.3); rotation safety follows.
    *
-   *  Spec: docs/d-157-spec.md § A.2 + I-6 / I-7. */
+   *  Spec: D-157 § A.2 + I-6 / I-7. */
   resumeFrom?: {
     /** Id of the step the checkpoint was minted at — the engine starts
      *  the sequential loop here. Must resolve to a step id in
@@ -887,6 +892,11 @@ export interface ExecutionResult {
      *  `QualityDelegationSignal` per resolution. Absent on non-quality asks ⇒ no
      *  signal (behaviour-preserving). */
     quality_relevant?: boolean;
+    /** D-211 — optional standing owner-ruling action + clamp warning. */
+    owner_override_offer?: PreflightOverrideOffer;
+    approval_clamped_from?: OperationApproval;
+    /** D-209 §1.7 — authorization posture before review/quality lifts. */
+    authorization_provenance?: AuthorizationProvenance;
     /** § 7 follow-on (pii-ledger-in-checkpoint) — the run's serialized
      *  `PiiLedgerStore` at the gate, present ONLY when the run minted
      *  pii-protect ledgers (authored or auto-synthesized brackets). The

@@ -19,7 +19,7 @@
  *
  *  A leaf's contract (per `FileSourceListFn`): resolve the connection's
  *  decrypted credentials, walk the vendor's list API to exhaustion (metadata
- *  only — bytes are NEVER fetched, North star), and return the raw vendor rows
+ *  only — sync never fetches bodies), and return the raw vendor rows
  *  + a POSITIVE `complete` proof (true ONLY when the whole scoped tree was
  *  provably walked). The reconciler keys / projects / hash-skips / upserts, and
  *  gates absence-based deletes on that `complete` proof — so a leaf that cannot
@@ -30,7 +30,7 @@
  *  touch storage or crypto directly, staying pure of the boot graph + trivially
  *  testable). `fetchImpl` + `now` are test seams.
  *
- *  Design: `docs/d-192-file-source-family.md`; taxonomy §0 / §3b. */
+ *  Design: D-192; taxonomy §0 / §3b. */
 
 import type { ConnectionAuth } from '@recued/contracts';
 

@@ -44,7 +44,7 @@
  *  brief spinner — annoying but harmless — while the answer is durably
  *  recorded.
  *
- *  Spec: docs/d-163-spec.md § N.5 / A.1 + Telegram Bot API
+ *  Spec: D-163 § N.5 / A.1 + Telegram Bot API
  *  https://core.telegram.org/bots/api#answercallbackquery */
 
 import { decodeAuthFromStorage } from '../../connection-handler.js';

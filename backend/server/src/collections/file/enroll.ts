@@ -1,24 +1,19 @@
 /** Phase 7 (D-110) — collection.file.* enroll rpc handlers.
  *
- *  Five methods wire into `collection-handler.ts`:
+ *  Four methods wire into `collection-handler.ts`:
  *    - enroll       → run probe, write row, return caps.
  *    - update       → patch config, optional reprobe.
  *    - delete       → remove the row (adapter lifecycle owned by the
  *                     composition root).
- *    - resync       → run probe again, refresh caps + auth_state.
- *    - reauth       → return oauth_url for oauth adapters, ok otherwise.
+ *    - resync       → re-probe caps, then restart for a bounded rescan.
  *
  *  Cross-type `collection.listInstances` lives next to these for
  *  import proximity even though it returns instances across every
  *  platform — it's the one shape the parseRecipe validator consumes.
  *
- *  The handlers deliberately do NOT spin up / tear down adapters on
- *  the CollectionRegistry. That's the composition root's concern
- *  (bin.ts) — it reads the instance store at boot and builds a
- *  Collection per row. Enroll writes a row + returns — the UI's next
- *  action (or a background task) asks the server to create the
- *  live adapter. Keeps the handler module free of gate / DB / bus
- *  dependencies.
+ *  The handlers delegate adapter lifecycle to optional composition-root
+ *  hooks. That keeps this module free of gate / DB / bus dependencies while
+ *  letting enroll, delete, and explicit resync update the live adapter.
  */
 
 import { RpcError } from '@recued/contracts';
@@ -48,10 +43,15 @@ export interface EnrollDeps {
    *  a chance to start the adapter on the live Collection registry.
    *  Optional so unit tests don't need live wiring. */
   onEnrolled?: (row: CollectionInstanceRow) => Promise<void> | void;
-  /** Called before a row is deleted so the composition root can stop
-   *  the adapter cleanly. Optional; missing → adapter-lifecycle is
-   *  the caller's concern. */
+  /** Called after the row is deleted so the composition root can stop
+   *  the adapter cleanly. Row-first ordering prevents an in-flight resync
+   *  from starting an orphan adapter. Optional; missing → adapter-lifecycle
+   *  is the caller's concern. */
   onDeleted?: (slug: string) => Promise<void> | void;
+  /** Called after a successful resync probe and caps update. Production
+   *  restarts the live adapter, which gives `watch: none` filesystem
+   *  instances an explicit bounded one-shot rescan without a poll loop. */
+  onResync?: (row: CollectionInstanceRow) => Promise<void> | void;
   now?: () => number;
 }
 
@@ -269,8 +269,8 @@ export const handleFileDelete = async (
       404,
     );
   }
-  await deps.onDeleted?.(slug);
   deps.instances.delete('file', slug);
+  await deps.onDeleted?.(slug);
   return { ok: true };
 };
 
@@ -283,6 +283,11 @@ export const handleFileResync = async (
   auth_state: CollectionAuthState;
 }> => {
   const slug = requireSlug(args.slug);
+  const deletedDuringResync = (): RpcError => new RpcError(
+    'not_found',
+    `collection.file.resync: instance '${slug}' was deleted during resync`,
+    404,
+  );
   const existing = deps.instances.get('file', slug);
   if (!existing) {
     throw new RpcError(
@@ -300,60 +305,81 @@ export const handleFileResync = async (
     );
   }
 
-  let caps: FileCollectionCaps;
-  let auth_state: CollectionAuthState = existing.auth_state;
+  let probedCaps: FileCollectionCaps | null = null;
+  let probeError: unknown;
   try {
-    caps = await probeAdapter(factory, existing.config);
-    auth_state = 'healthy';
+    probedCaps = await probeAdapter(factory, existing.config);
   } catch (err) {
+    probeError = err;
+  }
+
+  // The probe is awaited external work. Re-read before writing so a delete
+  // cannot be undone and an update cannot be overwritten with stale config.
+  const current = deps.instances.get('file', slug);
+  if (!current) {
+    throw deletedDuringResync();
+  }
+  if (
+    current.adapter_type !== existing.adapter_type
+    || JSON.stringify(current.config) !== JSON.stringify(existing.config)
+  ) {
+    throw new RpcError(
+      'conflict',
+      `collection.file.resync: instance '${slug}' changed during probe; retry`,
+      409,
+    );
+  }
+
+  const probeSucceeded = probedCaps !== null;
+  const caps = probedCaps ?? (current.caps as FileCollectionCaps);
+  let auth_state: CollectionAuthState = current.auth_state;
+  if (probeSucceeded) {
+    auth_state = 'healthy';
+  } else {
     // Probe failure on resync flips auth_state rather than 422'ing —
     // the instance still exists; the UI reads the new auth_state.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/auth|credential|token/i.test(msg)) {
-      auth_state = 'expired';
-    } else {
-      auth_state = 'degraded';
-    }
-    caps = existing.caps as FileCollectionCaps;
+    const msg = probeError instanceof Error ? probeError.message : String(probeError);
+    auth_state = /auth|credential|token/i.test(msg) ? 'expired' : 'degraded';
   }
 
-  deps.instances.upsert({
+  const stored = deps.instances.upsert({
     platform: 'file',
     slug,
-    adapter_type: existing.adapter_type,
-    config: existing.config,
+    adapter_type: current.adapter_type,
+    config: current.config,
     caps,
     auth_state,
-    last_synced_at: (deps.now ?? Date.now)(),
+    // A capability probe is not a source scan. Preserve the prior timestamp
+    // until the live adapter restart below completes.
+    last_synced_at: current.last_synced_at,
   });
-  return { ok: true, probe_result: caps, auth_state };
-};
 
-export const handleFileReauth = async (
-  deps: EnrollDeps,
-  args: { slug?: unknown },
-): Promise<{ oauth_url: string } | { ok: true }> => {
-  const slug = requireSlug(args.slug);
-  const existing = deps.instances.get('file', slug);
-  if (!existing) {
-    throw new RpcError(
-      'not_found',
-      `collection.file.reauth: instance '${slug}' not found`,
-      404,
-    );
+  if (probeSucceeded && deps.onResync) {
+    try {
+      await deps.onResync(toRow(
+        'file',
+        stored.adapter_type,
+        stored.caps as FileCollectionCaps,
+        stored.auth_state,
+        stored.slug,
+        stored.last_synced_at,
+      ));
+      // Advance sync time only after the adapter's one-shot initial
+      // scan/restart has completed. A capability probe alone is not a sync.
+      const refreshed = deps.instances.updateAuthState('file', slug, {
+        auth_state: 'healthy',
+        last_synced_at: (deps.now ?? Date.now)(),
+      });
+      if (!refreshed) throw deletedDuringResync();
+    } catch {
+      // startLiveAdapter logs the concrete cause. Keep the rpc result shaped
+      // like other resync degradation: success envelope + degraded state.
+      auth_state = 'degraded';
+      const degraded = deps.instances.updateAuthState('file', slug, { auth_state });
+      if (!degraded) throw deletedDuringResync();
+    }
   }
-  if ((existing.caps as FileCollectionCaps).auth === 'oauth') {
-    // OAuth URL construction happens per-adapter — the v1 adapter set
-    // (fs / s3 / ext-downloads) doesn't include any OAuth adapters.
-    // Preserving the surface so Dropbox / Google Drive can slot in
-    // later without a contract change.
-    throw new RpcError(
-      'not_implemented',
-      `oauth reauth not supported for adapter '${existing.adapter_type}' — no oauth adapters in v1`,
-      501,
-    );
-  }
-  return { ok: true };
+  return { ok: true, probe_result: caps, auth_state };
 };
 
 export const handleListInstances = async (

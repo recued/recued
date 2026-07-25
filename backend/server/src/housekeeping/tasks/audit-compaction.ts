@@ -28,7 +28,7 @@
  *  No `onInvalidate` — audit is append-only; nothing causes
  *  earlier rows to become eligible for re-compaction.
  *
- *  Spec: `docs/d-123-spec.md` §3.1. */
+ *  Spec: D-123 §3.1. */
 
 import type {
   HousekeepingCursor,

@@ -26,7 +26,7 @@
  *  without that grant must NOT get an empty list — that reads as *"this person has no
  *  deals"*, a claim about the user's data. It gets a NAMED `partial_failure`.
  *
- *  Spec: `docs/d-206-spec.md` §2.2c. */
+ *  Spec: D-206 §2.2c. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

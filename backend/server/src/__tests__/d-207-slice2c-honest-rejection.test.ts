@@ -319,20 +319,10 @@ const submit = async (input: {
   const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
 
   const submissionStore = createReceptionFormSubmissionStore(db);
-  // D-210 WS2 — record whether the canonical log was written at submit. Every
-  // form here is PAIRED, so the answer must be "no" on all three paths; a
-  // recorder rather than a no-op store is what makes that checkable.
-  const formResponseWrites: string[] = [];
   const postRes = fakeRes();
   await createIntakeFormSubmitHandler({
     getStore: () => registry as never,
     getSubmissionStore: () => submissionStore as never,
-    getFormResponseStore: () => ({
-      accept: (accepted: { submission_id: string }) => {
-        formResponseWrites.push(accepted.submission_id);
-        return { status: 'created', response: { submission_id: accepted.submission_id } };
-      },
-    }) as never,
     getFormNonceStore: () => nonceStore,
     getFormSubmissionPiiKey: () => deriveFormSubmissionPiiKeyFromSubDek(
       new Uint8Array(32).fill(0x6e),
@@ -359,7 +349,6 @@ const submit = async (input: {
     body: postRes.body,
     outcome: (db.prepare('SELECT processing_outcome FROM reception_form_submission LIMIT 1')
       .get() as { processing_outcome: string } | undefined)?.processing_outcome,
-    form_response_writes: formResponseWrites.length,
   };
 };
 
@@ -398,6 +387,5 @@ describe('END TO END — the handler really computes it and really hands it over
     const rejected = await submit({ renders: true, honeypot: true, email: 'bot@example.com' });
     const accepted = await submit({ renders: true, honeypot: false, email: 'lead@example.com' });
     expect(accepted.outcome).toBe('pending');
-    expect([spam, rejected, accepted].map((s) => s.form_response_writes)).toEqual([0, 0, 0]);
   });
 });

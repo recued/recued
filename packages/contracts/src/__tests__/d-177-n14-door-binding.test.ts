@@ -81,6 +81,7 @@ const doorCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -126,6 +127,7 @@ const ownerCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -359,6 +361,7 @@ describe('N.14.6 door binding — the mcp door', () => {
       channel: 'chat',
       actor: 'contracted_user',
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
     })).toBeUndefined();
     // The cells that ARE seeded — the exact list, so a new one is a deliberate edit.
     expect(SESSION_GRANT_DEFAULT_SEEDS.map(({ channel, actor }) => `${channel}:${actor}`))
@@ -471,6 +474,7 @@ describe('N.14 (reception, anonymous) seed', () => {
         channel: 'reception',
         actor: 'anonymous',
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
       }),
     ).toEqual({ ttl_ms: 86_400_000, max_uses: 20, risk_tier: 'write' });
     expect(
@@ -478,6 +482,7 @@ describe('N.14 (reception, anonymous) seed', () => {
         channel: 'reception',
         actor: 'anonymous',
         risk_tier: 'admin',
+        pre_lift_approval: 'ask',
       }),
     ).toBeUndefined();
   });
@@ -489,6 +494,7 @@ describe('N.14 (reception, anonymous) seed', () => {
         channel: 'webhook',
         actor: 'anonymous',
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
       }),
     ).toBeUndefined();
   });

@@ -18,7 +18,7 @@
  *  Self-contained (its own `QUALITY_SWITCH_PANEL_STYLES`, joined into the route's
  *  one `<style>` bundle) and disposable, mirroring `suggested-rules-panel.ts`.
  *
- *  Spec: docs/d-202-spec.md §4 / §5. */
+ *  Spec: D-202 §4 / §5. */
 
 import type { QualityGateSwitchStatus } from '@recued/contracts';
 

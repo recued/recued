@@ -70,6 +70,12 @@ export const PACKS_DIALOG_GRANT_OVERLAP_ATTR =
   'data-recued-packs-dialog-grant-overlap';
 export const PACKS_DIALOG_GRANT_OVERLAP_ITEM_ATTR =
   'data-recued-packs-dialog-grant-overlap-item';
+// D-211 Slice 5 — update merge-card for global owner rulings whose stamped
+// operation changed or disappeared in the incoming pack.
+export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR =
+  'data-recued-packs-dialog-owner-operation-review';
+export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR =
+  'data-recued-packs-dialog-owner-operation-review-item';
 
 /** Permission slug that is always required for any bulk-pack install.
  *  Mirrors `BULK_PACK_INSTALL_PERMISSION` in `@recued/contracts`; inlined so
@@ -89,9 +95,13 @@ export const GRANT_OVERLAP_ALSO_VIA_PREFIX = ' — also via ';
 
 const DIALOG_COPY = {
   eyebrow: 'Pack setup',
+  update_eyebrow: 'Pack update',
   heading_prefix: 'Install ',
+  update_heading_prefix: 'Update ',
   intro:
     'Review what this pack adds, then choose any connection and access it should receive.',
+  update_intro:
+    'Review what this update changes, then confirm the connection and access it should receive.',
   permissions_label: 'This pack requires:',
   body_grants_label: 'This pack will access the following body content:',
   recipes_label_prefix: 'Will install ',
@@ -100,6 +110,8 @@ const DIALOG_COPY = {
   required_permission_note: '(always required)',
   install_label: 'Install',
   installing_label: 'Installing…',
+  update_label: 'Update',
+  updating_label: 'Updating…',
   cancel_label: 'Cancel',
   // Slice C — cross-pack collision copy.
   collision_heading: '⚠ Recipe slug overlap with other packs:',
@@ -109,6 +121,11 @@ const DIALOG_COPY = {
   // Slice J — install-side overlap copy (additive framing).
   grant_overlap_heading:
     'This body content is already accessible via other installed packs:',
+  owner_operation_review_heading: 'Global operation rulings to review',
+  owner_operation_review_intro:
+    'This update changes pack operations with owner-wide Risk or Approval values. Those owner values remain global after the update.',
+  owner_operation_review_removed:
+    'Removed operations keep their ruling stored but inactive unless the operation returns.',
 } as const;
 
 /** Failure-code → copy mapping for the engine's `BulkPackInstallResult.
@@ -122,6 +139,8 @@ const INSTALL_FAILURE_COPY: Record<
     'Install rejected: a required permission was not granted.',
   version_mismatch:
     'Install rejected: the server runs a different pack manifest version.',
+  review_stale:
+    'This pack changed after you reviewed it. Refresh and review the current update.',
   validator_rejected:
     'Install rejected: the manifest failed substrate validation.',
   unresolved:
@@ -227,6 +246,7 @@ export const renderPacksInstallDialog = (
 ): HTMLElement => {
   const doc = props.document;
   const { pack, collision, grantOverlap, installing } = props;
+  const isUpdate = pack.installed_any_version === true && !pack.installed;
   const container = doc.createElement('section');
   container.setAttribute(PACKS_DIALOG_ATTR, '');
   container.setAttribute(PACKS_DIALOG_SLUG_ATTR, pack.slug);
@@ -257,19 +277,87 @@ export const renderPacksInstallDialog = (
 
   const eyebrow = doc.createElement('p');
   eyebrow.className = 'packs-dialog-eyebrow';
-  eyebrow.textContent = DIALOG_COPY.eyebrow;
+  eyebrow.textContent = isUpdate
+    ? DIALOG_COPY.update_eyebrow
+    : DIALOG_COPY.eyebrow;
   container.appendChild(eyebrow);
 
   const heading = doc.createElement('h4');
   heading.className = 'packs-dialog-heading';
   heading.id = headingId;
-  heading.textContent = `${DIALOG_COPY.heading_prefix}${pack.name}?`;
+  heading.textContent = `${isUpdate
+    ? DIALOG_COPY.update_heading_prefix
+    : DIALOG_COPY.heading_prefix}${pack.name}?`;
   container.appendChild(heading);
 
   const intro = doc.createElement('p');
   intro.className = 'packs-dialog-intro';
-  intro.textContent = DIALOG_COPY.intro;
+  intro.textContent = isUpdate ? DIALOG_COPY.update_intro : DIALOG_COPY.intro;
   container.appendChild(intro);
+
+  // D-211 Slice 5 — the D-166-style merge card for the small subset of global
+  // owner rulings whose reviewed operation changed or vanished. It is read-only:
+  // confirming Update accepts the incoming pack while preserving the ruling;
+  // edits remain in Pack > Permissions, never in per-contract Access.
+  const ownerReview = pack.owner_operation_review ?? [];
+  if (ownerReview.length > 0) {
+    const review = doc.createElement('section');
+    review.setAttribute(PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR, '');
+    review.className = 'packs-dialog-owner-operation-review';
+    review.setAttribute('role', 'region');
+    const reviewHeadingId = `packs-dialog-owner-operation-review-${pack.slug}`;
+    review.setAttribute('aria-labelledby', reviewHeadingId);
+    const reviewHeading = doc.createElement('p');
+    reviewHeading.id = reviewHeadingId;
+    reviewHeading.className =
+      'packs-dialog-summary packs-dialog-owner-operation-review-heading';
+    reviewHeading.textContent = DIALOG_COPY.owner_operation_review_heading;
+    review.appendChild(reviewHeading);
+    const reviewIntro = doc.createElement('p');
+    reviewIntro.className = 'packs-dialog-owner-operation-review-intro';
+    reviewIntro.textContent = DIALOG_COPY.owner_operation_review_intro;
+    review.appendChild(reviewIntro);
+    const list = doc.createElement('ul');
+    list.className = 'packs-dialog-owner-operation-review-list';
+    let hasRemoved = false;
+    for (const item of ownerReview) {
+      const row = doc.createElement('li');
+      row.setAttribute(
+        PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+        item.operation_id,
+      );
+      row.setAttribute('data-change', item.change);
+      row.setAttribute('data-ingredient-id', item.ingredient_id);
+      row.className = 'packs-dialog-owner-operation-review-item';
+      const ownerParts = [
+        ...(item.owner_policy.risk !== undefined
+          ? [`Owner risk: ${item.owner_policy.risk}`]
+          : []),
+        ...(item.owner_policy.approval !== undefined
+          ? [`Owner approval: ${item.owner_policy.approval}`]
+          : []),
+      ];
+      const incomingParts = item.incoming === undefined
+        ? []
+        : [
+            `Pack risk: ${item.incoming.risk}`,
+            `Pack approval: ${item.incoming.approval ?? 'automatic'}`,
+          ];
+      row.textContent = `${item.operation_id} — ${item.change === 'changed'
+        ? 'Changed'
+        : 'Removed'} · ${[...ownerParts, ...incomingParts].join(' · ')}`;
+      if (item.change === 'removed') hasRemoved = true;
+      list.appendChild(row);
+    }
+    review.appendChild(list);
+    if (hasRemoved) {
+      const removed = doc.createElement('p');
+      removed.className = 'packs-dialog-owner-operation-review-removed';
+      removed.textContent = DIALOG_COPY.owner_operation_review_removed;
+      review.appendChild(removed);
+    }
+    container.appendChild(review);
+  }
 
   // Recipe count summary
   const recipesP = doc.createElement('p');
@@ -539,8 +627,12 @@ export const renderPacksInstallDialog = (
   installBtn.setAttribute(PACKS_DIALOG_INSTALL_BTN_ATTR, '');
   installBtn.className = 'rx-btn rx-btn-primary rx-btn-sm packs-dialog-install';
   installBtn.textContent = installing
-    ? DIALOG_COPY.installing_label
-    : DIALOG_COPY.install_label;
+    ? isUpdate
+      ? DIALOG_COPY.updating_label
+      : DIALOG_COPY.installing_label
+    : isUpdate
+      ? DIALOG_COPY.update_label
+      : DIALOG_COPY.install_label;
   // Slice B — also disable while a Delete rpc is mid-flight on
   // another row. Single-rpc-at-a-time per DD#10; without this gate
   // a user could submit a parallel install while a delete is

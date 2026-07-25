@@ -53,7 +53,7 @@
  *  with `ratio = 0` — recipes gate on `inbound_count + outbound_count > 0`
  *  before treating the bucket as meaningful.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.1 + § A.3.2 (authorship filter) +
+ *  Spec: D-139 § A.9.1 + § A.3.2 (authorship filter) +
  *  § A.3.3 (direction filter) + § A.3.6 (lifecycle filter) +
  *  § P3 acceptance. */
 

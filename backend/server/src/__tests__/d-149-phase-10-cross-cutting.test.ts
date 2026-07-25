@@ -17,7 +17,7 @@
  *    - Cross-endpoint isolation — two endpoints in one DB stay
  *      decoupled (rate-limit budget, access log, token verification)
  *
- *  Spec: docs/d-149-spec.md § A.16 + § A.18 + § Must Hold I-8 / I-9 /
+ *  Spec: D-149 § A.16 + § A.18 + § Must Hold I-8 / I-9 /
  *  I-12b. */
 
 import Database from 'better-sqlite3';

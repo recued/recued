@@ -46,7 +46,7 @@ const mailArgsB = {
 let seedCounter = 0;
 
 const seedPlan = (
-  store: planApproval.PlanApprovalStore,
+  store: planApproval.SynchronousPlanApprovalStore,
   overrides: Partial<ChatPlanProposal> = {},
 ): ChatPlanProposal => {
   const args = overrides.args ?? mailArgsA;
@@ -68,7 +68,7 @@ const seedPlan = (
 };
 
 const approvePlan = (
-  store: planApproval.PlanApprovalStore,
+  store: planApproval.SynchronousPlanApprovalStore,
   plan_id: string,
   resolved_at: number,
 ): ChatPlanProposal => {
@@ -474,10 +474,51 @@ const consumeApprovedPlanOnce = async (
 };
 
 describe('D-137 § A.11 — orchestrator dispatchTool approval consumption', () => {
+  it('persists and broadcasts a trusted SELF run address with the execution receipt', async () => {
+    const h = buildOrchestratorHarness();
+    h.dispatchFn.mockResolvedValueOnce({
+      ok: true,
+      result: { rows: [] },
+      run_id: 'run-exact-1',
+    });
+
+    const planId = await consumeApprovedPlanOnce(h);
+
+    expect(
+      h.planApprovalStore.listForSession(h.session_id).find(
+        (record) => record.plan.plan_id === planId,
+      )?.execution,
+    ).toEqual({
+      status: 'completed',
+      turn_id: 't2',
+      result_ref: `${h.session_id}:t2:mail.send`,
+      run_id: 'run-exact-1',
+    });
+    expect(
+      h.broadcasted.find(
+        (event) =>
+          event.kind === 'chat.tool_call_completed'
+          && event.turn_id === 't2',
+      ),
+    ).toMatchObject({
+      kind: 'chat.tool_call_completed',
+      status: 'ok',
+      plan_id: planId,
+      run_id: 'run-exact-1',
+    });
+  });
+
   it('consumes an approved turn_1 plan on turn_2 dispatch and audits the spend', async () => {
     const h = buildOrchestratorHarness();
     const proposed = await dispatchMail(h, 't1');
     const planId = expectAwaitingApproval(proposed);
+    expect(
+      h.broadcasted.find(
+        (event) =>
+          event.kind === 'chat.tool_call_completed'
+          && event.turn_id === 't1',
+      ),
+    ).not.toHaveProperty('plan_id');
     approveHarnessPlan(h, planId, 6_000);
     h.setNow(7_000);
 
@@ -499,6 +540,221 @@ describe('D-137 § A.11 — orchestrator dispatchTool approval consumption', () 
       plan_id: planId,
       approved_turn_id: 't1',
       tier: 1,
+    });
+    expect(
+      h.broadcasted.filter(
+        (event) =>
+          (
+            event.kind === 'chat.tool_call_started'
+            || event.kind === 'chat.tool_call_completed'
+          )
+          && event.turn_id === 't2',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'chat.tool_call_started',
+        plan_id: planId,
+      }),
+      expect.objectContaining({
+        kind: 'chat.tool_call_completed',
+        status: 'ok',
+        plan_id: planId,
+      }),
+    ]);
+    expect(
+      h.planApprovalStore.listForSession(h.session_id).find(
+        (record) => record.plan.plan_id === planId,
+      )?.execution,
+    ).toEqual({
+      status: 'completed',
+      turn_id: 't2',
+      result_ref: `${h.session_id}:t2:mail.send`,
+    });
+  });
+
+  it('fails closed without a receipt link when approval consumption cannot be confirmed', async () => {
+    const h = buildOrchestratorHarness();
+    const proposed = await dispatchMail(h, 't1');
+    const planId = expectAwaitingApproval(proposed);
+    approveHarnessPlan(h, planId, 6_000);
+    vi.spyOn(
+      h.planApprovalStore,
+      'consumeForDispatch',
+    ).mockReturnValueOnce(undefined);
+    h.setNow(7_000);
+
+    const result = await dispatchMail(h, 't2');
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'execution_error',
+      detail:
+        'The one-time approval could not be confirmed as used; '
+        + 'no tool call was started.',
+    });
+    expect(h.dispatchFn).not.toHaveBeenCalled();
+    expect(h.planApprovalStore.get(planId)?.consumed_at).toBeUndefined();
+    const completion = h.broadcasted.find(
+      (event) =>
+        event.kind === 'chat.tool_call_completed'
+        && event.turn_id === 't2',
+    );
+    expect(completion).toEqual(expect.objectContaining({
+      status: 'error',
+      reason: 'execution_error',
+    }));
+    expect(completion).not.toHaveProperty('plan_id');
+  });
+
+  it('falls back to durable uncertainty when terminal receipt persistence fails', async () => {
+    const h = buildOrchestratorHarness();
+    const proposed = await dispatchMail(h, 't1');
+    const planId = expectAwaitingApproval(proposed);
+    approveHarnessPlan(h, planId, 6_000);
+    const recordExecution =
+      h.planApprovalStore.recordExecution.bind(h.planApprovalStore);
+    const receiptSpy = vi.spyOn(h.planApprovalStore, 'recordExecution')
+      .mockImplementation((id, receipt) => {
+        if (receipt.status === 'completed') {
+          throw new Error('vault locked during terminal receipt');
+        }
+        return recordExecution(id, receipt);
+      });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.setNow(7_000);
+
+    try {
+      expect(await dispatchMail(h, 't2')).toMatchObject({ ok: true });
+      expect(
+        receiptSpy.mock.calls.map(([, receipt]) => receipt.status),
+      ).toEqual(['completed', 'unknown']);
+      expect(
+        h.planApprovalStore.listForSession(h.session_id).find(
+          (record) => record.plan.plan_id === planId,
+        )?.execution,
+      ).toEqual({
+        status: 'unknown',
+        turn_id: 't2',
+      });
+    } finally {
+      receiptSpy.mockRestore();
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('links a consumed plan to a failed completion so the receipt cannot hang at running', async () => {
+    const h = buildOrchestratorHarness();
+    const proposed = await dispatchMail(h, 't1');
+    const planId = expectAwaitingApproval(proposed);
+    approveHarnessPlan(h, planId, 6_000);
+    h.dispatchFn.mockImplementationOnce(
+      async (): Promise<ChatDispatchResult> => ({
+        ok: false,
+        reason: 'execution_error',
+        detail: 'provider did not confirm completion',
+      }),
+    );
+    h.setNow(7_000);
+
+    const result = await dispatchMail(h, 't2');
+
+    expect(result).toMatchObject({ ok: false, reason: 'execution_error' });
+    expect(
+      h.broadcasted.find(
+        (event) =>
+          event.kind === 'chat.tool_call_completed'
+          && event.turn_id === 't2',
+      ),
+    ).toMatchObject({
+      status: 'error',
+      reason: 'execution_error',
+      detail: 'provider did not confirm completion',
+      plan_id: planId,
+    });
+    expect(
+      h.planApprovalStore.listForSession(h.session_id).find(
+        (record) => record.plan.plan_id === planId,
+      )?.execution,
+    ).toEqual({
+      status: 'failed',
+      turn_id: 't2',
+      reason: 'execution_error',
+      detail: 'provider did not confirm completion',
+    });
+  });
+
+  it('closes a consumed-plan receipt when the registry throws instead of returning', async () => {
+    const h = buildOrchestratorHarness();
+    const proposed = await dispatchMail(h, 't1');
+    const planId = expectAwaitingApproval(proposed);
+    approveHarnessPlan(h, planId, 6_000);
+    h.dispatchFn.mockRejectedValueOnce(new Error('dispatch exploded'));
+    h.setNow(7_000);
+
+    await expect(dispatchMail(h, 't2')).rejects.toThrow('dispatch exploded');
+
+    expect(
+      h.broadcasted.find(
+        (event) =>
+          event.kind === 'chat.tool_call_completed'
+          && event.turn_id === 't2',
+      ),
+    ).toMatchObject({
+      status: 'error',
+      reason: 'execution_error',
+      plan_id: planId,
+    });
+    expect(
+      h.planApprovalStore.listForSession(h.session_id).find(
+        (record) => record.plan.plan_id === planId,
+      )?.execution,
+    ).toEqual({
+      status: 'failed',
+      turn_id: 't2',
+      reason: 'execution_error',
+    });
+  });
+
+  it('marks a successful-but-held plan dispatch as paused rather than completed', async () => {
+    const h = buildOrchestratorHarness();
+    const proposed = await dispatchMail(h, 't1');
+    const planId = expectAwaitingApproval(proposed);
+    approveHarnessPlan(h, planId, 6_000);
+    h.dispatchFn.mockImplementationOnce(
+      async (): Promise<ChatDispatchResult> => ({
+        ok: true,
+        result: { status: 'awaiting_approval' },
+        run_held: { kind: 'approval' },
+      }),
+    );
+    h.setNow(7_000);
+
+    const result = await dispatchMail(h, 't2');
+
+    expect(result).toMatchObject({
+      ok: true,
+      run_held: { kind: 'approval' },
+    });
+    expect(
+      h.broadcasted.find(
+        (event) =>
+          event.kind === 'chat.tool_call_completed'
+          && event.turn_id === 't2',
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      run_held: 'approval',
+      plan_id: planId,
+    });
+    expect(
+      h.planApprovalStore.listForSession(h.session_id).find(
+        (record) => record.plan.plan_id === planId,
+      )?.execution,
+    ).toEqual({
+      status: 'held',
+      turn_id: 't2',
+      result_ref: `${h.session_id}:t2:mail.send`,
+      hold_kind: 'approval',
     });
   });
 

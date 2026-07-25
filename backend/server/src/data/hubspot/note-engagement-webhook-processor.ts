@@ -5,7 +5,7 @@
  *  idempotency-ledger gate; resolves the note record via
  *  `/crm/v3/objects/notes/{id}` follow-up GET.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6. */
 
 import { HUBSPOT_NOTE_PROPERTIES } from '@recued/contracts';
 

@@ -27,7 +27,7 @@
  *  and a SQLite collection backs the server with no store-code change.
  *  The collection is keyed by `commit_id`.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate (atomic) / § Dispatch-
+ *  Spec: D-153 § Commit substrate (atomic) / § Dispatch-
  *  outbox + crash-recovery.
  */
 

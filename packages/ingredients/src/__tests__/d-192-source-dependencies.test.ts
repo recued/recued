@@ -2,7 +2,7 @@
  *  the input-dependency graph that `create_if_not_picked` resolves: unique refs,
  *  list_op + id/label, create_op ⇔ create_name_arg, `arg_from` top-down (no
  *  cycles), non-empty `binds` against declared ops, and resolve↔op-role pairing.
- *  See `docs/d-192-source-dependencies-design.md`. */
+ *  See D-192. */
 
 import { describe, expect, it } from 'vitest';
 import { validateWorkEntitySources } from '../validate-work-entity-sources.js';

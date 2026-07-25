@@ -33,7 +33,7 @@
  *  existing `connection` adapter via per-vendor wrappers
  *  (`deal-reader-hubspot` / `opportunity-reader-salesforce`).
  *
- *  Spec: docs/d-130-spec.md §A.7.2 + §Phase 7. */
+ *  Spec: D-130 §A.7.2 + §Phase 7. */
 
 import {
   CONNECTION_VENDOR_ENTITIES,

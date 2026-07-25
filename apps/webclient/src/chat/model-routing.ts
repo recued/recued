@@ -210,7 +210,7 @@ const slotSourceOption = (slot: LlmSlotDetail): ChatModelSourceOption => {
 
 /** Project the LLM config into the picker's CONFIGURED source options, in
  *  slot_1 → slot_2 → free_pool order. Empty when nothing is configured (the
- *  picker then renders the "Configure LLM →" link). */
+ *  picker then renders the "Set up Chat →" link). */
 export const buildChatModelSourceOptions = (
   config: LlmConfigRecord | null,
 ): ChatModelSourceOption[] => {

@@ -32,7 +32,7 @@
  *       engagement).
  *    4. Bucket on distinct count.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import {
   type AccountBreadthBucket,

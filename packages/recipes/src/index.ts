@@ -168,7 +168,7 @@ export type {
 // Connection-agnostic op dispatch — the R1 install-time rewrite of a canonical
 // recipe (CanonicalOpStep `deal.search`) into a concrete vendor-bound recipe via
 // the injected PackResolutionContext. Design:
-// docs/unified-pack-exploration/connection-agnostic-op-contract.md.
+// internal design notes.
 export {
   resolveConnectionAgnosticRecipe,
   connectionVariableNames,

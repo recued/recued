@@ -97,6 +97,7 @@ const baseRawOpCtx = (
   operation_id: 'task.create',
   connection_name: 'myconn',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -328,9 +329,12 @@ describe('D-182 raw-op session grants', () => {
         ctx: baseRawOpCtx({ risk_tier: 'admin' }),
       },
       {
-        name: 'risk_tier read is never grantable',
+        name: 'pre-lift always cannot use a read session grant',
         grant: baseRawOpGrant({ risk_tier: 'read' }),
-        ctx: baseRawOpCtx({ risk_tier: 'read' }),
+        ctx: baseRawOpCtx({
+          risk_tier: 'read',
+          pre_lift_approval: 'always',
+        }),
       },
       {
         name: 'ingredient not explicitly named',
@@ -349,6 +353,13 @@ describe('D-182 raw-op session grants', () => {
         testCase.name,
       ).toBe(false);
     }
+  });
+
+  it('matches a read-tier raw-op session grant for pre-lift ask', () => {
+    expect(matches(
+      baseRawOpGrant({ risk_tier: 'read' }),
+      baseRawOpCtx({ risk_tier: 'read', pre_lift_approval: 'ask' }),
+    )).toBe(true);
   });
 
   it('matches when both grant and dispatch carry the same entity_scope', () => {

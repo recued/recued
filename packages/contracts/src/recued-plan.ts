@@ -35,7 +35,7 @@
  *       `persist_policy: 'persist'` for AI-packet exposure (audit
  *       persistence is allowed). See § B.2.3.
  *
- *  Spec: `docs/d-145-spec.md` § B.5 + § B.2.3 + § B.5.5.
+ *  Spec: D-145 § B.5 + § B.2.3 + § B.5.5.
  *  Hard prereq: D-148 § A.2.5 (server_identity_key for high-assurance
  *  signature emission). */
 

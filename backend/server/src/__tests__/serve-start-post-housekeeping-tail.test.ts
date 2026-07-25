@@ -84,6 +84,7 @@ const makeOptions = (
     },
     app: {
       llmConfig: { slot_1: { provider: 'openai', model: 'gpt-4.1' } },
+      executionCaseLifecycle: { finalizeTurn: vi.fn() },
     },
     collection: {
       calendarStack: { disposeAll: vi.fn() },
@@ -130,6 +131,10 @@ describe('startPostHousekeepingTail', () => {
       auditRetention: options.storage.auditRetention,
       s2sPreviewStore: options.storage.s2sPreviewStoreRef,
       correctionEventsStore: options.storage.correctionEventsStoreRef,
+      checkpointStore: options.storage.checkpointStore,
+      auditLog: options.storage.auditLog,
+      executionCaseLifecycle: options.app.executionCaseLifecycle,
+      notificationBlock: options.notificationBlock,
     });
     expect(tailMocks.startDdnsUpdatePoller).toHaveBeenCalledWith({
       db: options.storage.db,

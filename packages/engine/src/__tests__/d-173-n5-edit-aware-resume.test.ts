@@ -22,7 +22,7 @@
  *  plus a prototype-pollution-safe merge and an absent-checkpoint /
  *  non-checkpoint-sourced negative.
  *
- *  Spec: docs/d-173-spec.md § N.5; docs/d-157-spec.md § A.2 / TR-5.
+ *  Spec: D-173 § N.5; D-157 § A.2 / TR-5.
  */
 
 import { describe, it, expect } from 'vitest';

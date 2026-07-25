@@ -17,6 +17,15 @@ export function cmdHelp(): void {
   Pairing:
     pair                                Show a pairing code for the extension
 
+  Recovery:
+    recover-keyfile                     Re-create an unopenable server keyfile
+                                        from your 24-word recovery key. Rescues
+                                        the realm; mints a NEW identity, so every
+                                        device must pair again.
+    rotate-passphrase                   Change RECUED_IDENTITY_PASSPHRASE on an
+                                        openable keyfile. Keeps the identity —
+                                        nothing re-pairs. Server must be stopped.
+
   Audit:
     audit                               List recent runs
     audit <run-id|recipe-id>            Show one run or filter by recipe

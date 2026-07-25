@@ -1,11 +1,12 @@
 import { hostname } from 'node:os';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
 import { resolveBindPort } from '../cli/resolve-bind-port.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { cmdPair } from '../commands/pair.js';
 import { createPairingManager } from '../pairing.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
+import { openDatabase } from '../open-database.js';
 
 export interface PairProfileOptions {
   args: string[];
@@ -42,7 +43,7 @@ export async function runPairProfile(options: PairProfileOptions): Promise<void>
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

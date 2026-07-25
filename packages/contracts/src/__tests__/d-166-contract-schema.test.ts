@@ -25,6 +25,7 @@ const EXPECTED_DISPATCH_ROLES = [
   'pack_inventory',
   // D-170 gap #2 — connection → local-catalog binding inventory role.
   'connection_binding',
+  'owner_operation_defaults',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -257,6 +258,7 @@ describe('D-165 contract schema seed', () => {
       'grant',
       'policy_resolution',
       'override',
+      'owner_operation',
       'contract_definition',
       // D-177 N.13 (P6b) — staged-trust suggestion rows, keyed by the
       // canonical N.13 key hash (the learner's UNIQUE-key upsert target).
@@ -284,6 +286,7 @@ describe('D-165 contract schema seed', () => {
       'grant_policy',
       'merge_card_resolution',
       'override_policy',
+      'owner_operation_policy',
       'contract_scope',
       // D-177 N.3 — session-grant nested shapes (bound recipe identity +
       // batch member), referenced by the extended contract_definition shape.
@@ -350,6 +353,15 @@ describe('D-165 contract schema seed', () => {
     ]);
   });
 
+  it('pins D-211 owner defaults as an exact actorless operation key', () => {
+    const owner = D165_CONTRACT_SCHEMA.composite_keys.owner_operation;
+    expect(owner.segments).toEqual(['ingredient_id', 'operation_id']);
+    expect(owner.required).toEqual(['ingredient_id', 'operation_id']);
+    expect(owner.optional_tail).toBeUndefined();
+    expect(owner.applies_to).toEqual(['owner_operation_defaults']);
+    expect(owner.merge_rule).toBe('override');
+  });
+
   it('pins merge precedence by composite key', () => {
     expect(
       Object.fromEntries(
@@ -367,6 +379,7 @@ describe('D-165 contract schema seed', () => {
       grant: 10,
       policy_resolution: 20,
       override: 30,
+      owner_operation: 0,
       contract_definition: 0,
       // D-177 N.13 (P6b) — one row per key hash, no composition.
       delegation_rule_suggestion: 0,

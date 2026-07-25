@@ -5,7 +5,7 @@
  *  + threads the typed shapes the rpc surface returns to webclient
  *  callers (Settings → Server → Reception page).
  *
- *  Spec: docs/d-149-spec.md § A.3 (storage + rpc) + § A.5.x (per-kind
+ *  Spec: D-149 § A.3 (storage + rpc) + § A.5.x (per-kind
  *  packet declarations). */
 
 import type { ReceptionEndpointKind } from './reception.js';

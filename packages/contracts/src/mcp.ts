@@ -9,7 +9,7 @@
  *  contracts stays pure (no Node-only APIs beyond the standard
  *  `atob`/`btoa` already used in `bundle.ts`).
  *
- *  Spec: docs/d-120-spec.md (`data.timeline()` MCP primitive).
+ *  Spec: D-120 (`data.timeline()` MCP primitive).
  */
 
 /** Default cap on returned timeline entries when the caller omits

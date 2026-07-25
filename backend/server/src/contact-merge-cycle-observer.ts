@@ -19,7 +19,7 @@
  *  `onPlatformLinkChanged` callback; the single consumer is the
  *  scheduler boundary (`beginCycle()` / `closeCycle()`).
  *
- *  Spec: `docs/d-138-spec.md` § A.10. */
+ *  Spec: D-138 § A.10. */
 
 import { randomUUID } from 'node:crypto';
 

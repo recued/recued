@@ -4,7 +4,7 @@
  *  ranked `PrefetchCandidate[]` lives here, PURE, decoupled from row sourcing — so
  *  the current whole-warehouse scan (`createContactPrefetchSearch`) and the
  *  prefetch-owned FTS&RAM index that will replace it
- *  (`docs/d-167-prefetch-index-and-recall-collision-design.md` §1.A) run the EXACT
+ *  (D-167 §1.A) run the EXACT
  *  same per-row scoring + tie behaviour, identical output at ≤ the scan cap.
  *
  *  Pure: no IO, no warehouse access. The caller supplies the candidate rows, the

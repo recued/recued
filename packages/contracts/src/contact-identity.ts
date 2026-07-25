@@ -25,7 +25,7 @@
  *  for platform_id) and returns the matched contact_id (or null with
  *  alternatives on ambiguity).
  *
- *  Spec: docs/d-145-spec.md § A.4.
+ *  Spec: D-145 § A.4.
  *
  *  D-192 C-2: the alias `source` vocabulary + its rank were folded into the one
  *  contribution ladder (`contact-contribution.ts`) — see `ContactAliasSource`. */

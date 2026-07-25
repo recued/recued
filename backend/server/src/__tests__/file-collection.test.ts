@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, type FSWatcher } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -16,7 +17,11 @@ import {
 
 import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 import { createFileCollection } from '../collections/file/file-collection.js';
-import { globToRegExp, matchesAnyIgnore } from '../collections/file/fs-adapter.js';
+import {
+  createFsWatcher,
+  globToRegExp,
+  matchesAnyIgnore,
+} from '../collections/file/fs-adapter.js';
 
 const BIG_QUOTA = 100 * 1024 * 1024;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -120,6 +125,71 @@ describe('globToRegExp + matchesAnyIgnore', () => {
     const re = [globToRegExp('/top.txt')];
     expect(matchesAnyIgnore(re, 'top.txt')).toBe(true);
     expect(matchesAnyIgnore(re, 'sub/top.txt')).toBe(false);
+  });
+});
+
+describe('createFsWatcher — honest watch mode', () => {
+  let h: Harness;
+  beforeEach(() => { h = newHarness(); });
+  afterEach(() => { h.close(); });
+
+  it('watch:none completes a one-shot scan without attaching a watcher', async () => {
+    writeFileSync(join(h.root, 'seed.txt'), 'seed');
+    const events: string[] = [];
+    let attachCalls = 0;
+    const watcher = createFsWatcher({
+      root: h.root,
+      ignore: [],
+      watchMode: 'none',
+      onEvent: (event) => { events.push(`${event.type}:${event.path}`); },
+      watchFactory: () => {
+        attachCalls++;
+        throw new Error('must not attach');
+      },
+    });
+
+    await watcher.start();
+    expect(events).toEqual([`present:${join(h.root, 'seed.txt')}`]);
+    expect(attachCalls).toBe(0);
+    await watcher.stop();
+  });
+
+  it('rejects when realtime was promised but attachment fails', async () => {
+    const watcher = createFsWatcher({
+      root: h.root,
+      ignore: [],
+      watchMode: 'realtime',
+      onEvent: () => {},
+      watchFactory: () => { throw new Error('recursive watch unsupported'); },
+    });
+
+    await expect(watcher.start()).rejects.toMatchObject({
+      name: 'FsWatchUnavailableError',
+      code: 'FS_WATCH_UNAVAILABLE',
+    });
+    await watcher.stop();
+  });
+
+  it('reports an asynchronous watcher failure after a healthy start', async () => {
+    const fakeWatcher = Object.assign(new EventEmitter(), { close: vi.fn() });
+    const onUnavailable = vi.fn();
+    const watcher = createFsWatcher({
+      root: h.root,
+      ignore: [],
+      watchMode: 'realtime',
+      onEvent: () => {},
+      onUnavailable,
+      watchFactory: () => fakeWatcher as unknown as FSWatcher,
+    });
+
+    await watcher.start();
+    fakeWatcher.emit('error', new Error('watch handle lost'));
+
+    await vi.waitFor(() => expect(onUnavailable).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'FS_WATCH_UNAVAILABLE' }),
+    ));
+    expect(fakeWatcher.close).toHaveBeenCalledOnce();
+    await watcher.stop();
   });
 });
 

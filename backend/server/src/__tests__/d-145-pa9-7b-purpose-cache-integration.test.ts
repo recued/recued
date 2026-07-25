@@ -4,7 +4,7 @@
  *  hit / miss / self-heal surface but with purpose's classification
  *  output shape `{ category, confidence, reasoning }`.
  *
- *  Spec: docs/d-145-spec.md § A.7.10. */
+ *  Spec: D-145 § A.7.10. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

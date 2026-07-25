@@ -21,6 +21,22 @@ import {
   type StartPreListenerRuntimeOptions,
 } from './start-pre-listener-runtime.js';
 import { composeArchiveRpcDeps } from '../archive/archive-runtime.js';
+import { createUploadSessionStore } from '../storage/upload-session-store.js';
+
+/** The upload-session lookup the boot reclaim wants, when this composition can
+ *  actually provide one. Returns an empty object rather than throwing: the
+ *  reclaim degrades to skipping the upload tree, and a boot must not fail over
+ *  a housekeeping nicety. */
+const uploadSessionsForReclaim = (
+  db: unknown,
+): { uploadSessions?: Pick<import('../storage/upload-session-store.js').UploadSessionStore, 'get'> } => {
+  if (!db) return {};
+  try {
+    return { uploadSessions: createUploadSessionStore(db as never) };
+  } catch {
+    return {};
+  }
+};
 import { handleGetStatus } from '../bootstrap-handler.js';
 import type { PassportExportRpcDeps } from '../passport/export-handler.js';
 
@@ -125,6 +141,12 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
     // location) + the just-booted signing identity (the new publisher_id).
     dbPath: options.lifecycle.base.dbPath,
     getSigningIdentity: options.getSigningIdentity,
+    // Lets the boot reclaim distinguish a stranded upload scratch file from
+    // one a resumable session still owns. Best-effort: the store creates its
+    // own table, which a db-less or stubbed composition cannot serve — and the
+    // reclaim already treats an absent lookup as "skip the upload tree", which
+    // is the fail-safe answer rather than deleting a resumable session's file.
+    ...(uploadSessionsForReclaim(options.lifecycle.db)),
   });
 
   // Scope-B (D-108/D-109) — assemble the live `server.archive.*` runtime

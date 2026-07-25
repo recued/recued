@@ -67,7 +67,7 @@
  *  (which a future Settings → some-other-route remount would then
  *  inherit).
  *
- *  Spec: docs/d-148-spec.md § A.4.1 (Storage model — "Clear this
+ *  Spec: D-148 § A.4.1 (Storage model — "Clear this
  *  browser" + closed-list state). */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
@@ -101,6 +101,7 @@ import {
   type KeyHealthLoader,
   type KeyRotateCaller,
   type KeyHealthPanelMount,
+  type SystemStatusLoader,
 } from './key-health-panel.js';
 import {
   CERT_PIN_STALE_PANEL_STYLES,
@@ -159,6 +160,7 @@ import {
   type AiModelsSetChatCatalogModeCaller,
   type AiModelsLlmPromptsGetCaller,
   type AiModelsLlmPromptSetCaller,
+  type AiModelsInitialView,
   type AiModelsPageMount,
   type ChatDefaultModelPrefGetCaller,
   type ChatDefaultModelPrefSetCaller,
@@ -337,6 +339,13 @@ export interface BootstrapSettingsRouteOptions {
    *  `data-recued-settings-section`, the route scrolls that section into view
    *  once after mount. Unknown / absent ids are a safe no-op. */
   initialSectionId?: string | null;
+  /** Optional intent-specific view within AI / Models. The normal settings
+   * route stays on `manage`; Chat links to the focused `chat-setup` journey. */
+  initialAiModelsView?: AiModelsInitialView | null;
+  /** Fired after focused Chat setup has confirmed both required writes. */
+  onChatSetupComplete?: () => void;
+  /** Exact Chat deep link used by focused setup's return controls. */
+  chatSetupReturnHref?: string;
   /** Optional `#settings/seller/<subpage>` selection. Seller validates the
    * closed list and falls back to the Seller directory for a stale segment. */
   initialSellerSubpage?: string | null;
@@ -418,6 +427,13 @@ export interface BootstrapSettingsRouteOptions {
    *  `(req) => conn('key.rotate', req)`; tests inject a fake. See
    *  `keyHealthLoader` for the gate. */
   keyRotateCaller?: KeyRotateCaller;
+  /** D-212 §7.10 — `system.status` rpc caller, forwarded to the Key
+   *  Health page for its keyfile-posture card. Production wires
+   *  `() => conn('system.status', undefined).status`; tests inject a fake.
+   *  Independent of the Key Health gate: absent → the page mounts without
+   *  the posture card, and a failed read shows on the card rather than
+   *  failing the page. */
+  systemStatusLoader?: SystemStatusLoader;
   /** R26.2 Delta 1 — Settings → Server → Exposure grid callers. The
    *  Exposure sub-tab mounts only when ALL FOUR are wired (read + three
    *  mutators) — a read-only grid can't toggle, and a toggle-only grid
@@ -1381,7 +1397,8 @@ export const bootstrapSettingsRoute = (
     aiSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'ai-models');
 
     const aiSectionHeading = doc.createElement('h2');
-    aiSectionHeading.textContent = 'AI / Models';
+    aiSectionHeading.textContent =
+      opts.initialAiModelsView === 'chat-setup' ? 'Set up Chat' : 'AI / Models';
     aiSection.appendChild(aiSectionHeading);
 
     const aiHost = doc.createElement('div');
@@ -1389,6 +1406,16 @@ export const bootstrapSettingsRoute = (
     aiModels = mountAiModelsPage({
       host: aiHost,
       document: doc,
+      ...(opts.initialAiModelsView !== undefined
+        && opts.initialAiModelsView !== null
+        ? { initialView: opts.initialAiModelsView }
+        : {}),
+      ...(opts.onChatSetupComplete !== undefined
+        ? { onChatSetupComplete: opts.onChatSetupComplete }
+        : {}),
+      ...(opts.chatSetupReturnHref !== undefined
+        ? { chatSetupReturnHref: opts.chatSetupReturnHref }
+        : {}),
       ...(opts.aiModelsDefaultModelPrefGetCaller !== undefined
         ? { runGetDefaultModelPref: opts.aiModelsDefaultModelPrefGetCaller }
         : {}),
@@ -2136,6 +2163,11 @@ export const bootstrapSettingsRoute = (
         document: doc,
         loadHealth: opts.keyHealthLoader!,
         runRotate: opts.keyRotateCaller!,
+        // D-212 §7.10 — the keyfile posture card renders only when the
+        // host wired a `system.status` reader.
+        ...(opts.systemStatusLoader !== undefined
+          ? { loadSystemStatus: opts.systemStatusLoader }
+          : {}),
         ...(opts.now !== undefined ? { now: opts.now } : {}),
       });
     }

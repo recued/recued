@@ -31,7 +31,7 @@
  *  ingest just stores the CRM row + its `meta.message_id`. Probable
  *  (from+to+sent_at) twin materialization is deferred.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.2, § A.3.3, § A.3.5,
+ *  Spec: D-139 § A.1, § A.3, § A.3.2, § A.3.3, § A.3.5,
  *  § A.3.6, § A.3.7, § A.3.8, § A.4, § A.5. */
 
 import {

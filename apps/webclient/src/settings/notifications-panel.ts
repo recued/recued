@@ -67,7 +67,7 @@
  *  remotes). The panel does NOT re-sort — the substrate is the
  *  source of truth for row order so a future reshape lands once.
  *
- *  Spec: docs/d-163-spec.md § N.5 / N.6 / A.5. */
+ *  Spec: D-163 § N.5 / N.6 / A.5. */
 
 import type {
   NotificationBridgeModeRow,

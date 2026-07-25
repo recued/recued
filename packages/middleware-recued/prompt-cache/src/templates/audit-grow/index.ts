@@ -33,7 +33,7 @@
  *      rebuilds. Live-rebuild validation failures flow through
  *      `onPoolError`; the prior frozen list is preserved.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/audit-grow / O-6 (user-promoted only). */
 
 import type { RegisteredTemplate, TemplatePool } from '../library.js';

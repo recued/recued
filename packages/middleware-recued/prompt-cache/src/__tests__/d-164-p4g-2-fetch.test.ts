@@ -699,6 +699,7 @@ describe('D-164 P4g-2 loadBundlePool', () => {
     expect(probeData).toHaveBeenCalledWith({
       template: requireFirst(pool.list()).template,
       slots: [makeSlot('entity.email', 'alice@example.com', 6)],
+      locale: 'en',
     });
   });
 

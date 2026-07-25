@@ -32,7 +32,7 @@
  *  Settings UI renders alongside each row) and `install_url?` (the
  *  Bridge "Install Browser Bridge" CTA target).
  *
- *  Spec: docs/d-158-spec.md § N.5 / A.6 / I-7 / O-4 + docs/d-163-spec.md
+ *  Spec: D-158 § N.5 / A.6 / I-7 / O-4 + D-163
  *        § N.5 / N.6 / A.5.
  */
 

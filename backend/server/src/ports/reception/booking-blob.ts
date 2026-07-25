@@ -43,7 +43,7 @@
  *  It is carried anyway so the two blobs are one shape rather than two that
  *  merely resemble each other. Readers here take `fields.email`.
  *
- *  Spec: `docs/d-210-spec.md` § A.3; `docs/d-149-spec.md` § A.5.2 + § N.6. */
+ *  Spec: D-210 § A.3; D-149 § A.5.2 + § N.6. */
 
 import {
   SCHEDULING_LINK_VISITOR_FIELD_NAMES,

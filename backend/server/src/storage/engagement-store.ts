@@ -35,7 +35,7 @@
  *  through D-138's `merged_into` chain to the survivor's full member
  *  set per § A.5.0.
  *
- *  Spec: `docs/d-139-spec.md` § A.3, § A.3.5, § A.3.8, § A.4, § A.5,
+ *  Spec: D-139 § A.3, § A.3.5, § A.3.8, § A.4, § A.5,
  *  § A.5.0, § A.5.1. */
 
 import type Database from 'better-sqlite3';

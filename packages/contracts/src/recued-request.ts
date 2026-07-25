@@ -10,7 +10,7 @@
  *  `packages/engine/src/primitives/` consume narrower per-primitive
  *  inputs derived from the request + intermediate primitive outputs.
  *
- *  Spec: `docs/d-145-spec.md` § B.1.1 + § B.5 + § B.7. */
+ *  Spec: D-145 § B.1.1 + § B.5 + § B.7. */
 
 import type { AuditPolicy, ClassificationIntentKind, ContextBreadth, ModelTier } from './recued-plan.js';
 

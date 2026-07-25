@@ -18,7 +18,7 @@
 // kill/flag policy is unit-testable in isolation. The stateful monitor that
 // drives it (poll loop, file-growth sampling, SIGKILL) lives server-side in
 // `backend/server/src/execution/stall-monitor.ts` (it needs node fs + timers).
-// See `docs/d-181-spec.md` §6.
+// See D-181 §6.
 
 import type { IngredientKind } from './ingredient.js';
 import type { ProgressContract } from './execution-lane.js';

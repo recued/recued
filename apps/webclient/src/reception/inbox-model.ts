@@ -126,6 +126,8 @@ export interface ReceptionInboxRowModel {
    *  NEVER render "0 others" for unknown: silence and zero mean opposite things
    *  here, and the owner acts on the difference. */
   overlap_label: string | null;
+  /** Owner-only prior completed/no-show history. */
+  booking_history: InboxItem['booking_history'] | null;
   proposed_action: string;
   status: ReceptionInboxStatus;
   attachment: ReceptionInboxAttachmentModel | null;
@@ -299,17 +301,31 @@ export const buildReceptionInboxRowModel = (
       ? computeReceptionInboxWhenLabel(item.preview.when, now)
       : null,
   overlap_label: computeReceptionInboxOverlapLabel(item.calendar_overlap),
+  booking_history: item.booking_history ?? null,
   proposed_action: item.proposed_action,
   status: item.status,
   attachment: buildReceptionInboxAttachmentModel(item.attachment),
   allow_offer: item.allow_offer ?? null,
 });
 
-const inputKindForField = (field: ArgEditField): ReceptionInboxInputKind => {
+const MULTILINE_STRING_FIELD = /(?:^|[._-])(body|content|description|details?|message|notes?|summary)(?:$|[._-])/i;
+
+const inputKindForField = (
+  field: ArgEditField,
+  value: unknown,
+): ReceptionInboxInputKind => {
   if (field.options_source) return 'select';
   switch (field.type) {
-    case 'string':
-      return 'text';
+    case 'string': {
+      const label = field.label ?? '';
+      const text = typeof value === 'string' ? value : '';
+      return MULTILINE_STRING_FIELD.test(field.key)
+        || MULTILINE_STRING_FIELD.test(label)
+        || text.includes('\n')
+        || text.length > 120
+        ? 'textarea'
+        : 'text';
+    }
     case 'number':
       return 'number';
     case 'boolean':
@@ -359,7 +375,7 @@ export const buildReceptionInboxFieldModel = (
     key: field.key,
     label: field.label ?? field.key,
     type: field.type,
-    input_kind: inputKindForField(field),
+    input_kind: inputKindForField(field, value),
     required: field.required === true,
     privacy: field.privacy ?? null,
     masked: field.privacy !== undefined,

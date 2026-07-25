@@ -1,6 +1,6 @@
 /** D-160 — framework-not-container surface ratchet (Must Hold I-3).
  *
- *  Spec: docs/d-160-spec.md Must Hold I-3. This file intentionally
+ *  Spec: D-160 Must Hold I-3. This file intentionally
  *  does not duplicate the D-159 I-1/I-2 import-boundary ratchets.
  *
  *  D-160 P1 ratcheted the framework's *presence* — the D-160 surface is

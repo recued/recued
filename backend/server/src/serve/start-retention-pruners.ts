@@ -6,6 +6,9 @@ import type { BackgroundServiceRegistry } from '../composition/bin/wire-backgrou
 import { composeRetentionPruners } from '../composition/bin/wire-retention-pruners.js';
 import type { S2SPreviewStore } from '../s2s-preview/store.js';
 import type { CorrectionEventsStore } from '../storage/correction-events-store.js';
+import type {
+  ExecutionCaseLifecycle,
+} from '../chat-execution-case-tools.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -19,6 +22,7 @@ export interface StartRetentionPrunersOptions {
    *  missing block skips prompt bookkeeping only). */
   readonly checkpointStore: CheckpointStore | undefined;
   readonly auditLog: AuditLogStore | undefined;
+  readonly executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   readonly notificationBlock:
     | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
     | undefined;

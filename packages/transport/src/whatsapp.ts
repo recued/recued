@@ -36,7 +36,7 @@
  *     these prompts are approvals, and a clipped label can change what the user
  *     thinks they are agreeing to.
  *
- *  Spec: docs/d-160-spec.md § A.5; docs/d-158-spec.md § P2 / A.4.
+ *  Spec: D-160 § A.5; D-158 § P2 / A.4.
  */
 
 import { randomUUID } from 'node:crypto';

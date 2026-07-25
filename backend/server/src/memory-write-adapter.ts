@@ -16,7 +16,7 @@
  *  (`reception-rpc-handler.ts` — that path stays a deliberate no-op for authoring
  *  preview). The live write path is the chat tool over this adapter (Fork 2 = A).
  *
- *  Spec: docs/d-198-spec.md §5 / §6 + docs/d-198-build-plan.md §B Slice 4. */
+ *  Spec: D-198 §5 / §6 + D-198 §B Slice 4. */
 
 import type { Actor } from '@recued/contracts';
 import type { MemoryWriteAdapter } from '@recued/middleware/primitives/index.js';

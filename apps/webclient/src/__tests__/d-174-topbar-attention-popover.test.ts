@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ServerPendingApproval, ServerPendingAsk } from '@recued/contracts';
 
 import {
+  ATTENTION_CHAT_PLAN_LINK_ATTR,
+  ATTENTION_CHAT_PLAN_RESOLUTION_ATTR,
+  ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
   ATTENTION_GATEWAY_ASK_ROW_ATTR,
   ATTENTION_SEE_ALL_LINK_ATTR,
   ATTENTION_TOPBAR_HOST_ATTR,
@@ -22,7 +25,10 @@ import type {
   AsksListCaller,
   AsksSubmitAnswerCaller,
 } from '../approvals/asks-panel.js';
-import type { PendingChatPlan } from '../approvals/pending-chat-plans-store.js';
+import type {
+  PendingChatPlan,
+  PendingChatPlanResolution,
+} from '../approvals/pending-chat-plans-store.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 
@@ -595,7 +601,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
   it('removes the persistent host and unsubscribes on dispose', async () => {
     const { root, handle, approvalChanged, sub } = mountFor();
     await handle.whenLoaded();
-    expect(root.childList).toHaveLength(1);
+    expect(root.childList).toHaveLength(2);
 
     handle.dispose();
 
@@ -668,16 +674,49 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     tool: 'mail-send',
     tier: 2,
     args: { to: 'a@b.com' },
+    payload_available: true,
     proposed_at: 1_700_000_000_700,
     ...over,
   });
 
   const makeFakeChatPlans = (initial: PendingChatPlan[] = []) => {
     let plans: PendingChatPlan[] = [...initial];
+    let resolution: PendingChatPlanResolution | null = null;
     const listeners = new Set<() => void>();
+    const refresh = vi.fn(async (): Promise<void> => {});
+    const notify = (): void => {
+      for (const listener of [...listeners]) listener();
+    };
     return {
       store: {
         list: (): ReadonlyArray<PendingChatPlan> => plans,
+        latestResolution: (): PendingChatPlanResolution | null => resolution,
+        recordResolution: (
+          resolvedPlan: PendingChatPlan,
+          decision: 'approve' | 'reject',
+        ): void => {
+          plans = plans.filter(
+            (candidate) => candidate.plan_id !== resolvedPlan.plan_id,
+          );
+          resolution = {
+            plan_id: resolvedPlan.plan_id,
+            session_id: resolvedPlan.session_id,
+            turn_id: resolvedPlan.turn_id,
+            ...(resolvedPlan.message_id !== undefined
+              ? { message_id: resolvedPlan.message_id }
+              : {}),
+            tool: resolvedPlan.tool,
+            outcome: decision === 'approve' ? 'approved' : 'cancelled',
+            resolved_at: 1_700_000_001_000,
+          };
+          notify();
+        },
+        dismissResolution: (planId: string): void => {
+          if (resolution?.plan_id !== planId) return;
+          resolution = null;
+          notify();
+        },
+        refresh,
         subscribe: (listener: () => void): (() => void) => {
           listeners.add(listener);
           return () => listeners.delete(listener);
@@ -685,15 +724,40 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
       },
       set: (next: PendingChatPlan[]): void => {
         plans = next;
-        for (const l of [...listeners]) l();
+        notify();
       },
+      resolve: (
+        planId: string,
+        outcome: PendingChatPlanResolution['outcome'],
+      ): void => {
+        const resolvedPlan = plans.find(
+          (candidate) => candidate.plan_id === planId,
+        );
+        if (resolvedPlan === undefined) return;
+        plans = plans.filter((candidate) => candidate.plan_id !== planId);
+        resolution = {
+          plan_id: resolvedPlan.plan_id,
+          session_id: resolvedPlan.session_id,
+          turn_id: resolvedPlan.turn_id,
+          ...(resolvedPlan.message_id !== undefined
+            ? { message_id: resolvedPlan.message_id }
+            : {}),
+          tool: resolvedPlan.tool,
+          outcome,
+          resolved_at: 1_700_000_001_000,
+        };
+        notify();
+      },
+      refresh,
     };
   };
 
   it('renders chat-plan rows in the unified peek + resolves via runChatPlanResolve', async () => {
-    const chatPlans = makeFakeChatPlans([plan('pl-1')]);
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-1', { message_id: 'message-review' }),
+    ]);
     const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
-    const { topbar, handle } = mountFor({
+    const { root, topbar, handle } = mountFor({
       rows: () => [],
       asks: () => [],
       chatPlans: chatPlans.store,
@@ -716,10 +780,232 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
       plan_id: 'pl-1',
       decision: 'approve',
     });
+    expect(topbar.innerHTML).not.toContain('data-action="chat-plan-decide"');
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_CHAT_PLAN_RESOLUTION_ATTR}="pl-1"`,
+    );
+    expect(topbar.innerHTML).toContain('Approved mail-send');
+    expect(topbar.innerHTML).toContain(
+      'Approved once for these exact details. The action has not run.',
+    );
+    expect(topbar.innerHTML).toContain('Continue in Chat');
+    expect(topbar.innerHTML).toContain(
+      'href="#chat/session/s1/plan/pl-1/answer/message-review"',
+    );
+    expect(topbar.innerHTML).not.toContain('All clear');
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+    )!;
+    expect(announcer.getAttribute('role')).toBe('status');
+    expect(announcer.getAttribute('aria-live')).toBe('polite');
+    expect(announcer.textContent).toContain(
+      'Approved once for these exact details. The action has not run.',
+    );
+    topbar.fireAction({ 'data-action': 'open-chat-plan' });
+    await tick();
+    expect(topbar.innerHTML).not.toContain('role="dialog"');
     handle.dispose();
   });
 
-  it('keeps the plan guarded after a successful resolve (no double-fire pre-broadcast)', async () => {
+  it('announces a resolution only when its blocking-tab handoff is visible', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-tab', { message_id: 'message-tab' }),
+    ]);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      chatPlans: chatPlans.store,
+      runChatPlanResolve: vi.fn(async () => ({ ok: true })),
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({
+      'data-action': 'set-attention-tab',
+      'data-attention-tab': 'notifications',
+    });
+
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+    )!;
+    chatPlans.resolve('pl-tab', 'approved');
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_CHAT_PLAN_RESOLUTION_ATTR,
+    );
+    expect(announcer.textContent).toBe('');
+
+    topbar.fireAction({
+      'data-action': 'set-attention-tab',
+      'data-attention-tab': 'blocking',
+    });
+    expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
+    expect(announcer.textContent).toContain(
+      'Approved once for these exact details. The action has not run.',
+    );
+    handle.dispose();
+  });
+
+  it('keeps an unverified-queue warning visible beside a resolution receipt', async () => {
+    const resolution: PendingChatPlanResolution = {
+      plan_id: 'pl-unverified',
+      session_id: 's1',
+      turn_id: 't1',
+      message_id: 'message-unverified',
+      tool: 'mail-send',
+      outcome: 'approved',
+      resolved_at: 1_700_000_001_000,
+    };
+    const chatPlans = {
+      list: (): ReadonlyArray<PendingChatPlan> => [],
+      latestResolution: (): PendingChatPlanResolution => resolution,
+      state: () => ({
+        phase: 'error' as const,
+        error: new Error('snapshot unavailable'),
+      }),
+      subscribe: (): (() => void) => () => {},
+    };
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      chatPlans,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+
+    expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
+    expect(topbar.innerHTML).toContain(
+      "Pending decisions couldn't be verified.",
+    );
+    handle.dispose();
+  });
+
+  it('labels a fresh retry approval as new permission after uncertainty', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-fresh', { retry_of_plan_id: 'pl-uncertain' }),
+    ]);
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      chatPlans: chatPlans.store,
+      runChatPlanResolve: vi.fn(async () => ({ ok: true })),
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+
+    expect(topbar.innerHTML).toContain('Fresh review: mail-send');
+    expect(topbar.innerHTML).toContain(
+      'new permission after uncertain outcome - tier 2',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Earlier permission was used; review this action again before approving.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'data-retry-of-plan-id="pl-uncertain"',
+    );
+
+    handle.dispose();
+  });
+
+  it('links recovered plans to Chat and withholds approval without exact details', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-unavailable', {
+        message_id: 'message-review',
+        args: null,
+        payload_available: false,
+      }),
+    ]);
+    const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      chatPlans: chatPlans.store,
+      runChatPlanResolve,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+
+    expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_LINK_ATTR);
+    expect(topbar.innerHTML).toContain(
+      'href="#chat/session/s1/plan/pl-unavailable/answer/message-review"',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Exact reviewed details are unavailable after recovery.',
+    );
+    expect(topbar.innerHTML).toMatch(
+      /data-decision="approve"\s+data-plan-id="pl-unavailable" disabled/,
+    );
+    expect(topbar.innerHTML).not.toMatch(
+      /data-decision="reject"\s+data-plan-id="pl-unavailable" disabled/,
+    );
+
+    topbar.fireAction({
+      'data-action': 'chat-plan-decide',
+      'data-plan-id': 'pl-unavailable',
+      'data-decision': 'approve',
+    });
+    await tick();
+    expect(runChatPlanResolve).not.toHaveBeenCalled();
+    topbar.fireAction({
+      'data-action': 'chat-plan-decide',
+      'data-plan-id': 'pl-unavailable',
+      'data-decision': 'reject',
+    });
+    await tick();
+    expect(runChatPlanResolve).toHaveBeenCalledWith({
+      plan_id: 'pl-unavailable',
+      decision: 'reject',
+    });
+    handle.dispose();
+  });
+
+  it('replaces a stale error with the paired-device resolution handoff', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-remote-resolve', { message_id: 'message-remote' }),
+    ]);
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      chatPlans: chatPlans.store,
+      runChatPlanResolve: vi.fn(async () => {
+        throw new Error('temporary resolve failure');
+      }),
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    chatPlans.refresh.mockClear();
+    topbar.fireAction({
+      'data-action': 'chat-plan-decide',
+      'data-plan-id': 'pl-remote-resolve',
+      'data-decision': 'reject',
+    });
+    await tick();
+    expect(topbar.innerHTML).toContain('temporary resolve failure');
+    expect(chatPlans.refresh).toHaveBeenCalledTimes(1);
+
+    // Production equivalent: chat.plan_resolved arrives from another paired
+    // client and the shared store removes the row + retains its outcome.
+    chatPlans.resolve('pl-remote-resolve', 'cancelled');
+    expect(topbar.innerHTML).not.toContain('temporary resolve failure');
+    expect(topbar.innerHTML).toContain('Rejected mail-send');
+    expect(topbar.innerHTML).toContain(
+      'The action will not run. Return to Chat if you want to adjust the request.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'href="#chat/session/s1/plan/pl-remote-resolve/answer/message-remote"',
+    );
+    expect(topbar.innerHTML).not.toContain('All clear');
+
+    topbar.fireAction({
+      'data-action': 'dismiss-chat-plan-resolution',
+      'data-plan-id': 'pl-remote-resolve',
+    });
+    expect(topbar.innerHTML).not.toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
+    expect(topbar.innerHTML).toContain('All clear');
+    handle.dispose();
+  });
+
+  it('removes the resolved row immediately after a successful authoritative rpc', async () => {
     const chatPlans = makeFakeChatPlans([plan('pl-1')]);
     const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
     const { topbar, handle } = mountFor({
@@ -738,19 +1024,8 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     });
     await tick();
     expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
-
-    // Guard held (plan still in store, broadcast not arrived) — a second decide
-    // is a no-op.
-    topbar.fireAction({
-      'data-action': 'chat-plan-decide',
-      'data-plan-id': 'pl-1',
-      'data-decision': 'approve',
-    });
-    await tick();
-    expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
-
-    chatPlans.set([]);
     expect(topbar.innerHTML).not.toContain('chat-plan-decide');
+    expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
     handle.dispose();
   });
 

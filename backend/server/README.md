@@ -11,7 +11,7 @@ Pick the install path that matches your setup. All four deliver the same `recued
 | Distribution | Best for | Command |
 |---|---|---|
 | **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.7.3` |
+| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.7.25` |
 | **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
 | **One-click VPS** | Non-technical users on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
 
@@ -23,6 +23,23 @@ recued pair            # prints a 6-digit pairing code
 ```
 
 See [`distribution/homebrew/README.md`](../../distribution/homebrew/README.md) for Homebrew service management and [`distribution/vps/README.md`](../../distribution/vps/README.md) for provider-specific cloud-init details. The Docker variant's compose file is at [`docker-compose.yml`](./docker-compose.yml) — `docker compose up -d` with a mounted `config.toml` works out of the box.
+
+### `RECUED_IDENTITY_PASSPHRASE` — sealing the key file (D-212)
+
+The server unwraps its vault key from a key file in the data directory at every boot. On first boot it seals that file with the first factor available: **`RECUED_IDENTITY_PASSPHRASE`** if set, otherwise a platform secret store (macOS login keychain / Windows DPAPI / systemd-creds) whose secret lives outside the data directory, otherwise **nothing**.
+
+⚠ **Containers land in the unsealed case.** A host credential key is either on the ephemeral layer (`--force-recreate` destroys the realm's only key) or inside the data volume (it travels with a copy), so the platform rung declines by design. Unsealed still encrypts the realm — what it stops defending is capture of the whole data directory, which then carries the key too.
+
+```sh
+export RECUED_IDENTITY_PASSPHRASE='a long, random passphrase'
+recued serve --db ./recued-data/recued.db
+```
+
+**Changing the passphrase later is cheap** — stop the server and run `recued rotate-passphrase`. It re-seals the same keyfile under a new passphrase: same realm, same data, same server identity, nothing re-pairs. Set the new value in the service environment before starting again.
+
+**Changing the FACTOR is not.** Which factor seals the keyfile is recorded when the file is created and is permanent for that realm: before pairing the keyfile is disposable (stop, delete it, set or unset the variable, start again — costs a fresh identity, never data); after pairing it means `recued recover-keyfile` with the 24-word recovery key, which mints a new server identity, re-pairs every device, changes the publisher identity, and drops the account binding. Once sealed with a passphrase it is required at **every** start — the server fails loudly rather than opening the file without it.
+
+Keep it in the service manager's secret mechanism (systemd `EnvironmentFile=`, compose `env_file`, a secret manager), not in `config.toml` — that file lives in the directory the passphrase protects. `recued auth-status` prints the current posture.
 
 The packaged systemd, launchd, Docker, Homebrew, and VPS service
 surfaces all preserve the Phase C exit-code contract so clean shutdowns

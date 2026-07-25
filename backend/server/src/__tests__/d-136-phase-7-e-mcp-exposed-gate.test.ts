@@ -20,7 +20,7 @@
  *  layers on top, never replaces them. Writes via MCP stay
  *  privilege-gated per-rpc; this gate governs the read surface only.
  *
- *  Spec: docs/d-136-spec.md §A.13.5. */
+ *  Spec: D-136 §A.13.5. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

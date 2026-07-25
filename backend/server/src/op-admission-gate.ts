@@ -46,7 +46,7 @@
  *  governing contract → the gate is SKIPPED (admit): internal ops + the human's direct
  *  HID stay outside the grant axis (owner-directed).
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block; handover
+ *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_slice3_session1_3b_admission_actor.md` (step 4 / 5). */
 
 import {

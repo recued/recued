@@ -12,7 +12,7 @@ import type { AvailabilityStatus, FreePoolEntry } from './types.js';
  *
  *  D-131 — `embeddings_tokens_today` breaks out the embeddings-surface
  *  contribution to `tokens_today`. The two share the daily cap (per
- *  `docs/launch-sequence-2026-04-30.md` open-question §3 — "share
+ *  internal design notes open-question §3 — "share
  *  QuotaTracker entries by key"); the breakout exists for visibility in
  *  the cost-preview UI and for telemetry on the embeddings-vs-chat
  *  starvation risk. Invariant: for any entryId,

@@ -17,7 +17,7 @@
  *       no-op (byte-identical to pre-D-167 until a privacy-tagged mail schema is
  *       installed).
  *
- *  Spec: docs/d-167-spec.md §"Runtime flow", §"Scope", §Hard invariant.
+ *  Spec: D-167 §"Runtime flow", §"Scope", §Hard invariant.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';

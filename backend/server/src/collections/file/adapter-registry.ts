@@ -16,6 +16,11 @@
  *       machinery; the caller (enroll rpc + bin.ts wiring) decides
  *       when to start it.
  *
+ *  OAuth cloud-provider files are intentionally outside this registry. They
+ *  use a connection-backed D-192 Source for sync/read and the installed pack
+ *  for operations. Keeping OAuth out of D-110 prevents a second credential
+ *  and refresh lifecycle from growing beside `connection.api`.
+ *
  *  Lifecycle: the registry is a static import in production; tests
  *  swap it with `createAdapterRegistry` + their own factories. No
  *  mutable global state — adapters are all pure functions that
@@ -91,6 +96,14 @@ export interface FileAdapterContext {
   /** Validated config for this instance — adapter-specific shape.
    *  Factories parse further at construction time. */
   config: Record<string, unknown>;
+  /** Cached capabilities produced by this instance's probe. Adapters use this
+   *  to honor an honest degraded mode (for example fs `watch: none`) without
+   *  re-running probes or inventing unsupported fallbacks. */
+  caps?: FileCollectionCaps;
+  /** Runtime health signal for failures that occur after `start()` resolves.
+   *  The composition root persists degraded health; adapters do not reach into
+   *  the instance store directly. */
+  onDegraded?: (error: unknown) => Promise<void> | void;
   /** Event sink — called once per discovered / changed / removed
    *  record. Failures in the sink must NOT propagate out of the
    *  adapter's loop; adapters log + swallow. */
@@ -164,5 +177,24 @@ export const probeAdapter = async (
   // Adapter may hand us back a partial / untyped shape; validateCaps
   // throws when the shape is wrong — intentionally surfaces as a
   // developer error (factory bug), not a user-facing config error.
-  return validateCaps(probed);
+  return validateD110FileCaps(factory.type, probed);
+};
+
+/** Validate both the shared caps shape and D-110's local/storage authority
+ *  boundary. Boot rehydration uses this too, so a persisted row cannot bypass
+ *  the rule merely because it is not running a fresh probe. */
+export const validateD110FileCaps = (
+  adapterType: string,
+  value: unknown,
+): FileCollectionCaps => {
+  const caps = validateCaps(value);
+  // D-110 owns local/storage adapters. OAuth cloud providers already use the
+  // connection.api -> D-192 Source -> pack path, which owns OAuth refresh and
+  // avoids a second provider-token lifecycle in collection_instances.
+  if (caps.auth === 'oauth') {
+    throw new Error(
+      `adapter '${adapterType}' reports auth 'oauth'; D-110 file adapters are local/storage only — enroll cloud files through a connection-backed D-192 Source`,
+    );
+  }
+  return caps;
 };

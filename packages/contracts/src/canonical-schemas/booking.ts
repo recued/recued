@@ -22,7 +22,7 @@
  *  business axis answers a question the protocol one cannot: a customer
  *  who never turned up leaves the event `confirmed` forever.
  *
- *  Spec: docs/d-210-spec.md Appendix A. */
+ *  Spec: D-210 Appendix A. */
 
 import {
   BOOKING_DEFAULT_LIFECYCLE_STATE,

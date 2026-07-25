@@ -22,9 +22,12 @@
 import type {
   BundleSignatureResult,
   ExecutionScope,
+  FetchedRemoteBundle,
   InstallSource,
+  NonRemoteInstallSource,
   PubkeyResolver,
   RecipeBundle,
+  RemoteBundleInstallDescriptor,
   VaultScope,
   VaultScopeLookup,
 } from '@recued/contracts';
@@ -42,14 +45,7 @@ import type { ValidationIssue } from './validate.js';
 // Plan inputs / outputs
 // ────────────────────────────────────────────────────────────────
 
-export interface PlanBundleInstallInput {
-  /** Raw payload from a file pick / URL fetch / marketplace fetch.
-   *  May be a wrapped `RecipeBundle` or a bare `RecipeDefinition`
-   *  (auto-wrapped by `parseBundle`). */
-  input: unknown;
-  /** Where the install came from. The discriminant decides the vault
-   *  scope shape; see `deriveVaultScope`. */
-  source: InstallSource;
+interface PlanBundleInstallCommonInput {
   /** SHA-256 (or similar) of the canonical bundle content. The
    *  collision detector compares it against any previously-installed
    *  content under the same scope key. Same hash → idempotent
@@ -71,6 +67,49 @@ export interface PlanBundleInstallInput {
    *  resolved manifests there's nothing to derive against. */
   installRole?: ExecutionScope;
 }
+
+/** The install payload is discriminated by source kind.
+ *
+ *  File, marketplace, and kitchen callers provide their raw `input` directly.
+ *  A remote caller must instead provide the single `FetchedRemoteBundle`
+ *  returned by `fetchBundleByUrl`; its payload and post-redirect URL cannot be
+ *  supplied independently. This makes the final response URL load-bearing for
+ *  vault scope rather than a caller convention. */
+type PlanNonRemoteBundleInstallInput = PlanBundleInstallCommonInput & {
+  input: unknown;
+  source: NonRemoteInstallSource;
+  fetched?: never;
+};
+
+type PlanRemoteBundleInstallInput = PlanBundleInstallCommonInput & {
+  fetched: FetchedRemoteBundle;
+  source: RemoteBundleInstallDescriptor;
+  input?: never;
+};
+
+export type PlanBundleInstallInput =
+  | PlanNonRemoteBundleInstallInput
+  | PlanRemoteBundleInstallInput;
+
+const isRemoteBundleInstallInput = (
+  args: PlanBundleInstallInput,
+): args is PlanRemoteBundleInstallInput => args.source.kind === 'bundle-remote';
+
+/** Resolve the remote vault partition from evidence owned by this planner.
+ *
+ *  A valid accepted signature verifies the bundle regardless of transport.
+ *  An unsigned bundle is host-verified only when its final fetch URL is HTTPS.
+ *  Invalid, unknown, or rotated signatures remain explicitly unverified even
+ *  when transported over HTTPS: a claimed signature must not silently degrade
+ *  to transport-only trust. */
+const remoteBundleIsVerified = (
+  fetched: FetchedRemoteBundle,
+  signatureStatus: BundleSignatureResult,
+): boolean => signatureStatus.status === 'verified'
+  || (
+    signatureStatus.status === 'unverified-not-signed'
+    && new URL(fetched.finalUrl).protocol === 'https:'
+  );
 
 export type PlanBundleInstallOutcome =
   | {
@@ -118,16 +157,26 @@ export type PlanBundleInstallOutcome =
 export const planBundleInstall = async (
   args: PlanBundleInstallInput,
 ): Promise<PlanBundleInstallOutcome> => {
-  const parsed = parseBundle(args.input);
+  const remote = isRemoteBundleInstallInput(args);
+  const input = remote ? args.fetched.bundle : args.input;
+
+  const parsed = parseBundle(input);
   if (!parsed.ok) return { kind: 'invalid', issues: parsed.issues };
   const bundle = parsed.recipe;
-
-  const vaultScope = deriveVaultScope(args.source);
-  const scopeKey = vaultScopeKey(vaultScope);
 
   const signatureStatus = await verifyBundleSignature(bundle, {
     resolvePubkey: args.resolvePubkey,
   });
+
+  const installSource: InstallSource = remote
+    ? {
+        ...args.source,
+        finalUrl: args.fetched.finalUrl,
+        verified: remoteBundleIsVerified(args.fetched, signatureStatus),
+      }
+    : args.source;
+  const vaultScope = deriveVaultScope(installSource);
+  const scopeKey = vaultScopeKey(vaultScope);
 
   // D-119 Phase 15 — execution scope gate. Only fires when the
   // bundle carries `ingredients[]` (otherwise the install path has

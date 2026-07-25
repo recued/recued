@@ -167,7 +167,7 @@ export type IngredientKind =
 /** Closed set of every valid `IngredientKind`. Use for membership
  *  checks at the validator boundary; iterates in canonical order
  *  matching the type declaration. Frozen — adding a kind requires a
- *  decisions-log entry per the load-bearing rule in `docs/d-126-spec.md`.
+ *  decisions-log entry per the load-bearing rule in D-126.
  *  `cli` is last — it graduated in after the original eight (D-182 F2),
  *  matching the `OP_KINDS` append order so any persisted ordering stays
  *  stable. */
@@ -532,7 +532,7 @@ export interface IngredientManifest {
    *  `shared.delete`. Self-reference (a tool naming itself as its
    *  own undo) is rejected by `validateCancellationManifest`.
    *
-   *  Spec: docs/d-153-spec.md § Cancellation grace window +
+   *  Spec: D-153 § Cancellation grace window +
    *  compensating commits. */
   cancellation_partner?: string;
   /** D-153 P3 — milliseconds the Gateway holds this tool's dispatch in
@@ -544,7 +544,7 @@ export interface IngredientManifest {
    *  `[0, MAX_GRACE_WINDOW_MS]` (60_000) by the validator; values
    *  outside that range raise `grace_window_ms_out_of_range`.
    *
-   *  Spec: docs/d-153-spec.md § Cancellation grace window +
+   *  Spec: D-153 § Cancellation grace window +
    *  compensating commits. */
   grace_window_ms?: number;
 
@@ -561,7 +561,7 @@ export interface IngredientManifest {
   //  policy; full operation_groups + catalog-level governance below);
   //  the strict validator gates them. Still pending: the *surfaces* /
   //  *auth* / *execution-binding* substrate + marketplace publish path.
-  //  Spec: docs/d-165-spec.md § Provider catalog manifest / "P0" / "P2".
+  //  Spec: D-165 § Provider catalog manifest / "P0" / "P2".
 
   /** Operation policy declarations, keyed by the short operation key the
    *  recipe step passes (`"issues.list"`). Each value carries the
@@ -586,7 +586,7 @@ export interface IngredientManifest {
    *  named op must resolve to a REST-provable `surfaces.api.executes`
    *  binding. Declaration-only at P1 — validated fail-closed
    *  (`validateWorkEntitySources`), registered/synced by later phases.
-   *  Spec: docs/d-192-spec.md. */
+   *  Spec: D-192. */
   work_entity_sources?: WorkEntitySourceDeclaration[];
   /** D-192 F1 — commitment-evidence capture declarations. Each entry
    *  turns one designated external signal (v1: a canonical CRM field)
@@ -595,7 +595,7 @@ export interface IngredientManifest {
    *  stays reserved). Validated fail-closed
    *  (`validateCommitmentEvidence`); v1 runtime consumes the KERNEL
    *  declaration only — pack entries validate but stay inert until
-   *  the decomposer pass-through lands. Spec: docs/d-192-spec.md
+   *  the decomposer pass-through lands. Spec: D-192
    *  § Commitment evidence (F1). */
   commitment_evidence?: CommitmentEvidenceDeclaration[];
 

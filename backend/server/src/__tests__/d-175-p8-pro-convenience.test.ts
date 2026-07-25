@@ -1,7 +1,7 @@
 /** D-175 P8 — Pro convenience wiring (server-side DDNS/ACME off the
  *  binding credential).
  *
- *  The gate per `factory/dispatch/d175-p8-pro-convenience-backend.md`:
+ *  The gate per `internal planning notes`:
  *    - the entitlement-gated decision engine (Pro ∧ bound ∧ reachable),
  *      across every branch incl. the typed `pending` boundary (the cloud
  *      entitlement-mint endpoint is the flagged gap → stub fails closed);

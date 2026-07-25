@@ -25,7 +25,7 @@
  *     (policy mutated between pre-walk and dispatch) and is treated as
  *     a fatal error rather than a silent pause.
  *
- *  Spec: docs/d-157-spec.md § N.3 / A.2 / I-4 / TR-4. */
+ *  Spec: D-157 § N.3 / A.2 / I-4 / TR-4. */
 
 import {
   PreflightRequiredSignal,
@@ -40,6 +40,7 @@ import type {
   ContractSnapshot,
   ExecutionSource,
   IngredientKind,
+  OwnerOverridePolicy,
   RiskTier,
 } from '@recued/contracts';
 
@@ -103,6 +104,7 @@ export const evaluatePreflightAdmission = (args: {
   readonly tool: PreflightTool;
   readonly contract_snapshot?: ContractSnapshot;
   readonly scope_path?: string | null;
+  readonly owner_override?: OwnerOverridePolicy;
 }): AdmissionDecision => {
   if (executionSourceHasContract(args.source) && !args.contract_snapshot) {
     throw new Error(
@@ -147,6 +149,9 @@ export const evaluatePreflightAdmission = (args: {
     // `max_risk_without_approval`) governs, not the flat contracted default.
     ceiling: resolveTrustCeiling(args.source, args.contract_snapshot),
     source: args.source,
+    ...(args.owner_override !== undefined
+      ? { owner_override: args.owner_override }
+      : {}),
   });
 };
 
@@ -206,6 +211,7 @@ export const raiseOnAsk = (
       tool_slug: context.slug,
       risk_tier: decision.risk_tier,
       reason: decision.detail,
+      authorization_provenance: decision.authorization_provenance,
       // D-165 follow-on (op-identity binding) — the ingredient identity for
       // `Checkpoint.approved_target`. The simple-form gate has no
       // operation / connection axis, so only the slug is captured; the
@@ -228,6 +234,12 @@ export const raiseOnAsk = (
       // absent otherwise so no signal is recorded on non-quality asks.
       ...(context.quality_relevant !== undefined
         ? { quality_relevant: context.quality_relevant }
+        : {}),
+      ...(decision.owner_override_offer !== undefined
+        ? { owner_override_offer: decision.owner_override_offer }
+        : {}),
+      ...(decision.approval_clamped_from !== undefined
+        ? { approval_clamped_from: decision.approval_clamped_from }
         : {}),
     },
   );

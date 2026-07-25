@@ -22,7 +22,7 @@
  *  an LLM dep) + by running real handlers and confirming no thrown
  *  errors when LLM is poisoned in the surrounding context.
  *
- *  Spec: docs/d-136-spec.md §A.13.1 / §A.13.2 / §A.13.3 / §A.13.4 /
+ *  Spec: D-136 §A.13.1 / §A.13.2 / §A.13.3 / §A.13.4 /
  *  §A.13.6. */
 
 import { mkdtempSync, rmSync } from 'node:fs';

@@ -20,7 +20,7 @@
  *       `lifecycle_policy: 'historical'` (regression on the §P4
  *       D-133 amendment).
  *
- *  Spec: `docs/d-136-spec.md` §P4. */
+ *  Spec: D-136 §P4. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

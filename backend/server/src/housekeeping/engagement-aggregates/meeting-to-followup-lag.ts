@@ -31,7 +31,7 @@
  *       `-1` when no follow-up landed yet).
  *    4. Bucket per `MEETING_FOLLOWUP_LAG_BUCKETS` thresholds.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import {
   type CoverageMetadata,

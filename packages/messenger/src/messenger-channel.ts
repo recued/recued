@@ -13,7 +13,7 @@
  *  (`Channel`, `SessionStateStore`, …) are `import type` only — no
  *  runtime edge from this leaf block to its sibling.
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5 / I-10.
+ *  Spec: D-160 § N.5 / A.5 / I-10.
  */
 
 import type { Buffer } from 'node:buffer';

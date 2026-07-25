@@ -5,7 +5,7 @@
  *  update / delete / probe` rpcs (P2.1) and patches the page state
  *  back through.
  *
- *  Spec wireframe (`docs/d-125-spec.md` § 7.1):
+ *  Spec wireframe (D-125 § 7.1):
  *
  *    [Connections]
  *      ▼ API (4)

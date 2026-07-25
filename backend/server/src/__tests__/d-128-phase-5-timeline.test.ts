@@ -20,7 +20,7 @@
  *    - Unsupported `collection` (random scope name) returns no rows
  *      without crashing the loader.
  *
- *  Spec: docs/d-128-spec.md §A.4 + Phase 5. */
+ *  Spec: D-128 §A.4 + Phase 5. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

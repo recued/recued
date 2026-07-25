@@ -46,13 +46,14 @@
  *  `checkpointStore`) — the integration step then drops the slice, matching
  *  the reception / history slice posture (the rpc returns `not_configured`).
  *
- *  Spec: docs/d-173-spec.md § N.1 / N.2 / N.5 / N.6 / D5 / D10 / I-2 / I-3. */
+ *  Spec: D-173 § N.1 / N.2 / N.5 / N.6 / D5 / D10 / I-2 / I-3. */
 
 import {
   isCommitmentProposalSlug,
   type ArgEditField,
   type IngredientManifest,
   type ReceptionInboxScanStatus,
+  type InboxItem,
 } from '@recued/contracts';
 import {
   COMMITMENT_EVIDENCE_EDITABLE_ARGS,
@@ -90,6 +91,7 @@ import {
   type ReceptionProjectionResult,
   type ReceptionProjectionWorkEntityStore,
 } from '../../ports/reception/projection/reception-projection.js';
+import type { ReceptionBookingMintEffect } from '../../ports/reception/projection/reception-booking-mint.js';
 
 /** The injectable projection-op effect (the D-173 I-2 materialize). Backed
  *  by `runReceptionProjection`; the P3 dispatch-routing slice binds it as
@@ -140,6 +142,11 @@ export interface ComposeReceptionInboxDepsInput {
    *  (`countCalendarOverlap` over the calendar stack). Absent ⇒ no count is
    *  surfaced on the inbox item. Owner-facing ONLY — never the visitor path. */
   readonly countCalendarOverlap?: CountCalendarOverlap;
+  readonly lookupBookingHistory?: (
+    source: InboxItem['source'],
+    args: Readonly<Record<string, unknown>>,
+  ) => Promise<InboxItem['booking_history']>;
+  readonly resolveFormResponseEdit?: ReceptionInboxDeps['resolveFormResponseEdit'];
   /** Per-pair work-entity store — the destination the projection effect
    *  writes task / note / commitment / project through (D5). */
   readonly workEntityStore?: ReceptionProjectionWorkEntityStore;
@@ -150,10 +157,13 @@ export interface ComposeReceptionInboxDepsInput {
    *  Source). Present only when a `contact`-kind projection can run. */
   readonly contactDeps?: ContactRpcDeps;
   /** D-173 P4.3 — the local-calendar create seam (the `calendar.event`
-   *  branch's write path). Built by the caller over the calendar stack + the
-   *  scheduling booking store; present only when a calendar can be written.
-   *  Absent → a scheduling (calendar) projection fail-closes. */
+   *  intake branch's write path). Built by the caller over the calendar stack;
+   *  present only when a calendar can be written. Absent → an intake-calendar
+   *  projection fail-closes. */
   readonly createCalendarEvent?: ReceptionCalendarEventEffect;
+  /** Scheduling reservation materialization. Kept explicit so a conditional
+   *  spread at the boot caller cannot silently drop the live booking seam. */
+  readonly createBooking?: ReceptionBookingMintEffect;
   /** D-173 P5 — the file-attach seam (a drop's `data.link role:'attachment'`
    *  write path). Built by the caller over the annotation store + collection
    *  registry; present only when the attach substrate is up. Absent → a
@@ -353,6 +363,12 @@ export const composeReceptionInboxDeps = (
     ...(input.countCalendarOverlap !== undefined
       ? { countCalendarOverlap: input.countCalendarOverlap }
       : {}),
+    ...(input.lookupBookingHistory !== undefined
+      ? { lookupBookingHistory: input.lookupBookingHistory }
+      : {}),
+    ...(input.resolveFormResponseEdit !== undefined
+      ? { resolveFormResponseEdit: input.resolveFormResponseEdit }
+      : {}),
     broadcast,
     now,
   };
@@ -372,6 +388,9 @@ export const composeReceptionInboxDeps = (
         ...(input.contactDeps !== undefined ? { contactDeps: input.contactDeps } : {}),
         ...(input.createCalendarEvent !== undefined
           ? { createCalendarEvent: input.createCalendarEvent }
+          : {}),
+        ...(input.createBooking !== undefined
+          ? { createBooking: input.createBooking }
           : {}),
         ...(input.attachFile !== undefined ? { attachFile: input.attachFile } : {}),
         now,

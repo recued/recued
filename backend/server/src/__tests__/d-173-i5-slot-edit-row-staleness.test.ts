@@ -45,8 +45,8 @@
  *  Real store + real projection + real mint seam. Nothing is faked — since A.2
  *  the path no longer crosses the calendar provider at all.
  *
- *  Spec: `docs/d-173-spec.md` D7 ("confirmed at approval");
- *  `handovers/calendar-reservation-landing-zone-audit.md` §§ 9-10. */
+ *  Spec: D-173 D7 ("confirmed at approval");
+ *  internal design notes §§ 9-10. */
 
 import Database from 'better-sqlite3';
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
@@ -63,6 +63,7 @@ import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js'
 import { runReceptionProjection } from '../ports/reception/projection/reception-projection.js';
 import { createReceptionCalendarEventSeam } from '../ports/reception/projection/reception-calendar-event.js';
 import { createReceptionBookingMintSeam } from '../ports/reception/projection/reception-booking-mint.js';
+import { mintReceptionBookingBinding } from '../ports/reception/projection/reception-booking-binding.js';
 
 const NOW = 1_700_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -72,6 +73,8 @@ const ENDPOINT_ID = 'ep-provenance-1';
 const REQUEST_ID = 'req-provenance-1';
 const DURATION_MINUTES = 30;
 const DURATION_MS = DURATION_MINUTES * 60_000;
+const BINDING_KEY = new Uint8Array(32).fill(9);
+const BOOKING_ID = `reception_${REQUEST_ID}`;
 
 /** The slot the visitor picked and the door accepted. */
 const BOOKED_AT = NOW + DAY;
@@ -108,6 +111,7 @@ const buildEnv = () => {
     readBooking: (id) => workEntityStore.readBooking(id),
     findBooking: (request_id) => booking.findById(request_id),
     markProcessed: (input) => booking.markProcessed(input),
+    getFormSubmissionPiiKey: () => BINDING_KEY,
     now: () => NOW,
   });
 
@@ -154,12 +158,16 @@ const approveWithEditedSlot = async (env: Env): Promise<void> => {
     },
     {
       top_tier_kind: 'booking',
-      id: `reception-${REQUEST_ID}`,
+      id: BOOKING_ID,
       title: 'Alice — consultation',
       start_at: MOVED_TO,
       duration_minutes: DURATION_MINUTES,
       timezone: 'America/New_York',
       booking_request_id: REQUEST_ID,
+      booking_binding: mintReceptionBookingBinding(BINDING_KEY, {
+        booking_request_id: REQUEST_ID,
+        booking_id: BOOKING_ID,
+      }),
       reject_if_slot_past: true,
     },
   );
@@ -177,7 +185,7 @@ afterEach(() => {
 
 describe('D-173 — a slot edited at approval: the event agrees, the row remembers', () => {
   it('the BOOKING carries the edited slot — the accurate axis, and the one to count', () => {
-    const minted = env.workEntityStore.readBooking(`reception-${REQUEST_ID}`);
+    const minted = env.workEntityStore.readBooking(BOOKING_ID);
     expect(minted).not.toBeNull();
     expect(minted!.slot_start_at).toBe(MOVED_TO);
     // `slot_end_at` is recomputed from the edited start, preserving the booked
@@ -205,18 +213,18 @@ describe('D-173 — a slot edited at approval: the event agrees, the row remembe
     // that regression makes these two agree, and this assertion is the only
     // thing standing between it and a silently discarded owner edit.
     const row = env.booking.findById(REQUEST_ID);
-    const minted = env.workEntityStore.readBooking(`reception-${REQUEST_ID}`);
+    const minted = env.workEntityStore.readBooking(BOOKING_ID);
     expect(row?.slot?.start_at).not.toBe(minted?.slot_start_at);
   });
 
   it('the provenance pointer joins the two facts, so neither is orphaned', () => {
-    const minted = env.workEntityStore.readBooking(`reception-${REQUEST_ID}`);
+    const minted = env.workEntityStore.readBooking(BOOKING_ID);
     expect(minted?.reception_record_id).toBe(REQUEST_ID);
     // D-210 A.8 slice 4b-ii — the frozen `resolved_booking_id` became the
     // generic `(kind, id)` pair. BOTH halves are asserted: an id alone would
     // pass for a row resolved to some other kind entirely.
     const row = env.booking.findById(REQUEST_ID);
     expect(row?.resolved_target_kind).toBe('booking');
-    expect(row?.resolved_target_id).toBe(`reception-${REQUEST_ID}`);
+    expect(row?.resolved_target_id).toBe(BOOKING_ID);
   });
 });

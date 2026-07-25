@@ -14,7 +14,7 @@
  *  here keeps language modules focused on locale-specific assets
  *  (proper-noun shape, locale date formats, etc.).
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 ner / § 3 Invariant 4 (slot grammar) / § 3 Invariant 5
  *  (binary certainty). */
 
@@ -25,6 +25,14 @@
  *  share the same closed vocabulary; mismatch → pass through. */
 export type SlotKind = 'entity.name' | 'entity.email' | 'date' | 'time';
 
+/** Closed exact-reference evidence vocabulary shared by the typed proposal,
+ * NER slot, and final warehouse re-attestation. */
+export type EntityReferenceEvidence =
+  | 'email'
+  | 'e164-phone'
+  | 'chat-alias'
+  | 'platform-id';
+
 /** A raw extraction span — what the regex (or language rule) saw. The
  *  certainty gate (`confidence.ts`) is what decides whether `raw`
  *  becomes a `SlotValue`. Position is the start index of `raw` in the
@@ -33,13 +41,24 @@ export interface RawSlot {
   readonly kind: SlotKind;
   readonly raw: string;
   readonly position: number;
+  /** Optional canonical value for a span whose spelling was proposed by an
+   *  injected deterministic source rather than inferred from its typography.
+   *  Contextual known-name recovery uses the warehouse display name here while
+   *  retaining the exact user-authored `raw` span + `position`. Language regexes
+   *  leave it absent, so their value remains byte-identical to the matched text. */
+  readonly canonicalValue?: string;
+  /** Opaque caller-owned identity key for an exact contact reference
+   *  (email / E.164 phone / user-confirmed alias / platform id). It is
+   *  carried through NER only so the data probe can bind the warehouse read
+   *  to the exact contact the identifier resolved; it is never rendered. */
+  readonly referenceKey?: string;
+  /** Reference class needed to re-resolve `raw` at the final data probe. */
+  readonly referenceEvidence?: EntityReferenceEvidence;
 }
 
-/** Per-language rule bundle. `extract` runs over the same text the
- *  language-agnostic extractors see; the language is expected to add
- *  ONLY locale-specific spans (proper-noun shape, am/pm time, locale
- *  date formats). Returning `[]` is the universal stub — every
- *  registered locale starts as a stub until rules land. */
+/** Per-language rule bundle. Each candidate language sees the same text and
+ * contributes only locale/script-specific spans; the orchestrator merges and
+ * deduplicates them after running universal extraction once. */
 export interface LanguageRules {
   readonly locale: string;
   readonly extract: (text: string) => ReadonlyArray<RawSlot>;
@@ -135,13 +154,22 @@ export const extractRawSlots = (
   text: string,
   language: LanguageRules,
 ): ReadonlyArray<RawSlot> => {
+  const slots = [...extractUniversalRawSlots(text)];
+  if (text.length === 0) return slots;
+  for (const slot of language.extract(text)) {
+    slots.push(slot);
+  }
+  return slots;
+};
+
+/** Extract only language-independent spans. Multi-language orchestration uses
+ * this once, then merges the candidate language bundles without re-running
+ * the universal regexes. */
+export const extractUniversalRawSlots = (text: string): ReadonlyArray<RawSlot> => {
   if (text.length === 0) return [];
   const slots: RawSlot[] = [];
   collectMatches(text, EMAIL_RE, 'entity.email', slots);
   collectMatches(text, ISO_DATE_RE, 'date', slots);
   collectMatches(text, TIME_24H_RE, 'time', slots);
-  for (const slot of language.extract(text)) {
-    slots.push(slot);
-  }
   return slots;
 };

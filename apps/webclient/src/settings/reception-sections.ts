@@ -28,7 +28,7 @@
  *  deep-link re-mount and resolve their section here (segment 0 stays
  *  `endpoints`).
  *
- *  Design record: `recued-project/handovers/webclient-ia-treemap.md` §9
+ *  Design record: internal design notes §9
  *  + Review log R19 / R19.1. */
 
 // ════════════════════════════════════════════════════════════════

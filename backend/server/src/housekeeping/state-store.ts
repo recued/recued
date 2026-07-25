@@ -5,7 +5,7 @@
  *  cursor in a single text column, no migration scaffolding (the
  *  closed `HousekeepingCursor` discriminator is the schema).
  *
- *  Spec: `docs/d-123-spec.md` §1.2. */
+ *  Spec: D-123 §1.2. */
 
 import type Database from 'better-sqlite3';
 

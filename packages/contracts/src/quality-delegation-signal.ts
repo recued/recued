@@ -25,7 +25,7 @@
  *
  *  Everything is PURE — no I/O, no clock reads (callers pass `nowMs`).
  *
- *  Spec: docs/d-202-spec.md §2 (signals), §6/§8 (reject-driven confidence +
+ *  Spec: D-202 §2 (signals), §6/§8 (reject-driven confidence +
  *  attribution), §12.3 (only defaults train), §14 (degenerate node). */
 
 import type { ContractDefinition } from './contract-definition.js';

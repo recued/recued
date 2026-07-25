@@ -34,7 +34,7 @@
  *  through the same primitive. The governor's job is to avoid
  *  thrash, not to enforce data correctness.
  *
- *  Spec: `docs/d-136-spec.md` §A.5 (Fan-out budget) + audit §24.4
+ *  Spec: D-136 §A.5 (Fan-out budget) + audit §24.4
  *  A17 (rate ceiling rationale). */
 
 // ────────────────────────────────────────────────────────────────

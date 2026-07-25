@@ -16,7 +16,7 @@
  *  handler set is gated on `notificationsDeps` presence so dbless
  *  harnesses surface `not_configured`.
  *
- *  Spec: docs/d-163-spec.md § N.5 / N.6 / A.5. */
+ *  Spec: D-163 § N.5 / N.6 / A.5. */
 
 import {
   RpcError,

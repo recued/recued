@@ -1,0 +1,313 @@
+{
+  "recipe_id": "extract-commitments-from-mail",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Extract commitments from mail (D-145 PA10)",
+    "description": "Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply. Fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7), resolves the counterparty to a known contact when possible, and the extractor model sees only PII-aliased text, never the raw sender.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["email", "mail", "commitment", "work-entity", "reactive", "silent-producer", "pack:personal-organizer", "ai_surface"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "confidence_threshold": {
+      "label": "Minimum extraction confidence (0..1) to create a commitment row",
+      "type": "number",
+      "default": 0.7
+    }
+  },
+  "requires": [],
+  "event_triggers": [
+    { "event": "data.mail.**.created" }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "message",
+      "op": "core.mail.get",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "record_id": "{{context.event.payload.record_id}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "subject",
+      "transform": "default",
+      "value": "{{step.message.record.hot_fields.subject}}",
+      "fallback": ""
+    },
+    {
+      "id": "from_email",
+      "transform": "default",
+      "value": "{{step.message.record.hot_fields.from}}",
+      "fallback": ""
+    },
+    {
+      "id": "thread_id",
+      "transform": "default",
+      "value": "{{step.message.record.hot_fields.thread_id}}",
+      "fallback": ""
+    },
+    {
+      "id": "has_thread_id",
+      "transform": "compare",
+      "left": "{{step.thread_id}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "thread",
+      "skip_when": "{{step.has_thread_id}} not_equal true",
+      "op": "core.mail.thread-read",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "thread_id": "{{step.thread_id}}",
+        "max_messages": 5
+      }
+    },
+    {
+      "id": "thread_messages",
+      "transform": "default",
+      "value": "{{step.thread.messages}}",
+      "fallback": []
+    },
+    {
+      "id": "thread_body_reads",
+      "op": "core.mail.body-read",
+      "foreach": "{{step.thread_messages}}",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "record_id": "{{item.record_id}}",
+        "max_chars": 32000
+      }
+    },
+    {
+      "id": "thread_messages_with_body",
+      "transform": "filter",
+      "array": "{{step.thread_body_reads}}",
+      "field": "result.body",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "thread_body_segments",
+      "transform": "pluck",
+      "array": "{{step.thread_messages_with_body}}",
+      "field": "result.body"
+    },
+    {
+      "id": "thread_body",
+      "transform": "join",
+      "array": "{{step.thread_body_segments}}",
+      "separator": "\n\n---\n\n"
+    },
+    {
+      "id": "single_body_read",
+      "skip_when": "{{step.has_thread_id}} equal true",
+      "op": "core.mail.body-read",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "record_id": "{{context.event.payload.record_id}}",
+        "max_chars": 32000
+      }
+    },
+    {
+      "id": "single_body",
+      "transform": "default",
+      "value": "{{step.single_body_read.body}}",
+      "fallback": ""
+    },
+    {
+      "id": "body",
+      "transform": "ternary",
+      "if": "{{step.has_thread_id}}",
+      "then": "{{step.thread_body}}",
+      "else": "{{step.single_body}}"
+    },
+    {
+      "id": "body_present",
+      "transform": "compare",
+      "left": "{{step.body}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "skip_empty",
+      "transform": "compare",
+      "left": "{{step.body_present}}",
+      "operator": "not_equal",
+      "right": true
+    },
+    {
+      "id": "protect",
+      "transform": "pii-protect",
+      "data": {
+        "from": "{{step.from_email}}",
+        "subject": "{{step.subject}}",
+        "body": "{{step.body}}"
+      },
+      "fields": [
+        { "path": "from", "kind": "email" },
+        { "path": "subject", "kind": "content" },
+        { "path": "body", "kind": "content" }
+      ]
+    },
+    {
+      "id": "extract",
+      "skip_when": "{{step.skip_empty}} equal true",
+      "op": "core.ai.extract",
+      "args": {
+        "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
+        "llm.fields": [
+          "statement",
+          "direction",
+          "promised_for_at_iso",
+          "counterparty_email",
+          "monetary_amount",
+          "monetary_currency",
+          "derivation_confidence"
+        ],
+        "llm.model_hint": "fast"
+      }
+    },
+    {
+      "id": "restore",
+      "transform": "pii-restore",
+      "data": "{{step.extract}}",
+      "ledger_handle": "{{step.protect.ledger_handle}}"
+    },
+    {
+      "id": "extracted_statement",
+      "transform": "default",
+      "value": "{{step.restore.restored.statement}}",
+      "fallback": ""
+    },
+    {
+      "id": "extracted_direction",
+      "transform": "default",
+      "value": "{{step.restore.restored.direction}}",
+      "fallback": "inbound"
+    },
+    {
+      "id": "extracted_confidence",
+      "transform": "default",
+      "value": "{{step.restore.restored.derivation_confidence}}",
+      "fallback": 0
+    },
+    {
+      "id": "extracted_counterparty_email",
+      "transform": "default",
+      "value": "{{step.restore.restored.counterparty_email}}",
+      "fallback": ""
+    },
+    {
+      "id": "counterparty_email",
+      "transform": "trim",
+      "input": "{{step.extracted_counterparty_email}}"
+    },
+    {
+      "id": "extracted_monetary_amount",
+      "transform": "default",
+      "value": "{{step.restore.restored.monetary_amount}}",
+      "fallback": ""
+    },
+    {
+      "id": "extracted_monetary_currency",
+      "transform": "default",
+      "value": "{{step.restore.restored.monetary_currency}}",
+      "fallback": ""
+    },
+    {
+      "id": "promised_for_at",
+      "transform": "date_parse",
+      "input": "{{step.restore.restored.promised_for_at_iso}}"
+    },
+    {
+      "id": "has_monetary",
+      "transform": "all",
+      "conditions": [
+        "{{step.extracted_monetary_amount}} is_not_empty",
+        "{{step.extracted_monetary_currency}} is_not_empty"
+      ]
+    },
+    {
+      "id": "monetary_value",
+      "skip_when": "{{step.has_monetary}} not_equal true",
+      "transform": "merge",
+      "sources": [
+        {
+          "amount": "{{step.extracted_monetary_amount}}",
+          "currency": "{{step.extracted_monetary_currency}}"
+        }
+      ]
+    },
+    {
+      "id": "below_threshold",
+      "transform": "compare",
+      "left": "{{step.extracted_confidence}}",
+      "operator": "less",
+      "right": "{{config.confidence_threshold}}"
+    },
+    {
+      "id": "missing_statement",
+      "transform": "compare",
+      "left": "{{step.extracted_statement}}",
+      "operator": "is_empty"
+    },
+    {
+      "id": "skip_create",
+      "transform": "any",
+      "values": [
+        "{{step.skip_empty}}",
+        "{{step.below_threshold}}",
+        "{{step.missing_statement}}"
+      ]
+    },
+    {
+      "id": "resolve_counterparty",
+      "skip_when": "{{step.counterparty_email}} is_empty",
+      "op": "core.contact.resolve",
+      "args": {
+        "email": "{{step.counterparty_email}}"
+      }
+    },
+    {
+      "id": "create",
+      "skip_when": "{{step.skip_create}} equal true",
+      "op": "core.work-entity.commitment.create",
+      "args": {
+        "direction": "{{step.extracted_direction}}",
+        "statement": "{{step.extracted_statement}}",
+        "derivation": "mail_extracted",
+        "promised_for_at": "{{step.promised_for_at}}",
+        "expiry_policy": "escalate_overdue",
+        "derivation_confidence": "{{step.extracted_confidence}}",
+        "monetary_value": "{{step.monetary_value}}",
+        "counterparty_contact_id": "{{step.resolve_counterparty.contact.email}}",
+        "derived_from_mail_thread_id": "{{step.thread_id}}"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Mail thread",        "value": "{{step.thread_id}}" },
+        { "label": "Subject",            "value": "{{step.subject}}" },
+        { "label": "Statement",          "value": "{{step.extracted_statement}}" },
+        { "label": "Direction",          "value": "{{step.extracted_direction}}" },
+        { "label": "Confidence",         "value": "{{step.extracted_confidence:number}}" },
+        { "label": "Counterparty email", "value": "{{step.extracted_counterparty_email}}" },
+        { "label": "Counterparty contact", "value": "{{step.resolve_counterparty.contact.email}}" },
+        { "label": "Monetary amount",    "value": "{{step.extracted_monetary_amount}}" },
+        { "label": "Monetary currency",  "value": "{{step.extracted_monetary_currency}}" },
+        { "label": "Skipped",            "value": "{{step.skip_create}}" },
+        { "label": "Commitment ID",      "value": "{{step.create.commitment.id}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

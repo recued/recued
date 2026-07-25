@@ -12,13 +12,13 @@
  *
  *  Owns live-adapter lifecycle: `startAll()` rehydrates adapters for
  *  every row already in the instance store (boot path); `enrollDeps`
- *  carries `onEnrolled` / `onDeleted` hooks so enroll/delete rpcs flow
- *  through the same helpers. `disposeAll()` stops every live adapter
- *  during the lifecycle drain.
+ *  carries `onEnrolled` / `onDeleted` / `onResync` hooks so enroll,
+ *  delete, and manual refresh rpcs flow through the same serialized
+ *  helpers. `disposeAll()` stops every live adapter during the lifecycle drain.
  */
 
 import type Database from 'better-sqlite3';
-import type { CollectionInstanceRow } from '@recued/contracts';
+import type { CollectionInstanceRow, FileCollectionCaps } from '@recued/contracts';
 import type { KernelDispatchers } from '@recued/ingredients';
 import type { AuditLogStore } from '@recued/storage';
 import { createBackfillAuditRecorder } from '../../triggers/backfill-audit.js';
@@ -31,6 +31,7 @@ import {
   type FileAdapterEvent,
   type FileAdapterInstance,
   type FileAdapterRegistry,
+  validateD110FileCaps,
 } from './adapter-registry.js';
 import { fsAdapterFactory } from './adapters/fs/index.js';
 import { createS3AdapterFactory } from './adapters/s3/index.js';
@@ -86,7 +87,7 @@ export interface FileStack {
   extDownloads: ExtDownloadsRegistry;
   kernelDispatchers: FileKernelDispatchers;
   /** Feed to `collectionDeps.fileEnroll`. Carries `onEnrolled` /
-   *  `onDeleted` hooks that maintain the internal live-adapter map
+   *  `onDeleted` / `onResync` hooks that maintain the internal live-adapter map
    *  so enroll-rpc and delete-rpc flow through the same lifecycle
    *  helpers `startAll()` uses at boot. */
   enrollDeps: EnrollDeps;
@@ -117,31 +118,88 @@ export const composeFileStack = (
   adapters.register(createExtDownloadsAdapterFactory({ registry: extDownloads }));
 
   const liveAdapters = new Map<string, FileAdapterInstance>();
+  const lifecycleTails = new Map<string, Promise<void>>();
 
-  const startLiveAdapter = async (
-    row: Pick<CollectionInstanceRow, 'slug' | 'adapter_type'> & {
-      config?: Record<string, unknown>;
-    },
+  /** Enroll, delete, boot-start, and manual resync can arrive concurrently.
+   *  Serialize lifecycle mutations per slug so two resyncs cannot both observe
+   *  an empty live map and leave one untracked watcher running. Different
+   *  slugs remain independent. */
+  const serializeLifecycle = async <T>(
+    slug: string,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    const prior = lifecycleTails.get(slug) ?? Promise.resolve();
+    const run = prior.then(action);
+    const tail = run.then(() => undefined, () => undefined);
+    lifecycleTails.set(slug, tail);
+    try {
+      return await run;
+    } finally {
+      if (lifecycleTails.get(slug) === tail) lifecycleTails.delete(slug);
+    }
+  };
+
+  const startLiveAdapterUnlocked = async (
+    row: Pick<CollectionInstanceRow, 'slug'>,
   ): Promise<void> => {
     if (liveAdapters.has(row.slug)) return;
 
-    const factory = adapters.get(row.adapter_type);
-    if (!factory) {
-      log(
-        'warn',
-        `file-stack: unknown adapter_type '${row.adapter_type}' for slug '${row.slug}' — skipping`,
-      );
-      return;
+    // Lifecycle callbacks carry snapshots across awaits. Re-read the row so a
+    // concurrent delete cannot start an orphan adapter and a config update
+    // cannot start from stale callback data.
+    const stored = instances.get('file', row.slug);
+    if (!stored) {
+      throw new Error(`file-stack: instance row missing for slug '${row.slug}'`);
     }
 
-    const stored = instances.get('file', row.slug);
-    const config = row.config ?? stored?.config ?? {};
+    const config = stored.config;
+
+    const markStartDegraded = (): void => {
+      try {
+        instances.updateAuthState('file', row.slug, { auth_state: 'degraded' });
+      } catch (err) {
+        log('warn', `file-stack: failed to mark '${row.slug}' degraded`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+
+    let caps: FileCollectionCaps;
+    try {
+      // Fresh enroll/update/resync rows passed through probe already, but boot
+      // rehydration reads persisted JSON directly. Re-assert the same closed
+      // D-110 boundary so a legacy/corrupt OAuth row cannot start an adapter.
+      caps = validateD110FileCaps(stored.adapter_type, stored.caps);
+    } catch (err) {
+      log('warn', `file-stack: invalid persisted caps for '${row.slug}'`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      markStartDegraded();
+      throw err;
+    }
+
+    const factory = adapters.get(stored.adapter_type);
+    if (!factory) {
+      const err = new Error(
+        `file-stack: unknown adapter_type '${stored.adapter_type}' for slug '${row.slug}'`,
+      );
+      log('warn', err.message);
+      markStartDegraded();
+      throw err;
+    }
 
     let instance: FileAdapterInstance;
     try {
       instance = factory.create({
         slug: row.slug,
         config,
+        caps,
+        onDegraded: (err) => {
+          log('error', `file-stack: adapter runtime degraded for '${row.slug}'`, {
+            err: err instanceof Error ? err.message : String(err),
+          });
+          markStartDegraded();
+        },
         onEvent: (event) => onEvent(row.slug, event),
         log,
       });
@@ -149,6 +207,7 @@ export const composeFileStack = (
       log('error', `file-stack: factory.create failed for '${row.slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      markStartDegraded();
       throw err;
     }
 
@@ -173,6 +232,7 @@ export const composeFileStack = (
       log('error', `file-stack: adapter.start failed for '${row.slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      markStartDegraded();
       await backfillRecorder.finish('failed');
       throw err;
     }
@@ -194,23 +254,56 @@ export const composeFileStack = (
     liveAdapters.set(row.slug, instance);
   };
 
-  const stopLiveAdapter = async (slug: string): Promise<void> => {
+  const stopLiveAdapterUnlocked = async (
+    slug: string,
+    failOnError = false,
+  ): Promise<void> => {
     const instance = liveAdapters.get(slug);
     if (!instance) return;
-    liveAdapters.delete(slug);
+    // Delete/drain are terminal and remove the entry up front. Strict resync
+    // keeps it registered until stop succeeds, so repeated retries cannot
+    // forget an uncertain live adapter and create a duplicate.
+    if (!failOnError) liveAdapters.delete(slug);
     try {
       await instance.stop();
+      if (failOnError && liveAdapters.get(slug) === instance) {
+        liveAdapters.delete(slug);
+      }
     } catch (err) {
-      // Failures during stop are logged but swallowed — the caller
-      // (enroll rpc delete path or drain) has already removed the row
-      // from our map, and blocking the delete on a misbehaving adapter
-      // would leave the DB and the in-process map permanently out of
-      // sync.
+      // Delete/drain callers swallow stop failures because the row has already
+      // left the live map. Resync opts into fail-closed propagation below.
       log('warn', `file-stack: adapter.stop failed for '${slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      // Delete/drain remain best-effort, but a resync keeps the uncertain
+      // instance registered and must not start a second adapter.
+      if (failOnError) throw err;
     }
   };
+
+  const startLiveAdapter = (
+    row: Parameters<typeof startLiveAdapterUnlocked>[0],
+  ): Promise<void> => serializeLifecycle(
+    row.slug,
+    () => startLiveAdapterUnlocked(row),
+  );
+
+  const stopLiveAdapter = (slug: string): Promise<void> => serializeLifecycle(
+    slug,
+    () => stopLiveAdapterUnlocked(slug),
+  );
+
+  /** A user-requested resync is deliberately a one-shot restart, not a new
+   *  timer. For `watch: none` fs instances, `start()` performs the recursive
+   *  scan and stays idle; realtime instances rescan and reattach their watch.
+   *  A failed stop aborts replacement, avoiding an untracked duplicate. */
+  const resyncLiveAdapter = (row: CollectionInstanceRow): Promise<void> =>
+    serializeLifecycle(row.slug, async () => {
+      await stopLiveAdapterUnlocked(row.slug, true);
+      await startLiveAdapterUnlocked({
+        slug: row.slug,
+      });
+    });
 
   const dispatchDeps: FileDispatcherDeps = {
     instances,
@@ -230,6 +323,7 @@ export const composeFileStack = (
     adapters,
     onEnrolled: (row) => startLiveAdapter(row),
     onDeleted: (slug) => stopLiveAdapter(slug),
+    onResync: (row) => resyncLiveAdapter(row),
   };
 
   const startAll = async (): Promise<void> => {

@@ -41,7 +41,7 @@
  *  Token cost: ~250 per record. Same magnitude as the HubSpot
  *  variant + `purpose` / `company` / `role` AI producers.
  *
- *  Spec: `docs/d-130-spec.md` §A.6 + §Phase 6 + decision 11
+ *  Spec: D-130 §A.6 + §Phase 6 + decision 11
  *  (parallel topic per vendor). */
 
 import {

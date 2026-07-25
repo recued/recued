@@ -4,7 +4,7 @@
 // `LaneSemaphore` lives in `backend/server/` (so `packages/` never imports
 // `backend/`, preserving the public boundary). The engine acquires a slot
 // before a heavy call, runs the call inline-within-run, and releases on settle.
-// See `docs/d-181-spec.md` §4/§5.
+// See D-181 §4/§5.
 
 import type { CallClass, ExecutionLane } from './execution-lane.js';
 

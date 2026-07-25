@@ -12,7 +12,7 @@
  *  redundancy matches the registry's per-record shape (`scope: mail`,
  *  `target_id: <mail record_id>`).
  *
- *  Spec: `docs/d-123-spec.md` §4.3 + `ENRICHMENT_REGISTRY.thread_signals`. */
+ *  Spec: D-123 §4.3 + `ENRICHMENT_REGISTRY.thread_signals`. */
 
 import type { CollectionRecord, ThreadSignalsValue } from '@recued/contracts';
 

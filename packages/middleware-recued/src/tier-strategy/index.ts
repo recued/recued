@@ -14,7 +14,7 @@
  *  this folder used to live alongside).
  *
  *  Spec: § B.3 + § B.15.10 + § C.3.6 +
- *  docs/d-164-prompt-cache-consolidation-pending-design.md § P6. */
+ *  D-164 § P6. */
 
 export {
   selectSynthesisTier,

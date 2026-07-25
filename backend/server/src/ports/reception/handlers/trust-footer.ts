@@ -33,7 +33,7 @@
  *    - Returns `null` when the toggle is off (the renderer emits no
  *      trust-footer block).
  *
- *  Spec: docs/d-149-spec.md § A.20.7. */
+ *  Spec: D-149 § A.20.7. */
 
 import {
   buildTrustFooter,

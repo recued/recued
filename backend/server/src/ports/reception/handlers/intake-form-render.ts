@@ -27,7 +27,7 @@
  *  non-empty honeypot value the submission is tagged `'spam'` per § A.5.3
  *  line 704.
  *
- *  Spec: docs/d-149-spec.md § A.5.3 + § A.11 TR-2 + TR-14 + § A.5.3
+ *  Spec: D-149 § A.5.3 + § A.11 TR-2 + TR-14 + § A.5.3
  *  line 753-758 (public-mode field-type closed list). */
 
 import {

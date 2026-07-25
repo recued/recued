@@ -20,7 +20,7 @@
  *    6. Missing sidecar at the cached row (FK row but no vector) →
  *       lazy delete + LLM call.
  *
- *  Spec: docs/d-145-spec.md § A.7.10 + § A.7.10 acceptance criterion
+ *  Spec: D-145 § A.7.10 + § A.7.10 acceptance criterion
  *  6 (wire embedding producer first; ≥10% hit rate gate). */
 
 import { mkdtempSync, rmSync } from 'node:fs';

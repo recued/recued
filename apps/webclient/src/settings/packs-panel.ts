@@ -302,7 +302,7 @@
  *  success-path only, and a failure render would contradict the
  *  failure copy beside it.
  *
- *  Spec: docs/d-145-spec.md § PA10 (pack-shipped Standing Instructions
+ *  Spec: D-145 § PA10 (pack-shipped Standing Instructions
  *  + Settings UI prescription); the R22.1 detail layout is locked in
  *  the webclient-ia treemap §PACKS. */
 
@@ -354,6 +354,7 @@ import {
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_CANCEL_BTN_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
   installFailureCopy,
   renderPacksInstallDialog,
   resolveInstallDialogAccess,
@@ -405,6 +406,14 @@ import {
   createPackAccessController,
   type PackAccessController,
 } from './pack-access-controls.js';
+import {
+  createOwnerOperationController,
+  type OwnerOperationController,
+  type OwnerOperationDeleteCaller,
+  type OwnerOperationInventoryCaller,
+  type OwnerOperationListCaller,
+  type OwnerOperationUpsertCaller,
+} from './owner-operation-controls.js';
 import type {
   GrantCatalogOperationsCaller,
   GrantCliReachabilityListCaller,
@@ -440,6 +449,13 @@ export const PACKS_ROW_INSTALL_BTN_ATTR = 'data-recued-packs-row-install';
 // the detail view's Back-to-list control.
 export const PACKS_ROW_SELECT_ATTR = 'data-recued-packs-row-select';
 export const PACKS_DETAIL_BACK_ATTR = 'data-recued-packs-detail-back';
+// Pack detail sub-navigation. Permissions owns the global owner replacement
+// for pack-authored risk / approval defaults; Access remains the per-contract
+// reachability matrix.
+export const PACKS_DETAIL_TABS_ATTR = 'data-recued-packs-detail-tabs';
+export const PACKS_DETAIL_TAB_ATTR = 'data-recued-packs-detail-tab';
+export const PACKS_DETAIL_TAB_PANEL_ATTR = 'data-recued-packs-detail-tab-panel';
+export type PacksDetailTab = 'detail' | 'permissions' | 'access';
 // R22 3-section LIST — the section wrapper carries `data-section`
 // (`installed` / `discover` / `add`); the Installed section's per-service_kind
 // group carries `data-kind` (a PackServiceKind or `other`).
@@ -475,6 +491,8 @@ export {
   PACKS_DIALOG_RECIPE_COLLISION_ATTR,
   PACKS_DIALOG_GRANT_OVERLAP_ATTR,
   PACKS_DIALOG_GRANT_OVERLAP_ITEM_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
 } from './packs-install-dialog.js';
 // D-145 PA10 follow-on Slice B — per-row Delete affordance attributes.
 export const PACKS_ROW_DELETE_BTN_ATTR = 'data-recued-packs-row-delete';
@@ -489,8 +507,9 @@ export const PACKS_ROW_DELETE_ERROR_ATTR =
 // slug with at least one other pack in the list.
 export const PACKS_ROW_COLLISION_ATTR = 'data-recued-packs-row-collision';
 // R22.1 detail re-layout — the detail view's section wrappers; value is the
-// section id (`identity` / `access` / `declares` / `about`). The Identity
-// section also carries the author's repo link when the manifest declares one.
+// section id (`identity` / `operation-defaults` / `access` / `declares` /
+// `about`). The Identity section also carries the author's repo link when the
+// manifest declares one.
 export const PACKS_DETAIL_SECTION_ATTR = 'data-recued-packs-detail-section';
 export const PACKS_DETAIL_REPO_LINK_ATTR = 'data-recued-packs-detail-repo';
 // Detail-only surface — a marketplace pack whose manifest isn't bundled is
@@ -605,6 +624,8 @@ export type PacksResolveCaller = (input: string) => Promise<PacksResolveResult>;
 export type PacksInstallBySlugCaller = (args: {
   slug: string;
   granted_permissions: ReadonlyArray<string>;
+  /** Exact marketplace manifest rendered by the detail consent surface. */
+  expected_manifest_hash?: string;
   install_scope?: InstallGrantSelection;
   /** D-194 2b-2 — see {@link PacksInstallCaller}. */
   chosen_connection?: string;
@@ -700,6 +721,12 @@ export interface MountPacksPanelOptions {
   runContractGrantWrite?: GrantWriteCaller;
   /** `collection.contract.listCatalogOperations` — the shared op universe. */
   runCatalogOperations?: GrantCatalogOperationsCaller;
+  /** D-211 global owner operation-default row readers/writers. These are
+   * actorless and render in the pack detail, never in a contract row. */
+  runOwnerOperationInventory?: OwnerOperationInventoryCaller;
+  runOwnerOperationList?: OwnerOperationListCaller;
+  runOwnerOperationUpsert?: OwnerOperationUpsertCaller;
+  runOwnerOperationDelete?: OwnerOperationDeleteCaller;
   /** `cli.reachability.list` — cli-op effective state (global; split per
    *  principal client-side). */
   runCliReachabilityList?: GrantCliReachabilityListCaller;
@@ -859,6 +886,13 @@ const COPY = {
   installed_badge: 'Installed',
   foundation_badge: 'Foundation',
   detail_back_label: '← Packs',
+  detail_tabs_label: 'Pack sections',
+  detail_tab_label: 'Detail',
+  detail_permissions_tab_label: 'Permissions',
+  detail_access_tab_label: 'Access',
+  detail_operation_defaults_label: 'Operation defaults',
+  detail_operation_defaults_empty: 'This pack has no operation defaults to customize.',
+  detail_operation_defaults_unavailable: 'Operation defaults are unavailable on this server.',
   recipes_label: 'recipes',
   body_grants_label: 'body content',
   publisher_prefix: 'by ',
@@ -1023,6 +1057,9 @@ export const mountPacksPanel = (
    *  tolerated — `renderReady` falls back to the list until it appears (and
    *  clears a slug that's gone after a refresh, mirroring recipes/data). */
   let selectedSlug: string | null = opts.initialSlug ?? null;
+  /** Active pack-detail subview. Pack navigation always starts at Detail;
+   *  controller-driven re-renders preserve the current subview. */
+  let activeDetailTab: PacksDetailTab = 'detail';
 
   /** The resolved-but-not-yet-installed marketplace pack, projected from its
    *  fetched manifest (a pack absent from `packs[]`, opened in the detail via
@@ -1032,6 +1069,8 @@ export const mountPacksPanel = (
    *  resolved pack); KEPT across install so the detail flips to Uninstall (its
    *  `installed` re-derives from `rosterInstalledSet`). */
   let pendingAddEntry: PackListEntry | null = null;
+  /** Review anchor paired with `pendingAddEntry`; never reused across slugs. */
+  let pendingAddManifestHash: string | null = null;
 
   const canInstall = opts.runInstall !== undefined;
   const canDelete = opts.runUninstall !== undefined;
@@ -1044,6 +1083,10 @@ export const mountPacksPanel = (
    *  pack, absent from `packs[]`, shows up). Rebuilt on every list load; the
    *  detail derives a resolved marketplace pack's installed-state from it. */
   let rosterInstalledSet = new Set<string>();
+  /** Exact installed versions when the inventory supplies them. A resolved
+   * marketplace pack uses this to distinguish "already current" from "an older
+   * version is installed"; the latter must keep the Update review actionable. */
+  let rosterInstalledVersions = new Map<string, number>();
   // ── Detail-only marketplace resolve sub-state ────────────────────
   /** Slug whose `runResolvePack` is in flight (detail-only, not-in-roster). */
   let detailResolving: string | null = null;
@@ -1064,8 +1107,18 @@ export const mountPacksPanel = (
    *  correct across an install/uninstall without a re-resolve. */
   const findPackBySlug = (slug: string): PackListEntry | undefined => {
     if (pendingAddEntry?.slug === slug) {
+      const installedVersion = rosterInstalledVersions.get(slug);
+      if (installedVersion !== undefined) {
+        return {
+          ...pendingAddEntry,
+          // A newer installed version also satisfies this preview; never turn an
+          // older marketplace response into a downgrade-shaped Update action.
+          installed: installedVersion >= pendingAddEntry.version,
+          installed_any_version: true,
+        };
+      }
       return rosterInstalledSet.has(slug)
-        ? { ...pendingAddEntry, installed: true }
+        ? { ...pendingAddEntry, installed: true, installed_any_version: true }
         : pendingAddEntry;
     }
     return packs.find((p) => p.slug === slug);
@@ -1075,7 +1128,10 @@ export const mountPacksPanel = (
    *  mirrors the server's `projectManifest` (pack-list-handler.ts) but always
    *  `installed: false` (Add-a-pack resolves packs the user hasn't installed).
    *  Held as `pendingAddEntry`, never merged into `packs`. */
-  const projectAddedManifest = (manifest: BulkPackManifest): PackListEntry => ({
+  const projectAddedManifest = (
+    manifest: BulkPackManifest,
+    ownerOperationReview?: PackListEntry['owner_operation_review'],
+  ): PackListEntry => ({
     slug: manifest.slug,
     publisher: manifest.publisher,
     name: manifest.name,
@@ -1087,6 +1143,9 @@ export const mountPacksPanel = (
     recipe_count: manifest.recipes.length,
     body_visibility_grant_count: manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,
+    ...(ownerOperationReview !== undefined && ownerOperationReview.length > 0
+      ? { owner_operation_review: ownerOperationReview }
+      : {}),
   });
 
   /** Detail-only — resolve a marketplace pack whose manifest isn't bundled (so
@@ -1109,12 +1168,17 @@ export const mountPacksPanel = (
         if (disposed) return;
         if (selectedSlug !== slug) return; // navigated away mid-resolve
         if (result.manifest === null) {
+          pendingAddManifestHash = null;
           detailResolveError = {
             slug,
             message: result.failure?.message ?? COPY.add_generic_error,
           };
         } else {
-          pendingAddEntry = projectAddedManifest(result.manifest);
+          pendingAddEntry = projectAddedManifest(
+            result.manifest,
+            result.owner_operation_review,
+          );
+          pendingAddManifestHash = result.manifest_review_hash ?? null;
           detailResolveError = null;
         }
       } catch (err) {
@@ -1170,6 +1234,25 @@ export const mountPacksPanel = (
       ? { runCliReachabilitySet: opts.runCliReachabilitySet }
       : {}),
     ...(opts.subscribe ? { subscribe: opts.subscribe } : {}),
+    onChange: () => transitionTo(state, true),
+  });
+
+  // D-211 — pack-authored operation defaults plus the owner's global
+  // replacement. Deliberately separate from the per-contract Access matrix.
+  const ownerOperations: OwnerOperationController = createOwnerOperationController({
+    document: doc,
+    ...(opts.runOwnerOperationInventory
+      ? { runOperations: opts.runOwnerOperationInventory }
+      : {}),
+    ...(opts.runOwnerOperationList
+      ? { runListOverrides: opts.runOwnerOperationList }
+      : {}),
+    ...(opts.runOwnerOperationUpsert
+      ? { runUpsertOverride: opts.runOwnerOperationUpsert }
+      : {}),
+    ...(opts.runOwnerOperationDelete
+      ? { runDeleteOverride: opts.runOwnerOperationDelete }
+      : {}),
     onChange: () => transitionTo(state, true),
   });
 
@@ -1246,6 +1329,7 @@ export const mountPacksPanel = (
           supervision.refresh(),
           connectionsReadiness.refresh(),
           packAccess.refresh(),
+          ownerOperations.refresh(),
           refreshInstallAudienceOptions(),
         ]);
         if (disposed) return;
@@ -1259,6 +1343,16 @@ export const mountPacksPanel = (
           ...packs.filter((p) => p.installed || p.installed_any_version === true).map((p) => p.slug),
           ...(result.installed_versions ?? []).map((iv) => iv.slug),
         ]);
+        rosterInstalledVersions = new Map(
+          (result.installed_versions ?? []).map((iv) => [iv.slug, iv.version]),
+        );
+        // Older/dbless list handlers may omit the inventory array. Exact
+        // installed pack rows still provide a safe version fact.
+        for (const pack of packs) {
+          if (pack.installed && !rosterInstalledVersions.has(pack.slug)) {
+            rosterInstalledVersions.set(pack.slug, pack.version);
+          }
+        }
         // Codex review fold (MAJOR 2) — reconcile dialog state against
         // the refreshed list. Two cases close the dialog automatically:
         //   - the pack the user was about to install vanished server-
@@ -1289,12 +1383,20 @@ export const mountPacksPanel = (
           //     just for being absent, or a bus-refresh would nuke the in-progress
           //     consent).
           const rosterRow = packs.find((p) => p.slug === dialogOpenFor);
-          const isPendingAdd =
-            pendingAddEntry !== null && pendingAddEntry.slug === dialogOpenFor;
+          const pendingVersion =
+            pendingAddEntry !== null && pendingAddEntry.slug === dialogOpenFor
+              ? pendingAddEntry.version
+              : undefined;
+          const isPendingAdd = pendingVersion !== undefined;
           // A resolved marketplace pack (pending Add, absent from `packs[]`)
           // installed elsewhere lands in the inventory set, not `packs[]` — close
           // its stale install dialog too, so the detail flips to Uninstall.
-          const pendingNowInstalled = isPendingAdd && rosterInstalledSet.has(dialogOpenFor);
+          const pendingInstalledVersion = rosterInstalledVersions.get(dialogOpenFor);
+          const pendingNowInstalled = pendingVersion !== undefined && (
+            pendingInstalledVersion !== undefined
+              ? pendingInstalledVersion >= pendingVersion
+              : rosterInstalledSet.has(dialogOpenFor)
+          );
           if (
             rosterRow?.installed
             || pendingNowInstalled
@@ -1302,7 +1404,10 @@ export const mountPacksPanel = (
           ) {
             dialogPermissions.delete(dialogOpenFor);
             clearDialogGrantPicks(dialogOpenFor);
-            if (isPendingAdd) pendingAddEntry = null;
+            if (isPendingAdd) {
+              pendingAddEntry = null;
+              pendingAddManifestHash = null;
+            }
             dialogOpenFor = null;
             dialogError = null;
           }
@@ -1397,8 +1502,10 @@ export const mountPacksPanel = (
     // previously-failed slug retries on re-visit). An in-flight resolve
     // self-cancels via its `selectedSlug !== slug` guard.
     pendingAddEntry = null;
+    pendingAddManifestHash = null;
     detailResolveError = null;
     selectedSlug = slug;
+    activeDetailTab = 'detail';
     opts.onSelectSlug?.(slug);
     if (!disposed) render();
   };
@@ -1665,6 +1772,9 @@ export const mountPacksPanel = (
           ? await (opts.runInstallBySlug as PacksInstallBySlugCaller)({
               slug: target.slug,
               granted_permissions: granted,
+              ...(pendingAddManifestHash !== null
+                ? { expected_manifest_hash: pendingAddManifestHash }
+                : {}),
               ...(installScope !== undefined ? { install_scope: installScope } : {}),
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
@@ -1680,12 +1790,30 @@ export const mountPacksPanel = (
             });
         if (disposed) return;
         if (!response.result.ok) {
+          const failureCode = response.result.failure?.code;
+          if (isAdded && failureCode === 'review_stale') {
+            // The server fetched a different marketplace artifact than the one
+            // this consent dialog rendered. Discard every value derived from
+            // that preview and return to the detail retry state; reopening the
+            // same in-memory dialog would only resubmit the stale hash forever.
+            dialogPermissions.delete(submittingSlug);
+            clearDialogGrantPicks(submittingSlug);
+            pendingAddEntry = null;
+            pendingAddManifestHash = null;
+            dialogOpenFor = null;
+            dialogError = null;
+            detailResolveError = {
+              slug: submittingSlug,
+              message: installFailureCopy(failureCode),
+            };
+            return;
+          }
           // Engine-side `ok: false` outcome — surface the failure code via
           // the dialog module's exhaustive copy map (unknown / missing
           // codes fall back defensively there — Codex MINOR 4 fold). The
           // dialog stays open so the user can adjust permissions + retry,
           // or cancel.
-          dialogError = installFailureCopy(response.result.failure?.code);
+          dialogError = installFailureCopy(failureCode);
           return;
         }
         // Successful install — close the dialog + refresh the list so
@@ -2289,16 +2417,11 @@ export const mountPacksPanel = (
     return box;
   };
 
-  // R22.1 — the DETAIL view (`#packs/<slug>`), organized by IMPORTANCE:
-  //   IDENTITY  control-plane facts (name · badges · slug/publisher/version ·
-  //             repo link) + the Install / Delete affordances, with the
-  //             inline consent dialog directly under them;
-  //   ACCESS    placeholder — the by-PACK contract×op grant panel is R3;
-  //             until it lands, grants are managed per contract in #contracts;
-  //   DECLARES  capacity — recipe / body-content counts + the connection-
-  //             readiness block + the supervised-daemon controls (both moved
-  //             off the list row; the scope-bridge re-homing);
-  //   ABOUT     demoted prose — description · tags · cross-pack collision.
+  // R22.1 + D-211 follow-on — the DETAIL view (`#packs/<slug>`) keeps Identity
+  // and its actions fixed, then splits the potentially-long content into:
+  //   DETAIL       declared capacity / readiness + descriptive metadata;
+  //   PERMISSIONS  global owner risk / approval replacements for pack ops;
+  //   ACCESS       the per-contract operation reachability matrix.
   // Detail-only surface — the Back button + a transient body. Shared by the
   // resolve loading / error placeholders so a marketplace pack still has a Back
   // affordance while its manifest is being fetched (or after it failed).
@@ -2433,65 +2556,115 @@ export const mountPacksPanel = (
       wrapper.appendChild(renderDialog(pack, collision, grantOverlap));
     }
 
-    // ── ACCESS — the R3 by-PACK contract×op panel (contract-first nested
-    // list; the second axis of the one grant matrix). Falls back to the
-    // placeholder copy when the access callers aren't wired OR the pack
-    // ships no catalog ops (recipe-only). ──
-    const access = makeDetailSection('access', COPY.detail_access_label);
-    const accessPanel = packAccess.renderForPack(pack);
-    if (accessPanel !== null) {
-      access.appendChild(accessPanel);
-    } else {
-      const accessNote = doc.createElement('p');
-      accessNote.className = 'packs-detail-note';
-      accessNote.textContent = COPY.detail_access_placeholder;
-      access.appendChild(accessNote);
-      const contractsLink = doc.createElement('a');
-      contractsLink.className = 'rx-link packs-detail-access-link';
-      contractsLink.setAttribute('href', '#contracts');
-      contractsLink.textContent = COPY.detail_access_contracts_label;
-      access.appendChild(contractsLink);
+    const tabs: ReadonlyArray<{ id: PacksDetailTab; label: string }> = [
+      { id: 'detail', label: COPY.detail_tab_label },
+      { id: 'permissions', label: COPY.detail_permissions_tab_label },
+      { id: 'access', label: COPY.detail_access_tab_label },
+    ];
+    const tabStrip = doc.createElement('nav');
+    tabStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
+    tabStrip.setAttribute('role', 'tablist');
+    tabStrip.setAttribute('aria-label', COPY.detail_tabs_label);
+    for (const tab of tabs) {
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.setAttribute(PACKS_DETAIL_TAB_ATTR, tab.id);
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', activeDetailTab === tab.id ? 'true' : 'false');
+      button.textContent = tab.label;
+      button.addEventListener('click', () => {
+        if (activeDetailTab === tab.id) return;
+        activeDetailTab = tab.id;
+        render();
+      });
+      tabStrip.appendChild(button);
     }
-    wrapper.appendChild(access);
+    wrapper.appendChild(tabStrip);
 
-    // ── DECLARES — capacity: counts + connections + daemon controls ──
-    const declares = makeDetailSection('declares', COPY.detail_declares_label);
-    const counts = doc.createElement('p');
-    counts.className = 'packs-detail-counts';
-    const parts: string[] = [`${pack.recipe_count} ${COPY.recipes_label}`];
-    if (pack.body_visibility_grant_count > 0) {
-      parts.push(
-        `${pack.body_visibility_grant_count} ${COPY.body_grants_label}`,
+    const tabPanel = doc.createElement('div');
+    tabPanel.setAttribute(PACKS_DETAIL_TAB_PANEL_ATTR, activeDetailTab);
+    tabPanel.setAttribute('role', 'tabpanel');
+    tabPanel.className = 'packs-detail-tab-panel';
+
+    if (activeDetailTab === 'permissions') {
+      // D-211 global owner replacements. They are pack-wide defaults shared by
+      // every contract, so Permissions is deliberately separate from Access.
+      const defaults = makeDetailSection(
+        'operation-defaults',
+        COPY.detail_operation_defaults_label,
       );
-    }
-    counts.textContent = parts.join(' · ');
-    declares.appendChild(counts);
-    // Connections readiness — per declared connection, enrolled + scope
-    // coverage (null when the pack binds no connection).
-    const connSection = connectionsReadiness.renderForPack(pack);
-    if (connSection) declares.appendChild(connSection);
-    // Supervision — the pack's supervised-daemon controls (null when it
-    // ships no `detached.supervision` op or no set caller).
-    const supSection = supervision.renderForPack(pack);
-    if (supSection) declares.appendChild(supSection);
-    wrapper.appendChild(declares);
+      const operationDefaults = ownerOperations.renderForPack(pack);
+      if (operationDefaults !== null) {
+        defaults.appendChild(operationDefaults);
+      } else {
+        const note = doc.createElement('p');
+        note.className = 'packs-detail-note';
+        note.textContent = ownerOperations.enabled
+          ? COPY.detail_operation_defaults_empty
+          : COPY.detail_operation_defaults_unavailable;
+        defaults.appendChild(note);
+      }
+      tabPanel.appendChild(defaults);
+    } else if (activeDetailTab === 'access') {
+      // R3 by-PACK contract×op panel (contract-first nested list; the second
+      // axis of the one grant matrix). Falls back when access isn't wired or
+      // the pack ships no catalog operations.
+      const access = makeDetailSection('access', COPY.detail_access_label);
+      const accessPanel = packAccess.renderForPack(pack);
+      if (accessPanel !== null) {
+        access.appendChild(accessPanel);
+      } else {
+        const accessNote = doc.createElement('p');
+        accessNote.className = 'packs-detail-note';
+        accessNote.textContent = COPY.detail_access_placeholder;
+        access.appendChild(accessNote);
+        const contractsLink = doc.createElement('a');
+        contractsLink.className = 'rx-link packs-detail-access-link';
+        contractsLink.setAttribute('href', '#contracts');
+        contractsLink.textContent = COPY.detail_access_contracts_label;
+        access.appendChild(contractsLink);
+      }
+      tabPanel.appendChild(access);
+    } else {
+      // DETAIL — declared capacity, readiness, and descriptive metadata.
+      const declares = makeDetailSection('declares', COPY.detail_declares_label);
+      const counts = doc.createElement('p');
+      counts.className = 'packs-detail-counts';
+      const parts: string[] = [`${pack.recipe_count} ${COPY.recipes_label}`];
+      if (pack.body_visibility_grant_count > 0) {
+        parts.push(
+          `${pack.body_visibility_grant_count} ${COPY.body_grants_label}`,
+        );
+      }
+      counts.textContent = parts.join(' · ');
+      declares.appendChild(counts);
+      // Connections readiness — per declared connection, enrolled + scope
+      // coverage (null when the pack binds no connection).
+      const connSection = connectionsReadiness.renderForPack(pack);
+      if (connSection) declares.appendChild(connSection);
+      // Supervision — the pack's supervised-daemon controls (null when it
+      // ships no `detached.supervision` op or no set caller).
+      const supSection = supervision.renderForPack(pack);
+      if (supSection) declares.appendChild(supSection);
+      tabPanel.appendChild(declares);
 
-    // ── ABOUT — demoted prose ──
-    const about = makeDetailSection('about', COPY.detail_about_label);
-    const desc = doc.createElement('p');
-    desc.className = 'packs-detail-desc';
-    desc.textContent = pack.description;
-    about.appendChild(desc);
-    const tags = pack.manifest.tags ?? [];
-    if (tags.length > 0) {
-      const tagsP = doc.createElement('p');
-      tagsP.className = 'packs-detail-tags';
-      tagsP.textContent = tags.join(' · ');
-      about.appendChild(tagsP);
+      const about = makeDetailSection('about', COPY.detail_about_label);
+      const desc = doc.createElement('p');
+      desc.className = 'packs-detail-desc';
+      desc.textContent = pack.description;
+      about.appendChild(desc);
+      const tags = pack.manifest.tags ?? [];
+      if (tags.length > 0) {
+        const tagsP = doc.createElement('p');
+        tagsP.className = 'packs-detail-tags';
+        tagsP.textContent = tags.join(' · ');
+        about.appendChild(tagsP);
+      }
+      const collisionNotice = renderCollisionNotice(collision);
+      if (collisionNotice) about.appendChild(collisionNotice);
+      tabPanel.appendChild(about);
     }
-    const collisionNotice = renderCollisionNotice(collision);
-    if (collisionNotice) about.appendChild(collisionNotice);
-    wrapper.appendChild(about);
+    wrapper.appendChild(tabPanel);
   };
 
   // The packs panel is the `#packs/<slug>` DETAIL (the browse list is the
@@ -2701,6 +2874,7 @@ export const mountPacksPanel = (
       supervision.dispose();
       connectionsReadiness.dispose();
       packAccess.dispose();
+      ownerOperations.dispose();
       // Slice D — drop broadcast subscriptions BEFORE detaching the
       // wrapper so any in-flight event listener can't try to render
       // into a removed DOM tree. Each unsubscribe call is wrapped
@@ -2863,8 +3037,43 @@ export const PACKS_PANEL_STYLES = `
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-/* R22.1 detail sections — Identity leads borderless; Access / Declares /
-   About separate with a hairline + an eyebrow heading. */
+/* Pack detail tabs keep the long global-default and contract-access lists out
+   of the compact Detail summary. */
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TABS_ATTR}] {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}] {
+  appearance: none;
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}][aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}]:focus-visible {
+  border-radius: 6px 6px 0 0;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_PANEL_ATTR}] {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+/* R22.1 detail sections — Identity leads borderless; sections within a tab
+   use the tab divider, while subsequent Detail sections keep a hairline. */
 [${PACKS_PANEL_ATTR}] .packs-detail-section {
   display: flex;
   flex-direction: column;
@@ -2873,6 +3082,10 @@ export const PACKS_PANEL_STYLES = `
   border-top: 1px solid var(--border);
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-section[${PACKS_DETAIL_SECTION_ATTR}="identity"] {
+  border-top: none;
+  padding-top: 0;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_PANEL_ATTR}] > .packs-detail-section:first-child {
   border-top: none;
   padding-top: 0;
 }
@@ -3124,6 +3337,40 @@ export const PACKS_PANEL_STYLES = `
   font-size: 11px;
   line-height: 1.5;
   word-break: break-word;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: 9px;
+  background: var(--warn-bg);
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-heading,
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-intro,
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-removed {
+  margin: 0;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-intro,
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-removed {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-owner-operation-review-list {
+  display: grid;
+  gap: 5px;
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding-left: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+[${PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR}][data-change="removed"] {
+  color: var(--warn);
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-collision {
   display: flex;

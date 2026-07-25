@@ -17,7 +17,7 @@
  *  page shell + the projection-specific body. No fields beyond the
  *  packet payload ever reach the HTML.
  *
- *  Spec: docs/d-149-spec.md § A.5.6 + § A.11 TR-10. */
+ *  Spec: D-149 § A.5.6 + § A.11 TR-10. */
 
 import {
   RECEPTION_PAGE_STATIC_PATH_PREFIX,

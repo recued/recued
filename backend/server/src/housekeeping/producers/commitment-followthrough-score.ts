@@ -59,7 +59,7 @@
  *  enrichment (see `work-entity-due-status-sweep.ts` line 367-377), so
  *  no separate reactive harness is required.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 738) + A.7.2 + A.7.3 +
+ *  Spec: D-145 §§ A.7.1 (line 738) + A.7.2 + A.7.3 +
  *        A.7.5 + A.7.6 + line 285 (lifecycle filter) +
  *        `ENRICHMENT_REGISTRY.commitment_followthrough_score` +
  *        `packages/contracts/src/enrichment-declarations/commitment-followthrough-score.ts`. */

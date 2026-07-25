@@ -4,7 +4,7 @@
  *    - `RecipeBundle` + `BundleSignature` types
  *    - `VaultScope` + `InstallSource` discriminated unions
  *    - `deriveVaultScope` + `vaultScopeKey` helpers
- *    - `normalizeUrlForVaultScope` (with redirect-following stub)
+ *    - `normalizeUrlForVaultScope` (post-redirect URL normalization)
  *    - `verifyBundleSignature` (Web Crypto wrapper, 5 result classes)
  *    - `detectVaultScopeCollision` helper
  *    - `canonicalBundleBytes` (stable JSON for signing)
@@ -18,7 +18,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { IngredientManifest, RecipeDefinition } from '../index.js';
+import type {
+  IngredientManifest,
+  RecipeDefinition,
+  RedirectResolvedBundleUrl,
+} from '../index.js';
 import {
   canonicalBundleBytes,
   deriveVaultScope,
@@ -68,6 +72,11 @@ function bytesToBase64(b: Uint8Array): string {
   for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
   return btoa(s);
 }
+
+const resolvedBundleUrl = (url: string): RedirectResolvedBundleUrl =>
+  url as RedirectResolvedBundleUrl;
+const normalizeResolvedBundleUrl = (url: string): { host: string; path: string } =>
+  normalizeUrlForVaultScope(resolvedBundleUrl(url));
 
 async function generateEd25519KeyPair(): Promise<{ publicKey: Uint8Array; sign: (msg: Uint8Array) => Promise<Uint8Array> }> {
   // Cast through unknown for the same reason verifyBundleSignature does
@@ -173,7 +182,7 @@ describe('deriveVaultScope', () => {
   it('runs bundle-remote URL through normalizeUrlForVaultScope', () => {
     const scope = deriveVaultScope({
       kind: 'bundle-remote',
-      url: 'HTTPS://Recipes.Example.COM/Q3/Contracts',
+      finalUrl: resolvedBundleUrl('HTTPS://Recipes.Example.COM/Q3/Contracts'),
       slug: 'r',
       verified: true,
     });
@@ -193,42 +202,37 @@ describe('deriveVaultScope', () => {
 
 describe('normalizeUrlForVaultScope', () => {
   it('lowercases the host', () => {
-    expect(normalizeUrlForVaultScope('https://EXAMPLE.com/p').host).toBe('example.com');
+    expect(normalizeResolvedBundleUrl('https://EXAMPLE.com/p').host).toBe('example.com');
   });
 
   it('preserves the port in the host', () => {
-    expect(normalizeUrlForVaultScope('https://example.com:8443/p').host).toBe('example.com:8443');
+    expect(normalizeResolvedBundleUrl('https://example.com:8443/p').host).toBe('example.com:8443');
   });
 
   it('strips a trailing slash on the path', () => {
-    expect(normalizeUrlForVaultScope('https://x.io/foo/bar/').path).toBe('/foo/bar');
+    expect(normalizeResolvedBundleUrl('https://x.io/foo/bar/').path).toBe('/foo/bar');
   });
 
   it('returns empty path for the bare-root URL', () => {
-    expect(normalizeUrlForVaultScope('https://x.io/').path).toBe('');
+    expect(normalizeResolvedBundleUrl('https://x.io/').path).toBe('');
   });
 
   it('collapses query characters into / segments', () => {
-    expect(normalizeUrlForVaultScope('https://x.io/recipes?id=42').path).toBe('/recipes/id/42');
+    expect(normalizeResolvedBundleUrl('https://x.io/recipes?id=42').path).toBe('/recipes/id/42');
   });
 
   it('collapses hash fragments into / segments', () => {
-    expect(normalizeUrlForVaultScope('https://x.io/recipes#section').path).toBe('/recipes/section');
+    expect(normalizeResolvedBundleUrl('https://x.io/recipes#section').path).toBe('/recipes/section');
   });
 
   it('preserves dot, underscore, and hyphen in path segments', () => {
-    expect(normalizeUrlForVaultScope('https://x.io/v1.2/my_recipe-final').path)
+    expect(normalizeResolvedBundleUrl('https://x.io/v1.2/my_recipe-final').path)
       .toBe('/v1.2/my_recipe-final');
   });
 
-  it('runs the injected redirect-follower before normalization', () => {
-    const follow = (u: string) => u === 'https://short.ly/x' ? 'https://Real.Example.COM/Recipes/X' : u;
-    const result = normalizeUrlForVaultScope('https://short.ly/x', follow);
-    expect(result).toEqual({ host: 'real.example.com', path: '/recipes/x' });
-  });
-
-  it('uses identity follower by default (no redirects, no network)', () => {
-    expect(normalizeUrlForVaultScope('https://example.com/r')).toEqual({ host: 'example.com', path: '/r' });
+  it('normalizes the authoritative post-redirect URL directly', () => {
+    expect(normalizeResolvedBundleUrl('https://Real.Example.COM/Recipes/X'))
+      .toEqual({ host: 'real.example.com', path: '/recipes/x' });
   });
 });
 

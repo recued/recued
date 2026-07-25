@@ -43,7 +43,7 @@
  *  intentionally NOT aliased — aliasing would corrupt the embedding's semantic
  *  value. Both are documented follow-ons.
  *
- *  Spec: docs/d-167-spec.md §"Runtime flow", §"Scope", §Integration/D-165
+ *  Spec: D-167 §"Runtime flow", §"Scope", §Integration/D-165
  *  (amended — enrichment egress is a comfort-layer surface).
  */
 

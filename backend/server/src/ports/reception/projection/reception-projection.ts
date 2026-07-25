@@ -11,7 +11,7 @@
  *    - intake_form's `materialize(target_kind, …)` (task/note/commitment),
  *    - approval_link's hardcoded `create_commitment`,
  *  into one `top_tier_kind`-keyed projection so every reception kind (incl.
- *  scheduling → calendar, drop → task-with-attachment) shares one completion
+ *  scheduling → booking, drop → task-with-attachment) shares one completion
  *  path with one idempotency contract. `form_response` is the non-writing
  *  terminal: it verifies the canonical pre-resume promotion instead.
  *
@@ -46,7 +46,7 @@
  *  stores + exposes the projection op as `approval_required`; this file does
  *  NOT wire into server boot.
  *
- *  Spec: docs/d-173-spec.md § A.1 + D5 + I-4 + I-6. */
+ *  Spec: D-173 § A.1 + D5 + I-4 + I-6. */
 
 import {
   BOOKING_TITLE_MAX,
@@ -108,27 +108,20 @@ export interface ReceptionProjectionInput {
   /** The entity body / statement (note body, task body, commitment
    *  statement). May be empty — the projection falls back to `title`. */
   body?: string;
-  /** D-173 P4 / D7 — commitment due time. A scheduling booking maps its
-   *  selected slot start → the commitment's `promised_for_at` (the local
-   *  materialize of a booking is a commitment; the calendar event is the
-   *  optional write-back, D7). Only consumed for `top_tier_kind ===
-   *  'commitment'`; ignored for other kinds. Editable at the gate (D4 —
-   *  "edit the start") via the pack's `editable_args`. */
+  /** Commitment due time. Only consumed for `top_tier_kind === 'commitment'`;
+   *  scheduling uses the booking's own `start_at` instead. */
   promised_for_at?: number;
   /** D-173 P4 / I-7 — when set (scheduling), the projection REFUSES to
    *  materialize a slot already in the past (`<= now`). Enforced at this
    *  single materialize choke point (I-2) so BOTH the drain path AND the
    *  approve-resume path are guarded — a booking held in the inbox whose slot
-   *  passes before approval never books. Guards the commitment branch's
-   *  `promised_for_at` AND the calendar branch's `start_at`. A non-scheduling
-   *  commitment (e.g. an overdue approval) leaves this unset and may carry a
-   *  past due time legitimately. */
+   *  passes before approval never books. Also available to explicitly guarded
+   *  commitment or intake-calendar callers; ordinary overdue commitments leave
+   *  it unset and may carry a past due time legitimately. */
   reject_if_slot_past?: boolean;
-  /** D-173 P4.3 / D7 (amended) — a scheduling booking materializes a LOCAL
-   *  CALENDAR EVENT (its faithful artifact — it carries start + end + duration;
-   *  a commitment would drop the end). The slot start → the event `start_at`.
-   *  Editable at the gate (D4 — "edit the start"). Only consumed for
-   *  `top_tier_kind === 'calendar.event'`. Epoch ms. */
+  /** Slot start (epoch ms). Scheduling writes it to the canonical booking;
+   *  an intake explicitly targeting a calendar writes it to that event.
+   *  Editable at the approval gate. */
   start_at?: number;
   /** D-210 A.8 slice 3d — tell the visitor their booking is confirmed.
    *
@@ -142,25 +135,24 @@ export interface ReceptionProjectionInput {
    *  swallowing the send: the owner asked for a notification, and silently not
    *  sending one is the failure they cannot see. Scheduling branch only. */
   notify_visitor?: boolean;
-  /** D-173 P4.3 — the booked slot duration. The calendar branch computes
-   *  `end_at = start_at + duration_minutes` so editing the start preserves the
-   *  duration (shifts the end). Falls back to a 30-minute default when absent.
-   *  Calendar branch only. */
+  /** Slot duration. Booking and intake-calendar branches compute
+   *  `end_at = start_at + duration_minutes`, preserving duration across an edit.
+   *  Falls back to 30 minutes. */
   duration_minutes?: number;
-  /** D-173 P4.3 — the calendar event's IANA timezone (from the scheduling
-   *  endpoint's `available_window_definition.tz`). Defaults to `'UTC'` when
-   *  absent. Calendar branch only. */
+  /** IANA timezone for the booking or intake-calendar event. Defaults to UTC. */
   timezone?: string;
   /** D-210 WS3 — day-scoped rather than timed. Set by an INTAKE whose calendar
    *  mapping names a `date` start field; scheduling never sets it (a booked
    *  slot always has a clock time). Calendar branch only. */
   is_all_day?: boolean;
-  /** D-173 P4.3 / I-4 — the `reception_booking_request` id, the idempotency
-   *  anchor for the calendar branch. `createEvent` is non-idempotent (mints a
-   *  fresh UUID), so the seam pre-checks the booking's `resolved_calendar_event_id`
-   *  before creating + populates it after — a re-release / crash-recovery lands
-   *  the SAME event, not a duplicate. Calendar branch only. */
+  /** Scheduling reservation id. Its presence selects the sealed-reservation
+   *  booking path; caller-bound `booking_binding` authenticates the exact
+   *  request-id/deterministic-booking-id pair before any sealed-row read. */
   booking_request_id?: string;
+  /** HMAC over the exact reservation id + deterministic booking id, minted by
+   *  the scheduling drain. Required by the booking mint before it touches a
+   *  caller-selected sealed row. */
+  booking_binding?: string;
   /** Provenance + visitor metadata for the entity's `source_extension_blob`.
    *  MUST NOT carry the raw visitor email (sealed in the reception row); the
    *  reception kind builds this with provenance ids LAST so a visitor-named
@@ -201,12 +193,6 @@ export interface ReceptionProjectionResult {
  *  calendar) + the idempotency pre-check; the projection owns the
  *  visitor-payload → these-fields mapping + the I-7 past-slot guard. */
 export interface ReceptionCalendarEventInput {
-  /** D-173 I-4 — the `reception_booking_request` id, the idempotency anchor.
-   *  The seam pre-checks the booking's `resolved_calendar_event_id` before
-   *  creating (createEvent is non-idempotent) + populates it after. Absent →
-   *  the seam creates without the pre-check (the rare double-dispatch is the
-   *  only risk; production always supplies it). */
-  readonly booking_request_id?: string;
   readonly summary: string;
   readonly description?: string;
   /** Epoch ms. */
@@ -223,14 +209,13 @@ export interface ReceptionCalendarEventInput {
 }
 
 export interface ReceptionCalendarEventResult {
-  /** The created (or idempotently-resolved) calendar event's `source_id`. */
+  /** The created calendar event's `source_id`. */
   readonly source_id: string;
 }
 
 /** The injectable local-calendar create effect — the `calendar.event`
  *  branch's write path (NOT a Source). Built at the wire site over the
- *  calendar stack's create dispatcher + the scheduling booking store
- *  (idempotency). Present only when a calendar can be written (the calendar
+ *  calendar stack's create dispatcher. Present only when a calendar can be written (the calendar
  *  stack is up). A calendar projection without it fail-closes — it never
  *  silently drops an approved booking. */
 export type ReceptionCalendarEventEffect = (
@@ -304,7 +289,7 @@ export interface ReceptionProjectionDeps {
 
 /** D-173 P4.3 — fallback slot duration (ms) when a booking carries no
  *  resolvable `duration_minutes`. */
-const DEFAULT_EVENT_DURATION_MS = 30 * 60_000;
+const DEFAULT_SLOT_DURATION_MS = 30 * 60_000;
 
 const clamp = (s: string, max: number): string =>
   s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -415,8 +400,8 @@ const projectWorkEntity = (
     case 'commitment': {
       // D-173 P4 / I-7 — when `reject_if_slot_past` is set the slot guard
       // refuses a past or unresolvable due time at this single materialize
-      // choke point (I-2). Scheduling now materializes a calendar event, not a
-      // commitment (P4.3 / D7), so this guard is dormant for scheduling; it
+      // choke point (I-2). Scheduling now materializes a booking, not a
+      // commitment, so this guard is dormant for scheduling; it
       // stays generic substrate any dated commitment caller can opt into. A
       // non-scheduling commitment (e.g. an overdue / undated approval) leaves
       // the flag unset and may carry a past (or absent) `promised_for_at`
@@ -558,11 +543,33 @@ const projectContact = async (
   // Reuse the live `contact.upsert` validation + canonicalization path
   // (handleContactUpsert). The origin actor is whatever `contactDeps`
   // carries (server-injected, never spoofable) — the boot wire stamps it.
-  const { contact } = await handleContactUpsert(deps.contactDeps, {
-    email,
-    ...(input.contact_name !== undefined ? { name: input.contact_name } : {}),
-    last_interaction: deps.now(),
-  });
+  const { contact } = await handleContactUpsert(
+    deps.contactDeps,
+    {
+      email,
+      ...(input.contact_name !== undefined ? { name: input.contact_name } : {}),
+      last_interaction: deps.now(),
+    },
+    // ⛔ D-210 audit finding 5 — `contact_name` is text a VISITOR typed about
+    // themselves at a public door. Without this it landed as `source: 'manual'`
+    // — rank 0 of the contribution ladder, above `user_confirmed`, above CRM —
+    // so a visitor typing "jane" permanently outranked the owner's own
+    // "Jane Okafor" and every future CRM correction.
+    //
+    // The BOOKING path refuses the same write outright, in a 12-line comment
+    // (`reception-booking-mint.ts`: "⛔ EMAIL ONLY — the visitor's NAME is
+    // deliberately NOT passed … would LAUNDER its provenance to the top of the
+    // ladder"). Both paths reach the same `upsertManual` rung; only one applied
+    // the rule, and nothing here documented an exemption.
+    //
+    // Intake does NOT simply drop the name, because unlike a booking's
+    // counterparty this destination EXISTS to record the person — dropping it
+    // would trade a provenance bug for a data loss. It is recorded at the rung
+    // that is true of it instead: nobody owner-asserted it (the owner is never
+    // even shown it — `intake.materialize` exposes only title / body /
+    // destination), so it must never outrank someone who did.
+    { attribution_source: 'derived' },
+  );
   return {
     top_tier_kind: 'contact',
     // The contact_id when the store assigned one; the canonical email is the
@@ -656,8 +663,7 @@ const projectSchedulingBooking = async (
   // the visitor originally ASKED for — at `success: true`, with the inbox having
   // shown the owner the time they thought they were confirming.
   //
-  // The two facts stay distinct, exactly as they did when a calendar event held
-  // the agreement: the reservation row records what the visitor ASKED (write-once
+  // The two facts stay distinct: the reservation row records what the visitor ASKED (write-once
   // provenance), the booking records what was AGREED. `d-173-i5-slot-edit-row-
   // staleness` pins the disagreement, and pins which one downstream capacity
   // counting must read — the booking.
@@ -679,9 +685,10 @@ const projectSchedulingBooking = async (
   const durationMs =
     durationMinutes !== undefined && durationMinutes > 0
       ? durationMinutes * 60_000
-      : DEFAULT_EVENT_DURATION_MS;
+      : DEFAULT_SLOT_DURATION_MS;
   const booking_id = await deps.createBooking({
     booking_request_id,
+    booking_binding: requireBookingBinding(input.booking_binding, booking_request_id),
     // ⚠ Both, always. `slot_end_at` is START + DURATION, never a separately
     // carried end — an owner who edits the start shifts the whole booking and
     // keeps its length, which is what "move my 2-hour booking an hour later"
@@ -702,6 +709,18 @@ const projectSchedulingBooking = async (
   return { top_tier_kind: 'booking', target_id: booking_id };
 };
 
+const requireBookingBinding = (
+  binding: string | undefined,
+  booking_request_id: string,
+): string => {
+  if (typeof binding !== 'string' || binding.length === 0) {
+    throw new Error(
+      `reception booking projection: reservation '${booking_request_id}' has no caller-bound booking provenance`,
+    );
+  }
+  return binding;
+};
+
 /** The projection `id` a scheduling reservation must carry. Absent ⇒ throw:
  *  without it the seam's I-4 pre-check would read a different key than the
  *  write uses, and a re-approve would mint a SECOND booking for one slot. */
@@ -717,9 +736,8 @@ const requireProjectionId = (id: string | undefined, request_id: string): string
 // Calendar-event projection (D-173 P4.3 — NOT Source-routed)
 // ────────────────────────────────────────────────────────────────
 
-/** Project a scheduling booking into a LOCAL CALENDAR EVENT (D7 amended).
- *  A booking carries start + end + duration — a calendar event is its
- *  faithful artifact (a commitment would drop the end). The slot start →
+/** Project an approved INTAKE whose explicit destination is a local calendar.
+ *  The slot start maps to
  *  `start_at`; `end_at = start_at + duration_minutes` (so an edited start
  *  preserves the duration). The seam owns the destination (the default local
  *  calendar) + the idempotency pre-check (I-4); this branch owns the I-7
@@ -756,8 +774,8 @@ const projectCalendarEvent = async (
   const durationMs =
     durationMinutes !== undefined && durationMinutes > 0
       ? durationMinutes * 60_000
-      : DEFAULT_EVENT_DURATION_MS;
-  const summary = safeTitle(input.title, 'Booking');
+      : DEFAULT_SLOT_DURATION_MS;
+  const summary = safeTitle(input.title, 'Calendar item');
   const description =
     input.body !== undefined && input.body.trim().length > 0 ? input.body : undefined;
   const timezone =
@@ -765,9 +783,6 @@ const projectCalendarEvent = async (
       ? input.timezone
       : 'UTC';
   const { source_id } = await deps.createCalendarEvent({
-    ...(input.booking_request_id !== undefined
-      ? { booking_request_id: input.booking_request_id }
-      : {}),
     summary,
     ...(description !== undefined ? { description } : {}),
     start_at: startAt,
@@ -789,15 +804,16 @@ const projectCalendarEvent = async (
 
 /** Project an already-canonicalized reception payload into the warehouse,
  *  routing by `top_tier_kind` (D5). Returns the destination class + the
- *  materialized id. Idempotent for a stable `id` (work entities) / email
- *  (contact) / `resolved_calendar_event_id` (calendar) — I-4.
+ *  materialized id. Idempotent for a stable `id` (work entities) or email
+ *  (contact). Intake-calendar creation is deliberately non-retried after an
+ *  in-doubt crash because its provider assigns the id.
  *
  *  Throws on an unsupported `top_tier_kind` (only `form_response` / `task` /
  *  `note` / `commitment` / `project` / `contact` / `calendar.event` are
  *  completable locally; `mail_message` has no local write path), on a
  *  contact projection missing its deps/email, or on a calendar projection
- *  missing the create seam (all fail-closed). A scheduling booking
- *  materializes as a `calendar.event` (D7 amended — its faithful artifact). */
+ *  missing the create seam (all fail-closed). Scheduling projects a canonical
+ *  `booking`; `calendar.event` is intake-only. */
 export const runReceptionProjection = async (
   deps: ReceptionProjectionDeps,
   input: ReceptionProjectionInput,

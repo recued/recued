@@ -297,7 +297,7 @@ const variableToArgProp = (
   if (def === null) return { schema: { type: 'string' }, required: true };
   if (Array.isArray(def)) {
     // A `string[]` default is an enum/choice — the allowed values, first
-    // element the default (docs/recipe-schema-reference.md; the structural
+    // element the default (internal design notes; the structural
     // validator + engine default to `def[0]`), NOT an array-valued arg.
     const schema: Record<string, unknown> = { type: 'string' };
     if (def.length > 0) {

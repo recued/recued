@@ -35,7 +35,10 @@ export type PostHousekeepingTailStorageContext = Pick<
   | 'auditLog'
 >;
 
-export type PostHousekeepingTailAppContext = Pick<AppContext, 'llmConfig'>;
+export type PostHousekeepingTailAppContext = Pick<
+  AppContext,
+  'llmConfig' | 'executionCaseLifecycle'
+>;
 
 export type PostHousekeepingTailCollectionContext = Pick<
   CollectionContext,
@@ -88,6 +91,7 @@ export const startPostHousekeepingTail = (
     correctionEventsStore: storage.correctionEventsStoreRef,
     checkpointStore: storage.checkpointStore,
     auditLog: storage.auditLog,
+    executionCaseLifecycle: options.app.executionCaseLifecycle,
     notificationBlock: options.notificationBlock,
   });
 

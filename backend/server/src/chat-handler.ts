@@ -9,26 +9,24 @@
  *      events stream back via the D-121 broadcast bus (orchestrator
  *      emits per § Wire A; a post-accept shell failure surfaces as
  *      `engine.turn_failed` transparency from the completion watcher)
- *    - `chat.plan.approve` / `chat.plan.cancel` — placeholders for the
- *      P3 plan-approval surface; P1.2 returns `not_implemented` (502)
- *      so the rpc is reachable but produces a clear "land in P3" hint
- *      rather than 404-ing
+ *    - `chat.plan.approve` / `chat.plan.cancel` — resolve the shared durable
+ *      reviewed-action record and broadcast the terminal plan state
  *    - `chat.session.set_picker` / `chat.session.set_model_pref` —
  *      session-state writes; emit `chat.session_changed` on success
  *
  *  Per § Wire A — handlers run **server-side**. Webclient is display +
  *  HID; the orchestrator's loop runs in-process here.
  *
- *  Per D-137 P1 contract tightening — sessions + messages persist in
- *  `chat_sessions` / `chat_messages` (per-pair only; no cross-cloud sync per D-097 / D-168).
+ *  Per D-137 contract tightening — sessions, messages, and reviewed-action
+ *  recovery records persist in the core chat tables (per-pair only; no
+ *  cross-cloud sync per D-097 / D-168).
  *  The handler does NOT decrypt content on the chat.sessions.list path
  *  (would defeat the encrypted-at-rest invariant); list returns the
  *  per-session summary shape from `ChatSessionSummary` only.
  *
  *  No new error codes — re-uses `not_found` (404), `bad_request` (400),
  *  `not_configured` (501; reserved by the dispatcher for unwired
- *  methods; never produced by the handler), `not_implemented` (502
- *  for plan-approval until P3).
+ *  methods; plan approval uses it when its store is unwired).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -42,7 +40,11 @@ import {
   RpcError,
   buildDefaultConnectionMcpAnnotation,
   buildPickerEntries,
+  isChatDataDiagnosisIntent,
+  isChatDataDiagnosisRelationship,
+  isChatDataDiagnosisResolutionStatus,
   isChatMessageRole,
+  isExecutionCaseFeedbackKind,
   isChatModelHint,
   isChatModelSourceId,
   isReservedOwnerContractId,
@@ -52,12 +54,16 @@ import {
   validateInboundTokenChatModeUpdate,
   validateMcpInboundTokenInput,
   type ChatEgressPacket,
+  type ChatDataDiagnosisContext,
+  type ChatDataDiagnosisRequest,
+  type ChatDataDiagnosisResolution,
   type ChatMessage,
   type ChatModelHint,
   type ChatModelRoutingLayer,
   type ChatModelSourceId,
   type ChatPickerTarget,
   type ChatPlanProposal,
+  type ChatPlanRecord,
   type ChatSession,
   type ChatSessionChangedField,
   type ChatSessionSummary,
@@ -82,6 +88,15 @@ import type { ChatToolCatalogStore } from './storage/chat-tool-catalog-store.js'
 import type { ChatConnectionMcpStore } from './storage/chat-connection-mcp-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { PEER_HANDLE_CONFLICT_PREFIX } from './storage/chat-inbound-token-store.js';
+import type {
+  ExecutionCaseFeedbackRecorder,
+} from './execution-case-feedback.js';
+import type {
+  ExecutionCaseLifecycle,
+} from './chat-execution-case-tools.js';
+import type {
+  ExecutionSpanAnchorStore,
+} from './storage/execution-span-anchor-store.js';
 
 export interface ChatRpcDeps {
   store: ChatStore;
@@ -95,8 +110,8 @@ export interface ChatRpcDeps {
    *  throw `not_configured` (501) — same posture as the per-kind scope
    *  store. */
   connectionMcpStore?: ChatConnectionMcpStore;
-  /** D-137 P3 § A.11 — Mary's pending plan-approval registry. Same
-   *  in-memory store the orchestrator's `dispatchTool` gate consults;
+  /** D-137 P3 § A.11 — Mary's plan-approval registry. Same store the
+   *  orchestrator's `dispatchTool` gate consults;
    *  the rpc handlers flip status on approve / cancel + emit the
    *  resolution broadcast. Optional — when undefined the approve /
    *  cancel rpcs surface `not_configured` (501) the same way the
@@ -110,6 +125,19 @@ export interface ChatRpcDeps {
    *  `not_configured` (501) and the MCP HTTP transport falls back to
    *  the v1 `RECUED_MCP_HTTP_TOKEN` env-var path. */
   inboundTokenStore?: ChatInboundTokenStore;
+  /** D-214 owner-only typed completion feedback. */
+  executionCaseFeedbackRecorder?: ExecutionCaseFeedbackRecorder;
+  /** D-214 terminal plan resolutions can close a previously deferred span. */
+  executionCaseLifecycle?: ExecutionCaseLifecycle;
+  /** D-214 explicit conversational-continuation validator. The caller names a
+   * same-session prior turn; the server resolves the root internally. */
+  executionSpanAnchorStore?: ExecutionSpanAnchorStore;
+  /** D-214 privacy cascade. Session deletion removes every derived span/case
+   * source before the authoritative chat rows disappear. */
+  deleteSessionExecutionCases?: (session_id: string) => Promise<number>;
+  /** D-214 owner-only aggregate diagnostics. The producer returns no raw
+   * intervention or model-facing records. */
+  executionCaseDiagnostics?: () => Promise<unknown>;
   /** D-171 slice 2c — the live self tool catalog source backing
    *  `chat.inbound_token.tool_catalog`. Wired at composition as a thin
    *  closure over the chat orchestrator's `InternalToolRegistry.list()` so
@@ -152,8 +180,12 @@ type ChatMethods =
   | 'chat.session.export'
   | 'chat.egress.get'
   | 'chat.send'
+  | 'chat.data_diagnosis.resolve'
+  | 'chat.plans.pending.list'
   | 'chat.plan.approve'
   | 'chat.plan.cancel'
+  | 'chat.execution.feedback'
+  | 'chat.execution.diagnostics'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   | 'chat.session.clear_model_pref'
@@ -348,7 +380,12 @@ export const handleSessionsList = (
 export const handleSessionGet = async (
   deps: ChatRpcDeps,
   args: { session_id: string },
-): Promise<ChatSession & { messages: ChatMessage[] }> => {
+): Promise<
+  ChatSession & {
+    messages: ChatMessage[];
+    plans: ReadonlyArray<ChatPlanRecord>;
+  }
+> => {
   const safe = ensureRecordArgs('chat.session.get', args);
   const session_id = ensureNonEmptyString(
     'chat.session.get',
@@ -357,7 +394,31 @@ export const handleSessionGet = async (
   );
   const session = ensureSession(deps, session_id);
   const messages = await deps.store.listMessages(session_id);
-  return { ...session, messages };
+  const plans =
+    deps.planApprovalStore?.listForSession === undefined
+      ? []
+      : await deps.planApprovalStore.listForSession(session_id);
+  return { ...session, messages, plans };
+};
+
+/** Route-independent approval-inbox recovery. Unlike `chat.session.get`, this
+ * reads only still-proposed plan records across sessions: no message history,
+ * no execution resume, and no approval consumption. Unavailable encrypted
+ * payloads remain visible as non-executable shells so the owner can safely
+ * cancel them. */
+export const handlePlansPendingList = async (
+  deps: ChatRpcDeps,
+): Promise<{ plans: ReadonlyArray<ChatPlanRecord> }> => {
+  if (deps.planApprovalStore?.listPendingRecords === undefined) {
+    throw new RpcError(
+      'not_configured',
+      'Durable Chat approval recovery is unavailable.',
+      501,
+    );
+  }
+  return {
+    plans: await deps.planApprovalStore.listPendingRecords(),
+  };
 };
 
 /** D-167 transparency — read back the aliased model-bound packets actually
@@ -431,6 +492,7 @@ export const handleSessionDelete = async (
   );
   const session = ensureSession(deps, session_id);
   const messageCount = (await deps.store.listMessages(session_id)).length;
+  await deps.deleteSessionExecutionCases?.(session_id);
   const deleted = deps.store.deleteSession(session_id);
   if (!deleted) {
     // Race: session vanished between ensureSession + delete; surface
@@ -498,8 +560,19 @@ export const handleSend = async (
     model_pref?: { current: string; model_hint?: string; source_id?: string };
     /** D-193 — requesting user's IANA timezone (webclient-supplied). */
     time_zone?: string;
+    /** Optional lineage from the webclient's explicit verify-before-retry
+     * handoff. The server validates the named action before accepting it. */
+    retry_of_plan_id?: string;
+    /** Optional explicit continuation of a prior same-session turn. This is a
+     * conversational edge only; it carries no dispatch or approval authority. */
+    continuation_of_turn_id?: string;
+    /** Evidence-only grounding for a guided Data explanation or safe check. */
+    data_diagnosis?: ChatDataDiagnosisRequest;
   },
-): Promise<{ turn_id: string }> => {
+): Promise<{
+  turn_id: string;
+  data_diagnosis?: ChatDataDiagnosisContext;
+}> => {
   const safe = ensureRecordArgs('chat.send', args);
   const session_id = ensureNonEmptyString(
     'chat.send',
@@ -581,6 +654,168 @@ export const handleSend = async (
     typeof timeZoneArg === 'string' && timeZoneArg.trim().length > 0
       ? timeZoneArg.trim()
       : undefined;
+  let continuation_of_turn_id: string | undefined;
+  if (safe.continuation_of_turn_id !== undefined) {
+    continuation_of_turn_id = ensureNonEmptyString(
+      'chat.send',
+      'continuation_of_turn_id',
+      safe.continuation_of_turn_id,
+    );
+    const origin = deps.executionSpanAnchorStore?.getAnchor(
+      session_id,
+      continuation_of_turn_id,
+    );
+    if (!origin) {
+      throw new RpcError(
+        deps.executionSpanAnchorStore ? 'bad_request' : 'not_configured',
+        deps.executionSpanAnchorStore
+          ? 'chat.send: continuation_of_turn_id must name an anchored prior turn in this session'
+          : 'chat.send: conversational continuation history is unavailable',
+        deps.executionSpanAnchorStore ? 400 : 501,
+      );
+    }
+  }
+  if (
+    safe.retry_of_plan_id !== undefined
+    && safe.data_diagnosis !== undefined
+  ) {
+    throw new RpcError(
+      'bad_request',
+      'chat.send: data diagnosis cannot also request a retry',
+      400,
+    );
+  }
+  let retry_of_plan_id: string | undefined;
+  if (safe.retry_of_plan_id !== undefined) {
+    retry_of_plan_id = ensureNonEmptyString(
+      'chat.send',
+      'retry_of_plan_id',
+      safe.retry_of_plan_id,
+    );
+    if (deps.planApprovalStore?.listForSession === undefined) {
+      throw new RpcError(
+        'not_configured',
+        'chat.send: verify-before-retry history is unavailable',
+        501,
+      );
+    }
+    const records = await deps.planApprovalStore.listForSession(session_id);
+    const origin = records.find(
+      (record) => record.plan.plan_id === retry_of_plan_id,
+    );
+    const retryableFailure =
+      origin?.execution?.status === 'failed'
+      && origin.execution.reason !== 'run_cancelled';
+    if (
+      origin === undefined
+      || origin.plan.status !== 'approved'
+      || origin.plan.consumed_at === undefined
+      || origin.payload_available !== true
+      || (origin.execution?.status !== 'unknown' && !retryableFailure)
+    ) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: retry_of_plan_id must name a recoverable uncertain '
+          + 'action in this session',
+        400,
+      );
+    }
+  }
+  let data_diagnosis: ChatDataDiagnosisContext | undefined;
+  if (safe.data_diagnosis !== undefined) {
+    const diagnosisArg = safe.data_diagnosis;
+    if (
+      diagnosisArg === null
+      || typeof diagnosisArg !== 'object'
+      || Array.isArray(diagnosisArg)
+    ) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: data_diagnosis must be an object',
+        400,
+      );
+    }
+    const diagnosis = diagnosisArg as Record<string, unknown>;
+    const plan_id = ensureNonEmptyString(
+      'chat.send',
+      'data_diagnosis.plan_id',
+      diagnosis.plan_id,
+    );
+    const run_id = ensureNonEmptyString(
+      'chat.send',
+      'data_diagnosis.run_id',
+      diagnosis.run_id,
+    );
+    if (
+      diagnosis.intent !== undefined
+      && !isChatDataDiagnosisIntent(diagnosis.intent)
+    ) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: data_diagnosis.intent must be explanation or safe_check',
+        400,
+      );
+    }
+    if (
+      diagnosis.relationship !== undefined
+      && !isChatDataDiagnosisRelationship(diagnosis.relationship)
+    ) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: data_diagnosis.relationship must be one of '
+          + 'action | involved | derived',
+        400,
+      );
+    }
+    if (deps.planApprovalStore?.listForSession === undefined) {
+      throw new RpcError(
+        'not_configured',
+        'chat.send: data diagnosis history is unavailable',
+        501,
+      );
+    }
+    const records = await deps.planApprovalStore.listForSession(session_id);
+    const origin = records.find((record) => record.plan.plan_id === plan_id);
+    if (
+      origin === undefined
+      || origin.plan.status !== 'approved'
+      || origin.plan.consumed_at === undefined
+      || origin.execution === undefined
+    ) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: data_diagnosis.plan_id must name a consumed action '
+          + 'with execution history in this session',
+        400,
+      );
+    }
+    const receiptRunId =
+      'run_id' in origin.execution
+      && typeof origin.execution.run_id === 'string'
+      && origin.execution.run_id.length > 0
+        ? origin.execution.run_id
+        : undefined;
+    if (receiptRunId !== undefined && receiptRunId !== run_id) {
+      throw new RpcError(
+        'bad_request',
+        'chat.send: data_diagnosis.run_id does not match the action receipt',
+        400,
+      );
+    }
+    data_diagnosis = {
+      kind: 'data_verification',
+      plan_id,
+      run_id,
+      intent: isChatDataDiagnosisIntent(diagnosis.intent)
+        ? diagnosis.intent
+        : 'explanation',
+      run_correlation:
+        receiptRunId === run_id ? 'matched' : 'unverified',
+      ...(isChatDataDiagnosisRelationship(diagnosis.relationship)
+        ? { relationship: diagnosis.relationship }
+        : {}),
+    };
+  }
   // Ack-before-run — resolve the rpc at the turn's COMMIT POINT (the
   // user message durably appended; `on_accepted` fires) instead of at
   // turn completion, so a legitimately-slow model can no longer
@@ -595,7 +830,10 @@ export const handleSend = async (
   // (the event payload is deliberately bare — error text can carry
   // user content). An orchestrator that never fires the seam (a
   // stub / fake in tests) degenerates to the old ack-after-run shape.
-  return new Promise<{ turn_id: string }>((resolve, reject) => {
+  return new Promise<{
+    turn_id: string;
+    data_diagnosis?: ChatDataDiagnosisContext;
+  }>((resolve, reject) => {
     let acceptedTurnId: string | null = null;
     deps.orchestrator
       .runTurn({
@@ -606,13 +844,26 @@ export const handleSend = async (
         },
         ...(modelPref ? { model_pref: modelPref } : {}),
         ...(time_zone ? { time_zone } : {}),
+        ...(continuation_of_turn_id
+          ? { continuation_of_turn_id }
+          : {}),
+        ...(retry_of_plan_id ? { retry_of_plan_id } : {}),
+        ...(data_diagnosis ? { data_diagnosis } : {}),
         on_accepted: (ack) => {
           acceptedTurnId = ack.turn_id;
-          resolve({ turn_id: ack.turn_id });
+          resolve({
+            turn_id: ack.turn_id,
+            ...(data_diagnosis ? { data_diagnosis } : {}),
+          });
         },
       })
       .then((full) => {
-        if (acceptedTurnId === null) resolve({ turn_id: full.turn_id });
+        if (acceptedTurnId === null) {
+          resolve({
+            turn_id: full.turn_id,
+            ...(data_diagnosis ? { data_diagnosis } : {}),
+          });
+        }
       })
       .catch((err) => {
         if (acceptedTurnId === null) {
@@ -636,6 +887,117 @@ export const handleSend = async (
   });
 };
 
+/** Persist the owner's explicit closure of one completed safe-check answer.
+ * The exact assistant row and durable safe-check intent are required; model
+ * prose alone can never manufacture a resolution target. Re-selecting the
+ * current status is idempotent and preserves its original timestamp. */
+export const handleDataDiagnosisResolve = async (
+  deps: ChatRpcDeps,
+  args: {
+    session_id: string;
+    message_id: string;
+    status: string;
+  },
+): Promise<{ resolution: ChatDataDiagnosisResolution }> => {
+  const safe = ensureRecordArgs('chat.data_diagnosis.resolve', args);
+  const session_id = ensureNonEmptyString(
+    'chat.data_diagnosis.resolve',
+    'session_id',
+    safe.session_id,
+  );
+  const message_id = ensureNonEmptyString(
+    'chat.data_diagnosis.resolve',
+    'message_id',
+    safe.message_id,
+  );
+  if (!isChatDataDiagnosisResolutionStatus(safe.status)) {
+    throw new RpcError(
+      'bad_request',
+      'chat.data_diagnosis.resolve: status must be resolved, '
+        + 'still_uncertain, or needs_new_action',
+      400,
+    );
+  }
+  ensureSession(deps, session_id);
+  const messages = await deps.store.listMessages(session_id);
+  const message = messages.find((candidate) => candidate.id === message_id);
+  if (message === undefined) {
+    throw new RpcError(
+      'not_found',
+      `chat.data_diagnosis.resolve: message ${message_id} not found`,
+      404,
+    );
+  }
+  if (
+    message.role !== 'assistant'
+    || message.data_diagnosis?.intent !== 'safe_check'
+  ) {
+    throw new RpcError(
+      'bad_request',
+      'chat.data_diagnosis.resolve: message must be a completed safe-check answer',
+      400,
+    );
+  }
+  const previousResolution = message.data_diagnosis_resolution;
+  if (deps.store.setDataDiagnosisResolution === undefined) {
+    if (previousResolution?.status === safe.status) {
+      return { resolution: previousResolution };
+    }
+    throw new RpcError(
+      'not_configured',
+      'Durable safe-check closure is unavailable.',
+      501,
+    );
+  }
+  const priorResolvedAt =
+    previousResolution?.resolved_at ?? -1;
+  const resolution: ChatDataDiagnosisResolution = {
+    status: safe.status,
+    // Preserve last-writer ordering even when two owner choices land in the
+    // same clock millisecond. Clients can safely ignore a delayed older event.
+    resolved_at: Math.max(
+      (deps.now ?? Date.now)(),
+      priorResolvedAt + 1,
+    ),
+  };
+  const updated = await deps.store.setDataDiagnosisResolution(
+    session_id,
+    message_id,
+    resolution,
+  );
+  if (updated === null) {
+    throw new RpcError(
+      'not_found',
+      `chat.data_diagnosis.resolve: message ${message_id} not found`,
+      404,
+    );
+  }
+  const persistedResolution = updated.data_diagnosis_resolution;
+  if (persistedResolution === undefined) {
+    throw new RpcError(
+      'internal_error',
+      'chat.data_diagnosis.resolve: closure was not persisted',
+      500,
+    );
+  }
+  const changed =
+    previousResolution?.status !== persistedResolution.status
+    || previousResolution.resolved_at !== persistedResolution.resolved_at;
+  if (changed) {
+    try {
+      deps.broadcast?.emit({
+        kind: 'chat.data_diagnosis_resolved',
+        session_id,
+        message_id,
+        resolution: persistedResolution,
+      });
+    } catch {
+      // Broadcast is best-effort; reload hydration reads the durable closure.
+    }
+  }
+  return { resolution: persistedResolution };
+};
+
 /** D-137 P3 § A.11 — shared resolve helper. Validates the rpc args,
  *  looks up the plan, flips status, broadcasts + audits, returns the
  *  resolved plan to the caller. The approve / cancel handlers share
@@ -656,30 +1018,46 @@ const resolvePlanRpc = async (
   }
   const safe = ensureRecordArgs(method, args);
   const plan_id = ensureNonEmptyString(method, 'plan_id', safe.plan_id);
-  const existing = deps.planApprovalStore.get(plan_id);
-  if (!existing) {
-    throw new RpcError(
-      'not_found',
-      `${method}: plan_id '${plan_id}' not found`,
-      404,
-    );
-  }
-  if (existing.status !== 'proposed') {
-    throw new RpcError(
-      'bad_request',
-      `${method}: plan_id '${plan_id}' is already resolved (status=${existing.status})`,
-      400,
-    );
+  // Approval must recover the exact reviewed payload before any state change.
+  // Cancellation is the safe exception: the durable store may cancel a
+  // proposed shell even when corrupt ciphertext made its details unreadable.
+  if (next_status === 'approved') {
+    const existing = await deps.planApprovalStore.get(plan_id);
+    if (!existing) {
+      throw new RpcError(
+        'not_found',
+        `${method}: plan_id '${plan_id}' not found`,
+        404,
+      );
+    }
+    if (existing.status !== 'proposed') {
+      throw new RpcError(
+        'bad_request',
+        `${method}: plan_id '${plan_id}' is already resolved (status=${existing.status})`,
+        400,
+      );
+    }
   }
   const now = deps.now ?? Date.now;
-  const resolved = deps.planApprovalStore.resolve(plan_id, next_status, now());
+  const resolved = await deps.planApprovalStore.resolve(
+    plan_id,
+    next_status,
+    now(),
+  );
   if (!resolved) {
-    // resolve() returns undefined only when the plan was concurrently
-    // removed — surface as 404 rather than crash.
+    // The plan was removed or its exact reviewed payload became unavailable
+    // before approval. Surface a closed 404 rather than mutating blindly.
     throw new RpcError(
       'not_found',
       `${method}: plan_id '${plan_id}' was removed mid-resolve`,
       404,
+    );
+  }
+  if (resolved.status !== next_status) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: plan_id '${plan_id}' is already resolved (status=${resolved.status})`,
+      400,
     );
   }
   // Audit + broadcast. Audit failures are best-effort; broadcast
@@ -707,6 +1085,17 @@ const resolvePlanRpc = async (
       // Broadcast failures are observability-only.
     }
   }
+  if (next_status === 'cancelled' && deps.executionCaseLifecycle) {
+    try {
+      await deps.executionCaseLifecycle.finalizeTurn({
+        session_id: resolved.session_id,
+        turn_id: resolved.turn_id,
+      });
+    } catch {
+      // Learning is advisory. The cancellation is already durable and must not
+      // be rolled back or surfaced as failed because compilation was unavailable.
+    }
+  }
   return { plan: resolved };
 };
 
@@ -721,6 +1110,85 @@ export const handlePlanCancel = async (
   args: unknown,
 ): Promise<{ plan: ChatPlanProposal }> =>
   resolvePlanRpc(deps, 'chat.plan.cancel', 'cancelled', args);
+
+export const handleExecutionCaseFeedback = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ recorded: boolean }> => {
+  const method = 'chat.execution.feedback';
+  if (!deps.executionCaseFeedbackRecorder) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution-case feedback is not wired`,
+      501,
+    );
+  }
+  const safe = ensureRecordArgs(method, args);
+  const allowed = new Set([
+    'session_id',
+    'turn_id',
+    'kind',
+    'source_plan_id',
+  ]);
+  if (Object.keys(safe).some((key) => !allowed.has(key))) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: unexpected field`,
+      400,
+    );
+  }
+  const session_id = ensureNonEmptyString(
+    method,
+    'session_id',
+    safe.session_id,
+  );
+  ensureSession(deps, session_id);
+  const turn_id = ensureNonEmptyString(method, 'turn_id', safe.turn_id);
+  if (!isExecutionCaseFeedbackKind(safe.kind)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: kind must be accepted, corrected, rejected, or undone`,
+      400,
+    );
+  }
+  const source_plan_id = safe.source_plan_id === undefined
+    ? undefined
+    : ensureNonEmptyString(
+        method,
+        'source_plan_id',
+        safe.source_plan_id,
+      );
+  const result = await deps.executionCaseFeedbackRecorder.record({
+    session_id,
+    turn_id,
+    kind: safe.kind,
+    ...(source_plan_id ? { source_plan_id } : {}),
+  });
+  if (!result.ok) {
+    throw new RpcError(
+      result.reason === 'span_not_found' ? 'not_found' : 'bad_request',
+      result.reason === 'span_not_found'
+        ? `${method}: turn is not anchored to this session`
+        : `${method}: source_plan_id is not part of the resolved span`,
+      result.reason === 'span_not_found' ? 404 : 400,
+    );
+  }
+  return { recorded: result.recorded };
+};
+
+export const handleExecutionCaseDiagnostics = async (
+  deps: ChatRpcDeps,
+): Promise<unknown> => {
+  const method = 'chat.execution.diagnostics';
+  if (!deps.executionCaseDiagnostics) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution-case diagnostics are not wired`,
+      501,
+    );
+  }
+  return deps.executionCaseDiagnostics();
+};
 
 export const handleSetPicker = (
   deps: ChatRpcDeps,
@@ -1904,8 +2372,12 @@ export const makeChatHandlers = (
       'chat.session.export',
       'chat.egress.get',
       'chat.send',
+      'chat.data_diagnosis.resolve',
+      'chat.plans.pending.list',
       'chat.plan.approve',
       'chat.plan.cancel',
+      'chat.execution.feedback',
+      'chat.execution.diagnostics',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       'chat.session.clear_model_pref',
@@ -1944,8 +2416,19 @@ export const makeChatHandlers = (
           deps,
           args as Parameters<typeof handleSend>[1],
         ),
+      'chat.data_diagnosis.resolve': async (args) =>
+        handleDataDiagnosisResolve(
+          deps,
+          args as Parameters<typeof handleDataDiagnosisResolve>[1],
+        ),
+      'chat.plans.pending.list': async () =>
+        handlePlansPendingList(deps),
       'chat.plan.approve': async (args) => handlePlanApprove(deps, args),
       'chat.plan.cancel': async (args) => handlePlanCancel(deps, args),
+      'chat.execution.feedback': async (args) =>
+        handleExecutionCaseFeedback(deps, args),
+      'chat.execution.diagnostics': async () =>
+        handleExecutionCaseDiagnostics(deps),
       'chat.session.set_picker': async (args) =>
         handleSetPicker(
           deps,

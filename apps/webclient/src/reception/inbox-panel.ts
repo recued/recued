@@ -219,6 +219,16 @@ const RECEPTION_INBOX_STYLES = `
   font-size: 12px;
   font-weight: 600;
 }
+.reception-inbox-history {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunk);
+}
+.reception-inbox-history h4 { margin: 0 0 8px; font-size: 13px; }
+.reception-inbox-history ul { margin: 0; padding-left: 18px; }
+.reception-inbox-history li { margin-top: 5px; color: var(--fg-muted); font-size: 12px; }
 .reception-inbox-chip {
   display: inline-flex;
   align-items: center;
@@ -469,9 +479,29 @@ const parseFieldValue = (
       if (!Number.isFinite(n)) throw new Error(`${field.label} must be a number.`);
       return n;
     }
-    case 'datetime':
-      if (typeof field.value === 'number') return new Date(raw).getTime();
-      return raw;
+    case 'datetime': {
+      // ⚠ D-210 audit finding 7 — this used to read:
+      //     if (typeof field.value === 'number') return new Date(raw).getTime();
+      //     return raw;
+      // …so a `datetime` arg that was never PREFILLED (`field.value` undefined)
+      // shipped the raw wall-clock STRING, and the server's edit validator demands
+      // a finite number — `edit_invalid`, thrown at step 3, BEFORE release. The
+      // whole approve failed and the only way through was to clear the field.
+      //
+      // Live on the one path that reaches it: `reception-approval.json` declares
+      // `promised_for_at` as `datetime` and the approval processor never sets it,
+      // so "Due" always renders empty. The server-side enforcement added by
+      // `2dd38779c` says it "mirrors what the webclient already enforces … rather
+      // than inventing a second rule set. Two rule sets would let the two surfaces
+      // disagree about what a valid edit is." They disagreed here, and the `/ask`
+      // landing path (which coerces properly) did not — so the owner's two
+      // surfaces behaved differently on the same field.
+      //
+      // The type, not the prefill, decides the coercion.
+      const ms = new Date(raw).getTime();
+      if (!Number.isFinite(ms)) throw new Error(`${field.label} must be a date and time.`);
+      return ms;
+    }
     case 'json':
       try {
         return JSON.parse(raw);
@@ -899,7 +929,22 @@ export const mountReceptionInboxPanel = (
       ) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
       if (control === null) continue;
       const next = parseFieldValue(field, control);
-      if (!sameValue(next, field.value)) edits[field.key] = next;
+      if (!sameValue(next, field.value)) {
+        // ⛔ `undefined` NEVER SURVIVES THE WIRE. `parseFieldValue` returns it
+        // for an emptied optional field, and `JSON.stringify` drops own
+        // properties valued `undefined` — so the key never reaches the server,
+        // `validateEditsAgainstSchema` iterates `Object.keys(edits)` and sees
+        // nothing, no override is written, and the ORIGINAL value is promoted.
+        // The owner clears the visitor's email, the RPC answers
+        // `released: true, edited_keys: []`, and the address they just deleted
+        // is what lands on the canonical record.
+        //
+        // `null` is the server's documented clearing value for a non-required
+        // field (`validateEditsAgainstSchema`), and unlike `undefined` it
+        // serializes. The sibling destination-picker branch above already
+        // guards `decision.value !== undefined`; this arm did not.
+        edits[field.key] = next === undefined ? null : next;
+      }
     }
     return edits;
   };
@@ -1010,6 +1055,30 @@ export const mountReceptionInboxPanel = (
       overlap.className = 'reception-inbox-detail-overlap';
       overlap.textContent = detail.item.overlap_label;
       parent.appendChild(overlap);
+    }
+
+    const bookingHistory = detail.item.booking_history;
+    if (bookingHistory !== null && bookingHistory !== undefined) {
+      const history = doc.createElement('section');
+      history.className = 'reception-inbox-history';
+      parent.appendChild(history);
+      const heading = doc.createElement('h4');
+      heading.textContent = `Previous bookings (${bookingHistory.total})`;
+      history.appendChild(heading);
+      if (bookingHistory.entries.length === 0) {
+        appendText(doc, history, 'No previous completed or no-show bookings.');
+      } else {
+        const list = doc.createElement('ul');
+        history.appendChild(list);
+        for (const entry of bookingHistory.entries) {
+          const row = doc.createElement('li');
+          const when = entry.slot_start_at !== undefined
+            ? new Date(entry.slot_start_at).toLocaleString()
+            : new Date(entry.state_changed_at).toLocaleDateString();
+          row.textContent = `${entry.title} — ${entry.lifecycle_state.replace('_', ' ')} — ${when}`;
+          list.appendChild(row);
+        }
+      }
     }
 
     const chips = doc.createElement('div');

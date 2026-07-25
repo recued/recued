@@ -25,7 +25,7 @@
  *  complete by the boot reconcile, so its reads are never `undefined`; doors stay sparse.
  *
  *  Local-only by construction — the contract store never syncs cloud (D-090/D-097/D-168).
- *  Spec: `docs/d-187-spec.md` AMENDMENT block; handover
+ *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
 import type { ContractStore } from './contract-store.js';

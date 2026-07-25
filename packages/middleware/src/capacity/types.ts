@@ -6,7 +6,7 @@
  *  `@recued/contracts/capacity-spec` so consumers (recipes, ui)
  *  don't pull engine-internal interfaces.
  *
- *  Spec: `docs/d-145-spec.md` § B.4. Design: `docs/d-145-pb1-design.md`. */
+ *  Spec: D-145 § B.4. Design: D-145. */
 
 import type {
   CapacityCheck,

@@ -48,7 +48,7 @@
  *  templates-browser modal (`reception-templates-mount.ts`, fed by the
  *  route's own `reception.template.list` cache) became the live surface.
  *
- *  Spec: docs/d-149-spec.md § A.9 + § A.10 + § A.20.1-A.20.6. */
+ *  Spec: D-149 § A.9 + § A.10 + § A.20.1-A.20.6. */
 
 import {
   RpcError,

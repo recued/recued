@@ -92,13 +92,14 @@ describe('grant-resolve — read gate (verb-op ∧ entry)', () => {
 });
 
 describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
-  it('covers engagements, audit, memory, the work graph, webhook, and both free-form response gates', () => {
+  it('covers engagements, audit, memory, the work graph, webhook, and free-form response gates', () => {
     expect([...OWNER_DEFAULT_ONLY_GRANT_ENTRIES].sort()).toEqual([
       // D-198 follow-on — run history is its OWN domain now (was
       // `core.memory.audit.read`, which read as part of the knowledge-pool family).
       'core.audit.read',
       'core.contact.engagements.read',
       'core.data.form-response.get',
+      'core.data.form-response.list',
       // D-210 A.8 slice 2a — the lifecycle WRITE. A read of visitor answers is
       // owner-default-only, so a write that moves a visitor's state must be at
       // least as closed.

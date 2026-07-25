@@ -1,12 +1,11 @@
-/** D-202 task 4a.1 — the pure quality-gate decision orchestrator + the
- *  authorization conjunct it re-derives.
+/** D-202 task 4a.1 / D-211 Slice 3 — the pure quality-gate decision
+ *  orchestrator consuming captured authorization provenance.
  *
  *  These lock the load-bearing v1 semantics the gateway ask-branch (4a.2)
  *  depends on:
- *    - `admitByOpRiskWithoutQualityLifts` RELAXES an owner-driven outbound send
- *      to `admit` (the lifted `ask` was purely the AI-output review) but keeps a
- *      contracted AI's write / a destructive op at `ask` (§12.1 — quality can
- *      never grant authority);
+ *    - the real admission path captures an owner-driven outbound send at
+ *      `pre_lift_approval:'never'` before its review lift, but preserves a
+ *      contracted write or owner `always` at its stricter posture (§12.1);
  *    - `resolveQualityGateDecision` composes that with a matching quality
  *      delegation + Switch A/B + whole-document into the three-conjunct verdict:
  *      only an owner send with a matching, un-paused delegation and a passing
@@ -18,6 +17,7 @@ import {
   admitByOpRisk,
   admitByOpRiskWithoutQualityLifts,
   resolveQualityGateDecision,
+  type AuthorizationProvenance,
   type ExecutionSource,
   type QualityGateSwitches,
 } from '@recued/contracts';
@@ -106,17 +106,16 @@ describe('D-202 admitByOpRiskWithoutQualityLifts — strips ONLY the review lift
 // ════════════════════════════════════════════════════════════════
 
 const gate = (o: {
-  slug?: string;
-  risk_tier?: 'read' | 'write' | 'admin' | 'destructive';
-  source?: ExecutionSource;
+  authorization_provenance?: AuthorizationProvenance;
   qualityDelegationMatches?: boolean;
   switches?: QualityGateSwitches;
   wholeDocumentPasses?: boolean;
 } = {}) =>
   resolveQualityGateDecision({
-    slug: o.slug ?? 'mail-send',
-    risk_tier: o.risk_tier ?? 'write',
-    source: o.source ?? OWNER,
+    authorization_provenance: o.authorization_provenance ?? {
+      pre_lift_approval: 'never',
+      lift_reason: 'review_send',
+    },
     qualityDelegationMatches: o.qualityDelegationMatches ?? true,
     switches: o.switches ?? NO_PAUSE,
     ...(o.wholeDocumentPasses !== undefined
@@ -167,42 +166,38 @@ describe('D-202 resolveQualityGateDecision — quality conjunct routes to review
 
 describe('D-202 resolveQualityGateDecision — authorization is independent (§12.1)', () => {
   it('reviews a CONTRACTED send despite a quality match — the AI has no send authority', () => {
-    // Door ⇒ read ceiling ⇒ write outbound send stays ask ⇒ authorization_ask.
-    expect(gate({ source: DOOR })).toEqual({
+    expect(gate({
+      authorization_provenance: { pre_lift_approval: 'ask' },
+    })).toEqual({
       verdict: 'review',
       reason: 'authorization_ask',
     });
   });
 
-  it('reviews a DESTRUCTIVE op despite a quality match — quality never auto-runs it', () => {
-    expect(
-      gate({ slug: 'record-delete', risk_tier: 'destructive' }),
-    ).toEqual({ verdict: 'review', reason: 'authorization_ask' });
+  it('reviews an owner always ruling despite a quality match', () => {
+    expect(gate({
+      authorization_provenance: { pre_lift_approval: 'always' },
+    })).toEqual({ verdict: 'review', reason: 'authorization_ask' });
   });
 });
 
-// D-202 review Finding 1 — the authorization conjunct is an args-BLIND op-risk
-// recompute. `resolveQualityGateDecision` takes NO resolved args, so a spec §1
-// authorization value-bound ("amount > $X → review") is INVISIBLE to it: only
-// op-risk (slug × risk_tier), the trust ceiling (source), the delegation match,
-// and the kill-switch gate the verdict. Sound TODAY because op-risk+lift is the
-// admission's sole `ask` source. When value-bounds land they MUST NOT surface as
-// a plain `evaluateAdmission` ask — the authz conjunct must instead re-run the
-// real admission with the review lift suppressed, or a value-bound-tripped send
-// with a quality delegation would wrongly skip (§12.1). This pins the current
-// bounded contract so the limitation is executable, not merely documented.
-describe('D-202 resolveQualityGateDecision — Finding 1: authorization is args-blind', () => {
-  it('sends an owner outbound send with no payload channel by which a value-bound could gate it', () => {
-    expect(gate({ slug: 'mail-send', risk_tier: 'write', source: OWNER }).verdict).toBe(
-      'send',
-    );
+describe('D-209 §1.7 — quality consumes captured authorization provenance', () => {
+  it('sends when the real resolver captured a review-only pre-lift never', () => {
+    expect(gate({
+      authorization_provenance: {
+        pre_lift_approval: 'never',
+        lift_reason: 'review_send',
+      },
+    }).verdict).toBe('send');
   });
 
-  it('every knob that DOES gate the send is authorization/kill-switch, never payload', () => {
-    expect(gate({ source: DOOR }).verdict).toBe('review'); // trust ceiling
+  it('preserves captured tightening and the independent kill-switches', () => {
+    expect(gate({
+      authorization_provenance: { pre_lift_approval: 'ask' },
+    }).verdict).toBe('review');
     expect(gate({ switches: SWITCH_B }).verdict).toBe('review'); // kill-switch
-    expect(gate({ slug: 'record-delete', risk_tier: 'destructive' }).verdict).toBe(
-      'review',
-    ); // op-risk tier
+    expect(gate({
+      authorization_provenance: { pre_lift_approval: 'always' },
+    }).verdict).toBe('review');
   });
 });

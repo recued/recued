@@ -10,6 +10,7 @@ const bootRecoveryMocks = vi.hoisted(() => ({
   recoverNotificationBlockAtBoot: vi.fn(),
   raiseInDoubtForSweptCommits: vi.fn(),
   commitRestoreProvenanceAtBoot: vi.fn(),
+  replayKeyfileEventsIntoAudit: vi.fn(),
 }));
 
 vi.mock('../composition/bin/wire-notification-block.js', () => ({
@@ -22,6 +23,15 @@ vi.mock('../composition/bin/wire-notification-block.js', () => ({
 // own behavior is unit-tested in archive-restore-provenance.test.ts.
 vi.mock('../archive/restore-provenance.js', () => ({
   commitRestoreProvenanceAtBoot: bootRecoveryMocks.commitRestoreProvenanceAtBoot,
+}));
+
+// D-212 follow-on — same reasoning as the provenance mock above: the keyfile
+// event replay's own behavior is unit-tested in d-212-keyfile-event-ledger, and
+// what belongs HERE is that boot actually calls it. A `rotate-passphrase` that
+// records perfectly and a boot that never reads the ledger is the half-built
+// shape this follow-on was deliberately not shipped as.
+vi.mock('../keys/keyfile-event-replay.js', () => ({
+  replayKeyfileEventsIntoAudit: bootRecoveryMocks.replayKeyfileEventsIntoAudit,
 }));
 
 import {
@@ -60,6 +70,7 @@ beforeEach(() => {
   bootRecoveryMocks.recoverNotificationBlockAtBoot.mockReset();
   bootRecoveryMocks.raiseInDoubtForSweptCommits.mockReset();
   bootRecoveryMocks.commitRestoreProvenanceAtBoot.mockReset();
+  bootRecoveryMocks.replayKeyfileEventsIntoAudit.mockReset();
 });
 
 describe('startBootRecoveryAndAdapters', () => {
@@ -220,6 +231,49 @@ describe('startBootRecoveryAndAdapters — M5 S1 restore-provenance hook', () =>
     });
     // The new publisher_id is the live identity, so the commit must follow boot.
     expect(order).toEqual(['identity', 'provenance']);
+  });
+
+  it('replays the keyfile event ledger into the audit log, after the signing identity', async () => {
+    // The row is high-assurance, so it can only be signed once
+    // `bootSigningIdentity` has run — a replay ordered before it would write an
+    // unsigned row of a kind the verifier rejects.
+    const order: string[] = [];
+    const options = makeOptions({
+      dbPath: '/tmp/recued.db',
+      getSigningIdentity: vi.fn(() => bootedIdentity),
+      bootSigningIdentity: vi.fn(async () => { order.push('identity'); }),
+    });
+    bootRecoveryMocks.replayKeyfileEventsIntoAudit.mockImplementation(async () => {
+      order.push('keyfile-replay');
+      return 0;
+    });
+
+    await startBootRecoveryAndAdapters(options);
+
+    expect(bootRecoveryMocks.replayKeyfileEventsIntoAudit).toHaveBeenCalledTimes(1);
+    expect(bootRecoveryMocks.replayKeyfileEventsIntoAudit).toHaveBeenCalledWith({
+      dataPath: '/tmp', // dirname('/tmp/recued.db') — beside the keyfile itself
+      auditLog: options.auditLog,
+      warn: options.warn,
+    });
+    expect(order).toEqual(['identity', 'keyfile-replay']);
+  });
+
+  it('skips the keyfile replay on a db-less / identity-less / audit-less boot', async () => {
+    await startBootRecoveryAndAdapters(
+      makeOptions({ getSigningIdentity: vi.fn(() => bootedIdentity) }),
+    );
+    await startBootRecoveryAndAdapters(
+      makeOptions({ dbPath: '/tmp/recued.db', getSigningIdentity: vi.fn(() => undefined) }),
+    );
+    await startBootRecoveryAndAdapters(
+      makeOptions({
+        dbPath: '/tmp/recued.db',
+        getSigningIdentity: vi.fn(() => bootedIdentity),
+        auditLog: undefined,
+      }),
+    );
+    expect(bootRecoveryMocks.replayKeyfileEventsIntoAudit).not.toHaveBeenCalled();
   });
 
   it('skips the provenance commit when no db path is wired (db-less harness)', async () => {

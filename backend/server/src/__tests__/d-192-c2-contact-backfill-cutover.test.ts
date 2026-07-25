@@ -9,7 +9,7 @@
  *  real SQLite file: the invariants under test are UNIQUE indexes, triggers, and
  *  what actually lands in the columns, and a mock asserts nothing about any of it.
  *
- *  Spec: `docs/d-192-contact-source-family.md` (build plan step 3);
+ *  Spec: D-192 (build plan step 3);
  *  decisions-log § D-192 C-2. */
 
 import { mkdtempSync, rmSync } from 'node:fs';

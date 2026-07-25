@@ -208,20 +208,23 @@ describe('in-flight hold registry', () => {
       const pending = awaitInflightHold(key);
       if (pending === null) throw new Error('expected pending in-flight hold');
 
-      claim.settle('durable');
-      await expect(pending).resolves.toBe('durable');
+      claim.settle({ status: 'durable', run_id: 'run-1' });
+      await expect(pending).resolves.toEqual({
+        status: 'durable',
+        run_id: 'run-1',
+      });
       expect(awaitInflightHold(key)).toBeNull();
 
       freshClaim = claimInflightHold(key);
       if (freshClaim === null) throw new Error('expected fresh claim after settle');
       const freshPending = awaitInflightHold(key);
       if (freshPending === null) throw new Error('expected fresh pending hold');
-      freshClaim.settle('failed');
-      await expect(freshPending).resolves.toBe('failed');
+      freshClaim.settle({ status: 'failed' });
+      await expect(freshPending).resolves.toEqual({ status: 'failed' });
       expect(awaitInflightHold(key)).toBeNull();
     } finally {
-      freshClaim?.settle('failed');
-      claim.settle('failed');
+      freshClaim?.settle({ status: 'failed' });
+      claim.settle({ status: 'failed' });
     }
   });
 
@@ -234,13 +237,16 @@ describe('in-flight hold registry', () => {
       const pending = awaitInflightHold(key);
       if (pending === null) throw new Error('expected pending in-flight hold');
 
-      claim.settle('durable');
-      expect(() => claim.settle('failed')).not.toThrow();
+      claim.settle({ status: 'durable', run_id: 'run-once' });
+      expect(() => claim.settle({ status: 'failed' })).not.toThrow();
 
-      await expect(pending).resolves.toBe('durable');
+      await expect(pending).resolves.toEqual({
+        status: 'durable',
+        run_id: 'run-once',
+      });
       expect(awaitInflightHold(key)).toBeNull();
     } finally {
-      claim.settle('failed');
+      claim.settle({ status: 'failed' });
     }
   });
 });

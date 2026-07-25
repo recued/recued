@@ -14,7 +14,7 @@
  *     / op-step in prefetch_steps;
  *   - WARN      — a collection op resolving to no result_path (bare array);
  *   - override  — a per-op `result_path` wins over the surface default.
- * Spec: docs/unified-pack-exploration/connection-agnostic-op-contract.md.
+ * Spec: internal design notes.
  */
 import { describe, it, expect } from 'vitest';
 import type {

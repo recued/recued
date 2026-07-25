@@ -13,7 +13,7 @@
  *  OMITTED when no `data.mail` collection is wired (CRM-only: rows keep
  *  their as-ingested `body_state`). Wiring it here is the production fix
  *  for the first deferred D-184 MED (the twin join previously ran only in
- *  tests). See `handovers/handover_d184_decision2_email_twin_done.md`. */
+ *  tests). See internal design notes. */
 
 import type Database from 'better-sqlite3';
 import {

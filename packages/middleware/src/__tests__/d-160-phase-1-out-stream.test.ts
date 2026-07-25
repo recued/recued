@@ -1,6 +1,6 @@
 /** D-160 P1 -- transparency out-stream.
  *
- *  Spec: docs/d-160-spec.md sections N.6 / A.4 and Must Hold I-6.
+ *  Spec: D-160 sections N.6 / A.4 and Must Hold I-6.
  */
 
 import { describe, expect, it } from 'vitest';

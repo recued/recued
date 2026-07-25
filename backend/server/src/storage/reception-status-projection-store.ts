@@ -22,7 +22,7 @@
  *  cache columns (`last_resolved_payload_hash` / `last_resolved_at`)
  *  are write-only-by-substrate, never visitor-controllable.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.6 + § Contract Tightening +
+ *  Spec: D-149 § A.5.6 + § Contract Tightening +
  *  § Must Hold I-2 + I-12. */
 
 import type Database from 'better-sqlite3';

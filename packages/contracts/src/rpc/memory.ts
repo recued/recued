@@ -18,7 +18,7 @@
  *  `body_preview` + `size_bytes` — never the full body, which large text
  *  would bloat; the full body loads on demand via `memory.get` (Slice 2).
  *
- *  Spec: docs/d-198-spec.md (§5 operations) + docs/d-198-build-plan.md (§A.1).
+ *  Spec: D-198 (§5 operations) + D-198 (§A.1).
  */
 
 import type { Actor } from '../commits.js';

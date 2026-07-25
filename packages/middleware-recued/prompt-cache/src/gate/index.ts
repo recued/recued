@@ -39,10 +39,12 @@
  *  Subsequent writes never race the render because the snapshot is a
  *  by-value copy held by the gate until `renderTemplate` returns.
  *
- *  Dependency injection. The three callbacks (`matchTemplate` /
+ *  Dependency injection. The three core callbacks (`matchTemplate` /
  *  `probeData` / `renderTemplate`) all default to "never fires":
  *  matcher returns `null`, probe returns `null`, renderer returns the
- *  empty string. P4e ships the orchestration shape with the defaults
+ *  empty string. An optional `lookupKnownEntityNames` may propose canonical
+ *  local-index names before NER; absence or failure leaves ordinary NER intact.
+ *  P4e ships the orchestration shape with the defaults
  *  wired; P4f / P5 swap in the real template library + warehouse probe
  *  + renderer at boot. The gate's pass-through semantics mean a
  *  production deployment with default deps behaves identically to a
@@ -55,7 +57,7 @@
  *  short-circuit throws (the framework's `resolve` enforces "first
  *  call wins; a second call throws").
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 gate / § 3 the deterministic gate. */
 
 import type { SurfaceTag } from '@recued/chat';
@@ -67,7 +69,12 @@ import {
   type AnaphoraSignal,
   type IntentionResult,
 } from '../intention/index.js';
-import { extract, type SlotValue } from '../ner/index.js';
+import {
+  extract,
+  isKnownEntityNameProposal,
+  type KnownEntityNameProposal,
+  type SlotValue,
+} from '../ner/index.js';
 import type { RenderTemplate, Template } from '../types.js';
 
 import { rewriteAnaphoricPrompt } from './anaphora-rewrite.js';
@@ -87,6 +94,7 @@ export { containsListMarkerLine, parseReferentList } from './referent-list.js';
 export {
   noopDataPresenceProbe,
   createContactAttributePresenceProbe,
+  createContactAttributeListPresenceProbe,
   createCalendarNextMeetingProbe,
   createContactHasEmailProbe,
   createMailFromCountProbe,
@@ -94,12 +102,15 @@ export {
   type CalendarNextMeeting,
   type CalendarNextMeetingLookup,
   type ContactAttributeLookup,
+  type ContactAttributeReference,
   type ContactAttributeRow,
+  type ContactAttributeListProbeDescriptor,
   type DataPresenceProbe,
   type DataPresenceQuery,
   type DataSnapshot,
   type HasCrmContactSource,
   type MailFromCountLookup,
+  type NoEmailTemplateSelector,
 } from './data-presence.js';
 
 // ── Dependency contracts ───────────────────────────────────────────
@@ -117,6 +128,9 @@ export {
  *      is the matcher's responsibility.
  *    - `slots` — the certainty-gated NER slots.
  *    - `locale` — the resolved locale tag for slot grammar.
+ *    - `localeCandidates` — the ordered mixed-language evidence ladder;
+ *      built-ins use `locale` for response language while custom matchers may
+ *      inspect the additional candidates. Optional for legacy callers.
  *
  *  The matcher returns `null` whenever ANY criterion rejects (no
  *  template for this slot grammar, action-class mismatch, etc.); the
@@ -126,6 +140,7 @@ export type TemplateMatcher = (query: {
   readonly text: string;
   readonly slots: ReadonlyArray<SlotValue>;
   readonly locale: string;
+  readonly localeCandidates?: ReadonlyArray<string>;
 }) => Promise<Template | null> | Template | null;
 
 /** Render a matched template using the warehouse snapshot. Returns
@@ -136,13 +151,34 @@ export type TemplateRenderer = (
   snapshot: DataSnapshot,
 ) => Promise<string> | string;
 
-/** The orchestrator's three dependencies. All callbacks default to
- *  "never fires" so the gate is safe to register without a wired
- *  template library / warehouse probe / renderer. */
+/** Propose canonical entity display names that may occur in `text`. The live
+ *  backend implements this over its local contact index; the middleware treats
+ *  every proposal as untrusted candidate evidence and accepts only an exact
+ *  text span. The normal template + unique data-presence probes still decide
+ *  whether a turn may short-circuit. */
+export type KnownEntityNameLookup = (
+  text: string,
+) => Promise<readonly KnownEntityNameProposal[]> | readonly KnownEntityNameProposal[];
+
+export type {
+  KnownEntityNameCandidate,
+  KnownEntityNameProposal,
+  KnownEntityReferenceEvidence,
+} from '../ner/index.js';
+
+/** The orchestrator's three required dependencies plus the optional contextual
+ *  name/read-authorization seams. Required callbacks default to "never fires"
+ *  so the gate is safe to register without a wired template library / warehouse
+ *  probe / renderer. */
 export interface GateDeps {
   readonly matchTemplate: TemplateMatcher;
   readonly probeData: DataPresenceProbe;
   readonly renderTemplate: TemplateRenderer;
+  /** Optional local-index seam for names typography alone cannot certify
+   *  (lowercase, single-token, initialed/compound, or Latin inside CJK prose).
+   *  Absent, throwing, malformed, or over-cap results simply disable recovery;
+   *  the ordinary NER path remains unchanged. */
+  readonly lookupKnownEntityNames?: KnownEntityNameLookup;
   /** The READ-PERMISSION seam (P10 / P12): may the deterministic
    *  short-circuit fire on this surface? The gate's probes read the
    *  warehouse DIRECTLY, bypassing the per-token-gated `contact.search` /
@@ -177,6 +213,7 @@ export interface GateDeps {
 
 const NOOP_MATCH_TEMPLATE: TemplateMatcher = () => null;
 const NOOP_RENDER_TEMPLATE: TemplateRenderer = () => '';
+const KNOWN_ENTITY_NAME_LIMIT = 1_000;
 
 /** The default deps the middleware uses when no real wiring is
  *  provided — every turn passes through. Exported so callers can
@@ -389,7 +426,25 @@ export const runGate = async (
     return { kind: 'pass-through', reason: 'empty-text' };
   }
 
-  const extraction = extract(inputText);
+  let knownNames: readonly KnownEntityNameProposal[] = [];
+  if (deps.lookupKnownEntityNames !== undefined) {
+    try {
+      const proposed = await deps.lookupKnownEntityNames(inputText);
+      if (
+        Array.isArray(proposed)
+        && proposed.length <= KNOWN_ENTITY_NAME_LIMIT
+        && proposed.every(isKnownEntityNameProposal)
+      ) {
+        knownNames = proposed;
+      }
+    } catch {
+      // Recovery is optional comfort-layer evidence. A failed local index read
+      // must never fail the turn or weaken the ordinary typography-only NER path.
+      knownNames = [];
+    }
+  }
+
+  const extraction = extract(inputText, { knownNames });
   if (extraction === null) {
     return { kind: 'pass-through', reason: 'no-extraction' };
   }
@@ -398,6 +453,7 @@ export const runGate = async (
     text: inputText,
     slots: extraction.slots,
     locale: extraction.locale,
+    localeCandidates: extraction.localeCandidates,
   });
   if (template === null) {
     return { kind: 'pass-through', reason: 'no-template' };
@@ -406,7 +462,11 @@ export const runGate = async (
     return { kind: 'pass-through', reason: 'not-short-circuit-eligible' };
   }
 
-  const query: DataPresenceQuery = { template, slots: extraction.slots };
+  const query: DataPresenceQuery = {
+    template,
+    slots: extraction.slots,
+    locale: extraction.locale,
+  };
   const snapshot = await deps.probeData(query);
   if (snapshot === null) {
     return { kind: 'pass-through', reason: 'no-data-presence' };
@@ -431,6 +491,18 @@ export const runGate = async (
     return { kind: 'pass-through', reason: 'empty-render' };
   }
 
+  for (const part of snapshot.entity_parts ?? []) {
+    ctx.prompt.contribute({
+      role: 'entity',
+      entity: part.entity,
+      payload: part.payload,
+      // This turn resolves locally, so the live part is never rendered into a
+      // provider prompt. The function exists only because EntityPromptPart is
+      // the shared live shape; source retention projects payload values and
+      // never invokes or persists it.
+      render: () => '',
+    });
+  }
   ctx.resolve(text);
   return { kind: 'short-circuit', text };
 };

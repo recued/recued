@@ -1,7 +1,7 @@
 /**
  * D-167 PII-Value Registry P4 — pure Aho-Corasick string-set matcher.
  *
- * Design of record: `docs/d-167-eav-pii-registry-design.md` §2 (ALIASING). The
+ * Design of record: D-167 §2 (ALIASING). The
  * memory-recall PII leak ([[pii-memory-recall-leak-confirmed]]) needs the egress
  * to alias a recalled artifact's PII against the FULL cross-session contact
  * registry, not just the per-session ledger. The naive way — one

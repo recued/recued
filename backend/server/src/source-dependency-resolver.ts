@@ -1,6 +1,6 @@
 /** D-192 Slice 3 — source-dependency resolution.
  *
- *  Two halves of `create_if_not_picked` (`docs/d-192-source-dependencies-design.md`):
+ *  Two halves of `create_if_not_picked` (D-192):
  *   - `decideDependencyResolution` — the PURE pick / create / ask / unresolved
  *     decision over the fetched options + a stored selection + an optional named
  *     target (chat "project abc"), capability-gated on whether a create is

@@ -36,7 +36,7 @@
  *    - Persist fails → onError({ stage: 'persist' }). Same retry-
  *      via-reauth fallback applies.
  *
- *  Spec: docs/d-148-spec.md § A.4.4. */
+ *  Spec: D-148 § A.4.4. */
 
 import type { WebclientLocalStore } from '../storage/local-store.js';
 import { rewrapBearerForActivePair } from '../storage/rewrap-bearer.js';

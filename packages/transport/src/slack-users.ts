@@ -20,7 +20,7 @@
  *  fills the counterparty at approval — the F1 nullable posture); it never
  *  throws.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` § 3a (M-1). */
+ *  Spec: D-192 § 3a (M-1). */
 
 import { DEFAULT_TIMEOUT_MS, postJson } from './http.js';
 

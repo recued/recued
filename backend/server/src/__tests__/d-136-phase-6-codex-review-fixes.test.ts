@@ -13,7 +13,7 @@
  *    [P2] `trimMember` filters `value IS NOT NULL` so tombstoned rows
  *         (NULL value after P6) don't trip JSON.parse(null).field.
  *
- *  Spec: docs/d-136-spec.md §A.5 + §A.6 + audit §10.2. */
+ *  Spec: D-136 §A.5 + §A.6 + audit §10.2. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

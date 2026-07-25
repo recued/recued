@@ -54,7 +54,7 @@
  *  `publisher_id_unavailable`) names the substrate gap for log
  *  consumers + audit scrapers without changing the routing logic.
  *
- *  Spec: `docs/d-148-spec.md` § A.5.3 + § A.6.5. */
+ *  Spec: D-148 § A.5.3 + § A.6.5. */
 
 import { RecuedAcmeClient } from '@recued/server-network';
 

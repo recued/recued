@@ -48,6 +48,10 @@ describe('executeRecipe awaiting_approval structured fields', () => {
           tool_slug: 'mail.send',
           risk_tier: 'write',
           reason: 'write tier requires user approval',
+          authorization_provenance: {
+            pre_lift_approval: 'never',
+            lift_reason: 'review_send',
+          },
         });
       }
       return null;
@@ -60,6 +64,10 @@ describe('executeRecipe awaiting_approval structured fields', () => {
       tool_slug: 'mail.send',
       risk_tier: 'write',
       reason: 'write tier requires user approval',
+      authorization_provenance: {
+        pre_lift_approval: 'never',
+        lift_reason: 'review_send',
+      },
     });
     expect(result.awaiting_approval!.step_state).toEqual({ prepare: 'ready' });
   });
@@ -79,8 +87,10 @@ describe('executeRecipe awaiting_approval structured fields', () => {
     expect(result.awaiting_approval!.tool_slug).toBeUndefined();
     expect(result.awaiting_approval!.risk_tier).toBeUndefined();
     expect(result.awaiting_approval!.reason).toBeUndefined();
+    expect(result.awaiting_approval!.authorization_provenance).toBeUndefined();
     expect(result.awaiting_approval).not.toHaveProperty('tool_slug');
     expect(result.awaiting_approval).not.toHaveProperty('risk_tier');
     expect(result.awaiting_approval).not.toHaveProperty('reason');
+    expect(result.awaiting_approval).not.toHaveProperty('authorization_provenance');
   });
 });

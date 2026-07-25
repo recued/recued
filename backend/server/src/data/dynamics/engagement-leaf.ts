@@ -25,7 +25,7 @@
  *  Registered via `registerEngagementLeaf('dynamics', …)` — `registerDynamicsEngagementLeaf`
  *  is called from `compose-generic-engagement-reconciliation.ts` with the HTTP deps.
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c3); survey Wall-D leaf. */
+ *  Spec: D-192 (S4c3); survey Wall-D leaf. */
 
 import {
   canonicalizeEmail,

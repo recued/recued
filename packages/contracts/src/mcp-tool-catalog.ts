@@ -127,6 +127,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // issuing a fresh max-grants token, and the grants edit could widen
   // a peer's surface mid-call. Channel-isolation invariant.
   'chat.inbound_token.',
+  // D-214 — explicit execution feedback trains owner-scoped historical
+  // evidence. An MCP agent must not mark its own work accepted or poison the
+  // owner's future planner context.
+  'chat.execution.',
   // D-149 P3 § A.3 — Public Reception registry rpc family is operator-
   // only. External AI agents must never create / enable / revoke /
   // rotate / extend reception endpoints (the public-facing surface
@@ -340,6 +344,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // leaks the user's policy posture. Operator / local-UI (Settings → Advanced)
   // only. Channel-isolation invariant.
   'collection.contract.',
+  // D-211 — risk/approval replacement is an owner's global ruling about a
+  // pack operation. An MCP agent may be governed by it but may never author or
+  // enumerate it.
+  'collection.operation.',
   // D-152 — hostname registry CRUD + ownership-proof transitions are
   // local-UI only. A compromised MCP-channel agent must never add,
   // enable, delete, or "verify" public hostnames; that would reshape

@@ -20,7 +20,7 @@
  *  archive, task mark-done) are deliberately NOT upsert targets — they
  *  are distinct semantic operations on the ingredient/recipe path.
  *
- *  Spec: docs/d-174-spec.md D11 + docs/d-145-spec.md § A.1 / A.2. */
+ *  Spec: D-174 D11 + D-145 § A.1 / A.2. */
 
 import type {
   WorkEntity,
@@ -34,6 +34,10 @@ import type {
   CommitmentUpdateInput,
   ProjectCreateInput,
   ProjectUpdateInput,
+  BookingCreateInput,
+  BookingUpdateInput,
+  BookingHistorySummary,
+  BookingLifecycleState,
   WorkEntityDeleteOutput,
 } from './work-entities.js';
 import type { WorkEntitySourceFreshness } from './work-entity-sources.js';
@@ -54,6 +58,10 @@ export interface WorkEntityListRpcRequest {
   include_disabled?: boolean;
   limit?: number;
   offset?: number;
+  /** Booking-only, server-side search across the complete result set. */
+  search?: string;
+  /** Booking-only business lifecycle filter. */
+  booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
 
 export interface WorkEntityListRpcResponse {
@@ -96,6 +104,9 @@ export interface WorkEntityGetRpcResponse {
    *  precedent). Contact edges carry the read-time survivor display
    *  identity (`target_display`). */
   relationship_edges?: WorkEntityEdgeView[];
+  /** Owner-only prior completed/no-show history for a booking's opaque
+   *  counterparty. Absent for every other kind and for unlinked bookings. */
+  booking_history?: BookingHistorySummary;
 }
 
 /** Create (no `id`) or update (`id` present) one entity. The per-kind
@@ -110,7 +121,8 @@ export type WorkEntityUpsertRpcRequest =
   | ({ kind: 'task' } & (TaskCreateInput | TaskUpdateInput))
   | ({ kind: 'note' } & (NoteCreateInput | NoteUpdateInput))
   | ({ kind: 'commitment' } & (CommitmentCreateInput | CommitmentUpdateInput))
-  | ({ kind: 'project' } & (ProjectCreateInput | ProjectUpdateInput));
+  | ({ kind: 'project' } & (ProjectCreateInput | ProjectUpdateInput))
+  | ({ kind: 'booking' } & (BookingCreateInput | BookingUpdateInput));
 
 export interface WorkEntityUpsertRpcResponse {
   /** Tagged canonical record (`_kind` discriminator) for the

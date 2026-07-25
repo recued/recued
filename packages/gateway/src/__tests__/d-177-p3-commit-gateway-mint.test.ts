@@ -66,6 +66,7 @@ const askDecision = (
   verdict: 'ask',
   risk_tier: 'write',
   detail: 'approval required',
+  authorization_provenance: { pre_lift_approval: 'ask' },
   ...overrides,
 });
 
@@ -172,6 +173,7 @@ describe('wrapWithCommitGateway D-177 P3 session-grant mint branch', () => {
       channel_session_id: 'chat-1',
       ingredient_slug: 'mail.send',
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: expectedHashes.arg_shape_hash,
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       ttl_ms: 3_600_000,

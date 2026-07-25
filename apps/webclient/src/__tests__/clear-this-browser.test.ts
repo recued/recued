@@ -2,7 +2,15 @@
 
 import { describe, expect, it } from 'vitest';
 import { clearThisBrowser } from '../auth/clear-this-browser.js';
+import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
+
+// Seed + assert the REAL constant, never a copy of its current value. A literal
+// here pins whatever the constant happens to say, so it stays green through
+// exactly the drift that broke the wipe twice. That the constant matches the
+// cache `public/sw.js` opens is asserted in
+// `service-worker-cache-name-parity.test.ts`.
+const SHELL_CACHE = WEBCLIENT_SHELL_CACHE_NAME;
 
 describe('D-148 P4 — clear this browser', () => {
   it('wipes the closed-list 5 fields + sessionStorage + SW cache', async () => {
@@ -16,7 +24,7 @@ describe('D-148 P4 — clear this browser', () => {
         session_cleared = true;
       },
     };
-    const cache_state = new Set(['webclient-shell-v4', 'unrelated.cache']);
+    const cache_state = new Set([SHELL_CACHE, 'unrelated.cache']);
     const cache_storage = {
       async keys() {
         return [...cache_state];
@@ -38,11 +46,11 @@ describe('D-148 P4 — clear this browser', () => {
     expect(result.cleared_session_storage).toBe(true);
     expect(result.cleared_sw_caches).toBe(true);
     expect(result.cleared_crypto_keys).toBe(false);
-    // Codex slice-109 P2 fold — default cache name aligned with the
-    // SW's actual `CACHE_NAME` (`webclient-shell-v4` in `public/sw.js`).
-    expect(result.deleted_cache_names).toEqual(['webclient-shell-v4']);
+    // Codex slice-109 P2 fold — default cache name aligned with the SW's
+    // actual `CACHE_NAME` in `public/sw.js`.
+    expect(result.deleted_cache_names).toEqual([SHELL_CACHE]);
     expect(session_cleared).toBe(true);
-    expect(cache_state.has('webclient-shell-v4')).toBe(false);
+    expect(cache_state.has(SHELL_CACHE)).toBe(false);
     expect(cache_state.has('unrelated.cache')).toBe(true);
     const inspect = await local_store.inspect();
     expect(inspect.server_url).toBeNull();
@@ -94,12 +102,11 @@ describe('D-148 P4 — clear this browser', () => {
   });
 
   it('Codex slice-109 P2 fold — default cache name matches the SW shell cache', async () => {
-    // The SW's `CACHE_NAME` in `public/sw.js` is `webclient-shell-v4`.
     // Pre-fold the substrate defaulted to `recued.webclient.assets`, a
     // string no SW build had ever opened, so the default "Clear this
     // browser" path silently no-op'd the shell cache. This test seeds
     // BOTH names and asserts the default targets the real one.
-    const cache_state = new Set(['webclient-shell-v4', 'recued.webclient.assets']);
+    const cache_state = new Set([SHELL_CACHE, 'recued.webclient.assets']);
     const result = await clearThisBrowser({
       local_store: createInMemoryWebclientLocalStore(),
       cache_storage: {
@@ -113,10 +120,10 @@ describe('D-148 P4 — clear this browser', () => {
         },
       },
     });
-    expect(result.deleted_cache_names).toEqual(['webclient-shell-v4']);
+    expect(result.deleted_cache_names).toEqual([SHELL_CACHE]);
     // The stale-default cache name is left untouched (would be the
     // case in production too — no SW has ever opened it).
-    expect(cache_state.has('webclient-shell-v4')).toBe(false);
+    expect(cache_state.has(SHELL_CACHE)).toBe(false);
     expect(cache_state.has('recued.webclient.assets')).toBe(true);
   });
 });

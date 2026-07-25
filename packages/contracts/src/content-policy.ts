@@ -6,6 +6,11 @@
  */
 
 import { CORE_SLUG_PREFIX } from './core-pack.js';
+import {
+  describeUnstorable,
+  findUnstorableStrings,
+  UNSTORABLE_FINDING_LIMIT,
+} from './storable-encoding.js';
 
 // ────────────────────────────────────────────────────────────────
 // Reserved publisher handles
@@ -390,6 +395,22 @@ export const validateRecipeBundlePublisher = (
 export const validateRecipeContent = (recipe: Record<string, unknown>): ContentIssue[] => {
   const issues: ContentIssue[] = [];
   const meta = (recipe.metadata ?? {}) as Record<string, unknown>;
+
+  // Whole-document storable-encoding sweep, BEFORE the per-field checks below.
+  // Those inspect six named fields; the characters that have actually broken a
+  // publish sat nowhere near them, so this deliberately walks everything —
+  // steps, schemas, nested composition bodies included.
+  const unstorable = findUnstorableStrings(recipe);
+  for (const f of unstorable) {
+    issues.push({ code: 'unstorable_encoding', field: f.path.replace(/^\./, ''), message: describeUnstorable(f) });
+  }
+  if (unstorable.length >= UNSTORABLE_FINDING_LIMIT) {
+    issues.push({
+      code: 'unstorable_encoding_truncated',
+      field: '',
+      message: `report capped at ${UNSTORABLE_FINDING_LIMIT} findings; there may be more`,
+    });
+  }
 
   // Slug
   if (typeof recipe.recipe_id === 'string') {

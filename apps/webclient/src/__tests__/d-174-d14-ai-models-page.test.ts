@@ -11,6 +11,16 @@ import type {
 import {
   AI_MODELS_ACTION_ERROR_ATTR,
   AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+  AI_MODELS_CHAT_SETUP_ADVANCED_ATTR,
+  AI_MODELS_CHAT_SETUP_ATTR,
+  AI_MODELS_CHAT_SETUP_BASE_URL_ATTR,
+  AI_MODELS_CHAT_SETUP_ERROR_ATTR,
+  AI_MODELS_CHAT_SETUP_KEY_ATTR,
+  AI_MODELS_CHAT_SETUP_MODEL_ATTR,
+  AI_MODELS_CHAT_SETUP_PROVIDER_ATTR,
+  AI_MODELS_CHAT_SETUP_SOURCE_ATTR,
+  AI_MODELS_CHAT_SETUP_STATUS_ATTR,
+  AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
   AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR,
   AI_MODELS_FAIL_LOUD_ATTR,
   AI_MODELS_PENDING_CONTROL_ATTR,
@@ -24,6 +34,7 @@ import {
   AI_MODELS_PROMPT_SECTION_ATTR,
   AI_MODELS_PROMPT_TEXT_ATTR,
   AI_MODELS_SLOT_SAVE_ATTR,
+  AI_MODELS_TAB_ATTR,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
 
@@ -137,6 +148,21 @@ const findByAttrValue = (
   return null;
 };
 
+const findByTagText = (
+  root: FakeElement,
+  tagName: string,
+  text: string,
+): FakeElement | null => {
+  if (root.tagName === tagName.toUpperCase() && root.textContent === text) {
+    return root;
+  }
+  for (const child of root.children) {
+    const hit = findByTagText(child, tagName, text);
+    if (hit) return hit;
+  }
+  return null;
+};
+
 /** Fire the click listeners registered on the element matching attr=value. */
 const clickByAttrValue = (root: FakeElement, attr: string, value: string): void => {
   const el = findByAttrValue(root, attr, value);
@@ -156,6 +182,17 @@ const changeSelect = (
   if (!el) throw new Error(`no <select> with ${attr}="${value}"`);
   el.value = next;
   for (const fn of el.listeners.get('change') ?? []) fn({});
+};
+
+const inputByAttr = (
+  root: FakeElement,
+  attr: string,
+  value: string,
+): void => {
+  const el = findByAttr(root, attr);
+  if (!el) throw new Error(`no input with ${attr}`);
+  el.value = value;
+  for (const fn of el.listeners.get('input') ?? []) fn({});
 };
 
 /** True if any node in the tree has textContent containing `needle`. */
@@ -362,6 +399,267 @@ describe('D-174 D14 — AI / Models initial load', () => {
 
     expect(mount.getState().failLoud).toMatch(/No AI model is available/);
     expect(findByAttr(host, AI_MODELS_FAIL_LOUD_ATTR)).not.toBeNull();
+    mount.dispose();
+  });
+});
+
+describe('Set up Chat — focused first-run journey', () => {
+  it('loads only setup state, saves slot_1 + the default, then returns to Chat', async () => {
+    const onChatSetupComplete = vi.fn();
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      onChatSetupComplete,
+      chatSetupReturnHref: '#chat/session/chat%2Fone',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ATTR)).not.toBeNull();
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR)?.value).toBe('openai');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR)?.value).toBe('gpt-4.1-mini');
+    expect(findByAttr(host, AI_MODELS_TAB_ATTR)).toBeNull();
+    expect(opts.runGetLlmPrompts).not.toHaveBeenCalled();
+    expect(opts.runGetConfigSchema).not.toHaveBeenCalled();
+    expect(opts.runReadHousekeepingConfig).not.toHaveBeenCalled();
+    expect(opts.runCacheStats).not.toHaveBeenCalled();
+
+    const advanced = findByAttr(host, AI_MODELS_CHAT_SETUP_ADVANCED_ATTR);
+    expect(advanced?.getAttribute('href')).toBe('#settings/ai-models');
+    expect(findByTagText(host, 'a', 'Back to Chat')?.getAttribute('href'))
+      .toBe('#chat/session/chat%2Fone');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-setup');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+
+    expect(opts.runSetLLMSlot).toHaveBeenCalledWith({
+      slot_key: 'slot_1',
+      slot: expect.objectContaining({
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        api_key: 'sk-setup',
+        speed: 'fast',
+      }),
+    });
+    expect(opts.runSetDefaultModelPref).toHaveBeenCalledWith({
+      source_id: 'slot_1',
+    });
+    expect(onChatSetupComplete).toHaveBeenCalledTimes(1);
+    expect(
+      findByAttrValue(host, AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready'),
+    ).not.toBeNull();
+    expect(findByTagText(host, 'a', 'Start chatting')?.getAttribute('href'))
+      .toBe('#chat/session/chat%2Fone');
+    mount.dispose();
+  });
+
+  it('keeps validation local and does not write an empty key', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toContain('API key');
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    expect(opts.runSetDefaultModelPref).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('requires and saves the base URL for an OpenAI-compatible endpoint', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    changeSelect(
+      host,
+      AI_MODELS_CHAT_SETUP_PROVIDER_ATTR,
+      '',
+      'openai-compatible',
+    );
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, 'local-chat');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'local-key');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toContain('base URL');
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    inputByAttr(
+      host,
+      AI_MODELS_CHAT_SETUP_BASE_URL_ATTR,
+      'http://127.0.0.1:11434/v1',
+    );
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledWith({
+      slot_key: 'slot_1',
+      slot: expect.objectContaining({
+        provider: 'openai-compatible',
+        model: 'local-chat',
+        api_key: 'local-key',
+        base_url: 'http://127.0.0.1:11434/v1',
+      }),
+    });
+    mount.dispose();
+  });
+
+  it('rejects a malformed compatible Base URL before saving', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    changeSelect(
+      host,
+      AI_MODELS_CHAT_SETUP_PROVIDER_ATTR,
+      '',
+      'openai-compatible',
+    );
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, 'local-chat');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'local-key');
+    inputByAttr(
+      host,
+      AI_MODELS_CHAT_SETUP_BASE_URL_ATTR,
+      'localhost:11434/v1',
+    );
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toContain('http:// or https://');
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('clears the masked key when the provider changes', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-openai');
+    changeSelect(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '', 'anthropic');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)?.value).toBe('');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toContain('API key');
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('clears a stale custom endpoint when saving a standard provider', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          slot_1: {
+            provider: 'openai-compatible',
+            model: 'old-model',
+            base_url: 'https://old-endpoint.invalid/v1',
+            has_key: false,
+          },
+        },
+      })),
+    });
+    await mount.whenLoaded();
+
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-openai');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+
+    const written = vi.mocked(opts.runSetLLMSlot).mock.calls[0]![0].slot;
+    expect(written).not.toHaveProperty('base_url');
+    mount.dispose();
+  });
+
+  it('recognizes an already-selected source instead of asking for its key again', async () => {
+    const { host, mount } = mountFixture({ initialView: 'chat-setup' });
+    await mount.whenLoaded();
+
+    expect(
+      findByAttrValue(host, AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready'),
+    ).not.toBeNull();
+    expect(hasText(host, 'Fast · openai-compatible')).toBe(true);
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('fails closed when the current LLM config cannot be read', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetLLMConfig: vi.fn(async () => {
+        throw new Error('offline');
+      }),
+    });
+    await mount.whenLoaded();
+
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toContain('Could not read');
+    expect(hasText(host, 'Try again')).toBe(true);
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)).toBeNull();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('shows a stable finishing state while selecting an existing source', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onChatSetupComplete = vi.fn();
+    const { host, mount } = mountFixture({
+      initialView: 'chat-setup',
+      onChatSetupComplete,
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runSetDefaultModelPref: vi.fn(async ({ source_id }) => {
+        await gate;
+        return { source_id, updated_at: 1 };
+      }),
+    });
+    await mount.whenLoaded();
+
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_SOURCE_ATTR)).not.toBeNull();
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'existing');
+    expect(
+      findByAttrValue(host, AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'saving'),
+    ).not.toBeNull();
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)).toBeNull();
+
+    release();
+    await flush();
+    expect(onChatSetupComplete).toHaveBeenCalledTimes(1);
     mount.dispose();
   });
 });

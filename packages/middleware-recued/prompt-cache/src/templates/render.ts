@@ -10,11 +10,11 @@
  *
  *  Bench provenance: all framing / NOTATION / PROTOCOL / batching-hint
  *  strings are verbatim ports from
- *  `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts`.
+ *  internal benchmarks.
  *  The mirrored MDs in `../prompts/*.md` are documentation; this file
  *  is the runtime source of truth.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates / § 4 catalog / § 6 batching. */
 
 import type { CatalogToolEntry, SectionAssembly, SectionedCatalog } from '../types.js';

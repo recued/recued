@@ -457,7 +457,7 @@ describe('D-149 authoring — scheduling_link', () => {
     expect(model.is_new).toBe(true);
     expect(model.duration_options_minutes.value).toEqual([30]);
     expect(model.min_advance_notice_hours.value).toBe(24);
-    expect(model.create_calendar_event.value).toBe(true);
+    expect(model.notify_visitor_sender.value).toBe('');
     // Five per-field requirement selects; name is locked to Required-only.
     expect(model.required_visitor_fields).toHaveLength(5);
     const nameField = model.required_visitor_fields.find(
@@ -474,13 +474,18 @@ describe('D-149 authoring — scheduling_link', () => {
 
   it('buildSchedulingLinkFormModel projects an existing config', () => {
     const model = buildSchedulingLinkFormModel(
-      mkSchedulingLinkConfig({ min_advance_notice_hours: 48, max_bookings_per_day: 5 }),
+      mkSchedulingLinkConfig({
+        min_advance_notice_hours: 48,
+        max_bookings_per_day: 5,
+        on_booking: { notify_visitor_sender: 'mail.owner' },
+      }),
     );
     expect(model.is_new).toBe(false);
     expect(model.display_name.value).toBe('Alice — 30 min calls');
     expect(model.tz.value).toBe('America/New_York');
     expect(model.min_advance_notice_hours.value).toBe(48);
     expect(model.max_bookings_per_day.value).toBe(5);
+    expect(model.notify_visitor_sender.value).toBe('mail.owner');
     expect(model.explicit_windows.rows).toEqual([
       { day_of_week: 1, start_minute: 540, end_minute: 1020 },
     ]);

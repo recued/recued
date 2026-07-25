@@ -1,15 +1,15 @@
 {
   "vendor": "hibob",
-  "retrieved_on": "2026-07-15",
+  "retrieved_on": "2026-07-20",
   "official_index": {
     "url": "https://apidocs.hibob.com/llms.txt",
-    "bytes": 133932,
-    "sha256": "b47c2d82ea9e79f529fb314bdd90d3982e1050707fe142e394fcbbabf9b2a44a"
+    "bytes": 133923,
+    "sha256": "63f688a019333cd346a144028904459bee97dbccf67d4004a70aa5c1a37e479b"
   },
   "official_endpoint_document_set": {
     "endpoint_documents": 179,
     "inbound_webhook_documents": 28,
-    "aggregate_sha256": "8bccff39a3d5eb266452e7ed45af0a932e89597d9e5c052f2cce96c653451746",
+    "aggregate_sha256": "f71fcbf79646d3e081acf667a833b183775cc04b6ddd6cae0b1cb124646e97a0",
     "aggregate_algorithm": "sha256(sorted newline records: url byte_length raw_markdown_sha256)",
     "note": "HiBob publishes one Markdown-wrapped OpenAPI fragment per endpoint. The packs omit a misleading partial openapi_source; this fixture retains each official raw page hash and extracted OpenAPI hash."
   },
@@ -253,6 +253,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -328,6 +329,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -385,6 +387,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -460,6 +463,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -553,6 +557,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -628,6 +633,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -703,6 +709,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -760,6 +767,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -817,6 +825,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -910,6 +919,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -985,6 +995,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1060,6 +1071,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1135,6 +1147,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1210,6 +1223,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1285,6 +1299,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1360,6 +1375,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1435,6 +1451,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1510,6 +1527,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1585,6 +1603,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -1623,7 +1642,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -1662,7 +1684,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -1701,7 +1726,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -1759,6 +1787,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -1816,6 +1845,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -1930,6 +1960,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2044,6 +2075,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2157,7 +2189,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -2272,6 +2307,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2349,6 +2385,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2408,6 +2445,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2447,6 +2485,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2513,6 +2552,7 @@
       },
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2641,7 +2681,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -2779,7 +2822,10 @@
         }
       },
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -2819,6 +2865,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2858,6 +2905,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -2916,7 +2964,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -2955,7 +3006,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -2994,7 +3048,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3033,7 +3090,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3072,7 +3132,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3153,6 +3216,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3192,6 +3256,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3288,6 +3353,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3327,6 +3393,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3423,6 +3490,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3462,6 +3530,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3501,6 +3570,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3597,6 +3667,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3635,7 +3706,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3675,6 +3749,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3751,7 +3826,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3846,7 +3924,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -3906,6 +3987,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -3945,6 +4027,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4003,7 +4086,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4081,6 +4167,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4157,7 +4244,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4235,6 +4325,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4311,7 +4402,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4389,6 +4483,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4465,7 +4560,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4543,6 +4641,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4581,7 +4680,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4620,7 +4722,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -4660,6 +4765,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4737,6 +4843,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4776,6 +4883,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -4870,15 +4978,18 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
       "source_url": "https://apidocs.hibob.com/reference/get_timeoff-employees-id-requests-requestid.md",
-      "source_markdown_bytes": 86077,
-      "source_markdown_sha256": "55e15fefcff2e0bad43bdf3a720c88fb99579bf3fb5b013763dae852dd63a11a",
-      "source_openapi_bytes": 84445,
-      "source_openapi_sha256": "a4a5f333bc15d62140c69e0169e856739421a381ff69bbea542ed4fd730e47b4",
+      "source_markdown_bytes": 87558,
+      "source_markdown_sha256": "73f27e19cf116b700120098abea94d11b3307b39e38d787750c6cb3defd88eb0",
+      "source_openapi_bytes": 85926,
+      "source_openapi_sha256": "6a50621cd73e85fe7caa5b23fc78a7d0686406fb0ca5321dc9438ef9e660a163",
       "module": "Time Off API",
       "page": "get_timeoff-employees-id-requests-requestid",
       "method": "GET",
@@ -4965,15 +5076,18 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
       "source_url": "https://apidocs.hibob.com/reference/get_timeoff-outtoday.md",
-      "source_markdown_bytes": 74254,
-      "source_markdown_sha256": "114fa448a2f70529ceaa2ba5623dfa8d66ac647260e9d76e69c72a2f07a288de",
-      "source_openapi_bytes": 71612,
-      "source_openapi_sha256": "dd8b9d20c895a57710a0f9ced85896da3f31446695ce4f8c5b4e03316fbcd538",
+      "source_markdown_bytes": 75267,
+      "source_markdown_sha256": "68c23e3179fbf46cddf29d5cd8a637732b4ae9b164e3b43e71aab164a01bdf7f",
+      "source_openapi_bytes": 72625,
+      "source_openapi_sha256": "930a2f05e9209253eff418f2eb225f6a25ec4e192ccdf5a6b6636fa3d4383793",
       "module": "Time Off API",
       "page": "get_timeoff-outtoday",
       "method": "GET",
@@ -5078,7 +5192,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -5138,6 +5255,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -5196,7 +5314,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -5255,7 +5376,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -5314,7 +5438,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -5354,14 +5481,15 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
       "source_url": "https://apidocs.hibob.com/reference/get_timeoff-requests-changes.md",
-      "source_markdown_bytes": 76082,
-      "source_markdown_sha256": "9e0608f045485389c24ce6f45d2ad1be9ae60c038fc521f0de7f97548acfb73a",
-      "source_openapi_bytes": 74352,
-      "source_openapi_sha256": "88b0e386ffc791a10d22ed21bdc594d2962506cc0d96e8254f0c471eff630953",
+      "source_markdown_bytes": 77095,
+      "source_markdown_sha256": "45c09e063fae769173fcdb370bcb77b3f6ffa0cc400ee420d9ebbd4fe109beaa",
+      "source_openapi_bytes": 75365,
+      "source_openapi_sha256": "e3b158d266e39ff0e2c1492de08830f70cef43c7afac97c56bf1485c5a88787b",
       "module": "Time Off API",
       "page": "get_timeoff-requests-changes",
       "method": "GET",
@@ -5450,15 +5578,18 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
       "source_url": "https://apidocs.hibob.com/reference/get_timeoff-whosout.md",
-      "source_markdown_bytes": 76628,
-      "source_markdown_sha256": "afee3cfd4bdea3f8f3ead9a0ff87f4637b8ba4dc27ebf13795c7a5084474ad7c",
-      "source_openapi_bytes": 73923,
-      "source_openapi_sha256": "25d6d48a2e97cbc38e50e0cdbae03917259fd000465e65e1cea2d1b19e6f1990",
+      "source_markdown_bytes": 77641,
+      "source_markdown_sha256": "05bc26e3abe64e4ca0d266f179245ef80ab3bcc7ce54a3471ea9ca506e49438d",
+      "source_openapi_bytes": 74936,
+      "source_openapi_sha256": "eaf9eefdd62c258d32f05ac4f770d17331868fb2ed5e8e4be6fd3bb4b41ee1a1",
       "module": "Time Off API",
       "page": "get_timeoff-whosout",
       "method": "GET",
@@ -5601,7 +5732,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -5671,6 +5805,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -5740,6 +5875,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -5797,6 +5933,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -5854,6 +5991,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -5911,6 +6049,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -5968,6 +6107,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6036,6 +6176,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6108,6 +6249,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6180,6 +6322,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6255,6 +6398,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6327,6 +6471,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6394,6 +6539,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6461,6 +6607,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6518,6 +6665,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6601,6 +6749,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6684,6 +6833,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6749,6 +6899,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -6821,7 +6972,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -6924,6 +7078,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7000,7 +7155,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -7054,6 +7212,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7133,6 +7292,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7207,7 +7367,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -7282,7 +7445,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -7333,6 +7499,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7409,7 +7576,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -7463,6 +7633,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7535,7 +7706,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -7609,6 +7783,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7681,6 +7856,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7733,6 +7909,7 @@
       "response_capture": null,
       "risk": null,
       "approval": null,
+      "tags": null,
       "idempotency": null
     },
     {
@@ -7812,6 +7989,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7909,6 +8087,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -7973,6 +8152,7 @@
       "response_capture": null,
       "risk": null,
       "approval": null,
+      "tags": null,
       "idempotency": null
     },
     {
@@ -8027,6 +8207,7 @@
       "response_capture": null,
       "risk": null,
       "approval": null,
+      "tags": null,
       "idempotency": null
     },
     {
@@ -8106,6 +8287,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8171,6 +8353,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8242,6 +8425,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8331,6 +8515,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8388,6 +8573,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8456,7 +8642,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -8519,7 +8708,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -8589,6 +8781,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8657,7 +8850,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -8729,7 +8925,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -8784,6 +8983,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -8858,15 +9058,18 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
       "source_url": "https://apidocs.hibob.com/reference/post_hiring-applications-search.md",
-      "source_markdown_bytes": 51633,
-      "source_markdown_sha256": "11f0e7b44dfe0d6c82c036c7e58e3fff5dbcd2d0d89613c9c8c8e12b00f2d4ae",
-      "source_openapi_bytes": 51030,
-      "source_openapi_sha256": "b9b04a0abc871859894f24a1cddec2d4efe8f615d3541b32caffc1107ebef527",
+      "source_markdown_bytes": 51467,
+      "source_markdown_sha256": "bddd2deca4a2518fd3b42c66e66b9643a1326a53061042b0741397d356e88aef",
+      "source_openapi_bytes": 50864,
+      "source_openapi_sha256": "30fa27a75e57f7fbdc1c849c6c41486e2bdcdd953a8b555718a0efe79a67c7d2",
       "module": "Bob Hiring API",
       "page": "post_hiring-applications-search",
       "method": "POST",
@@ -8933,7 +9136,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9008,7 +9214,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9083,7 +9292,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9158,7 +9370,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9233,7 +9448,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9308,7 +9526,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9383,7 +9604,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9458,7 +9682,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9533,7 +9760,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9608,7 +9838,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9683,7 +9916,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9758,7 +9994,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -9835,6 +10074,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -9910,6 +10150,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -9984,7 +10225,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -10057,6 +10301,7 @@
       "response_capture": null,
       "risk": "read",
       "approval": "never",
+      "tags": null,
       "idempotency": "safe"
     },
     {
@@ -10124,6 +10369,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10221,6 +10467,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10273,6 +10520,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10332,7 +10580,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -10398,7 +10649,10 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -10482,6 +10736,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10607,6 +10862,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10816,6 +11072,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -10965,6 +11222,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11108,6 +11366,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11227,6 +11486,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11334,6 +11594,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11447,6 +11708,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11519,7 +11781,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -11585,7 +11850,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -11652,6 +11920,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -11723,7 +11992,10 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -11795,7 +12067,10 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -11855,6 +12130,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -11921,7 +12197,10 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "ask",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe"
     },
     {
@@ -12011,6 +12290,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12076,6 +12356,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12141,6 +12422,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12208,6 +12490,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12275,6 +12558,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12327,6 +12611,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12375,6 +12660,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12440,6 +12726,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12505,6 +12792,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12594,6 +12882,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12665,6 +12954,7 @@
       "response_capture": null,
       "risk": "admin",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12766,6 +13056,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -12909,6 +13200,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -12974,6 +13266,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -13201,6 +13494,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -13368,6 +13662,7 @@
       "response_capture": null,
       "risk": "destructive",
       "approval": "always",
+      "tags": null,
       "idempotency": "non_idempotent"
     },
     {
@@ -13499,6 +13794,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     },
     {
@@ -13564,6 +13860,7 @@
       "response_capture": null,
       "risk": "write",
       "approval": "always",
+      "tags": null,
       "idempotency": "idempotent"
     }
   ],

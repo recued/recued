@@ -15,7 +15,7 @@
  *  is content-addressed (re-insert is a no-op); `json_set` always
  *  produces the same output for the same input.
  *
- *  Spec: docs/d-120-spec.md (Phase 2 → "Backfill existing audit entries").
+ *  Spec: D-120 (Phase 2 → "Backfill existing audit entries").
  */
 
 import type Database from 'better-sqlite3';

@@ -12,7 +12,7 @@
  *  derived summaries, response synthesis, and provenance links
  *  persist by design.
  *
- *  Spec: `docs/d-145-spec.md` § B.9 + § B.9.5. */
+ *  Spec: D-145 § B.9 + § B.9.5. */
 
 import type { ContextContentClass, ContextPersistPolicy } from './recued-plan.js';
 import { CONTEXT_CLASS_PERSIST_POLICIES } from './recued-plan.js';

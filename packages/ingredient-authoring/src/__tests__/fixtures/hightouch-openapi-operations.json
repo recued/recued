@@ -6,7 +6,7 @@
         "url": "https://api.hightouch.io/api/swagger.json",
         "bytes": 159607,
         "sha256": "ee840baa9cabd6a62b17e90c1738f3702744bf0da25782c1ee6934b6c55d2c58",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "39 bearer-secured method/path operations across 27 paths",
           "exact parameters, required and optional JSON bodies, success response unions, and pagination defaults",
@@ -33,9 +33,9 @@
       "api_guide_section": {
         "kind": "official_api_guide_section_hash_locked",
         "url": "https://hightouch.com/docs/developer-tools/api-guide",
-        "bytes": 3451,
-        "sha256": "689f868f013368a7a50b1cb29d284bf0592bd0bdf15cf64e0f7906243b5cad95",
-        "retrieved_on": "2026-07-16",
+        "bytes": 4185,
+        "sha256": "e8c8eaef8ccb9e0cf7ec7a5ec0438ed934bdf545a18a7a876e399d04b2fbcc80",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "API keys must be created by a workspace Admin",
           "API keys provide read/write access to sensitive Hightouch resources",
@@ -93,7 +93,8 @@
       "read": 19
     },
     "approval_counts": {
-      "always": 38
+      "always": 19,
+      "never": 19
     },
     "idempotency_counts": {
       "idempotent": 6,
@@ -238,12 +239,12 @@
       {
         "severity": "high",
         "finding": "Hightouch API keys must be Admin-created and provide read/write access to sensitive workspace resources.",
-        "resolution": "Uses one encrypted bearer connection requirement, exposes no credential operation arguments, requires approval on every operation, and keeps provider outputs private."
+        "resolution": "Uses one encrypted bearer connection requirement, exposes no credential operation arguments, requires approval on every mutation, and keeps provider outputs private."
       },
       {
         "severity": "high",
         "finding": "Destination and source contracts can return connection configuration, while model contracts can return compiled or raw SQL.",
-        "resolution": "Retains the approval-gated capabilities but suppresses all six sensitive GETs from bundled rendering workflows and labels all twelve affected responses as sensitive."
+        "resolution": "Retains the capabilities admitted but suppresses all six sensitive GETs from bundled rendering workflows and labels all twelve affected responses as sensitive."
       },
       {
         "severity": "high",
@@ -1702,7 +1703,7 @@
       "path": "/campaigns/{campaignId}/sends/{sendId}",
       "namespace": "campaign",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -1765,7 +1766,7 @@
       "path": "/decision-engine/flow/{flowId}",
       "namespace": "decision_engine",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -1813,7 +1814,7 @@
       "path": "/decision-engine/flow/{flowId}/messages",
       "namespace": "decision_engine",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -1904,7 +1905,7 @@
       "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
       "namespace": "decision_engine",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -1967,7 +1968,7 @@
       "path": "/decision-engine/flows",
       "namespace": "decision_engine",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2073,7 +2074,7 @@
       "path": "/destinations",
       "namespace": "destination",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2194,7 +2195,7 @@
       "path": "/destinations/{destinationId}",
       "namespace": "destination",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2242,7 +2243,7 @@
       "path": "/events/contracts",
       "namespace": "event_contract",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2348,7 +2349,7 @@
       "path": "/events/contracts/{contractId}",
       "namespace": "event_contract",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2396,7 +2397,7 @@
       "path": "/idr/{graphId}/reprocess-status/{requestId}",
       "namespace": "identity_resolution",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2459,7 +2460,7 @@
       "path": "/idr/{graphId}/runs",
       "namespace": "identity_resolution",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2610,7 +2611,7 @@
       "path": "/models",
       "namespace": "model",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2746,7 +2747,7 @@
       "path": "/models/{modelId}",
       "namespace": "model",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2794,7 +2795,7 @@
       "path": "/sources",
       "namespace": "source",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2915,7 +2916,7 @@
       "path": "/sources/{sourceId}",
       "namespace": "source",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -2963,7 +2964,7 @@
       "path": "/sync-sequences/runs/{syncSequenceRunId}",
       "namespace": "sync_sequence",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -3011,7 +3012,7 @@
       "path": "/syncs",
       "namespace": "sync",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -3162,7 +3163,7 @@
       "path": "/syncs/{syncId}",
       "namespace": "sync",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -3210,7 +3211,7 @@
       "path": "/syncs/{syncId}/runs",
       "namespace": "sync",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {

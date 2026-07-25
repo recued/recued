@@ -19,11 +19,18 @@
  *  the engine pause/resume path + the gateway preflight flow are later
  *  D-157 P1 slices.
  *
- *  Spec: docs/d-157-spec.md § N.3 / A.2 / I-4 / I-6.
+ *  Spec: D-157 § N.3 / A.2 / I-4 / I-6.
  */
 
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
+import {
+  isOperationApproval,
+  type AuthorizationProvenance,
+  type OperationApproval,
+} from './ingredient-catalog.js';
 import type { PiiLedgerStoreSnapshot } from './pii-alias.js';
+import type { PreflightOverrideOffer } from './preflight-signal.js';
+import { isOperationSpecHash } from './owner-operation-override.js';
 
 // ────────────────────────────────────────────────────────────────
 // Checkpoint — the resumable state of a preflight-gated run
@@ -51,6 +58,20 @@ export interface PreflightApprovedTarget {
   /** Connection record name the operation dispatched against (catalog gate
    *  only). */
   connection_name?: string;
+}
+
+/** D-211 Slice 2 — durable presentation/action metadata for an approval hold.
+ * The original ask normally persists its own payload; this checkpoint copy
+ * keeps the same affordance and clamp warning when boot recovery must re-raise
+ * an ask after notification delivery failed. */
+export interface PreflightCheckpointContext {
+  tool_slug?: string;
+  connection_name?: string;
+  risk_tier?: string;
+  reason?: string;
+  owner_override_offer?: PreflightOverrideOffer;
+  approval_clamped_from?: OperationApproval;
+  authorization_provenance?: AuthorizationProvenance;
 }
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
@@ -162,7 +183,7 @@ export interface RawOpCheckpoint {
  *    `checkpoint_id` ↔ `ask_id` link on the run anchor (the recipe-run
  *    `AuditEntry`), not on the checkpoint (§ N.3 step 3).
  *
- *  Spec: docs/d-157-spec.md § A.2 / N.3. */
+ *  Spec: D-157 § A.2 / N.3. */
 export interface Checkpoint {
   /** UUID — the checkpoint's stable identity, engine-minted when the
    *  preflight gate fires. The gateway's preflight `notification.ask`
@@ -236,6 +257,8 @@ export interface Checkpoint {
    *  operation / connection axis, stays position-bound); the real catalog
    *  pause path always sets it. */
   approved_target?: PreflightApprovedTarget;
+  /** D-211 — presentation/action metadata used by boot-time ask recovery. */
+  preflight_context?: PreflightCheckpointContext;
   /** Snapshot of the `step.*` namespace (`NamespaceStores['step']`) at
    *  the moment the gate fired — step id → that step's output. The run
    *  state a fresh execution re-seeds from. `{}` when the gate fires
@@ -298,7 +321,7 @@ export interface Checkpoint {
    *  Absent/`false` on every non-quality ask ⇒ no signal — behaviour-preserving.
    *  Never load-bearing for resume: a tampered/absent value only affects whether
    *  a best-effort learner signal is recorded, never what dispatches. Spec:
-   *  docs/d-202-quality-gate-seams.md §3 (S4). */
+   *  D-202 §3 (S4). */
   quality_relevant?: boolean;
   /** Checkpoint mint time — unix epoch ms. The ordering key for
    *  `CheckpointStore.list` and the cursor for D-157's optional,
@@ -419,6 +442,51 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
     const t = v.approved_target as Record<string, unknown>;
     for (const f of ['ingredient_slug', 'operation_id', 'connection_name'] as const) {
       if (t[f] !== undefined && typeof t[f] !== 'string') return false;
+    }
+  }
+  if (v.preflight_context !== undefined) {
+    if (
+      typeof v.preflight_context !== 'object'
+      || v.preflight_context === null
+      || Array.isArray(v.preflight_context)
+    ) return false;
+    const c = v.preflight_context as Record<string, unknown>;
+    for (const f of ['tool_slug', 'connection_name', 'risk_tier', 'reason'] as const) {
+      if (c[f] !== undefined && typeof c[f] !== 'string') return false;
+    }
+    if (
+      c.approval_clamped_from !== undefined
+      && !isOperationApproval(c.approval_clamped_from)
+    ) return false;
+    if (c.authorization_provenance !== undefined) {
+      if (
+        typeof c.authorization_provenance !== 'object'
+        || c.authorization_provenance === null
+        || Array.isArray(c.authorization_provenance)
+      ) return false;
+      const p = c.authorization_provenance as Record<string, unknown>;
+      if (!isOperationApproval(p.pre_lift_approval)) return false;
+      if (
+        p.lift_reason !== undefined
+        && p.lift_reason !== 'review_send'
+        && p.lift_reason !== 'review_commitment'
+        && p.lift_reason !== 'quality'
+      ) return false;
+    }
+    if (c.owner_override_offer !== undefined) {
+      if (
+        typeof c.owner_override_offer !== 'object'
+        || c.owner_override_offer === null
+        || Array.isArray(c.owner_override_offer)
+      ) return false;
+      const o = c.owner_override_offer as Record<string, unknown>;
+      if (typeof o.ingredient_id !== 'string' || o.ingredient_id.length === 0) return false;
+      if (typeof o.operation_id !== 'string' || o.operation_id.length === 0) return false;
+      if (!isOperationSpecHash(o.op_hash)) return false;
+      if (!(
+        (o.kind === 'never_ask' && o.approval === 'never')
+        || (o.kind === 'relax_to_ask' && o.approval === 'ask')
+      )) return false;
     }
   }
   if (

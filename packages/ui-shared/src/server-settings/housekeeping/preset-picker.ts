@@ -5,7 +5,7 @@
  *  power users edit it via the config-rpc directly per the spec
  *  (§Constants).
  *
- *  Spec: `docs/d-123-spec.md` §5.2. */
+ *  Spec: D-123 §5.2. */
 
 import type { HousekeepingPreset } from '@recued/contracts';
 import { e } from '../../template.js';

@@ -10,7 +10,7 @@
  *  attendees / agendas are never inputs — they were already dropped
  *  upstream at `computeFreeWindows` per the redacted-packet substrate.
  *
- *  Spec: docs/d-149-spec.md § A.5.2 + § A.18.6. */
+ *  Spec: D-149 § A.5.2 + § A.18.6. */
 
 import type {
   FreeWindow,

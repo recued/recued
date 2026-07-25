@@ -12,7 +12,7 @@
  *  `null` from this helper — the dispatcher then surfaces an error
  *  instead of wrapping with a misleading suggestion.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 5. */
+ *  See: D-164 § 5. */
 
 import type { EnrichmentDeclaration, SuggestDirective } from '@recued/contracts';
 

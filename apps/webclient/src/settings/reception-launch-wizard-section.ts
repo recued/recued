@@ -40,7 +40,7 @@
  *  configs (mirroring the modal `openLaunchWizard`, which passes no
  *  `initialConfigs`).
  *
- *  Design record: `recued-project/handovers/webclient-ia-treemap.md` §9
+ *  Design record: internal design notes §9
  *  + Review log R19 / R19.1. */
 
 import type { LaunchWizardStepId } from '@recued/contracts';

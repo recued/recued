@@ -18,6 +18,7 @@ import type {
   WebChatTab,
 } from '@recued/contracts';
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
+import { RECALL_SEARCH_TOOL_NAME } from '../chat-recall-search-tool.js';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventBus } from '../events/bus.js';
 import type { KeyManager } from '../key-manager.js';
@@ -135,6 +136,10 @@ const expectedBundleKeys = [
   'internalRegistry',
   'orchestrator',
   'chatDeps',
+  // D-214 — retained for plan-cancel and approval-expiry finalization.
+  'executionCaseLifecycle',
+  // D-214 — deterministic post-write verification evidence producer.
+  'executionCaseVerificationRecorder',
   // D-177 rule 5 slice B — per-session forwarded-sender candidate index
   'forwardedSenderIndex',
 ].sort();
@@ -153,6 +158,12 @@ const expectedChatDepsKeys = [
   'catalogProvider',
   // D-167 P5 S4 — the session-delete PII alias-ledger purge callback.
   'dropSessionPiiLedger',
+  // D-214 — source/privacy deletion cascades through derived case rows.
+  'deleteSessionExecutionCases',
+  'executionCaseFeedbackRecorder',
+  'executionCaseDiagnostics',
+  'executionCaseLifecycle',
+  'executionSpanAnchorStore',
 ].sort();
 
 const annotationValue = (
@@ -262,6 +273,32 @@ describe('composeChatOrchestrator', () => {
         dispatchTool: expect.any(Function),
       }),
     }));
+    expect(bundle.executionCaseVerificationRecorder).toEqual(expect.objectContaining({
+      record: expect.any(Function),
+    }));
+  });
+
+  it('injects recall.search only into the cooperative chat registry, never the raw MCP or grant catalog', async () => {
+    const { compose, createChatOrchestratorMock } =
+      await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps());
+    const orchestratorDeps = createChatOrchestratorMock.mock.calls[0]![0] as {
+      registry: ChatOrchestratorDeps['registry'];
+    };
+
+    expect(orchestratorDeps.registry.getByName(RECALL_SEARCH_TOOL_NAME)).toMatchObject({
+      name: RECALL_SEARCH_TOOL_NAME,
+      tier: 1,
+      classification: 'read',
+      concurrency_safe: false,
+    });
+    expect(bundle.internalRegistry.getByName(RECALL_SEARCH_TOOL_NAME)).toBeNull();
+    expect(bundle.internalRegistry.list().map((entry) => entry.name)).not.toContain(
+      RECALL_SEARCH_TOOL_NAME,
+    );
+    expect(
+      bundle.chatDeps.catalogProvider?.().map((entry) => entry.name) ?? [],
+    ).not.toContain(RECALL_SEARCH_TOOL_NAME);
   });
 
   it('creates every chat SQLite table when composed against an empty in-memory db', () => {
@@ -346,7 +383,7 @@ describe('composeChatOrchestrator', () => {
   });
 
   it('uses one shared plan approval store for orchestrator gating and chatDeps resolution', async () => {
-    const { bundle } = composeHarness();
+    const { bundle, deps } = composeHarness();
     bundle.connectionMcpStore.setAnnotation({
       value: annotationValue('exa', 'index', 'write'),
       now: 20,
@@ -363,7 +400,10 @@ describe('composeChatOrchestrator', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('awaiting_approval');
-    const pending = bundle.chatDeps.planApprovalStore?.listPending('sess-plan') ?? [];
+    const pending = await (
+      bundle.chatDeps.planApprovalStore?.listPending('sess-plan')
+      ?? []
+    );
     expect(pending).toHaveLength(1);
     expect(pending[0]).toEqual(expect.objectContaining({
       session_id: 'sess-plan',
@@ -371,6 +411,11 @@ describe('composeChatOrchestrator', () => {
       tool: 'exa.index',
       classification: 'write',
     }));
+    expect(
+      deps.db.prepare(`
+        SELECT status FROM chat_plans WHERE session_id = ?
+      `).get('sess-plan'),
+    ).toEqual({ status: 'proposed' });
   });
 
   it('uses the dbless plaintext chat-store fallback when keys is undefined', async () => {
@@ -625,6 +670,89 @@ describe('composeChatOrchestrator', () => {
       'auditLog',
     ].sort());
     expect(bundle.chatDeps.auditLog).toBe(auditLog);
+  });
+
+  it('wires owner-only D-214 aggregate diagnostics without raw rows', async () => {
+    const { bundle } = composeHarness();
+    const diagnostics = await bundle.chatDeps.executionCaseDiagnostics?.() as {
+      active_experiment: boolean;
+      compiler: { materialized_cases: number };
+    };
+    expect(diagnostics).toMatchObject({
+      active_experiment: false,
+      compiler: { materialized_cases: 0 },
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain('root_request');
+    expect(JSON.stringify(diagnostics)).not.toContain('payload_encrypted');
+  });
+
+  it('activates composed D-214 augmentation for a real owner-chat turn', async () => {
+    const experimentEnv: Record<string, string> = {
+      RECUED_D214_EXPERIMENT_ID: 'composed-augmentation',
+      RECUED_D214_EXPERIMENT_SURFACE: 'request_augmentation',
+      RECUED_D214_EXPERIMENT_START_MS: '0',
+      RECUED_D214_EXPERIMENT_END_MS: '9999999999999',
+      RECUED_D214_EXPERIMENT_MAX_ROOTS: '10',
+      RECUED_D214_EXPERIMENT_MAX_CRITIQUES_PER_ROOT: '1',
+      RECUED_D214_EXPERIMENT_MAX_EVIDENCE: '3',
+      RECUED_D214_EXPERIMENT_MIN_RELEVANCE_SCORE: '1',
+      RECUED_D214_EXPERIMENT_ELIGIBLE_POPULATION:
+        'in-scope rooted turns reaching request augmentation',
+      RECUED_D214_EXPERIMENT_DECISION_RULE: 'composition activation test',
+      RECUED_D214_EXPERIMENT_PLANNER_FINGERPRINT: 'planner-test',
+      RECUED_D214_EXPERIMENT_PROMPT_FINGERPRINT: 'prompt-test',
+      RECUED_D214_EXPERIMENT_RETRIEVAL_FINGERPRINT: 'retrieval-test',
+      RECUED_D214_EXPERIMENT_POLICY_FINGERPRINT: 'policy-test',
+      RECUED_D214_EXPERIMENT_PRIMARY_AXES: 'verified_success',
+      RECUED_D214_EXPERIMENT_MATERIAL_HARM_BOUNDS:
+        '{"execution_failure":0}',
+      RECUED_D214_EXPERIMENT_SECRET: 'composition-secret',
+    };
+    const prior = new Map(
+      Object.keys(experimentEnv).map((key) => [key, process.env[key]]),
+    );
+    for (const [key, value] of Object.entries(experimentEnv)) {
+      process.env[key] = value;
+    }
+    cleanups.push(() => {
+      for (const [key, value] of prior) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    const db = makeDb();
+    const { bundle } = composeHarness({
+      db,
+      llmConfig: undefined,
+    });
+    bundle.chatStore.createSession({ id: 'd214-live-session', now: 1 });
+
+    await bundle.orchestrator.runTurn({
+      session_id: 'd214-live-session',
+      message: 'Summarize the latest context',
+      picker_state: { current: 'self' },
+    });
+
+    const intervention = db.prepare(`
+      SELECT experiment_id, governing_contract_id, principal_key, surface
+        FROM case_interventions
+    `).get() as {
+      experiment_id: string;
+      governing_contract_id: string;
+      principal_key: string;
+      surface: string;
+    } | undefined;
+    expect(intervention).toEqual({
+      experiment_id: 'composed-augmentation',
+      governing_contract_id: 'user_self',
+      principal_key: 'user_self',
+      surface: 'request_augmentation',
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM execution_span_anchors
+       WHERE session_id = 'd214-live-session'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('uses a conditional auditLog spread for orchestrator construction', async () => {

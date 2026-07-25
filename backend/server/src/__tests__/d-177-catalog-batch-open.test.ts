@@ -174,6 +174,7 @@ const pausedResult = (
     tool_slug: TOOL_SLUG,
     risk_tier: 'write',
     reason: 'write tier requires approval',
+    authorization_provenance: { pre_lift_approval: 'ask' },
     ...awaitingOverrides,
   },
 });
@@ -359,6 +360,7 @@ describe('handleExecute D-177 catalog session-grant closures', () => {
       operation_id: CATALOG_OPERATION_ID,
       connection_name: CONNECTION,
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: 'arg-shape-1',
       canonical_payload_hash: 'payload-1',
       open_pinned_projection_hash: 'h_open',

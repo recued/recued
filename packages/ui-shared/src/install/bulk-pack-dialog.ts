@@ -113,7 +113,7 @@ export interface BulkPackDialogState {
   /** D-179 P5b — registered file slug(s) the pack's recipes need (the
    *  queue-sweeper drop dir), aggregated + deduped across recipes.
    *  Rendered as a pre-install "File access needed" disclosure
-   *  prompting registration (Data → Files). Omitted / empty → the
+   *  prompting registration (Connections → Files). Omitted / empty → the
    *  section is suppressed. */
   required_file_slugs?: ReadonlyArray<BulkPackFileSlugNeed>;
   /** True when the resolver returned ready=true AND every recipe
@@ -291,7 +291,7 @@ export const renderBulkPackDialog = (state: BulkPackDialogState): string => {
     : `
         <div class="bulk-pack-section">
           <h3>File access needed</h3>
-          <p class="bulk-pack-file-slugs-note">These recipes read or write a registered directory. Register it under Data &rarr; Files, then pick its slug in the recipe settings after install.</p>
+          <p class="bulk-pack-file-slugs-note">These recipes read or write a registered file collection. Register it under Connections &rarr; Files, then pick its slug in the recipe settings after install.</p>
           <ul class="bulk-pack-file-slugs">${fileSlugNeeds.map(renderFileSlugNeedRow).join('')}</ul>
         </div>
       `;

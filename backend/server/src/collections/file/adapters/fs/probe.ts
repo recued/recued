@@ -3,10 +3,10 @@
  *  Runs three cheap checks against the configured root:
  *    1. `stat` — directory exists + readable.
  *    2. Write-read-delete a probe file (`.recued-caps-probe-<uuid>`).
- *    3. Derive `watch` = 'realtime' when fs.watch (recursive) is
- *       supported on the platform; otherwise 'poll' (not implemented
- *       in v1, but the caps shape reflects what the adapter could
- *       honor if the poll path existed).
+ *    3. Attempt a short-lived recursive `fs.watch` subscription.
+ *       Report `realtime` only when it attaches; otherwise `none`.
+ *       Filesystem polling is deliberately not an automatic fallback:
+ *       the user can request a bounded one-shot rescan instead.
  *
  *  Probe failures map to caps refusals:
  *    - directory unreadable     → throw (config error, caller surfaces 422).
@@ -17,7 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { access, stat, writeFile, readFile, unlink } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import type { ProbedCaps } from '../../caps.js';
 
@@ -27,8 +27,43 @@ export interface FsProbeConfig {
   path: string;
 }
 
+export interface FsProbeDeps {
+  /** Test seam for deterministic supported/unsupported coverage. Production
+   *  performs a real short-lived recursive watcher attachment. */
+  probeRealtimeWatch?: (path: string) => Promise<boolean>;
+}
+
+/** `fs.watch` can reject synchronously or emit an immediate error after the
+ *  handle is created. Keep the probe alive for one event-loop turn to catch
+ *  both shapes, then close it without retaining any process state. */
+const probeRealtimeWatch = async (path: string): Promise<boolean> =>
+  new Promise((resolveProbe) => {
+    let watcher: FSWatcher | undefined;
+    let settled = false;
+
+    const finish = (supported: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (watcher) {
+        try { watcher.close(); } catch { /* best-effort probe cleanup */ }
+        watcher.removeListener('error', onError);
+      }
+      resolveProbe(supported);
+    };
+    const onError = (): void => finish(false);
+
+    try {
+      watcher = watch(path, { recursive: true }, () => {});
+      watcher.once('error', onError);
+      setImmediate(() => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
+
 export const probeFsCaps = async (
   config: FsProbeConfig,
+  deps: FsProbeDeps = {},
 ): Promise<ProbedCaps> => {
   if (!config.path || typeof config.path !== 'string') {
     throw new Error('fs adapter: config.path is required');
@@ -64,14 +99,17 @@ export const probeFsCaps = async (
     }
   }
 
+  const realtimeWatch = await (
+    deps.probeRealtimeWatch ?? probeRealtimeWatch
+  )(config.path);
+
   return {
     read: 'yes',
     write: canWrite ? 'yes' : 'no',
     delete: canWrite && canDelete ? 'yes' : 'no',
-    // fs.watch({ recursive: true }) is available on macOS / Windows /
-    // Linux (inotify) under Node 20+. We assume realtime; a future
-    // poll-fallback commit can downgrade.
-    watch: 'realtime',
+    // Do not advertise a fallback that does not exist. A `none` instance is
+    // still readable/writable and can be refreshed with an explicit resync.
+    watch: realtimeWatch ? 'realtime' : 'none',
     mirror: 'optional',
     auth: 'none',
     path_style: 'posix',

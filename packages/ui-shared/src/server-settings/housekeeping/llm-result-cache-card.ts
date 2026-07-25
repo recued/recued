@@ -49,7 +49,7 @@
  *  an empty cache; surfacing it would render an enabled control whose
  *  rpc is a no-op + waste a click.
  *
- *  Spec: docs/d-145-spec.md § A.7.10 + PA11 widening note. */
+ *  Spec: D-145 § A.7.10 + PA11 widening note. */
 
 import { e } from '../../template.js';
 import { button } from '../../primitives/button.js';

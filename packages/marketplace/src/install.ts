@@ -31,7 +31,7 @@
  *  catch-up flows through the adapter path (D-124 P2.1) and reactive
  *  recipes accumulate forward (Model A; spec §"Backfill model").
  *
- *  Spec: docs/d-122-spec.md §"Atomic install" + Phase 4.
+ *  Spec: D-122 §"Atomic install" + Phase 4.
  */
 
 import {

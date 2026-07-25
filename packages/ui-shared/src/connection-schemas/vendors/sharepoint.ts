@@ -28,7 +28,7 @@
  *  metadata mirror to a subtree — applied CLIENT-SIDE after the whole-drive walk
  *  (Graph's `/delta` feed has no server-side path filter), exactly as OneDrive.
  *
- *  Spec: `docs/d-192-file-source-family.md`; mirrors `onedrive.ts`. */
+ *  Spec: D-192; mirrors `onedrive.ts`. */
 
 import {
   MICROSOFT_GRAPH_API_BASE,
@@ -82,7 +82,8 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     help:
       'Optional path glob to limit which files are mirrored — e.g. '
       + '`Shared Documents/**` (a folder) or `**/*.pdf` (a pattern). Leave blank '
-      + 'to mirror the whole library. Metadata only — file contents are never fetched.',
+      + 'to mirror the whole library. Sync mirrors metadata only; contents are '
+      + 'fetched lazily only when you explicitly read a file.',
   },
   // The EASY path (D-192 CORE #5e) — paste the site URL and the server resolves
   // the default document library's Graph drive id at enrollment (one Graph call
@@ -186,7 +187,7 @@ export const sharepointSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'SharePoint',
   description:
-    'SharePoint document libraries — mirror file/folder metadata into your warehouse via Microsoft Graph (bytes never fetched). Paste your site URL and Recued resolves the document library automatically. OAuth 2.0 via your own Microsoft Entra app.',
+    'SharePoint document libraries — mirror file/folder metadata into your warehouse via Microsoft Graph; file bytes stay remote and are fetched only for an explicit read. Paste your site URL and Recued resolves the document library automatically. OAuth 2.0 via your own Microsoft Entra app.',
   fields: SHAREPOINT_FIELDS,
   initialValues: SHAREPOINT_SCHEMA_INITIAL_VALUES,
 };

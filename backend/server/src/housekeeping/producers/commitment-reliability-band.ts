@@ -58,7 +58,7 @@
  *  declaration's `invalidation_triggers`. Pure SQL + arithmetic — zero
  *  token cost, idle-eligible.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 754) + A.7.2 + A.7.3 +
+ *  Spec: D-145 §§ A.7.1 (line 754) + A.7.2 + A.7.3 +
  *        A.7.5 + A.7.6 #2 +
  *        `ENRICHMENT_REGISTRY.commitment_reliability_band` +
  *        `packages/contracts/src/enrichment-declarations/commitment-reliability-band.ts`. */

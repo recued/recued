@@ -25,7 +25,7 @@
  *  All statements are idempotent (`IF NOT EXISTS`) — safe to call on
  *  every boot and from migration tests.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import type Database from 'better-sqlite3';
@@ -333,7 +333,7 @@ export const ensureLinkConfidenceSchema = (db: Database.Database): void => {
  *  collection is created — the Gateway dispatch-outbox (slice 3b.3) is
  *  the first writer.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate. */
+ *  Spec: D-153 § Commit substrate. */
 export const ensureCommitSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE INDEX IF NOT EXISTS commits_status_idx
@@ -390,7 +390,7 @@ export const ensureCommitSchema = (db: Database.Database): void => {
  *  collection is created — exactly the slice-3a-ships /
  *  slice-3b.1-calls split `ensureCommitSchema` followed.
  *
- *  Spec: docs/d-157-spec.md § A.2 / N.3. */
+ *  Spec: D-157 § A.2 / N.3. */
 export const ensureCheckpointSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE INDEX IF NOT EXISTS checkpoints_run_id_idx

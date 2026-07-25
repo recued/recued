@@ -46,7 +46,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // into its own `audit` domain: run history is not the knowledge pool.
   memory: 12,
   audit: 1,
-  data: 17,
+  data: 18, // D-210 closeout — + form-response-list
   webhook: 1,
   storage: 18,
   schedule: 1,
@@ -189,6 +189,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.data.enrichment.upsert|data|enrichment-upsert|write',
       'core.data.enrichment.vector-search|data|(native)|read',
       'core.data.form-response.get|data|form-response-get|read',
+      'core.data.form-response.list|data|form-response-list|read',
       // D-210 A.8 slice 2 — the lifecycle write. `write`, not `read`: it moves
       // a visitor's state and must sit behind the same approval a write gets.
       'core.data.form-response.set-state|data|form-response-set-state|write',

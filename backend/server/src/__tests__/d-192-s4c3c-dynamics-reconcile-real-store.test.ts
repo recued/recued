@@ -10,7 +10,7 @@
  *  suites) and its contact-identity leg is a documented follow-up (the leaf's
  *  contact-redirect is a no-op until the live contact store is threaded).
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c3). */
+ *  Spec: D-192 (S4c3). */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

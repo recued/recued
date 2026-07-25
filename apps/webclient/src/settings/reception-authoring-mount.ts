@@ -65,7 +65,7 @@
  *  field edit after a failed submit clears the stale validation summary
  *  and re-renders once (re-enabling the disabled submit button).
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX) + § A.5.1-A.5.6
+ *  Spec: D-149 § A.9 (Settings UX) + § A.5.1-A.5.6
  *  (per-kind config contracts) + § A.3 (preview-hash-gated create). */
 
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';

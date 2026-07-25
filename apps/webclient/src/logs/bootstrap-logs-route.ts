@@ -36,6 +36,8 @@ import type {
   PolicyResult,
   RecipeError,
   RunAnchorStatus,
+  RunApprovalOutcome,
+  RunDegradation,
   RunDetail,
   RunFeedRow,
   RunGatewayCallTraceEntry,
@@ -50,23 +52,40 @@ import {
   ACTORS,
   RUN_ANCHOR_STATUSES,
   isCliFailureDetail,
+  parseTimelineEntityId,
 } from '@recued/contracts';
 
 import { RefPicker } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
-import { serializeShellRoute } from '../shell/route.js';
+import {
+  serializeDataEntityVerificationAddress,
+  serializeChatPlanAddress,
+  serializeLogsRunAddress,
+  serializeShellRoute,
+  serializeSourceRecordVerificationAddress,
+  type ChatPlanAddress,
+  type DataEntityVerificationTab,
+  type DataVerificationRelationship,
+  type LogsRunAddress,
+  type SourceRecordDataTab,
+} from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const LOGS_ROUTE_STYLES_MARKER = 'data-recued-logs-route-styles';
 export const LOGS_ROUTE_HOST_ATTR = 'data-recued-logs-route';
 export const LOGS_ROUTE_HEADING_ATTR = 'data-recued-logs-route-heading';
+export const LOGS_ROUTE_CHAT_RETURN_ATTR =
+  'data-recued-logs-route-chat-return';
 export const LOGS_ROUTE_FILTER_ATTR = 'data-recued-logs-filter';
 export const LOGS_ROUTE_ROW_ATTR = 'data-recued-logs-row';
 export const LOGS_ROUTE_STATUS_ATTR = 'data-recued-logs-status';
 export const LOGS_ROUTE_POLICY_ATTR = 'data-recued-logs-policy';
 export const LOGS_ROUTE_LINK_ATTR = 'data-recued-logs-link';
 export const LOGS_ROUTE_DETAIL_ATTR = 'data-recued-logs-detail';
+export const LOGS_ROUTE_OUTCOME_ATTR = 'data-recued-logs-outcome';
+export const LOGS_ROUTE_AFFECTED_ITEMS_ATTR =
+  'data-recued-logs-affected-items';
 export const LOGS_ROUTE_GATEWAY_TRACE_ATTR = 'data-recued-logs-gateway-trace';
 export const LOGS_ROUTE_DEGRADED_ATTR = 'data-recued-logs-degraded';
 export const LOGS_ROUTE_REDACTED_IO_ATTR = 'data-recued-logs-redacted-io';
@@ -202,6 +221,9 @@ export interface BootstrapLogsRouteOptions {
   /** Backs the Recipe filter combobox (★ ref-picker). */
   recipeNamesCaller?: RunsRecipeNamesCaller;
   initialRunId?: string;
+  /** Originating reviewed Chat action for an exact-run drill-down. Bound to
+   * `initialRunId`; selecting another run intentionally drops this context. */
+  chatReturn?: ChatPlanAddress;
   /** R24 follow-on — pre-select the Recipe filter from a `#logs/recipe/<recipe_id>`
    *  deep link (the recipe detail's "View runs in Logs" link), so the History
    *  view opens already scoped to that recipe's runs. Seeds `filters.recipe_id`;
@@ -224,6 +246,53 @@ export interface RunsLoadErrors {
   active?: string;
   /** D-186 Slice C — the "Active passes" list error. */
   grants?: string;
+}
+
+export type RunOutcomeTone =
+  | 'positive'
+  | 'attention'
+  | 'danger'
+  | 'neutral';
+
+export interface RunOutcomeAction {
+  readonly href: string;
+  readonly label: string;
+}
+
+export interface RunRecordWarning {
+  readonly code: RunDegradation;
+  readonly message: string;
+}
+
+export interface RunOutcomeSummary {
+  readonly tone: RunOutcomeTone;
+  readonly title: string;
+  readonly detail: string;
+  readonly nextStep?: string;
+  readonly action?: RunOutcomeAction;
+  readonly recordWarnings: ReadonlyArray<RunRecordWarning>;
+}
+
+export type RunAffectedItemRelationship =
+  | 'involved'
+  | 'derived'
+  | 'action';
+
+export type RunAffectedItemResolution =
+  | 'exact'
+  | 'resolve-source'
+  | 'fallback';
+
+export interface RunAffectedItem {
+  readonly entityId: string;
+  readonly collection: string;
+  readonly recordId: string;
+  readonly title: string;
+  readonly relationship: RunAffectedItemRelationship;
+  readonly relationshipLabel: string;
+  readonly resolution: RunAffectedItemResolution;
+  readonly href: string;
+  readonly actionLabel: string;
 }
 
 export interface RunsRoute {
@@ -276,11 +345,50 @@ const LOGS_ROUTE_STYLES = `
   font-size: 20px;
   font-weight: 650;
 }
+[${LOGS_ROUTE_CHAT_RETURN_ATTR}] {
+  min-height: 44px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a {
+  min-height: 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-weight: 680;
+  text-decoration: none;
+}
+[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a:hover,
+[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a:focus-visible {
+  background: var(--accent-weak);
+}
 [${LOGS_ROUTE_HOST_ATTR}] a,
 [${LOGS_ROUTE_HOST_ATTR}] .logs-inline-link {
   color: var(--accent);
   font-size: 13px;
   text-decoration: none;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-inline-link,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta a {
+  box-sizing: border-box;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-layout {
   display: grid;
@@ -389,6 +497,8 @@ const LOGS_ROUTE_STYLES = `
   white-space: nowrap;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-row-open {
+  min-width: 32px;
+  min-height: 32px;
   padding: 2px 9px;
   font-size: 14px;
   line-height: 1.2;
@@ -456,6 +566,143 @@ const LOGS_ROUTE_STYLES = `
   margin-top: 14px;
   font-size: 13px;
 }
+[${LOGS_ROUTE_OUTCOME_ATTR}] {
+  margin: 10px 0 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg);
+  border-radius: 7px;
+  background: var(--surface-sunk, var(--surface));
+}
+[${LOGS_ROUTE_OUTCOME_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+[${LOGS_ROUTE_OUTCOME_ATTR}][data-tone="attention"] {
+  border-left-color: var(--accent);
+}
+[${LOGS_ROUTE_OUTCOME_ATTR}][data-tone="danger"] {
+  border-left-color: var(--danger);
+}
+[${LOGS_ROUTE_OUTCOME_ATTR}][data-tone="neutral"] {
+  border-left-color: var(--muted);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-label {
+  margin: 0 0 3px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+[${LOGS_ROUTE_OUTCOME_ATTR}] .logs-outcome-title {
+  margin: 0;
+  color: var(--fg-strong, var(--fg));
+  font-size: 16px;
+  line-height: 1.3;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-copy,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-next {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-next {
+  color: var(--fg);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-action {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  margin-top: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 680;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-action:hover,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-action:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] {
+  margin: 0 0 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] h3 {
+  margin: 0;
+  font-size: 14px;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-intro,
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-empty {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-copy {
+  min-width: 0;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-relationship {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-reference,
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-fallback {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-action {
+  box-sizing: border-box;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 680;
+  text-align: center;
+}
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-action:hover,
+[${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-action:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
 [${LOGS_ROUTE_HOST_ATTR}] .logs-detail-list {
   display: grid;
   gap: 8px;
@@ -480,6 +727,27 @@ const LOGS_ROUTE_STYLES = `
   border-left: 2px solid var(--accent);
   padding-left: 8px;
   font-weight: 650;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-record-warnings {
+  margin-top: 9px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-record-warnings strong {
+  font-weight: 680;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-record-warnings ul {
+  display: grid;
+  gap: 2px;
+  margin: 3px 0 0;
+  padding-left: 18px;
+  font-weight: 400;
+}
+@media (max-width: 560px) {
+  [${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] .logs-affected-action {
+    width: 100%;
+  }
 }
 [${LOGS_ROUTE_ERROR_ATTR}] {
   border-left: 2px solid var(--danger);
@@ -781,6 +1049,113 @@ const CLI_FAILURE_LABELS: Record<CliFailureReason, string> = {
   bad_output: 'bad tool output',
 };
 
+const DEGRADATION_MESSAGES: Record<RunDegradation, string> = {
+  audit_unwritten: 'Part of this run’s history could not be saved.',
+  provenance_incomplete:
+    'Some links to records affected by this run are missing.',
+};
+
+const APPROVAL_OUTCOME_LABELS: Record<RunApprovalOutcome, string> = {
+  allow: 'Approved',
+  deny: 'Denied',
+  edit: 'Edited',
+  dismiss: 'Dismissed',
+  dismiss_unseen: 'Dismissed without review',
+};
+
+type RunOutcomeCore = Omit<RunOutcomeSummary, 'recordWarnings'>;
+
+const FAILED_CATEGORY_OUTCOMES: Record<
+  HeavyOpErrorCategory,
+  RunOutcomeCore
+> = {
+  timeout: {
+    tone: 'danger',
+    title: 'Run timed out',
+    detail:
+      'The run reached its time limit before completing. Earlier steps may still have made changes.',
+    nextStep: 'Check the affected app or data before trying again.',
+  },
+  oom: {
+    tone: 'danger',
+    title: 'Run ran out of memory',
+    detail:
+      'The run stopped after exhausting available memory. Earlier steps may still have made changes.',
+    nextStep: 'Check the affected app or data before trying again.',
+  },
+  crashed: {
+    tone: 'danger',
+    title: 'Run crashed',
+    detail:
+      'The run stopped unexpectedly before completing. Earlier steps may still have made changes.',
+    nextStep: 'Check the affected app or data before trying again.',
+  },
+  stalled: {
+    tone: 'danger',
+    title: 'Run stalled',
+    detail:
+      'The run stopped because it was no longer making progress. Earlier steps may still have made changes.',
+    nextStep: 'Check the affected app or data before trying again.',
+  },
+  killed: {
+    tone: 'danger',
+    title: 'Run was stopped',
+    detail:
+      'The run was stopped while an operation was still active. Earlier steps may still have made changes.',
+    nextStep: 'Check the affected app or data before trying again.',
+  },
+  cancelled_before_dispatch: {
+    tone: 'neutral',
+    title: 'Queued action was cancelled',
+    detail:
+      'A queued step was cancelled before it was sent, so the run did not complete. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the activity and any affected app or data before starting a new run.',
+  },
+};
+
+const CLI_FAILURE_OUTCOMES: Record<CliFailureReason, RunOutcomeCore> = {
+  not_found: {
+    tone: 'danger',
+    title: 'Required tool was not found',
+    detail:
+      'The run could not start a required local tool and did not complete. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the tool error below, then install or configure the missing tool.',
+  },
+  spawn_error: {
+    tone: 'danger',
+    title: 'Required tool could not start',
+    detail:
+      'The run could not start a required local tool and did not complete. Earlier steps may still have made changes.',
+    nextStep: 'Review the tool error below before trying again.',
+  },
+  nonzero_exit: {
+    tone: 'danger',
+    title: 'A required tool returned an error',
+    detail:
+      'A local tool stopped the run before it completed. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the tool error and check the affected app or data before trying again.',
+  },
+  timeout: {
+    tone: 'danger',
+    title: 'A required tool timed out',
+    detail:
+      'A local tool exceeded its time limit. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the tool error and check the affected app or data before trying again.',
+  },
+  bad_output: {
+    tone: 'danger',
+    title: 'A required tool returned unreadable output',
+    detail:
+      'The run could not use a local tool’s result. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the tool error and check the affected app or data before trying again.',
+  },
+};
+
 // D-181 slice 5b — the live Active-section copy.
 const ACTIVE_STATE_LABELS: Record<ActiveExecutionEntry['state'], string> = {
   running: 'running',
@@ -846,6 +1221,165 @@ const formatDuration = (ms: number): string => {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 };
 
+const detailErrors = (detail: RunDetail): ReadonlyArray<RecipeError> =>
+  detail.errors.length > 0 ? detail.errors : detail.audit.errors;
+
+const firstCliFailureReason = (
+  detail: RunDetail,
+): CliFailureReason | undefined => {
+  for (const err of detailErrors(detail)) {
+    const cli = err.details.cli_failure;
+    if (isCliFailureDetail(cli)) return cli.reason;
+  }
+  return undefined;
+};
+
+const failedOutcome = (detail: RunDetail): RunOutcomeCore => {
+  const category = detail.audit.error_category;
+  if (category !== undefined) return FAILED_CATEGORY_OUTCOMES[category];
+
+  const errors = detailErrors(detail);
+  const permissionDenied =
+    detail.approvals.outcome === 'deny'
+    || detail.gateway.policy_result === 'denied'
+    || errors.some((error) => error.code === 'RECIPE_POLICY_DENIED');
+  if (permissionDenied) {
+    return {
+      tone: 'danger',
+      title: 'Permission was denied',
+      detail:
+        'The denied step was not sent. Earlier steps may still have made changes.',
+      nextStep:
+        'Review the error and permission details below before trying again.',
+    };
+  }
+
+  const cliFailure = firstCliFailureReason(detail);
+  if (cliFailure !== undefined) return CLI_FAILURE_OUTCOMES[cliFailure];
+
+  return {
+    tone: 'danger',
+    title: 'Run failed',
+    detail:
+      'The run ended before completing. Earlier steps may still have made changes.',
+    nextStep:
+      'Review the error and check the affected app or data before trying again.',
+  };
+};
+
+const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
+  const status = detail.audit.status;
+  switch (status) {
+    case 'pending':
+      return {
+        tone: 'attention',
+        title: 'Run is waiting to start',
+        detail: 'The run has been recorded, but it has not started yet.',
+        nextStep: 'Check its live status before starting another run.',
+        action: {
+          href: serializeShellRoute('logs', 'active'),
+          label: 'View live status',
+        },
+      };
+    case 'running':
+      return {
+        tone: 'attention',
+        title: 'Run is still in progress',
+        detail:
+          'The run has started, but no final outcome has been recorded.',
+        nextStep: 'Check its live status before starting another run.',
+        action: {
+          href: serializeShellRoute('logs', 'active'),
+          label: 'View live status',
+        },
+      };
+    case 'succeeded':
+      return {
+        tone: 'positive',
+        title: 'Run completed',
+        detail: 'The run finished successfully.',
+      };
+    case 'failed':
+      return failedOutcome(detail);
+    case 'cancelled':
+      return {
+        tone: 'neutral',
+        title: 'Run was cancelled',
+        detail:
+          'The run stopped before completing. Earlier steps may still have made changes.',
+        nextStep:
+          'Review the activity and any affected app or data before starting a new run.',
+      };
+    case 'killed':
+      return FAILED_CATEGORY_OUTCOMES.killed;
+    case 'in_doubt':
+      return {
+        tone: 'attention',
+        title: 'Outcome needs verification',
+        detail:
+          'The system lost confirmation before it could determine whether the action finished.',
+        nextStep:
+          'Check the affected app or data before trying again. This run will not retry automatically.',
+      };
+    case 'awaiting_approval': {
+      const askId = detail.approvals.ask_id ?? detail.audit.ask_id;
+      const hasAsk = askId !== undefined && askId.length > 0;
+      return {
+        tone: 'attention',
+        title: 'Run is waiting for approval',
+        detail:
+          'The run paused before sending the step that needs approval. That step has not run.',
+        nextStep: hasAsk
+          ? 'Review the approval to continue or stop the action.'
+          : 'This hold is not linked to the approval queue. Check the surface that requested it for next steps.',
+        ...(hasAsk
+          ? {
+              action: {
+                href: serializeShellRoute('approvals', askId),
+                label: 'Review approval',
+              },
+            }
+          : {}),
+      };
+    }
+    default: {
+      const exhaustiveStatus: never = status;
+      return exhaustiveStatus;
+    }
+  }
+};
+
+/** Plain-language projection for the run-detail hero.
+ *
+ * Status remains the authority for whether a run completed. Structured
+ * termination / policy / CLI fields only refine a failed status, and audit
+ * degradation stays a separate record warning because it does not change the
+ * side-effect outcome.
+ */
+export const projectRunOutcomeSummary = (
+  detail: RunDetail,
+): RunOutcomeSummary => {
+  const core = runOutcomeCore(detail);
+  const recordWarnings = (detail.audit.degraded ?? []).map((code) => ({
+    code,
+    message: DEGRADATION_MESSAGES[code],
+  }));
+  const hasRecordWarning = recordWarnings.length > 0;
+  return {
+    ...core,
+    ...(hasRecordWarning && core.tone === 'positive'
+      ? { tone: 'attention' as const }
+      : {}),
+    ...(hasRecordWarning && core.nextStep === undefined
+      ? {
+          nextStep:
+            'Review the record warning before relying on this run history.',
+        }
+      : {}),
+    recordWarnings,
+  };
+};
+
 const originLabel = (origin: RunOrigin): string => {
   if (origin.channel === 'mcp') return 'Connected agent';
   if (origin.channel === 'reception') return 'Reception';
@@ -871,8 +1405,13 @@ const rowRisk = (row: RunFeedRow): 'blocked' | 'normal' =>
     ? 'blocked'
     : 'normal';
 
-const runHref = (run_id: string): string =>
-  serializeShellRoute('logs', run_id);
+const runHref = (
+  run_id: string,
+  returnToChat?: ChatPlanAddress,
+): string => serializeLogsRunAddress({
+  runId: run_id,
+  ...(returnToChat !== undefined ? { returnToChat } : {}),
+});
 
 const recipeHref = (recipe_id: string): string =>
   serializeShellRoute('recipes', recipe_id);
@@ -934,6 +1473,240 @@ const renderCliFailureDetail = (cli: CliFailureDetail): string => {
   `;
 };
 
+const EXECUTION_PROVENANCE_KINDS: ReadonlySet<string> = new Set([
+  'execution.action',
+  'execution.derived',
+  'execution.write',
+]);
+
+const isExecutionProvenanceLink = (
+  link: RunProvenanceLink,
+): boolean => EXECUTION_PROVENANCE_KINDS.has(link.kind);
+
+const isProjectableExecutionProvenanceLink = (
+  link: RunProvenanceLink,
+): boolean =>
+  isExecutionProvenanceLink(link)
+  && parseTimelineEntityId(link.entity_id) !== null;
+
+const AFFECTED_RELATIONSHIP_BY_KIND: Readonly<
+  Record<string, {
+    relationship: RunAffectedItemRelationship;
+    label: string;
+    rank: number;
+  }>
+> = {
+  'execution.action': {
+    relationship: 'action',
+    label: 'Used by action',
+    rank: 1,
+  },
+  'execution.derived': {
+    relationship: 'derived',
+    label: 'Created or changed',
+    rank: 3,
+  },
+  'execution.write': {
+    // The persisted kind predates access-mode storage: it can name the written
+    // target OR an input read by a local side-effecting step. Do not claim this
+    // exact item changed until provenance retains that distinction.
+    relationship: 'involved',
+    label: 'Involved in change',
+    rank: 2,
+  },
+};
+
+const SOURCE_TAB_BY_COLLECTION: Readonly<
+  Partial<Record<string, SourceRecordDataTab>>
+> = {
+  mail: 'mail',
+  calendar: 'calendar',
+  file: 'files',
+  files: 'files',
+};
+
+const DIRECT_DATA_TAB_BY_COLLECTION: Readonly<
+  Partial<Record<string, DataEntityVerificationTab>>
+> = {
+  contact: 'contact',
+  form_response: 'form_response',
+  crm: 'crm',
+  task: 'task',
+  note: 'note',
+  commitment: 'commitment',
+  project: 'project',
+  booking: 'booking',
+  annotation: 'annotation',
+  link: 'link',
+  shared: 'shared',
+};
+
+const COLLECTION_TITLES: Readonly<Record<string, string>> = {
+  mail: 'Mail message',
+  calendar: 'Calendar event',
+  file: 'File',
+  files: 'File',
+  contact: 'Contact',
+  form_response: 'Form response',
+  crm: 'CRM record',
+  task: 'Task',
+  note: 'Note',
+  commitment: 'Commitment',
+  project: 'Project',
+  booking: 'Booking',
+  annotation: 'Annotation',
+  link: 'Data link',
+  shared: 'Shared data item',
+};
+
+const humanizeCollection = (collection: string): string => {
+  const raw = collection
+    .split('.')
+    .filter((part) => part.length > 0)
+    .slice(-2)
+    .join(' ')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return raw.length === 0
+    ? 'Data item'
+    : raw.charAt(0).toUpperCase() + raw.slice(1);
+};
+
+const isCrmCollection = (collection: string): boolean =>
+  collection === 'deal'
+  || collection === 'account'
+  || collection === 'owner'
+  || collection.startsWith('connection.api.');
+
+const affectedActionLabel = (
+  status: RunAnchorStatus,
+  relationship: RunAffectedItemRelationship,
+  resolution: RunAffectedItemResolution,
+): string => {
+  if (resolution === 'fallback') return 'Open Data';
+  if (
+    status === 'failed'
+    || status === 'cancelled'
+    || status === 'killed'
+    || status === 'in_doubt'
+  ) {
+    return 'Verify before retrying';
+  }
+  if (status === 'succeeded') {
+    return relationship === 'derived' ? 'View result' : 'Verify item';
+  }
+  return 'Review item';
+};
+
+interface AffectedItemTarget {
+  readonly title: string;
+  readonly resolution: RunAffectedItemResolution;
+  readonly href: string;
+}
+
+const affectedItemTarget = (
+  collection: string,
+  recordId: string,
+  entityId: string,
+  returnToRun: LogsRunAddress,
+  verificationRelationship: DataVerificationRelationship,
+): AffectedItemTarget => {
+  const sourceTab = SOURCE_TAB_BY_COLLECTION[collection];
+  if (sourceTab !== undefined) {
+    return {
+      title: COLLECTION_TITLES[collection] ?? 'Source record',
+      resolution: 'resolve-source',
+      href: serializeSourceRecordVerificationAddress({
+        tab: sourceTab,
+        recordId,
+        returnToRun,
+        verificationRelationship,
+      }),
+    };
+  }
+
+  const directTab = DIRECT_DATA_TAB_BY_COLLECTION[collection];
+  if (directTab !== undefined) {
+    return {
+      title: COLLECTION_TITLES[collection] ?? humanizeCollection(collection),
+      resolution: 'exact',
+      href: serializeDataEntityVerificationAddress({
+        tab: directTab,
+        entityId: directTab === 'crm' ? entityId : recordId,
+        returnToRun,
+        verificationRelationship,
+      }),
+    };
+  }
+
+  if (isCrmCollection(collection)) {
+    return {
+      title: `CRM ${humanizeCollection(collection).toLowerCase()}`,
+      resolution: 'exact',
+      href: serializeDataEntityVerificationAddress({
+        tab: 'crm',
+        entityId,
+        returnToRun,
+        verificationRelationship,
+      }),
+    };
+  }
+
+  return {
+    title: humanizeCollection(collection),
+    resolution: 'fallback',
+    href: serializeShellRoute('data'),
+  };
+};
+
+/** Turn raw provenance edges into one human-readable verification target per
+ * entity. A stronger write/derived relationship wins when a run emitted more
+ * than one edge for the same item; source mirrors route through an account
+ * resolver because the persisted edge does not carry a collection slug. */
+export const projectRunAffectedItems = (
+  links: ReadonlyArray<RunProvenanceLink>,
+  run: Pick<RunFeedRow, 'run_id' | 'status'>,
+  returnToChat?: ChatPlanAddress,
+): ReadonlyArray<RunAffectedItem> => {
+  const returnToRun: LogsRunAddress = {
+    runId: run.run_id,
+    ...(returnToChat !== undefined ? { returnToChat } : {}),
+  };
+  const projected = new Map<string, RunAffectedItem & { readonly rank: number }>();
+  for (const link of links) {
+    const relationship = AFFECTED_RELATIONSHIP_BY_KIND[link.kind];
+    if (relationship === undefined) continue;
+    const parsed = parseTimelineEntityId(link.entity_id);
+    if (parsed === null) continue;
+    const target = affectedItemTarget(
+      parsed.collection,
+      parsed.id,
+      link.entity_id,
+      returnToRun,
+      relationship.relationship,
+    );
+    const previous = projected.get(link.entity_id);
+    if (previous !== undefined && previous.rank >= relationship.rank) continue;
+    projected.set(link.entity_id, {
+      entityId: link.entity_id,
+      collection: parsed.collection,
+      recordId: parsed.id,
+      title: target.title,
+      relationship: relationship.relationship,
+      relationshipLabel: relationship.label,
+      resolution: target.resolution,
+      href: target.href,
+      actionLabel: affectedActionLabel(
+        run.status,
+        relationship.relationship,
+        target.resolution,
+      ),
+      rank: relationship.rank,
+    });
+  }
+  return [...projected.values()].map(({ rank: _rank, ...item }) => item);
+};
+
 const renderProvenanceLink = (
   link: RunProvenanceLink,
   idx: number,
@@ -947,6 +1720,7 @@ const renderProvenanceLink = (
 const renderRunLinks = (
   row: Pick<RunFeedRow, 'run_id' | 'recipe_id' | 'status' | 'policy_result' | 'links'>
     & { ask_id?: string },
+  returnToChat?: ChatPlanAddress,
 ): string => {
   // R17 — the approval link is run-SCOPED when the run carries a pending ask id:
   // `#approvals/<ask_id>` focuses + highlights that one card instead of dropping
@@ -983,12 +1757,19 @@ const renderRunLinks = (
   const approvalLink = hasRunLink(row) && !awaitingWithNoAsk
     ? `<a ${LOGS_ROUTE_LINK_ATTR}="approval" href="${e(approvalHref)}">Approval</a>`
     : '';
-  const provenance = row.links.map(renderProvenanceLink).join('');
+  // Execution provenance now has a human, outcome-adjacent verification
+  // surface. Keep legacy/non-execution links — and malformed execution links
+  // that cannot be projected there — in this technical row. Suppressing by
+  // kind alone would make old or corrupt audit evidence disappear entirely.
+  const provenance = row.links
+    .filter((link) => !isProjectableExecutionProvenanceLink(link))
+    .map(renderProvenanceLink)
+    .join('');
   return `
     <div class="logs-row-links">
       <a ${LOGS_ROUTE_LINK_ATTR}="recipe" href="${e(recipeHref(row.recipe_id))}">Recipe: ${e(row.recipe_id)}</a>
       ${approvalLink}
-      <a ${LOGS_ROUTE_LINK_ATTR}="audit" href="${e(runHref(row.run_id))}">Audit detail</a>
+      <a ${LOGS_ROUTE_LINK_ATTR}="audit" href="${e(runHref(row.run_id, returnToChat))}">Audit detail</a>
       ${provenance}
     </div>
   `;
@@ -1430,7 +2211,7 @@ const renderApprovals = (detail: RunDetail): string => {
     </li>
   `).join('');
   const outcome = approvals.outcome !== undefined
-    ? `<p class="logs-detail-row">Outcome: ${e(approvals.outcome)}</p>`
+    ? `<p class="logs-detail-row">Approval result: ${e(APPROVAL_OUTCOME_LABELS[approvals.outcome])}</p>`
     : '';
   if (checkpointRows.length === 0 && outcome.length === 0) {
     return '<p class="logs-detail-row">No approval checkpoints joined to this run.</p>';
@@ -1447,12 +2228,11 @@ const renderGatewayTraceRow = (trace: RunGatewayCallTraceEntry): string => `
   <li class="logs-detail-row">
     <div class="logs-trace-title">
       <strong>${e(trace.ingredient)} / ${e(trace.tool)}</strong>
-      ${renderPolicy(trace.decision === 'blocked' ? 'blocked' : 'allowed')}
+      ${renderStatus(trace.verdict)}
     </div>
     <div class="logs-detail-meta">
       <span>ref ${e(trace.commit_id)}</span>
       <span>type ${e(trace.kind)}</span>
-      <span>decision ${e(trace.verdict)}</span>
       <span>${e(formatDateTime(trace.dispatched_at))}</span>
       ${trace.duration_ms !== undefined ? `<span>${e(formatDuration(trace.duration_ms))}</span>` : ''}
       ${trace.cached === true ? '<span>cached</span>' : ''}
@@ -1463,26 +2243,124 @@ const renderGatewayTraceRow = (trace: RunGatewayCallTraceEntry): string => `
 const renderGateway = (detail: RunDetail): string => {
   const trace = detail.gateway.per_call_trace;
   return `
-    <p class="logs-detail-row">Permission decision: ${renderPolicy(detail.gateway.policy_result)}</p>
+    <p class="logs-detail-row">Recorded result: ${renderPolicy(detail.gateway.policy_result)}</p>
     ${trace.length === 0
-      ? '<p class="logs-detail-row">No permission decisions recorded for this run.</p>'
+      ? '<p class="logs-detail-row">No per-step gateway activity was recorded for this run.</p>'
       : `<ul class="logs-detail-list" ${LOGS_ROUTE_GATEWAY_TRACE_ATTR} role="list">
           ${trace.map(renderGatewayTraceRow).join('')}
         </ul>`}
   `;
 };
 
-const renderDegraded = (detail: RunDetail): string => {
-  const degraded = detail.audit.degraded ?? [];
-  if (degraded.length === 0) return '';
-  return `<p ${LOGS_ROUTE_DEGRADED_ATTR}>Degraded: ${e(degraded.join(', '))}</p>`;
+const renderRecordWarnings = (
+  warnings: ReadonlyArray<RunRecordWarning>,
+): string => {
+  if (warnings.length === 0) return '';
+  const label = warnings.length === 1 ? 'Record warning' : 'Record warnings';
+  return `
+    <div class="logs-record-warnings" ${LOGS_ROUTE_DEGRADED_ATTR} role="note">
+      <strong>${label}</strong>
+      <ul role="list">
+        ${warnings.map((warning) =>
+          `<li data-degradation="${e(warning.code)}">${e(warning.message)}</li>`,
+        ).join('')}
+      </ul>
+    </div>
+  `;
 };
+
+const renderOutcome = (detail: RunDetail): string => {
+  const summary = projectRunOutcomeSummary(detail);
+  return `
+    <section ${LOGS_ROUTE_OUTCOME_ATTR}="${e(detail.audit.status)}" data-tone="${e(summary.tone)}" aria-label="Run outcome" tabindex="-1">
+      <p class="logs-outcome-label">Outcome</p>
+      <h3 class="logs-outcome-title">${e(summary.title)}</h3>
+      <p class="logs-outcome-copy">${e(summary.detail)}</p>
+      ${summary.nextStep !== undefined
+        ? `<p class="logs-outcome-next"><strong>Next:</strong> ${e(summary.nextStep)}</p>`
+        : ''}
+      ${summary.action !== undefined
+        ? `<a class="logs-outcome-action" href="${e(summary.action.href)}">${e(summary.action.label)}</a>`
+        : ''}
+      ${renderRecordWarnings(summary.recordWarnings)}
+    </section>
+  `;
+};
+
+const runNeedsAffectedItemVerification = (status: RunAnchorStatus): boolean =>
+  status === 'failed'
+  || status === 'cancelled'
+  || status === 'killed'
+  || status === 'in_doubt';
+
+const affectedItemsIntro = (status: RunAnchorStatus): string => {
+  if (runNeedsAffectedItemVerification(status)) {
+    return 'Check these recorded items before retrying or starting a replacement run.';
+  }
+  if (status === 'succeeded') {
+    return 'Open a recorded item to review what the run used or changed.';
+  }
+  return 'These items were already involved in the run.';
+};
+
+const renderAffectedItems = (
+  detail: RunDetail,
+  returnToChat?: ChatPlanAddress,
+): string => {
+  const items = projectRunAffectedItems(
+    detail.links,
+    {
+      run_id: detail.audit.run_id,
+      status: detail.audit.status,
+    },
+    returnToChat,
+  );
+  if (items.length === 0 && !runNeedsAffectedItemVerification(detail.audit.status)) {
+    return '';
+  }
+  const rows = items.map((item, idx) => `
+    <li class="logs-affected-row" data-resolution="${e(item.resolution)}">
+      <div class="logs-affected-copy">
+        <div class="logs-affected-title">
+          <span class="logs-affected-relationship">${e(item.relationshipLabel)}</span>
+          <strong>${e(item.title)}</strong>
+        </div>
+        <span class="logs-affected-reference">Reference ${e(item.recordId)}</span>
+        ${item.resolution === 'resolve-source'
+          ? '<span class="logs-affected-fallback">Data will check connected sources before opening this record.</span>'
+          : item.resolution === 'fallback'
+            ? '<span class="logs-affected-fallback">An exact record view is not available for this collection yet.</span>'
+            : ''}
+      </div>
+      <a class="logs-affected-action" ${LOGS_ROUTE_LINK_ATTR}="${e(`affected:${idx}`)}" href="${e(item.href)}">${e(item.actionLabel)}</a>
+    </li>
+  `).join('');
+  return `
+    <section ${LOGS_ROUTE_AFFECTED_ITEMS_ATTR} aria-labelledby="logs-affected-title">
+      <h3 id="logs-affected-title">Recorded items</h3>
+      <p class="logs-affected-intro">${e(affectedItemsIntro(detail.audit.status))}</p>
+      ${rows.length > 0
+        ? `<ul class="logs-affected-list" role="list">${rows}</ul>`
+        : '<p class="logs-affected-empty">No item links were recorded. Check the destination app directly before retrying.</p>'}
+    </section>
+  `;
+};
+
+const renderChatReturn = (
+  address: ChatPlanAddress | undefined,
+): string => address === undefined
+  ? ''
+  : `<aside ${LOGS_ROUTE_CHAT_RETURN_ATTR} role="note">
+      <span>You came here from an action in Chat.</span>
+      <a href="${e(serializeChatPlanAddress(address))}" aria-label="Back to the originating Chat action">Back to this Chat action</a>
+    </aside>`;
 
 const renderDetail = (
   detail: RunDetail | null,
   selectedRunId: string | null,
   loading: boolean,
   error: string | undefined,
+  returnToChat?: ChatPlanAddress,
 ): string => {
   if (error !== undefined) {
     return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2>Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p></aside>`;
@@ -1502,6 +2380,8 @@ const renderDetail = (
   return `
     <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}">
       <h2>${e(audit.recipe_id)}</h2>
+      ${renderOutcome(detail)}
+      ${renderAffectedItems(detail, returnToChat)}
       <div class="logs-detail-meta">
         <span>run ${e(audit.run_id)}</span>
         <span>hash ${e(audit.recipe_hash)}</span>
@@ -1513,7 +2393,6 @@ const renderDetail = (
       </div>
       ${audit.trigger_source !== null ? `<p class="logs-detail-row">Trigger source: ${e(audit.trigger_source)}</p>` : ''}
       ${audit.instance_id !== null ? `<p class="logs-detail-row">Instance: ${e(audit.instance_id)}</p>` : ''}
-      ${renderDegraded(detail)}
       ${audit.output_string !== undefined
         ? `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>Redacted output is recorded for this run.</p>`
         : `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>No redacted output summary recorded.</p>`}
@@ -1522,7 +2401,7 @@ const renderDetail = (
       ${renderApprovals(detail)}
 
       <h3>Errors</h3>
-      ${renderErrors(detail.errors.length > 0 ? detail.errors : audit.errors)}
+      ${renderErrors(detailErrors(detail))}
 
       <h3>Gateway</h3>
       ${renderGateway(detail)}
@@ -1535,7 +2414,7 @@ const renderDetail = (
         policy_result: detail.gateway.policy_result,
         links: detail.links,
         ...(askId !== undefined ? { ask_id: askId } : {}),
-      })}
+      }, returnToChat)}
     </aside>
   `;
 };
@@ -1611,6 +2490,16 @@ export const bootstrapLogsRoute = (
   let nextCursor: ExecutionListCursor | null = null;
   let selectedRunId: string | null = opts.initialRunId ?? null;
   let selectedRun: RunDetail | null = null;
+  const initialFocusRunId = opts.initialRunId ?? null;
+  let pendingInitialRunFocus = initialFocusRunId !== null;
+  // The Chat return is meaningful only for the exact inbound run. A later
+  // History selection becomes an ordinary Logs drill-down and drops it.
+  const chatReturnRunId =
+    opts.chatReturn !== undefined && selectedRunId !== null
+      ? selectedRunId
+      : null;
+  let chatReturn =
+    chatReturnRunId === null ? undefined : opts.chatReturn;
   let loadingFeed = false;
   let loadingMore = false;
   let loadingDetail = false;
@@ -1717,6 +2606,7 @@ export const bootstrapLogsRoute = (
       <header class="logs-header">
         <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1>
       </header>
+      ${renderChatReturn(chatReturn)}
       ${hasActiveSection
         ? renderActivePeek(activeEntries, loadingActive, errors.active, nowMs)
         : ''}
@@ -1731,11 +2621,35 @@ export const bootstrapLogsRoute = (
         <section class="logs-panel">
           ${renderFeed(runs, loadingFeed, loadingMore, nextCursor, errors.feed, selectedRunId)}
         </section>
-        ${renderDetail(selectedRun, selectedRunId, loadingDetail, errors.detail)}
+        ${renderDetail(
+          selectedRun,
+          selectedRunId,
+          loadingDetail,
+          errors.detail,
+          chatReturn,
+        )}
       </div>
     `;
     // (Re-)attach the Recipe combobox to the freshly-painted shell.
     mountRecipePicker();
+  };
+
+  /** Delay focus until the feed and exact detail have both settled; otherwise
+   * the last parallel hydration paint can replace the focused outcome. */
+  const focusInitialRunOutcome = (): void => {
+    if (
+      !pendingInitialRunFocus
+      || selectedRunId !== initialFocusRunId
+      || selectedRun === null
+    ) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selectors: string) => HTMLElement | null;
+    };
+    const outcome =
+      queryable.querySelector?.(`[${LOGS_ROUTE_OUTCOME_ATTR}]`) ?? null;
+    if (outcome === null) return;
+    pendingInitialRunFocus = false;
+    outcome.focus?.({ preventScroll: true });
   };
 
   const loadRecipeNames = async (): Promise<void> => {
@@ -1808,17 +2722,22 @@ export const bootstrapLogsRoute = (
   // selection) and for the test fake DOM (no `defaultView`); replaceState can
   // throw in sandboxed embeddings, so it is best-effort.
   const syncSelectedHash = (run_id: string): void => {
-    if (view !== 'logs') return;
+    if (disposed || view !== 'logs') return;
     const history = doc.defaultView?.history;
     if (history?.replaceState === undefined) return;
     try {
-      history.replaceState(null, '', runHref(run_id));
+      history.replaceState(null, '', runHref(run_id, chatReturn));
     } catch {
       // Non-fatal — addressability degrades to in-page-only.
     }
   };
 
   const openRun = async (run_id: string): Promise<void> => {
+    if (disposed) return;
+    if (run_id !== initialFocusRunId) pendingInitialRunFocus = false;
+    if (chatReturn !== undefined && run_id !== chatReturnRunId) {
+      chatReturn = undefined;
+    }
     selectedRunId = run_id;
     syncSelectedHash(run_id);
     if (opts.getCaller === undefined) {
@@ -2153,17 +3072,20 @@ export const bootstrapLogsRoute = (
         hasPassesSection ? loadGrants() : Promise.resolve(),
       ])
     : Promise.all([
-        // Default — the History feed (+ a deep-linked run's detail), plus the
-        // Active snapshot that backs the peek-strip count. Passes are
-        // console-only, so they are not loaded in this view.
-        loadFeed('replace').then(() => {
-          if (selectedRunId !== null) return openRun(selectedRunId);
-          return undefined;
-        }),
+        // Default — the History feed and a deep-linked run are independent
+        // reads. Start the exact detail immediately instead of making it wait
+        // for the list; that also prevents a late list completion from opening
+        // the stale run after this route has already been disposed.
+        loadFeed('replace'),
+        selectedRunId !== null
+          ? openRun(selectedRunId)
+          : Promise.resolve(),
         hasActiveSection ? loadActive() : Promise.resolve(),
         loadRecipeNames(),
       ])
-  ).then(() => undefined);
+  ).then(() => {
+    if (!disposed) focusInitialRunOutcome();
+  });
 
   return {
     getRuns: () => runs,

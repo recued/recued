@@ -11,7 +11,7 @@
  *  removing the markup, so the render contract stays stable across
  *  PA7 + PB.
  *
- *  Spec: docs/d-145-spec.md § A.5.5 (AI-assist sidebar). */
+ *  Spec: D-145 § A.5.5 (AI-assist sidebar). */
 
 import { MAIL_COMPOSE_AI_ACTIONS, type MailComposeAiAction } from '@recued/contracts';
 import { e } from '../template.js';

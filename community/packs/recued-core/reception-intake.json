@@ -1,0 +1,139 @@
+{
+  "manifest_version": 2,
+  "slug": "reception-intake",
+  "publisher": "recued-core",
+  "name": "Reception — Intake",
+  "description": "Review-by-default intake reception. An incoming form submission lands in Reception Inbox; approval always retains the canonical response in Data. Store-only forms finish there, while forms with an entity target also materialize a task, note, or commitment — no external connection required.",
+  "version": 1,
+  "pre_install": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:reception",
+    "reception",
+    "reception-intake",
+    "l2"
+  ],
+  "pack_kind": "app_pack",
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "reception-intake",
+        "catalog_kind": "private_byo",
+        "ingredients": [
+          {
+            "slug": "reception-intake",
+            "kind": "http",
+            "http": {
+              "base": "https://reception.local",
+              "connection": "reception-intake"
+            },
+            "entities": {
+              "intake": {
+                "fields": [
+                  {
+                    "field_path": "id",
+                    "type": "string",
+                    "maps_to": "id",
+                    "description": "Deterministic completion id: the canonical submission id for form_response, or the materialized entity id for an entity target."
+                  },
+                  {
+                    "field_path": "title",
+                    "type": "string",
+                    "maps_to": "title",
+                    "description": "Submission title."
+                  },
+                  {
+                    "field_path": "body",
+                    "type": "string",
+                    "maps_to": "body",
+                    "optional": true,
+                    "description": "Submission details."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "intake.materialize",
+            "ingredient": "reception-intake",
+            "risk": "write",
+            "approval": "ask",
+            "out": "result",
+            "args": [
+              "title",
+              "body",
+              {
+                "key": "source_id",
+                "affects_target": true
+              }
+            ],
+            "description": "Complete a reviewed intake submission through the local review projection. Approval-required: the Gateway gate holds it pending first. A `form_response` target verifies the canonical accepted response and creates no second entity; task, note, and commitment targets materialize into the local warehouse. The `https://reception.local` base url is a LOCAL-DISPATCH sentinel, never a reachable endpoint.",
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/reception/intake/materialize"
+            },
+            "request_schema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "editable_args": [
+              {
+                "key": "title",
+                "type": "string",
+                "label": "Title",
+                "required": true
+              },
+              {
+                "key": "body",
+                "type": "string",
+                "label": "Details"
+              },
+              {
+                "key": "source_id",
+                "type": "string",
+                "label": "Destination",
+                "options_source": "reception_destination_sources",
+                "affects_target": true
+              }
+            ]
+          }
+        ],
+        "default_grants": [
+          "reception-intake.intake.write"
+        ],
+        "recipe_templates": [
+          {
+            "template": "review-then-approve",
+            "trigger": {
+              "entity": "reception_form_submission",
+              "field": "processing_outcome",
+              "value": "pending"
+            },
+            "operation": "intake.materialize"
+          }
+        ]
+      }
+    }
+  ]
+}

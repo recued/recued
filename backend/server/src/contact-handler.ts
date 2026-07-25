@@ -78,8 +78,19 @@ export const handleContactUpsert = async (
     phone?: string;
     mailing_address?: MailingAddress;
     company?: string;
+    title?: string;
+    birthday?: string;
     network_domain?: NetworkDomain[];
   },
+  /** D-210 audit finding 5 — TRUSTED, server-internal write options.
+   *
+   *  ⛔ DELIBERATELY A SEPARATE PARAMETER, NOT A FIELD ON `args`. `args` is the
+   *  `contact.upsert` rpc payload; a caller able to set its own provenance rung
+   *  there could park an unverified value at the top of the contribution ladder,
+   *  which is precisely what the ladder exists to prevent. Only a server-internal
+   *  caller that KNOWS its values were not hand-typed by the owner passes this,
+   *  and the rpc path never passes it at all. ⇒ [[separate_authorization_axes]] */
+  internal?: { readonly attribution_source?: 'derived' },
 ): Promise<{ contact: ContactRecord }> => {
   if (typeof args.email !== 'string' || !args.email.trim()) {
     throw new RpcError('bad_request', 'contact.upsert: email is required');
@@ -113,6 +124,8 @@ export const handleContactUpsert = async (
           ? { mailing_address: args.mailing_address }
           : {}),
         ...(args.company !== undefined ? { company: args.company } : {}),
+        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(args.birthday !== undefined ? { birthday: args.birthday } : {}),
       },
       deps.now?.(),
       // D-161 P2 — stamp the SERVER-INJECTED write-actor (from `deps`,
@@ -133,6 +146,11 @@ export const handleContactUpsert = async (
           : {}),
         ...(deps.origin_surface !== undefined
           ? { origin_surface: deps.origin_surface }
+          : {}),
+        // D-210 audit finding 5 — read ONLY from the trusted `internal`
+        // parameter, never from `args`.
+        ...(internal?.attribution_source !== undefined
+          ? { attribution_source: internal.attribution_source }
           : {}),
       },
     );

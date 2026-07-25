@@ -1,0 +1,138 @@
+{
+  "recipe_id": "stalled-projects",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Stalled projects (D-145 PA10)",
+    "description": "Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["productivity", "project", "stalled", "dashboard", "ai_surface", "reactive", "pack:personal-organizer"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "stall_limit": {
+      "label": "Max stalled projects to surface",
+      "type": "number",
+      "default": 8
+    }
+  },
+  "requires": [],
+  "auto_run": {
+    "interval_ms": 600000
+  },
+  "trigger_steps": [
+    {
+      "id": "weekday_window",
+      "op": "core.watch.time",
+      "args": {
+        "weekdays": [1, 2, 3, 4, 5],
+        "start_hour": 8,
+        "end_hour": 18
+      }
+    }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "stall_signals",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "project_stall_signal",
+        "scope": "project",
+        "limit": "{{config.stall_limit}}"
+      }
+    },
+    {
+      "id": "next_action_gaps",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "project_next_action_gap",
+        "scope": "project",
+        "limit": "{{config.stall_limit}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "stalled_count",
+      "transform": "count",
+      "input": "{{step.stall_signals.entries}}"
+    },
+    {
+      "id": "gap_count",
+      "transform": "count",
+      "input": "{{step.next_action_gaps.entries}}"
+    },
+    {
+      "id": "stalled_ids",
+      "transform": "pluck",
+      "array": "{{step.stall_signals.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "gap_ids",
+      "transform": "pluck",
+      "array": "{{step.next_action_gaps.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "intervention_ids",
+      "transform": "flatten",
+      "array": [
+        "{{step.stalled_ids}}",
+        "{{step.gap_ids}}"
+      ],
+      "depth": 1
+    },
+    {
+      "id": "intervention_unique",
+      "transform": "unique",
+      "array": "{{step.intervention_ids}}"
+    },
+    {
+      "id": "intervention_count",
+      "transform": "count",
+      "input": "{{step.intervention_unique}}"
+    },
+    {
+      "id": "intervention_text",
+      "transform": "join",
+      "array": "{{step.intervention_unique}}",
+      "separator": ", "
+    },
+    {
+      "id": "any_intervention",
+      "transform": "compare",
+      "left": "{{step.intervention_count}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "next_action_prompt",
+      "skip_when": "{{step.any_intervention}} not_equal true",
+      "op": "core.ai.generate",
+      "args": {
+        "llm.data": "Projects with no recent activity or no next action: {{step.intervention_text}}",
+        "llm.template_type": "next_action_prompt",
+        "llm.tone": "concise",
+        "llm.model_hint": "fast"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Stall-signaled projects", "value": "{{step.stalled_count:number}}" },
+        { "label": "Projects with no next action", "value": "{{step.gap_count:number}}" },
+        { "label": "Intervention list (union)", "value": "{{step.intervention_text}}" },
+        { "label": "Suggested next-action prompt", "value": "{{step.next_action_prompt.content}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

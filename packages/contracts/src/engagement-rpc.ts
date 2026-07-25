@@ -43,7 +43,7 @@
  *  shape; the re-probe rpc is Salesforce-only because HubSpot
  *  doesn't carry the capability-flag substrate.
  *
- *  Spec: `docs/d-139-spec.md` § A.8 + `### P2`. */
+ *  Spec: D-139 § A.8 + `### P2`. */
 
 import type { EngagementVendor } from './engagement-evidence.js';
 import type { EngagementCapabilityFlags } from './engagement.js';

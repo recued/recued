@@ -67,7 +67,7 @@
  *  enrichment; the stale-sweep re-derives within the next eligible
  *  cycle.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 741) + A.7.2 + A.7.5 +
+ *  Spec: D-145 §§ A.7.1 (line 741) + A.7.2 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.task_completion_velocity` +
  *        `packages/contracts/src/enrichment-declarations/task-completion-velocity.ts`. */
 

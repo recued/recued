@@ -1,0 +1,196 @@
+{
+  "recipe_id": "triage-inbox",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Triage inbox (D-145 PA10)",
+    "description": "Classify each inbound email into urgent_action / awaiting_response / fyi / promotional / spam and send an in-app notification for urgent_action + awaiting_response (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail. Fires automatically on inbound mail; the classifier model sees only PII-aliased text, never the raw sender.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["email", "mail", "inbox", "triage", "alert", "ai_surface", "reactive", "pack:personal-organizer"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "channels": {
+      "label": "Notification channels",
+      "type": "array",
+      "default": ["in_app"]
+    },
+    "min_confidence": {
+      "label": "Min confidence to notify (0..1)",
+      "type": "number",
+      "default": 0.6
+    }
+  },
+  "requires": ["notification_send"],
+  "event_triggers": [
+    { "event": "data.mail.**.created" }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "message",
+      "op": "core.mail.get",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "record_id": "{{context.event.payload.record_id}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "subject",
+      "transform": "default",
+      "value": "{{step.message.record.hot_fields.subject}}",
+      "fallback": ""
+    },
+    {
+      "id": "from_email",
+      "transform": "default",
+      "value": "{{step.message.record.hot_fields.from}}",
+      "fallback": ""
+    },
+    {
+      "id": "body_read",
+      "op": "core.mail.body-read",
+      "args": {
+        "slug": "{{context.event.payload.slug}}",
+        "record_id": "{{context.event.payload.record_id}}",
+        "max_chars": 32000
+      }
+    },
+    {
+      "id": "body",
+      "transform": "default",
+      "value": "{{step.body_read.body}}",
+      "fallback": ""
+    },
+    {
+      "id": "body_present",
+      "transform": "compare",
+      "left": "{{step.body}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "skip_empty",
+      "transform": "compare",
+      "left": "{{step.body_present}}",
+      "operator": "not_equal",
+      "right": true
+    },
+    {
+      "id": "protect",
+      "transform": "pii-protect",
+      "data": {
+        "from": "{{step.from_email}}",
+        "subject": "{{step.subject}}",
+        "body": "{{step.body}}"
+      },
+      "fields": [
+        { "path": "from", "kind": "email" },
+        { "path": "subject", "kind": "content" },
+        { "path": "body", "kind": "content" }
+      ]
+    },
+    {
+      "id": "classify",
+      "skip_when": "{{step.skip_empty}} equal true",
+      "op": "core.ai.classify",
+      "args": {
+        "llm.data": "From: {{step.protect.aliased.from}}\nSubject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
+        "llm.categories": [
+          "urgent_action",
+          "awaiting_response",
+          "fyi",
+          "promotional",
+          "spam"
+        ],
+        "llm.context": "Classify the user's inbound mail by what action it implies. urgent_action = caller needs response within 24h; awaiting_response = the user previously promised something now arriving as a follow-up; fyi = informational only; promotional = marketing / newsletter; spam = unsolicited.",
+        "llm.model_hint": "fast"
+      }
+    },
+    {
+      "id": "restore",
+      "transform": "pii-restore",
+      "data": {
+        "reasoning": "{{step.classify.reasoning}}"
+      },
+      "ledger_handle": "{{step.protect.ledger_handle}}"
+    },
+    {
+      "id": "category",
+      "transform": "default",
+      "value": "{{step.classify.category}}",
+      "fallback": "fyi"
+    },
+    {
+      "id": "confidence",
+      "transform": "default",
+      "value": "{{step.classify.confidence}}",
+      "fallback": 0
+    },
+    {
+      "id": "is_actionable",
+      "transform": "any",
+      "conditions": [
+        "{{step.category}} equal urgent_action",
+        "{{step.category}} equal awaiting_response"
+      ]
+    },
+    {
+      "id": "below_confidence",
+      "transform": "compare",
+      "left": "{{step.confidence}}",
+      "operator": "less",
+      "right": "{{config.min_confidence}}"
+    },
+    {
+      "id": "skip_notify",
+      "transform": "any",
+      "conditions": [
+        "{{step.skip_empty}} equal true",
+        "{{step.below_confidence}} equal true",
+        "{{step.is_actionable}} equal false"
+      ]
+    },
+    {
+      "id": "notify_title",
+      "transform": "switch",
+      "input": "{{step.category}}",
+      "cases": {
+        "urgent_action": "Urgent: {{step.subject}}",
+        "awaiting_response": "Awaiting your response: {{step.subject}}"
+      },
+      "default": "Mail: {{step.subject}}"
+    },
+    {
+      "id": "notify",
+      "skip_when": "{{step.skip_notify}} equal true",
+      "op": "core.notification.send",
+      "args": {
+        "channels": "{{config.channels}}",
+        "title": "{{step.notify_title}}",
+        "text": "From {{step.from_email}}. AI confidence {{step.confidence:percent}}. {{step.restore.restored.reasoning}}",
+        "link_url": null
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Mail thread",  "value": "{{step.message.record.hot_fields.thread_id}}" },
+        { "label": "From",         "value": "{{step.from_email}}" },
+        { "label": "Subject",      "value": "{{step.subject}}" },
+        { "label": "Category",     "value": "{{step.category}}" },
+        { "label": "Confidence",   "value": "{{step.confidence:percent}}" },
+        { "label": "Notified",     "value": "{{step.notify.delivered_to}}" },
+        { "label": "Skipped",      "value": "{{step.skip_notify}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

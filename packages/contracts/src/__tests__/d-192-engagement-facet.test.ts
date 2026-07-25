@@ -5,7 +5,7 @@
  *  The load-bearing test is behavior-preservation: the facet backfill + the
  *  `engagementEntitiesForVendor` helper MUST reproduce the old constants
  *  exactly, so S2's swap (repoint consumers → delete constants) is a no-op in
- *  behavior. Design: `docs/d-192-engagement-facet.md`. */
+ *  behavior. Design: D-192. */
 
 import { describe, expect, it } from 'vitest';
 

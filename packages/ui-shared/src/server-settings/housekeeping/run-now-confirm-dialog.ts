@@ -14,7 +14,7 @@
  *  deterministic + AI-blocked branches inherit the scope footprint
  *  unchanged.
  *
- *  Spec: `docs/d-123-spec.md` §5.3 + `docs/d-132-spec.md` §A.6. */
+ *  Spec: D-123 §5.3 + D-132 §A.6. */
 
 import type {
   EnrichmentPoolPolicy,

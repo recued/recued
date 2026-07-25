@@ -27,7 +27,7 @@
  *  shared core; this layer only adds scope isolation + the webclient finalize
  *  target + the rpc/frame mapping.
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`
+ *  Spec: internal design notes
  *  (rev 3 shared-split + rev 4 build order). */
 
 import type Database from 'better-sqlite3';

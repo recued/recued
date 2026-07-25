@@ -11,15 +11,15 @@
  *  the collision detector. Phase 2 wires these into the install UI;
  *  no UI surface is touched here.
  *
- *  Design pillars (see `docs/d-119-spec.md`):
+ *  Design pillars (see D-119):
  *    - **Decentralized**. Anyone can host a bundle on any URL or
  *      share it as a file. Vault scope keys are derived from
  *      observable install inputs (URL host+path, file marker,
  *      marketplace publisher, kitchen origin) so collisions are
  *      detectable without a central registry.
  *    - **Trust through visibility, not modals**. Signatures decorate
- *      a badge; verification status is a UI hint, not an install
- *      gate. Host+path already isolates publishers from each other.
+ *      a badge and select the verified/unverified vault partition;
+ *      verification status is never an install gate.
  *    - **No new sync transports / no new RPC primitives**. Phase 1
  *      is type-level scaffolding plus pure helpers — no IO except
  *      the Web Crypto verify call inside `verifyBundleSignature`.
@@ -68,9 +68,9 @@ export interface RecipeBundle {
    *  a verification badge (`signature-verified` /
    *  `signature-mismatch` split into `crypto-invalid` /
    *  `pubkey-rotated` / `unknown-pubkey`); when absent the badge is
-   *  `unsigned-host`. Signatures decorate trust UX — they never
-   *  change vault-scope keying because host+path already isolates
-   *  publishers from each other. */
+   *  `unsigned-host`. Signatures decorate trust UX and select the
+   *  verified/unverified remote vault partition; they never block an
+   *  install. */
   signature?: BundleSignature;
 }
 
@@ -100,15 +100,50 @@ export type VaultScope =
   | { kind: 'bundle-remote'; host: string; path: string; slug: string; verified: boolean }
   | { kind: 'kitchen'; slug: string };
 
-/** Discriminated union covering every install entry point that
- *  yields a `VaultScope`. The `bundle-remote` case carries the raw
- *  (already-redirect-resolved) URL — `deriveVaultScope` runs it
- *  through `normalizeUrlForVaultScope` so callers don't have to. */
-export type InstallSource =
+/** Opaque proof that a remote-bundle URL came from the fetch response after
+ *  redirect processing, rather than from the URL the user originally pasted.
+ *
+ *  Only the remote bundle fetch boundary should mint this type. It keeps a
+ *  plain request URL from being accidentally reused as vault authority while
+ *  remaining a string at runtime. */
+declare const REDIRECT_RESOLVED_BUNDLE_URL: unique symbol;
+export type RedirectResolvedBundleUrl = string & {
+  readonly [REDIRECT_RESOLVED_BUNDLE_URL]: true;
+};
+
+/** The payload and authoritative post-redirect URL returned by a remote bundle
+ *  fetch. Keeping them in one object lets the install planner bind the bytes it
+ *  validates to the origin it uses for vault scope. */
+export interface FetchedRemoteBundle {
+  readonly bundle: RecipeBundle;
+  readonly finalUrl: RedirectResolvedBundleUrl;
+}
+
+/** Install sources that do not involve a remote redirect chain. */
+export type NonRemoteInstallSource =
   | { kind: 'marketplace'; publisher: string; slug: string }
   | { kind: 'bundle-file'; slug: string }
-  | { kind: 'bundle-remote'; url: string; slug: string; verified: boolean }
   | { kind: 'kitchen'; slug: string };
+
+/** Metadata supplied by the caller for a fetched remote bundle. The final URL
+ *  and verification state are deliberately absent: they must be resolved from
+ *  `FetchedRemoteBundle` and the bundle signature by the install planner. */
+export interface RemoteBundleInstallDescriptor {
+  readonly kind: 'bundle-remote';
+  readonly slug: string;
+}
+
+/** Remote install source accepted by `deriveVaultScope`. `finalUrl` is branded
+ *  proof from the fetch response, never the user-pasted request URL;
+ *  `verified` is the install planner's result, never caller-supplied metadata. */
+export type RemoteBundleInstallSource = RemoteBundleInstallDescriptor & {
+  readonly finalUrl: RedirectResolvedBundleUrl;
+  readonly verified: boolean;
+};
+
+/** Discriminated union covering every install entry point that yields a
+ *  `VaultScope`. */
+export type InstallSource = NonRemoteInstallSource | RemoteBundleInstallSource;
 
 /** Convert an `InstallSource` to its `VaultScope`. Identity for the
  *  marketplace / bundle-file / kitchen kinds; for `bundle-remote` it
@@ -120,7 +155,7 @@ export function deriveVaultScope(install: InstallSource): VaultScope {
     case 'bundle-file':
       return { kind: 'bundle-file', slug: install.slug };
     case 'bundle-remote': {
-      const { host, path } = normalizeUrlForVaultScope(install.url);
+      const { host, path } = normalizeUrlForVaultScope(install.finalUrl);
       return { kind: 'bundle-remote', host, path, slug: install.slug, verified: install.verified };
     }
     case 'kitchen':
@@ -158,25 +193,18 @@ export function vaultScopeKey(s: VaultScope): string {
 // URL normalization for vault scope
 // ────────────────────────────────────────────────────────────────
 
-/** Optional redirect-following hook. Phase 1 ships a stub identity
- *  default; Phase 2 wires this to a fetch-based follower so the
- *  vault scope is keyed off the *final* URL the bundle actually
- *  came from, not the shortener / vanity URL the user pasted. */
-export type RedirectFollower = (url: string) => string;
-
 /** Normalize a remote-bundle URL to the `{ host, path }` pair used
- *  to derive its vault scope. Lowercases the URL, follows
- *  redirects (via the injected stub), and collapses every
- *  non-`[a-z0-9._-]` byte in the path/query/hash to `/` so the
- *  resulting key is short, filesystem-safe, and stable across cosmetic
- *  URL variations. The trailing `/` on the raw concatenated path is
- *  stripped before collapse. */
+ *  to derive its vault scope. The caller must supply the post-redirect
+ *  `Response.url`; redirect following is asynchronous network work owned by
+ *  `fetchBundleByUrl`, not this pure normalizer. Lowercases the final URL and
+ *  collapses every non-`[a-z0-9._-]` byte in the path/query/hash to `/` so the
+ *  resulting key is short, filesystem-safe, and stable across cosmetic URL
+ *  variations. The trailing `/` on the raw concatenated path is stripped
+ *  before collapse. */
 export function normalizeUrlForVaultScope(
-  rawUrl: string,
-  followRedirects: RedirectFollower = (u) => u,
+  finalUrl: RedirectResolvedBundleUrl,
 ): { host: string; path: string } {
-  const followed = followRedirects(rawUrl);
-  const url = new URL(followed.toLowerCase());
+  const url = new URL(finalUrl.toLowerCase());
   const host = url.host;
   const rawPath = (url.pathname + url.search + url.hash).replace(/\/$/, '');
   const path = rawPath.replace(/[^a-z0-9._-]+/g, '/');

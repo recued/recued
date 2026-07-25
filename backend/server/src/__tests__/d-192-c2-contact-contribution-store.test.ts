@@ -9,7 +9,7 @@
  *  invariants under test are the UNIQUE indexes and the upsert conflict clauses,
  *  and a mocked store would assert nothing about either.
  *
- *  Spec: `docs/d-192-contact-source-family.md`; decisions-log § D-192 C-2. */
+ *  Spec: D-192; decisions-log § D-192 C-2. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

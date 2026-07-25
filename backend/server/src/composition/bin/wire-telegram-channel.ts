@@ -16,8 +16,8 @@
  *      `connection-notification` ingredient's telegram branch
  *      (`packages/ingredients/src/connection-notification.ts`).
  *
- *  Spec: docs/d-163-spec.md § N.5 / A.1; `connection.notification.telegram`
- *  shape: docs/d-148-spec.md § A.13 (auth); outbound transport:
+ *  Spec: D-163 § N.5 / A.1; `connection.notification.telegram`
+ *  shape: D-148 § A.13 (auth); outbound transport:
  *  D-160 P0 `createTelegramTransport` (`@recued/transport`). */
 
 import type { RemoteChannel } from '@recued/notification';

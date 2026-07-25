@@ -36,7 +36,7 @@
  *  binding decides everything else. Anyone generalizing this later should delete the branch,
  *  not widen it.
  *
- *  Spec: `docs/d-210-spec.md` §3; `docs/d-207-spec.md` §5.3; `docs/d-149-spec.md` § A.5.3. */
+ *  Spec: D-210 §3; D-207 §5.3; D-149 § A.5.3. */
 
 import {
   isReceptionFormPairBinding,

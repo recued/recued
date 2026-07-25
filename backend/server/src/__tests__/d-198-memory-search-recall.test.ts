@@ -243,6 +243,25 @@ describe('memory.search — the grant now gates the WHOLE tool', () => {
     expect(res.result.memories).toEqual([]);
     expect(res.result.hint).toContain('not granted');
   });
+
+  it('checks the grant before disclosing that the memory store is unavailable', async () => {
+    const getUserMemoryStore = vi.fn(() => undefined);
+    const handlers = buildChatTier1Handlers({
+      getAuditLog: () => ({ listRecent: vi.fn(), listByRecipe: vi.fn() }) as never,
+      getUserMemoryStore,
+      getOpAdmissionGate: () => ({ isOpGranted: () => false }) as never,
+    } as never);
+
+    const res = (await handlers['memory.search']!(
+      { query: 'secret' },
+      ctx(),
+    )) as any;
+    expect(res.ok).toBe(true);
+    expect(res.result.memories).toEqual([]);
+    expect(res.result.hint).toContain('not granted');
+    expect(res.result.coverage).toBeUndefined();
+    expect(getUserMemoryStore).not.toHaveBeenCalled();
+  });
 });
 
 describe('memory.search — since/until + cursor', () => {

@@ -1,6 +1,6 @@
 /** `recued-server pair` — print a fresh pairing code + reachable URLs.
  *
- *  Spec ref: docs/d-121-spec.md § "Server CLI refresh".
+ *  Spec ref: D-121 § "Server CLI refresh".
  *
  *  Default form (`recued-server pair`) and explicit `pair generate` are
  *  identical: refresh the pairing code, list reachable server URLs, and

@@ -109,6 +109,80 @@ describe('FormResponseStore', () => {
     });
   });
 
+  it('edits only the working content and advances updated_at only on a real change', () => {
+    const db = new Database(':memory:');
+    const store = createFormResponseStore(db);
+    const original = store.accept(acceptedInput()).response;
+
+    const changed = store.updateContent('sub-1', {
+      values: { topic: 'Owner clarified the brief', budget: 3000 },
+      visitor: { email: 'corrected@example.com' },
+    }, ACCEPTED_AT + 10)!;
+    expect(changed).toMatchObject({
+      values: { topic: 'Owner clarified the brief', budget: 3000 },
+      visitor: { email: 'corrected@example.com' },
+      updated_at: ACCEPTED_AT + 10,
+      submitted_at: original.submitted_at,
+      accepted_at: original.accepted_at,
+      definition_snapshot: original.definition_snapshot,
+      origin_actor: 'anonymous',
+      origin_surface: 'system',
+      lifecycle_state: 'received',
+      state_changed_at: 0,
+    });
+
+    const noOp = store.updateContent('sub-1', {
+      values: { budget: 3000, topic: 'Owner clarified the brief' },
+      visitor: { email: 'corrected@example.com' },
+    }, ACCEPTED_AT + 99)!;
+    expect(noOp.updated_at).toBe(ACCEPTED_AT + 10);
+  });
+
+  it('keeps source idempotency bound to the immutable submitted content after owner edits', () => {
+    const db = new Database(':memory:');
+    const store = createFormResponseStore(db);
+    expect(store.accept(acceptedInput()).status).toBe('created');
+    store.updateContent('sub-1', {
+      values: { topic: 'Owner working copy' },
+      visitor: {},
+    }, ACCEPTED_AT + 10);
+
+    const retry = store.accept(acceptedInput());
+    expect(retry.status).toBe('existing');
+    expect(retry.response.values).toEqual({ topic: 'Owner working copy' });
+    expect(retry.response.visitor).toEqual({});
+    expect(() => store.accept({
+      ...acceptedInput(),
+      values: { topic: 'Different source submission', budget: 2500 },
+    })).toThrow(FormResponseConflictError);
+  });
+
+  it('applies approve-time edits atomically and never overwrites them on a retry', () => {
+    const db = new Database(':memory:');
+    const store = createFormResponseStore(db);
+    const first = store.acceptWithWorkingContent(
+      acceptedInput(),
+      { values: { topic: 'Approved wording' }, visitor: {} },
+      ACCEPTED_AT + 5,
+    );
+    expect(first.status).toBe('created');
+    expect(first.response.values).toEqual({ topic: 'Approved wording' });
+    expect(first.response.updated_at).toBe(ACCEPTED_AT + 5);
+
+    store.updateContent('sub-1', {
+      values: { topic: 'Later owner edit' },
+      visitor: { email: 'later@example.test' },
+    }, ACCEPTED_AT + 20);
+    const retry = store.acceptWithWorkingContent(
+      acceptedInput(),
+      { values: { topic: 'Stale approve retry' }, visitor: {} },
+      ACCEPTED_AT + 30,
+    );
+    expect(retry.status).toBe('existing');
+    expect(retry.response.values).toEqual({ topic: 'Later owner edit' });
+    expect(retry.response.updated_at).toBe(ACCEPTED_AT + 20);
+  });
+
   it('lists newest-first and filters by form and endpoint', () => {
     const db = new Database(':memory:');
     const store = createFormResponseStore(db);
@@ -141,6 +215,21 @@ describe('FormResponseStore', () => {
     ]);
   });
 
+  it('filters list and summaries by a validated lifecycle closed list', () => {
+    const store = createFormResponseStore(new Database(':memory:'));
+    store.accept(acceptedInput());
+    store.accept({ ...acceptedInput(), submission_id: 'sub-2', accepted_at: ACCEPTED_AT + 1 });
+    store.setLifecycleState('sub-2', 'accepted', ACCEPTED_AT + 2);
+
+    expect(store.list({ lifecycle_states: ['accepted'] }).map((row) => row.submission_id))
+      .toEqual(['sub-2']);
+    expect(store.listSummaries({ lifecycle_states: ['received'] }).map((row) => row.submission_id))
+      .toEqual(['sub-1']);
+    expect(() => store.list({ lifecycle_states: [] })).toThrow(FormResponseValidationError);
+    expect(() => store.list({ lifecycle_states: ['unknown' as never] }))
+      .toThrow(FormResponseValidationError);
+  });
+
   it('projects Data-browser summaries without answer values or the frozen definition', () => {
     const db = new Database(':memory:');
     const store = createFormResponseStore(db);
@@ -155,6 +244,9 @@ describe('FormResponseStore', () => {
         visitor: { email: 'visitor@example.com' },
         submitted_at: SUBMITTED_AT,
         accepted_at: ACCEPTED_AT,
+        updated_at: ACCEPTED_AT,
+        lifecycle_state: 'received',
+        state_changed_at: 0,
         metadata: { template_ref: 'foundation:intake/free-form' },
       },
     ]);
@@ -336,5 +428,10 @@ describe('FormResponseStore', () => {
     // stamping "now" would claim every historical response changed state on
     // deploy day.
     expect(migrated.state_changed_at).toBe(0);
+    expect(migrated.updated_at).toBe(2);
+    const raw = db.prepare(
+      'SELECT source_content_hash FROM form_response WHERE submission_id = ?',
+    ).get('old-1') as { source_content_hash: string };
+    expect(raw.source_content_hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 });

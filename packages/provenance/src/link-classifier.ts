@@ -22,7 +22,7 @@
  *  classified links via `ctx.linkSink`; the caller (server's
  *  execute-handler) writes them out post-run.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import type {

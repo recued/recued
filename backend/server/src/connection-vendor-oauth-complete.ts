@@ -24,7 +24,7 @@
  *  actually started. Tokens never touch the cloud (I-18) — the exchange
  *  runs here, on the user-server.
  *
- *  Spec: `docs/d-148-spec.md` §A.12 + `project-d165-vendor-oauth-popup-scope`. */
+ *  Spec: D-148 §A.12 + `project-d165-vendor-oauth-popup-scope`. */
 
 import {
   getVendorProvider,

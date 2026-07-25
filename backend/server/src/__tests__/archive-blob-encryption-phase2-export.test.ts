@@ -4,7 +4,7 @@
  * restore (Phase 3) can re-encrypt under the restoring server's key. Verified by
  * decoding the archive records directly (the importer refuses the new
  * cache-blobs/ namespace until Phase 3, so a full round-trip lands there). See
- * docs/archive-blob-encryption-fix.md. */
+ * internal design notes. */
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -23,6 +23,7 @@ import { deriveArchiveKeys, decryptRecord } from '../archive/archive-crypto.js';
 import {
   BLOB_NAME_PREFIX,
   CACHE_BLOB_NAME_PREFIX,
+  ARCHIVE_FORMAT_VERSION,
   MAGIC_LEN,
   UINT32_LEN,
   HMAC_LEN,
@@ -92,7 +93,7 @@ describe('Phase 2 export — plaintext across postures', () => {
     expect(res.blob_count).toBe(2);
     // blob_bytes is the PLAINTEXT total (not the encrypted on-disk size).
     expect(res.manifest.blob_bytes).toBe(9000 + 3000);
-    expect(res.manifest.archive_format_version).toBe(2);
+    expect(res.manifest.archive_format_version).toBe(ARCHIVE_FORMAT_VERSION);
 
     const records = readArchiveRecords(destPath, recoveryKey);
     // The encrypted source's blob is stored as PLAINTEXT under cache-blobs/.
@@ -149,7 +150,7 @@ describe('Phase 2 export — plaintext across postures', () => {
 });
 
 describe('collectBlobHashesByStore', () => {
-  it('splits refs by CAS root: keyless=shared∪annotation, cache=cache∪collection, memory=user_memory', () => {
+  it('splits refs by CAS root: shared=shared∪annotation, cache=cache∪collection, memory=user_memory', () => {
     const db = newDb();
     db.exec(`
       CREATE TABLE cache_entries (key TEXT PRIMARY KEY, blob_hash TEXT);
@@ -169,8 +170,8 @@ describe('collectBlobHashesByStore', () => {
     db.prepare(`INSERT INTO user_memory VALUES (?, ?)`).run('umem_2', JSON.stringify({ memory_id: 'umem_2', body_inline: 'inline, no blob' }));
 
     const by = collectBlobHashesByStore(db);
-    // keyless = shared ∪ annotation.
-    expect(new Set(by.keyless)).toEqual(new Set(['shared-1', 'anno-1']));
+    // shared = shared ∪ annotation.
+    expect(new Set(by.shared)).toEqual(new Set(['shared-1', 'anno-1']));
     // cache ∪ collection, de-duped across the two.
     expect(new Set(by.cache)).toEqual(new Set(['cache-1', 'coll-1']));
     // memory = user_memory blob refs (json_extract), skipping inline-body rows.
@@ -180,12 +181,39 @@ describe('collectBlobHashesByStore', () => {
   it('tolerates missing tables (all groups empty)', () => {
     const db = newDb();
     const by = collectBlobHashesByStore(db);
-    expect(by).toEqual({ keyless: [], cache: [], memory: [] });
+    expect(by).toEqual({ shared: [], cache: [], memory: [] });
+  });
+
+  it('reports absence per store, while the stores that ARE there still scan', () => {
+    // The tolerance above must stay a per-store fact, not a blanket one: a
+    // realm without the shared/annotation/memory stores still has to export
+    // every cache reference it does hold.
+    const db = newDb();
+    db.exec(`CREATE TABLE cache_entries (key TEXT PRIMARY KEY, blob_hash TEXT);`);
+    db.exec(`INSERT INTO cache_entries VALUES ('a','cache-1');`);
+    expect(collectBlobHashesByStore(db)).toEqual({
+      shared: [], cache: ['cache-1'], memory: [],
+    });
+  });
+
+  // ⛔ The failure this closes is silent and permanent: a reader that threw for
+  // ANY reason was read as "store absent", so the export bundled a database
+  // still referencing those blobs, without their payloads, and signed it. The
+  // backup looks authentic and is discovered incomplete only on restore.
+  it('PROPAGATES a reader failure that is not a genuinely absent table', () => {
+    const db = newDb();
+    // The store IS here — its SHAPE is wrong (partial migration / corruption).
+    // Absence is the only thing allowed to shorten this scan, and this is not it.
+    db.exec(`CREATE TABLE shared_store (key TEXT PRIMARY KEY);`);
+    db.exec(`CREATE TABLE cache_entries (key TEXT PRIMARY KEY, blob_hash TEXT);`);
+    db.exec(`INSERT INTO cache_entries VALUES ('a','cache-1');`);
+
+    expect(() => collectBlobHashesByStore(db)).toThrow(/no such column/i);
   });
 });
 
-describe('buildExportBlobSources (keyless server)', () => {
-  it('builds keyless posture-tagged sources with no KeyManager', async () => {
+describe('buildExportBlobSources (D-212 keyed-always production sources)', () => {
+  it('keeps every root encrypted even while its mandatory provider is locked', async () => {
     const dir = mkdir('p2-sources-');
     const db = new Database(join(dir, 'w.db'));
     db.exec(`
@@ -193,12 +221,13 @@ describe('buildExportBlobSources (keyless server)', () => {
       CREATE TABLE shared_store (key TEXT PRIMARY KEY, blob_hash TEXT);
     `);
     db.exec(`INSERT INTO cache_entries VALUES ('a','h-cache'); INSERT INTO shared_store VALUES ('b','h-shared');`);
-    const sources = buildExportBlobSources(dir, db, undefined);
+    const sources = buildExportBlobSources(dir, db, () => null);
     const byPrefix = new Map(sources.map((s) => [s.prefix, s]));
     expect(byPrefix.get(BLOB_NAME_PREFIX)!.hashes).toEqual(['h-shared']);
-    expect(byPrefix.get(BLOB_NAME_PREFIX)!.store.encrypted).toBe(false);
+    expect(byPrefix.get(BLOB_NAME_PREFIX)!.store.encrypted).toBe(true);
     expect(byPrefix.get(CACHE_BLOB_NAME_PREFIX)!.hashes).toEqual(['h-cache']);
-    // Keyless server → the cache root is plaintext too (no key given).
-    expect(byPrefix.get(CACHE_BLOB_NAME_PREFIX)!.store.encrypted).toBe(false);
+    expect(byPrefix.get(CACHE_BLOB_NAME_PREFIX)!.store.encrypted).toBe(true);
+    await expect(byPrefix.get(BLOB_NAME_PREFIX)!.store.put(Buffer.from('x')))
+      .rejects.toThrow(/locked/);
   });
 });

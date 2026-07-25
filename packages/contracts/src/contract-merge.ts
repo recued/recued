@@ -20,7 +20,7 @@
  *  surfaces any same-precedence disagreement as a `MergeConflict` (the gateway
  *  raises a merge card at write-time, D-165 Q22).
  *
- *  Spec: `docs/d-166-spec.md` §"Merge algebra formalization" (lines 257–329) +
+ *  Spec: D-166 §"Merge algebra formalization" (lines 257–329) +
  *  §"Composition algorithm (final form)" (386–414). */
 
 import type { MergeRule } from './contract-schema.js';

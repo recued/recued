@@ -10,7 +10,7 @@
  *       malformed), default-dish conflict mapping, delete clearing the
  *       continuity snapshot.
  *
- *  Spec: docs/d-179-spec.md (RATIFIED 2026-06-12).
+ *  Spec: D-179 (RATIFIED 2026-06-12).
  */
 
 import Database from 'better-sqlite3';

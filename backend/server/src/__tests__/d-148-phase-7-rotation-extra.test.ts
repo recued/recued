@@ -85,6 +85,9 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async () => {
           throw new Error('blob-store offline');
         },
@@ -107,7 +110,7 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     });
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
-      master_dek_reencryptor: { rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
+      master_dek_reencryptor: { rekeysRealmDatabase: true, rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
       compromise_ledger: ledger,
       effects,
     });
@@ -165,7 +168,7 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     const { effects, audits } = makeEffects();
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
-      master_dek_reencryptor: { rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
+      master_dek_reencryptor: { rekeysRealmDatabase: true, rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
       compromise_ledger: createInMemoryCompromiseLedger(),
       effects,
     });
@@ -181,7 +184,7 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     };
     const engine2 = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
-      master_dek_reencryptor: { rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
+      master_dek_reencryptor: { rekeysRealmDatabase: true, rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
       compromise_ledger: createInMemoryCompromiseLedger(),
       effects: spied.effects,
     });
@@ -194,7 +197,7 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     const fixed = 1_700_000_000_000;
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
-      master_dek_reencryptor: { rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
+      master_dek_reencryptor: { rekeysRealmDatabase: true, rotate: async ({ installNewMaster }) => { await installNewMaster(); return { reencrypted_blob_count: 0 }; } },
       compromise_ledger: createInMemoryCompromiseLedger(),
       effects,
       clock: () => fixed,
@@ -203,5 +206,43 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.rotated_at).toBe(fixed);
+  });
+});
+
+describe('master_dek rotation refuses when the realm database would be orphaned', () => {
+  /** D-212 derives the realm DATABASE key from the Master DEK
+   *  (`deriveSubDEK(masterDEK, 'database')`), and this substrate does not know
+   *  that. A rotation that re-wraps both bundle wraps to a new Master DEK while
+   *  the file stays encrypted under the OLD `database` sub-DEK leaves it
+   *  readable by neither the keyfile nor the 24-word recovery key — the whole
+   *  realm, unrecoverable.
+   *
+   *  Unreachable today (no composition supplies a reencryptor), which is why
+   *  the guard is code rather than a comment: `wire-cert-stack.ts` invites a
+   *  future slice to wire one, and the webclient already tells users rotation
+   *  re-encrypts the whole warehouse. */
+  it('refuses a reencryptor that does not declare it rekeys the database', async () => {
+    const { effects } = makeEffects();
+    let rotateCalled = false;
+    const engine = createRotationEngine({
+      master_dek: { current: () => new Uint8Array(32), install: async () => {} },
+      master_dek_reencryptor: {
+        // No `rekeysRealmDatabase` — the omission must be refused, not assumed.
+        rotate: async ({ installNewMaster }) => {
+          rotateCalled = true;
+          await installNewMaster();
+          return { reencrypted_blob_count: 0 };
+        },
+      },
+      compromise_ledger: createInMemoryCompromiseLedger(),
+      effects,
+    });
+
+    const result = await engine.rotateMasterDek({ triggered_by_client_id: 'admin' });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe('database_rekey_unsupported');
+    // Refused BEFORE any key material moved — nothing to roll back.
+    expect(rotateCalled).toBe(false);
   });
 });

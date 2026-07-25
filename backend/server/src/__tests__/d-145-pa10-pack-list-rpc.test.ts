@@ -244,6 +244,37 @@ describe('D-145 PA10 follow-on — handlePacksList', () => {
     expect(pack.installed).toBe(false);
   });
 
+  it('returns installed: false when only the pack version drifts and recipe pins still match', async () => {
+    writeManifest(
+      'metadata-bump-pack',
+      baseManifest({
+        slug: 'metadata-bump-pack',
+        version: 2,
+        recipes: [{ slug: 'alpha-recipe', version: 1 }],
+      }),
+    );
+    recipeStore.save(
+      recipeDef('alpha-recipe', 1),
+      'recued-core',
+      'bundled',
+      undefined,
+      'metadata-bump-pack',
+    );
+    const store: ContractStore = createContractStore(db, { now: () => NOW });
+    recordPackInventory(store, {
+      pack_slug: 'metadata-bump-pack',
+      publisher: 'recued-core',
+      pack_version: 1,
+      contents: [],
+      installed_at: NOW,
+    });
+
+    const listed = await handlePacksList({ recipeStore, packDir, contractStore: store });
+    const pack = listed.packs.find((entry) => entry.slug === 'metadata-bump-pack')!;
+    expect(pack.installed).toBe(false);
+    expect(pack.installed_any_version).toBe(true);
+  });
+
   it('returns installed: false when any recipe is missing', async () => {
     writeManifest(
       'partial-pack',
@@ -526,6 +557,38 @@ describe('D-145 PA10 follow-on — handlePacksList', () => {
     expect(pack.installed_any_version).toBe(true); // owns `new-recipe` under this pack_slug
   });
 
+  it('a newer inventoried recipe pack with replaced slugs does not expose the older bundle as a downgrade', async () => {
+    const store: ContractStore = createContractStore(db, { now: () => NOW });
+    writeManifest(
+      'replaced-newer',
+      baseManifest({
+        slug: 'replaced-newer',
+        version: 2,
+        recipes: [{ slug: 'old-recipe', version: 2 }],
+      }),
+    );
+    recipeStore.save(
+      recipeDef('new-recipe', 5),
+      'recued-core',
+      'bundled',
+      undefined,
+      'replaced-newer',
+    );
+    recordPackInventory(store, {
+      pack_slug: 'replaced-newer',
+      publisher: 'recued-core',
+      pack_version: 5,
+      contents: [],
+      installed_at: NOW,
+    });
+
+    const listed = await handlePacksList({ recipeStore, packDir, contractStore: store });
+    const pack = listed.packs.find((entry) => entry.slug === 'replaced-newer')!;
+    expect(pack.installed).toBe(true);
+    expect(pack.installed_any_version).toBe(true);
+    expect(pack.owner_operation_review).toBeUndefined();
+  });
+
   it('installed_any_version: TRUE (both true) for a normally-installed pack at the disk version', async () => {
     writeManifest('at-disk', baseManifest({ slug: 'at-disk', recipes: [{ slug: 'alpha-recipe', version: 1 }] }));
     recipeStore.save(recipeDef('alpha-recipe', 1), 'recued-core', 'bundled', undefined, 'at-disk');
@@ -550,7 +613,7 @@ describe('D-145 PA10 follow-on — handlePacksList', () => {
     expect(result.installed_versions).toContainEqual({ slug: 'additive', version: 5, publisher: 'recued-core' }); // …but the inventory is v5
   });
 
-  it('installed_any_version: an empty-recipes pack with a version-drifted inventory row is TRUE (installed) though installed is FALSE', async () => {
+  it('an empty-recipes pack installed above the bundle is satisfied without exposing a downgrade', async () => {
     const store: ContractStore = createContractStore(db, { now: () => NOW });
     writeManifest('comp-higher', baseManifest({
       slug: 'comp-higher', manifest_version: BULK_PACK_MANIFEST_VERSION_V2, version: 2, recipes: [],
@@ -558,7 +621,7 @@ describe('D-145 PA10 follow-on — handlePacksList', () => {
     } as Partial<BulkPackManifest>));
     recordPackInventory(store, { pack_slug: 'comp-higher', publisher: 'recued-core', pack_version: 5, contents: [], installed_at: NOW });
     const pack = (await handlePacksList({ recipeStore, packDir, contractStore: store })).packs.find((p) => p.slug === 'comp-higher')!;
-    expect(pack.installed).toBe(false); // inventory v5 ≠ disk v2
+    expect(pack.installed).toBe(true); // installed v5 satisfies older disk v2
     expect(pack.installed_any_version).toBe(true); // an inventory row exists
   });
 

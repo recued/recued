@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Checkpoint } from '@recued/contracts';
+import { buildAuditEntry } from '@recued/storage';
 
 import { composeRetentionPruners } from '../composition/bin/wire-retention-pruners.js';
 
@@ -99,6 +101,78 @@ describe('composeRetentionPruners per-pruner gating', () => {
       's2s-preview-prune',
       'correction-events-prune',
     ]);
+  });
+});
+
+describe('composeRetentionPruners D-214 expiry handoff', () => {
+  it('finalizes the exact chat turn carried by the expired run source', async () => {
+    const now = 4_000_000_000;
+    const cp: Checkpoint = {
+      checkpoint_id: 'cp-chat',
+      run_id: 'run-chat',
+      recipe_id: 'mail.send',
+      gated_step_id: 'send',
+      step_state: {},
+      created_at: 1,
+    };
+    let deleted = false;
+    let current = buildAuditEntry({
+      recipe_id: 'mail.send',
+      recipe_hash: 'hash',
+      commit_status: 'awaiting_approval',
+      duration_ms: 1,
+      errors: [],
+      config_snapshot: {},
+      trigger_url: null,
+      trigger_source: 'manual',
+      instance_id: 'server',
+      run_id: 'run-chat',
+      now: 1,
+      checkpoint_id: 'cp-chat',
+      execution_source: {
+        channel: 'chat',
+        actor: 'user_self',
+        chat_session_id: 'session-chat',
+        user_id: 'owner',
+        turn_id: 'turn-chat',
+      },
+    });
+    const checkpointStore = {
+      list: vi.fn(async () => [cp]),
+      get: vi.fn(async () => deleted ? null : cp),
+      delete: vi.fn(async () => {
+        deleted = true;
+      }),
+    };
+    const auditLog = {
+      get: vi.fn(async () => current),
+      append: vi.fn(async (entry) => {
+        current = entry;
+      }),
+      logActivity: vi.fn(async () => undefined),
+    };
+    const finalizeTurn = vi.fn(async () => undefined);
+    const registrations = composeWithDeps({
+      checkpointStore,
+      auditLog,
+      executionCaseLifecycle: { finalizeTurn },
+      runtimeConfig: {
+        get: vi.fn(() => 30),
+      },
+      now: () => now,
+    });
+
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.name).toBe('checkpoint-stale-prune');
+    registrations[0]!.tick();
+    await vi.waitFor(() => {
+      expect(finalizeTurn).toHaveBeenCalledWith({
+        session_id: 'session-chat',
+        turn_id: 'turn-chat',
+      });
+    });
+    expect(deleted).toBe(true);
+    expect(current.commit_status).toBe('failed');
   });
 });
 

@@ -287,7 +287,10 @@ describe('D-192 F1 commitment evidence approval lift', () => {
       source: reactiveSystemSource,
     });
 
-    expect(verdict).toEqual({ verdict: 'admit' });
+    expect(verdict).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 
   it('keeps commitment-propose as ask for attended user_self dispatches', () => {

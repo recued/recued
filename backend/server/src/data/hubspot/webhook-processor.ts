@@ -21,14 +21,14 @@
  *      slim record. The funnel's hash-diff + meta-refresh + synthetic-
  *      event-emit pipeline runs against the materialized record
  *      uniformly with the cycle path (load-bearing decision #8 in
- *      `docs/d-129-spec.md`).
+ *      D-129).
  *
  *  The follow-up GET path makes `parseEvents` async — D-129 P5 widened
  *  `WebhookProcessor.parseEvents` to allow `Promise<...>` returns.
  *  Sync vendor processors (and the existing P3 test stubs) keep
  *  working unchanged.
  *
- *  Spec: `docs/d-129-spec.md` § A.4 + § Phase 5. */
+ *  Spec: D-129 § A.4 + § Phase 5. */
 
 import { composePlatformRecordTargetId, type ConnectionRecord } from '@recued/contracts';
 

@@ -4,7 +4,7 @@
  *  kind, return the dropdown option list — All-Sources sentinel
  *  prepended, then registered Sources in registration order.
  *
- *  Spec: docs/d-145-spec.md § A.2.2 (resolver behavior — `data.<kind>.*`
+ *  Spec: D-145 § A.2.2 (resolver behavior — `data.<kind>.*`
  *  polymorphic across all registered Sources for that kind; default-
  *  Source memory drives UI default).
  */

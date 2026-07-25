@@ -41,7 +41,7 @@
  *  Pure module — no I/O. Production callers pass the sub-DEK in; tests
  *  derive an in-memory sub-DEK and exercise round-trip.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.3 + § N.6. */
+ *  Spec: D-149 § A.5.3 + § N.6. */
 
 import { hkdfSync } from 'node:crypto';
 import { decrypt, decodeCiphertext, encodeCiphertext, encrypt } from '@recued/crypto';

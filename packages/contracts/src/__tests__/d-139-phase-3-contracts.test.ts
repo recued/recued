@@ -13,7 +13,7 @@
  *      malformed shapes per the per-field contracts.
  *    - Enum closed-list exports for trajectory + bucket.
  *
- *  Spec: docs/d-139-spec.md § A.9.1 + § P3 acceptance + § P3
+ *  Spec: D-139 § A.9.1 + § P3 acceptance + § P3
  *  contracts. */
 
 import { describe, expect, it } from 'vitest';

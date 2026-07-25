@@ -40,7 +40,7 @@
  *  module only relocates it from a modal satellite to a routed page +
  *  wires the back / create-close navigation.
  *
- *  Design record: `recued-project/handovers/webclient-ia-treemap.md` §9
+ *  Design record: internal design notes §9
  *  + Review log R19 / R19.1. */
 
 import { emptyHint, panel } from '@recued/ui-shared/primitives';

@@ -42,7 +42,7 @@
  *  re-runs the spine builder; the authoring form is local edit state
  *  until the create / upsert rpc lands.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX) + § A.5.1-A.5.6
+ *  Spec: D-149 § A.9 (Settings UX) + § A.5.1-A.5.6
  *  (per-kind config contracts) + § A.3 (preview-hash-gated create). */
 
 import {
@@ -67,6 +67,7 @@ import {
   SCHEDULING_LINK_MAX_BOOKINGS_PER_DAY_MAX,
   SCHEDULING_LINK_MAX_LEAD_TIME_DAYS_MAX,
   SCHEDULING_LINK_MIN_ADVANCE_NOTICE_HOURS_MAX,
+  SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX,
   SCHEDULING_LINK_SUCCESS_MESSAGE_MAX,
   SCHEDULING_LINK_TZ_MAX,
   validateSchedulingLinkConfig,
@@ -198,7 +199,7 @@ export interface AuthoringNumberField extends AuthoringFieldBase {
   readonly max: number;
 }
 
-/** Boolean toggle — section toggles, `create_calendar_event`, etc. */
+/** Boolean toggle — section toggles and other explicit yes/no choices. */
 export interface AuthoringToggleField extends AuthoringFieldBase {
   readonly control: 'toggle';
   readonly value: boolean;
@@ -896,8 +897,7 @@ export interface SchedulingLinkFormModel {
   readonly min_advance_notice_hours: AuthoringNumberField;
   readonly max_lead_time_days: AuthoringNumberField;
   readonly max_bookings_per_day: AuthoringNumberField;
-  readonly create_calendar_event: AuthoringToggleField;
-  readonly create_commitment_entity: AuthoringToggleField;
+  readonly notify_visitor_sender: AuthoringTextField;
 }
 
 /** One `explicit_windows[]` repeater row — mirrors
@@ -1022,19 +1022,16 @@ export const buildSchedulingLinkFormModel = (
       min: 0,
       max: SCHEDULING_LINK_MAX_BOOKINGS_PER_DAY_MAX,
     },
-    create_calendar_event: {
-      control: 'toggle',
-      key: 'on_booking.create_calendar_event',
-      label: 'Create a calendar event on booking',
-      help: 'When a booking lands, your engine creates the matching calendar event.',
-      value: ob?.create_calendar_event ?? true,
-    },
-    create_commitment_entity: {
-      control: 'toggle',
-      key: 'on_booking.create_commitment_entity',
-      label: 'Create a commitment entity on booking',
-      help: 'When a booking lands, your engine creates a commitment work-entity to track it.',
-      value: ob?.create_commitment_entity ?? true,
+    notify_visitor_sender: {
+      control: 'text',
+      key: 'on_booking.notify_visitor_sender',
+      label: 'Visitor notification sender',
+      help:
+        'Optional send-capable mail instance. Set it before using “Notify visitor” on approval.',
+      value: ob?.notify_visitor_sender ?? '',
+      max_length: SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX,
+      required: false,
+      multiline: false,
     },
   };
 };

@@ -11,7 +11,7 @@
  *  fingerprint the client rejects with `cert_pin_mismatch` on first
  *  handshake.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';

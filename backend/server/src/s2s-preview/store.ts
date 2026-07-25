@@ -10,7 +10,7 @@
  *  (downstream) both read this store; cross-server state survives
  *  via the access_token the publisher hands to the consumer.
  *
- *  Spec: `docs/d-145-spec.md` § B.13.3 + § B.13.4. */
+ *  Spec: D-145 § B.13.3 + § B.13.4. */
 
 import type Database from 'better-sqlite3';
 import {

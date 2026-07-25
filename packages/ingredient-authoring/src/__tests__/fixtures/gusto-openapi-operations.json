@@ -158,7 +158,8 @@
     },
     "approvals": {
       "always": 66,
-      "never": 69
+      "ask": 64,
+      "never": 5
     },
     "pagination": 17,
     "manual_pagination": 1,
@@ -1444,7 +1445,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1524,7 +1526,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1656,7 +1659,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1736,7 +1740,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1833,7 +1838,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1987,7 +1993,8 @@
         "reason": "The documented continue flag is response-header-only. The catalog gateway cannot inspect that custom header or derive a cursor from a root response array, so the operation exposes explicit cursor inputs and does not claim automatic completeness."
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2067,7 +2074,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2147,7 +2155,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2227,7 +2236,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2307,7 +2317,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2516,7 +2527,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2691,7 +2703,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2822,7 +2835,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2919,7 +2933,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3102,7 +3117,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3216,7 +3232,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3331,7 +3348,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3411,7 +3429,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3696,7 +3715,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3811,7 +3831,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3942,7 +3963,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4022,7 +4044,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4119,7 +4142,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4234,7 +4258,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4400,7 +4425,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4668,7 +4694,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4782,7 +4809,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4862,7 +4890,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5096,7 +5125,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5176,7 +5206,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5256,7 +5287,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5336,7 +5368,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5468,7 +5501,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5582,7 +5616,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5662,7 +5697,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5759,7 +5795,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5839,7 +5876,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5954,7 +5992,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6086,7 +6125,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6166,7 +6206,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6281,7 +6322,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6361,7 +6403,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6476,7 +6519,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6556,7 +6600,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6636,7 +6681,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6716,7 +6762,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6813,7 +6860,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6893,7 +6941,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6990,7 +7039,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7052,7 +7102,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7132,7 +7183,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7212,7 +7264,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7344,7 +7397,8 @@
       },
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7424,7 +7478,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7521,7 +7576,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7601,7 +7657,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7681,7 +7738,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7839,7 +7897,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7919,7 +7978,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8057,7 +8117,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8197,7 +8258,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8337,7 +8399,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8434,7 +8497,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -10779,7 +10843,8 @@
       "pagination": null,
       "manual_pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
+      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],

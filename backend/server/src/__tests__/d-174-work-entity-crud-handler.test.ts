@@ -494,6 +494,80 @@ describe('D-174 work_entity.list / get', () => {
     const out = await handleWorkEntityGet(deps, { kind: 'task', id: 'missing' });
     expect(out.entity).toBeNull();
   });
+
+  it('applies booking search/lifecycle filters before pagination and keeps total honest', async () => {
+    store.writeBooking({
+      id: 'booking-match-1', source_id: RECUED_BUILTIN_SOURCE_ID('booking'),
+      title: 'Discovery call', lifecycle_state: 'completed',
+      counterparty_contact_id: 'contact-needle',
+    }, NOW);
+    store.writeBooking({
+      id: 'booking-match-2', source_id: RECUED_BUILTIN_SOURCE_ID('booking'),
+      title: 'Needle review', lifecycle_state: 'completed',
+    }, NOW + 1);
+    store.writeBooking({
+      id: 'booking-open', source_id: RECUED_BUILTIN_SOURCE_ID('booking'),
+      title: 'Needle pending', lifecycle_state: 'confirmed',
+    }, NOW + 2);
+
+    const page = await handleWorkEntityList(deps, {
+      kind: 'booking',
+      search: 'needle',
+      booking_lifecycle_states: ['completed'],
+      limit: 1,
+    });
+    expect(page.entities).toHaveLength(1);
+    expect(page.total).toBe(2);
+    expect(page.entities[0]?._kind).toBe('booking');
+  });
+
+  it('rejects booking-only filters on every other kind at the RPC boundary', async () => {
+    await expect(handleWorkEntityList(deps, { kind: 'task', search: 'x' }))
+      .rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handleWorkEntityList(deps, {
+      kind: 'note',
+      booking_lifecycle_states: ['completed'],
+    })).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('enriches owner booking detail with prior terminal history only', async () => {
+    store.registerSource({
+      id: 'legacy.booking',
+      top_tier_kind: 'booking',
+      source_kind: 'builtin',
+      source_label: 'Legacy bookings',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.writeBooking({
+      id: 'booking-old', source_id: 'legacy.booking', title: 'Prior visit',
+      lifecycle_state: 'no_show', counterparty_contact_id: 'contact-opaque',
+      state_changed_at: NOW - 10,
+    }, NOW - 10);
+    store.writeBooking({
+      id: 'booking-open-old', source_id: 'legacy.booking', title: 'Still open',
+      lifecycle_state: 'confirmed', counterparty_contact_id: 'contact-opaque',
+    }, NOW - 5);
+    store.setSourceEnabled('legacy.booking', false);
+    store.writeBooking({
+      id: 'booking-current', source_id: RECUED_BUILTIN_SOURCE_ID('booking'),
+      title: 'Current visit', lifecycle_state: 'confirmed',
+      counterparty_contact_id: 'contact-opaque',
+    }, NOW);
+
+    const result = await handleWorkEntityGet(deps, {
+      kind: 'booking', id: 'booking-current',
+    });
+    expect(result.booking_history).toMatchObject({
+      counterparty_contact_id: 'contact-opaque',
+      total: 1,
+      entries: [{ id: 'booking-old', lifecycle_state: 'no_show' }],
+    });
+    expect(JSON.stringify(result.booking_history)).not.toContain('@');
+    expect(JSON.stringify(result.booking_history)).not.toContain('booking-current');
+    expect(JSON.stringify(result.booking_history)).not.toContain('booking-open-old');
+  });
 });
 
 describe('D-174 work_entity.* — validation surfaces', () => {

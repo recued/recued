@@ -30,12 +30,15 @@ export const IV_LEN = 12;
 export const AEAD_TAG_LEN = 16;
 
 /** Current archive format version. Bump on breaking layout changes.
- *  v2 (blob-encryption fix Phase 2): blob records are split by encryption
- *  posture across `blobs/` (keyless), `cache-blobs/` (cache + collections), and
- *  `memory-blobs/` (memory), all carrying PLAINTEXT. A pre-v2 consumer refuses a
+ *  v2 (blob-encryption fix Phase 2): blob records are split by destination root
+ *  across `blobs/` (shared + annotation), `cache-blobs/` (cache + collections),
+ *  and `memory-blobs/` (memory), all carrying PLAINTEXT. A pre-v2 consumer refuses a
  *  v2 archive at the `archive_format_version > ARCHIVE_FORMAT_VERSION` gate
- *  (`archive-import.ts`) rather than silently discarding the new record kinds. */
-export const ARCHIVE_FORMAT_VERSION = 2;
+ *  (`archive-import.ts`) rather than silently discarding the new record kinds.
+ *  v3 (D-212 slice 1): `server-vault-bundle.json` carries the db-adjacent
+ *  dual-wrapped Master-DEK sidecar. It must restore alongside the db so a
+ *  recovery-key-only disaster recovery can open the restored realm. */
+export const ARCHIVE_FORMAT_VERSION = 3;
 
 /** Current schema version for SQLite tables. Bump when warehouse /
  *  server_state / vault table schemas change shape in a way that
@@ -48,7 +51,7 @@ export const SCHEMA_VERSION = 2;
 /** Minimum consumer version that understands this archive. Bumped
  *  alongside breaking format changes. Producers always write their
  *  own version; the consumer rejects if current < min_consumer.
- *  Bumped to 0.2.0 for the blob-encryption fix (posture-split, plaintext-
+ *  Bumped to 0.2.0 for the blob-encryption fix (root-split, plaintext-
  *  carrying blob records that only a Phase-3+ restore can route). */
 export const MIN_CONSUMER_VERSION = '0.2.0';
 
@@ -62,6 +65,9 @@ export interface ArchiveManifest {
   db_size_bytes: number;
   blob_count: number;
   blob_bytes: number;
+  /** D-212: archive carries `FILE_NAMES.serverVault`. The streaming importer
+   *  uses this to fail closed if a blob appears before the bundle. */
+  includes_server_vault_bundle?: boolean;
   encryption: {
     algorithm: 'aes-256-gcm';
     key_derivation: 'hkdf-sha-256';
@@ -77,7 +83,10 @@ export interface ArchiveManifest {
 export const FILE_NAMES = {
   db: 'db.sqlite',
   config: 'config.toml',
+  /** Legacy password/recovery FileVault bundle (`Bundle`). */
   vault: 'vault-bundle.json',
+  /** D-212: server-key/recovery-key dual-wrapped Master DEK (`ServerBundle`). */
+  serverVault: 'server-vault-bundle.json',
   /** A signed `migration_full` server passport (D-148 § A.9) attesting the
    *  identity that produced THIS snapshot. Optional (the export-time
    *  "include identity passport" toggle). On import it is the provenance
@@ -85,12 +94,13 @@ export const FILE_NAMES = {
   passport: 'passport.json',
 } as const;
 
-/** Blob records are named `<prefix><hash>`, split by the source store's
- *  encryption posture (blob-encryption fix Phase 2) so the importer can route
- *  each to the right restore store + re-encrypt under the restoring server's
+/** Blob records are named `<prefix><hash>`, split by destination root
+ *  (blob-encryption fix Phase 2) so the importer can route each to the right
+ *  restore store + re-encrypt under the restoring server's
  *  key. `hash` is always the CAS hash of the PLAINTEXT (what the archive
- *  carries), matching `<table>.blob_hash`. The bare `blobs/` prefix stays the
- *  KEYLESS root (shared + annotation) for backward compatibility. The three
+ *  carries), matching `<table>.blob_hash`. The bare `blobs/` prefix remains the
+ *  historical shared + annotation wire namespace for backward compatibility;
+ *  D-212 slice 4 encrypts that production root too. The three
  *  prefixes are mutually non-overlapping (distinct leading text), so the
  *  importer's `startsWith` routing is order-independent. */
 export const BLOB_NAME_PREFIX = 'blobs/';

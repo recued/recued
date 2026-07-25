@@ -33,7 +33,7 @@
  *  reference id, the field labels + values) IS html-escaped — those are
  *  visitor-supplied / substrate-supplied raw strings.
  *
- *  Spec: docs/d-149-spec.md § A.20.3 + § A.20.7 + § N.7. */
+ *  Spec: D-149 § A.20.3 + § A.20.7 + § N.7. */
 
 import {
   buildVisitorReceipt,

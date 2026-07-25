@@ -19,11 +19,12 @@
  *      ▸ Email Bob — Done
  *      ▸ …
  *
- *  Spec: docs/d-145-spec.md § Phase PA6.
+ *  Spec: D-145 § Phase PA6.
  */
 
 import {
   workEntityNavSpec,
+  type BookingLifecycleState,
   type FormDefinition,
   type SourceDropdownOption,
   type WorkEntityListRow,
@@ -61,6 +62,8 @@ export interface WorkEntityPageProps {
    *  load-more footer ("Showing N of M" + Load more). The host owns the
    *  pagination state + action wiring; the page just gives it a slot. */
   footer_html?: string;
+  /** Booking-only server-side lifecycle filter echoed into the list control. */
+  booking_lifecycle_filter?: BookingLifecycleState | 'all';
 }
 
 export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
@@ -100,6 +103,9 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     show_source_label: showSourceLabel,
     empty_state_copy: spec.empty_state_copy,
     search_query: state.search_query,
+    ...(state.kind === 'booking'
+      ? { booking_lifecycle_filter: props.booking_lifecycle_filter ?? 'all' }
+      : {}),
   });
 
   const dialogHtml =

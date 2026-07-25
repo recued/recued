@@ -5,7 +5,7 @@
  *  shape + behavior as the existing `listByRecipe`: in-memory filter
  *  + sorted DESC by `started_at` + optional limit.
  *
- *  Spec: docs/d-153-spec.md § Three-tier session IDs. */
+ *  Spec: D-153 § Three-tier session IDs. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -13,7 +13,7 @@
  *  decision table is unit-testable in isolation and the block's fan-out
  *  loop reads as a thin map over them.
  *
- *  Spec: docs/d-169-spec.md § A.6 / N.6 / I-10. */
+ *  Spec: D-169 § A.6 / N.6 / I-10. */
 
 import type { BridgeModeSettings } from './types.js';
 

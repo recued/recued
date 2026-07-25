@@ -20,7 +20,7 @@
  *  envelope as a last resort. Insert paths refuse anything still over
  *  the cap.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import {

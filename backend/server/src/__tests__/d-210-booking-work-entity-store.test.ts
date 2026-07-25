@@ -289,6 +289,184 @@ describe('booking storage round-trip', () => {
     expect(store.readBooking(two.id)?.sync_state).toBe('tombstoned');
   });
 
+  it('searches bookings in SQL before pagination with literal wildcard handling', () => {
+    store.writeBooking({ id: 'booking-percent', source_id: 'recued.booking', title: '100% ready' }, NOW);
+    store.writeBooking({ id: 'booking-plain', source_id: 'recued.booking', title: '100X ready' }, NOW + 1);
+    store.writeBooking({ id: 'booking_under', source_id: 'recued.booking', title: 'Needs_followup' }, NOW + 2);
+    store.writeBooking({
+      id: 'booking-contact',
+      source_id: 'recued.booking',
+      title: 'Consultation',
+      counterparty_contact_id: 'contact-opaque-77',
+    }, NOW + 3);
+
+    expect(store.listBookings({ search: '%' }).map((row) => row.id))
+      .toEqual(['booking-percent']);
+    expect(store.listBookings({ search: '_' }).map((row) => row.id))
+      .toEqual(['booking_under']);
+    expect(store.listBookings({ search: 'opaque-77', limit: 1 }).map((row) => row.id))
+      .toEqual(['booking-contact']);
+    expect(store.countBookings({ search: 'ready' })).toBe(2);
+    expect(store.listBookings({ search: "%' OR 1=1 --" })).toEqual([]);
+  });
+
+  it('folds case across the full Unicode range, not just ASCII', () => {
+    // ⛔ REGRESSION GUARD. SQLite's built-in LOWER() is ASCII-only, so a
+    // SQL-lowered column compared against a JS-lowered pattern matches NOTHING
+    // for accented or non-Latin text. The owner types the name exactly as it is
+    // displayed and gets an empty page — and countBookings, running the same
+    // predicate, reports 0, so the empty result looks authoritative.
+    store.writeBooking(
+      { id: 'booking-ecole', source_id: 'recued.booking', title: 'École review' },
+      NOW,
+    );
+    store.writeBooking(
+      // ⚠ The NAME goes in the title, not `counterparty_contact_id` — that
+      // column is fenced to opaque identifiers precisely so a visitor's name or
+      // address cannot reach a history response.
+      { id: 'booking-garcia', source_id: 'recued.booking', title: 'Call — José García' },
+      NOW + 1,
+    );
+
+    // As displayed, upper-cased, and lower-cased all reach the same row.
+    for (const term of ['École', 'ÉCOLE', 'école']) {
+      expect(store.listBookings({ search: term }).map((row) => row.id))
+        .toEqual(['booking-ecole']);
+      expect(store.countBookings({ search: term })).toBe(1);
+    }
+    for (const term of ['José', 'JOSÉ', 'josé garcía']) {
+      expect(store.listBookings({ search: term }).map((row) => row.id))
+        .toEqual(['booking-garcia']);
+    }
+    // Non-Latin scripts fold (or pass through) without dropping the row.
+    store.writeBooking(
+      { id: 'booking-cyrillic', source_id: 'recued.booking', title: 'Встреча' },
+      NOW + 2,
+    );
+    expect(store.listBookings({ search: 'встреча' }).map((row) => row.id))
+      .toEqual(['booking-cyrillic']);
+  });
+
+  it('orders bookings by a total key so pages cannot duplicate or skip', () => {
+    // Same-millisecond rows (one seeded/imported batch) under LIMIT/OFFSET.
+    for (const id of ['b-aaa', 'b-bbb', 'b-ccc', 'b-ddd']) {
+      store.writeBooking({ id, source_id: 'recued.booking', title: id }, NOW);
+    }
+    const first = store.listBookings({ limit: 2, offset: 0 }).map((row) => row.id);
+    const second = store.listBookings({ limit: 2, offset: 2 }).map((row) => row.id);
+    expect(new Set([...first, ...second]).size).toBe(4);
+    expect([...first, ...second]).toEqual(['b-ddd', 'b-ccc', 'b-bbb', 'b-aaa']);
+  });
+
+  it('filters lifecycle before pagination and validates booking-only filters', () => {
+    for (const [id, lifecycle_state] of [
+      ['b-pending', 'pending'],
+      ['b-confirmed', 'confirmed'],
+      ['b-completed', 'completed'],
+    ] as const) {
+      store.writeBooking({
+        id,
+        source_id: 'recued.booking',
+        title: id,
+        lifecycle_state,
+      }, NOW + id.length);
+    }
+    const page = store.listBookings({
+      booking_lifecycle_states: ['pending', 'completed'],
+      limit: 1,
+    });
+    expect(page).toHaveLength(1);
+    expect(store.countBookings({ booking_lifecycle_states: ['pending', 'completed'] })).toBe(2);
+    expect(() => store.listBookings({ booking_lifecycle_states: ['attended' as never] }))
+      .toThrow(WorkEntityValidationError);
+    expect(() => store.listBookings({ search: 'x'.repeat(201) }))
+      .toThrow(WorkEntityValidationError);
+    expect(() => store.listTasks({ search: 'booking-only' }))
+      .toThrow(WorkEntityValidationError);
+  });
+
+  it('returns only prior terminal customer history, independent of source liveness', () => {
+    const write = (
+      id: string,
+      lifecycle_state: 'confirmed' | 'completed' | 'no_show',
+      contact = 'contact-opaque-1',
+      at = NOW,
+    ) => store.writeBooking({
+      id,
+      source_id: 'recued.booking',
+      title: `Booking ${id}`,
+      lifecycle_state,
+      counterparty_contact_id: contact,
+      slot_start_at: at + 1_000,
+      slot_end_at: at + 2_000,
+      state_changed_at: at,
+      // 🔴 The row DELIBERATELY carries visitor-shaped content in the columns a
+      // whole-row spread would leak. Without this the absence assertions below
+      // are vacuous — they would pass against ANY projection, including one
+      // that returns the entire row. [[a_defaulted_field_is_not_evidence]]
+      reception_record_id: `sub-${id}`,
+      source_record_hash: `hash-${id}`,
+      source_extension_blob: {
+        visitor_email: 'visitor@example.com',
+        visitor_notes: 'Please call my mobile, I am at 12 Rue Lafayette',
+      },
+    }, at);
+    write('completed-old', 'completed', 'contact-opaque-1', NOW + 1);
+    write('no-show-new', 'no_show', 'contact-opaque-1', NOW + 3);
+    write('current', 'completed', 'contact-opaque-1', NOW + 4);
+    write('still-open', 'confirmed', 'contact-opaque-1', NOW + 5);
+    write('other-contact', 'completed', 'contact-opaque-2', NOW + 6);
+    store.setSourceEnabled('recued.booking', false);
+
+    const history = store.getBookingHistory({
+      counterparty_contact_id: 'contact-opaque-1',
+      exclude_booking_id: 'current',
+      limit: 1,
+    });
+    expect(history.total).toBe(2);
+    // ⛔ EXACT key set, not `objectContaining`. `toMatchObject` /
+    // `objectContaining` cannot prove a field is ABSENT, so a projection that
+    // started spreading the whole row — leaking `source_extension_blob`,
+    // `reception_record_id`, `monetary_amount` — would still pass them.
+    // [[an_absent_key_needs_object_hasown]]
+    expect(history.entries).toHaveLength(1);
+    expect(Object.keys(history.entries[0]!).sort()).toEqual([
+      'created_at',
+      'id',
+      'lifecycle_state',
+      'slot_end_at',
+      'slot_start_at',
+      'state_changed_at',
+      'title',
+    ]);
+    expect(history.entries[0]).toMatchObject({
+      id: 'no-show-new',
+      lifecycle_state: 'no_show',
+    });
+    for (const leaked of [
+      'source_extension_blob',
+      'reception_record_id',
+      'monetary_amount',
+      'source_record_hash',
+    ]) {
+      expect(Object.hasOwn(history.entries[0]!, leaked)).toBe(false);
+    }
+    const serialized = JSON.stringify(history);
+    // Now non-vacuous: the fixture DOES contain an address and free-form
+    // visitor text, so these fail the moment either reaches the response.
+    expect(serialized).not.toContain('@');
+    expect(serialized).not.toContain('Rue Lafayette');
+    expect(serialized).not.toContain('sub-');
+    expect(serialized).not.toContain('still-open');
+    expect(serialized).not.toContain('other-contact');
+    expect(serialized).not.toContain('current');
+
+    expect(() => store.getBookingHistory({ counterparty_contact_id: '', limit: 10 }))
+      .toThrow(WorkEntityValidationError);
+    expect(() => store.getBookingHistory({ counterparty_contact_id: 'contact-1', limit: 51 }))
+      .toThrow(WorkEntityValidationError);
+  });
+
   it('reaches the polymorphic readers by kind', () => {
     const b = store.writeBooking(
       { source_id: 'recued.booking', title: 'Polymorphic' },

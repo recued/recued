@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -86,6 +86,16 @@ describe('blob-store decryptToFile (encrypted → scratch plaintext)', () => {
     const store = createBlobStore(root);
     const hash = await store.put(randomBytes(1000));
     await expect(store.decryptToFile!(hash, scratch)).rejects.toThrow(/encryption mode/);
+  });
+
+  // This is the one place a keyed blob's plaintext exists as a file, so it must
+  // not be readable by anyone but the owner for the moment it does.
+  it('the scratch plaintext is owner-only', async () => {
+    if (process.platform === 'win32') return; // no POSIX mode bits
+    const store = enc();
+    const hash = await store.put(randomBytes(5000));
+    await store.decryptToFile!(hash, scratch);
+    expect(statSync(scratch).mode & 0o077).toBe(0);
   });
 });
 

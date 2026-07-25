@@ -1,4 +1,7 @@
 import {
+  describeUnstorable,
+  findUnstorableStrings,
+  UNSTORABLE_FINDING_LIMIT,
   KIND_ALLOWED_TIERS,
   OP_KINDS,
   isOpKind,
@@ -1536,6 +1539,33 @@ const validateOperations = (
     if (typeof row.approval !== 'string' || !OPERATION_APPROVALS.has(row.approval as OperationApproval)) {
       add('error', 'composition_operation_approval_invalid', `${path}.approval`, 'approval must be one of never|ask|always');
     }
+    // D-211 Slice 4 — a reason is recommended for every deliberately held read.
+    // It remains a warning for a discriminating row, but becomes part of the
+    // error-level exemption when a pack holds every read (see the pack fence
+    // below). The value is a compact extensible code, not policy-bearing prose.
+    const approvalReasonValid = row.approval_reason === undefined
+      || (isNonEmptyString(row.approval_reason)
+        && /^[a-z][a-z0-9_]{2,63}$/.test(row.approval_reason));
+    if (!approvalReasonValid) {
+      add(
+        'error',
+        'composition_operation_approval_reason_invalid',
+        `${path}.approval_reason`,
+        'approval_reason must be a 3-64 character lowercase snake_case code when present',
+      );
+    }
+    if (
+      risk === 'read'
+      && (row.approval === 'ask' || row.approval === 'always')
+      && row.approval_reason === undefined
+    ) {
+      add(
+        'warn',
+        'composition_operation_approval_reason_recommended',
+        `${path}.approval_reason`,
+        'a held read should explain its authored judgment with approval_reason',
+      );
+    }
     // D-185 Slice 3b — the `out` required-non-empty rule is RETIRED (the field is gone).
     if (row.args !== undefined) {
       validateOperationArgs(row.args, `${path}.args`, add);
@@ -1680,6 +1710,20 @@ export const validateCompositionStructure = (body: unknown): CompositionValidati
     return issues;
   }
   const raw = body;
+
+  // Storable-encoding sweep — a composition authored standalone never reaches
+  // `parseBulkPackManifest`, which carries this check for whole packs, so the
+  // authoring gate would otherwise pass content the publish gate rejects. Same
+  // shared walk, so the two can never drift.
+  const unstorable = findUnstorableStrings(body);
+  for (const f of unstorable) {
+    add('error', 'unstorable_encoding', f.path.replace(/^\./, ''), describeUnstorable(f));
+  }
+  if (unstorable.length >= UNSTORABLE_FINDING_LIMIT) {
+    add('error', 'unstorable_encoding_truncated', '',
+      `report capped at ${UNSTORABLE_FINDING_LIMIT} findings; there may be more`);
+  }
+
   const bytes = serializedBytes(body);
   if (bytes === null) {
     add('error', 'composition_serialization_failed', '', 'composition body must be JSON-serializable');
@@ -1870,6 +1914,38 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
         validateCompositionContentRef(content, `contents[${idx}]`, issues);
       }
     });
+  }
+  // D-211 Slice 4 — the read-hold lever returns only as a discriminating
+  // author judgment. A pack with at least three reads may hold every read only
+  // when every held row carries an explicit reason; otherwise GET→ask/always
+  // machine-stamping would recreate the noise D-209 removed. The threshold
+  // avoids treating one- and two-read packs as evidence of a blanket rule.
+  if (isPlainObject(pack) && Array.isArray(pack.contents)) {
+    const reads: Array<Record<string, unknown>> = [];
+    for (const content of pack.contents) {
+      if (
+        !isPlainObject(content)
+        || content.type !== 'composition'
+        || !isPlainObject(content.composition)
+        || !Array.isArray(content.composition.operations)
+      ) continue;
+      for (const operation of content.composition.operations) {
+        if (isPlainObject(operation) && operation.risk === 'read') reads.push(operation);
+      }
+    }
+    const allHeld = reads.length >= 3
+      && reads.every(({ approval }) => approval === 'ask' || approval === 'always');
+    const everyHeldReadExplained = reads.every(({ approval_reason: reason }) =>
+      isNonEmptyString(reason) && /^[a-z][a-z0-9_]{2,63}$/.test(reason));
+    if (allHeld && !everyHeldReadExplained) {
+      addIssue(
+        issues,
+        'error',
+        'composition_pack_reads_uniformly_held',
+        'contents',
+        'a pack with at least three reads must not hold every read at ask/always unless every held read carries a valid approval_reason',
+      );
+    }
   }
   return issues;
 };

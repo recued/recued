@@ -13,7 +13,7 @@
  *  NOT vary at runtime; a different mode is a different adapter with a
  *  different `name`.
  *
- *  Spec: docs/d-158-spec.md § A.4 / N.4 + docs/d-163-spec.md § N.1-N.3.
+ *  Spec: D-158 § A.4 / N.4 + D-163 § N.1-N.3.
  */
 
 import type { AskOption, ChannelName, NotificationMessage } from '../types.js';
@@ -80,7 +80,7 @@ export interface Channel {
    *  it MUST NOT vary at runtime. Recipe-mode `pii-protect` /
    *  `pii-restore` are explicit steps unaffected by this flag.
    *
-   *  Spec: docs/d-167-spec.md § "Channel ownership signal" + P0/P1. */
+   *  Spec: D-167 § "Channel ownership signal" + P0/P1. */
   readonly owns_llm_egress: boolean;
 
   /** Deliver a fire-and-forget `notify` to this surface. Collects no

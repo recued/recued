@@ -24,7 +24,8 @@ import {
   type MigrateDeps,
 } from '../migration/auth-migrate-handler.js';
 import { runMigration } from '../migration/migration-runner.js';
-import { createBlobStore, createSQLiteCacheStore } from '../storage/index.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore } from '../storage/index.js';
 import type { CacheEntry } from '@recued/cache';
 import { RpcError } from '@recued/contracts';
 import { deriveSubDEK, bundleFromJSON } from '@recued/crypto';

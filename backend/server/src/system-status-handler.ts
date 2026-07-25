@@ -60,6 +60,15 @@ export interface SystemStatusDeps {
   /** Recent error count (audit log `status='error'` rows in last 1h).
    *  Absent → `null`. */
   countRecentErrors?: () => Promise<number | null>;
+  /** D-212 §7.10 — the standing keyfile-sealing posture, read from the live
+   *  key store's own header rather than from what the caller intended.
+   *
+   *  🔑 This is not a diagnostic counter, it is the floor §7.10 enforces in
+   *  place of the retracted §7.9 refusal. An operator may choose an unsealed
+   *  keyfile; what they may not do is choose it without knowing. Absent → `null`
+   *  (not wired), which is deliberately distinct from `'none'` (known-unsealed).
+   */
+  getKeyfileSealing?: () => 'machine' | 'passphrase' | 'none' | null;
   /** Clock — defaults to `Date.now`. */
   now?: () => number;
 }
@@ -125,6 +134,7 @@ export const handleSystemStatus = async (
       pending_asks,
       schedule_queue_depth,
       recent_error_count,
+      keyfile_sealing: deps.getKeyfileSealing ? deps.getKeyfileSealing() : null,
       snapshot_at: now,
     },
   };

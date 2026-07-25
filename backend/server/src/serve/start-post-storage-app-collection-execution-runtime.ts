@@ -3,6 +3,7 @@ import {
   type AppContext,
   type ComposeAppContextOptions,
 } from './compose-app-context.js';
+import { dirname } from 'node:path';
 import { backgroundServices as defaultBackgroundServices } from '../composition/bin/background-services-instance.js';
 import { housekeepingSchedulerRegistry as defaultSchedulerRegistry } from '../composition/bin/housekeeping-scheduler-instance.js';
 import type { BaseContext } from './compose-base-context.js';
@@ -23,6 +24,9 @@ import {
 import { resolveReceptionInboxFanoutModeFromStore } from '../ports/reception/handlers/trust-footer.js';
 import type { KeyManager } from '../key-manager.js';
 import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
+import { createServerBundleStore } from '../server-bundle-store.js';
+import { reconcileServerBundleSwap } from '../archive/server-bundle-swap.js';
+import { reclaimDisplacedBlobs } from '../archive/archive-restore.js';
 
 type CollectionDerivedKeys =
   | 'db'
@@ -145,6 +149,56 @@ export const startPostBaseStorageVaultRuntime = async (
     options.backgroundServices ?? defaultBackgroundServices;
   const schedulerRegistry =
     options.schedulerRegistry ?? defaultSchedulerRegistry;
+  // D-212 slice 1 — resolve the dual-wrapped Master-DEK bundle sidecar BEFORE
+  // storage composition. The store itself is pure filesystem I/O and does not
+  // need SQLite open; later slices can therefore unlock/key the db at this
+  // boundary without reintroducing the old bundle-inside-db cycle.
+  // A restore killed between overlaying a blob and committing leaves the
+  // pre-restore original parked beside it. Their fate is only decidable from
+  // the swap outcome: a completed swap means the archive's blobs are the live
+  // ones, anything else means the OLD database survived and still references
+  // the parked bytes. The CAS sweep cannot make that call and deliberately
+  // leaves parks alone, so this is where they are reclaimed.
+  //
+  // Passed INTO the reconcile rather than run after it: the marker is the only
+  // durable record of the verdict, so the parks have to be resolved while it
+  // still exists. Reclaiming afterwards meant a kill in the gap left "parks,
+  // no marker" — read by the next boot as an uncommitted restore.
+  let reclaimedParks = { restored: 0, reaped: 0, complete: true };
+  const bundleSwapRecovery = reconcileServerBundleSwap(base.dbPath, (committed) => {
+    reclaimedParks = reclaimDisplacedBlobs(dirname(base.dbPath), committed);
+    // Reported back so the journal keeps its marker when a park could not be
+    // resolved — the next boot then re-decides it rather than losing the verdict.
+    return reclaimedParks.complete;
+  });
+  if (bundleSwapRecovery.recovery !== 'none') {
+    console.warn(
+      `[archive] ${bundleSwapRecovery.recovery} interrupted db + server-bundle restore swap`,
+    );
+  }
+  // Boot proceeds on an unretired journal — a park it cannot move must never
+  // fail a boot (that is the standing rule for this reclaim). The marker simply
+  // waits for a boot that can finish it. Say so, because the realm is carrying
+  // an open journal and the operator is the one who can clear the blocker.
+  if (!bundleSwapRecovery.retired) {
+    console.warn(
+      '[archive] a parked pre-restore blob could not be reclaimed; the restore journal is kept '
+        + 'for the next boot. Archive restores are refused until it retires.',
+    );
+  }
+  // No journal at all — so no restore reached the point of having one, and any
+  // park is debris from a kill DURING the stream, before the marker existed.
+  // The old database is still the live one; put them back.
+  if (bundleSwapRecovery.recovery === 'none') {
+    reclaimedParks = reclaimDisplacedBlobs(dirname(base.dbPath), false);
+  }
+  if (reclaimedParks.restored > 0 || reclaimedParks.reaped > 0) {
+    console.warn(
+      `[archive] reclaimed interrupted-restore blobs (restored=${reclaimedParks.restored}, reaped=${reclaimedParks.reaped})`,
+    );
+  }
+  const serverBundleStore = createServerBundleStore(base.dbPath);
+  const initialServerBundle = serverBundleStore.load();
   // Slice 4 — late-bound vault key. `keysRef` is published after
   // composeAppContext (deeper in the boot), so at the first-boot vault load
   // it returns null (locked ⇒ env-only baseVault) and yields the real
@@ -224,6 +278,8 @@ export const startPostBaseStorageVaultRuntime = async (
     app: {
       db: storageContext.db,
       dbPath: base.dbPath,
+      serverBundleStore,
+      initialServerBundle,
       envLlmConfig: storageContext.envLlmConfig,
       gateRegistry: storageContext.gateRegistry,
       auditLog: storageContext.auditLog,

@@ -20,7 +20,7 @@
  *      pairs counted as separate touches (not collapsed)
  *    - event_at: `null` rows excluded (touch hasn't happened)
  *
- *  Spec: docs/d-139-spec.md § A.9.1 + § P3 acceptance. */
+ *  Spec: D-139 § A.9.1 + § P3 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -267,12 +267,48 @@ describe('D-164 P4e runGate short-circuit and dependency inputs', () => {
       text: EMAIL_TEXT,
       slots: [EMAIL_SLOT],
       locale: 'en',
+      localeCandidates: ['en'],
     });
     expect(probeData).toHaveBeenCalledWith({
       template: TEMPLATE,
       slots: [EMAIL_SLOT],
+      locale: 'en',
     });
     expect(renderTemplate).toHaveBeenCalledWith(TEMPLATE, SNAPSHOT);
+  });
+
+  it('contributes only bounded schema data before a deterministic resolve', async () => {
+    const { contribute, ctx, resolve } = makeTurnContext([
+      makeSessionEntry('user', EMAIL_TEXT, 1),
+    ]);
+    const snapshot: DataSnapshot = {
+      data: {
+        email: 'bob@example.com',
+        raw_probe_state: 'must not be retained',
+      },
+      entity_parts: [{
+        entity: 'contact',
+        payload: [{ email: 'bob@example.com' }],
+      }],
+    };
+    const { deps } = makeDeps({ probeResult: snapshot });
+
+    await expect(runGate(ctx, deps)).resolves.toMatchObject({
+      kind: 'short-circuit',
+    });
+    expect(contribute).toHaveBeenCalledOnce();
+    expect(contribute).toHaveBeenCalledWith({
+      role: 'entity',
+      entity: 'contact',
+      payload: [{ email: 'bob@example.com' }],
+      render: expect.any(Function),
+    });
+    expect(contribute.mock.invocationCallOrder[0]).toBeLessThan(
+      resolve.mock.invocationCallOrder[0]!,
+    );
+    expect(JSON.stringify(contribute.mock.calls[0]?.[0])).not.toContain(
+      'raw_probe_state',
+    );
   });
 
   it('passes the exact matcher slots through to the data-presence probe', async () => {
@@ -431,6 +467,70 @@ describe('D-164 P4e runGate input-text selection', () => {
     expect(matchTemplate).toHaveBeenCalledWith(expect.objectContaining({
       text: latestUser.text,
     }));
+  });
+});
+
+describe('D-164 contextual known-name lookup seam', () => {
+  const contextualDeps = (
+    lookupKnownEntityNames: NonNullable<GateDeps['lookupKnownEntityNames']>,
+  ): GateDeps => ({
+    lookupKnownEntityNames,
+    matchTemplate: matchContactAttributeTemplate,
+    probeData: createContactAttributePresenceProbe((name) => name === 'Alice Bond'
+      ? [{ name: 'Alice Bond', email: 'alice@x.com' }]
+      : []),
+    renderTemplate: createTemplateRenderer(),
+  });
+
+  it('recovers a lowercase name, then preserves the ordinary matcher + unique probe path', async () => {
+    const text = "what is alice bond's email address?";
+    const lookupKnownEntityNames = vi.fn(() => ['Alice Bond']);
+    const { ctx, resolve } = makeTurnContext([
+      makeSessionEntry('user', text, 1),
+    ]);
+
+    await expect(runGate(ctx, contextualDeps(lookupKnownEntityNames))).resolves.toEqual({
+      kind: 'short-circuit',
+      text: "Alice Bond's email address is alice@x.com.",
+    });
+    expect(lookupKnownEntityNames).toHaveBeenCalledOnce();
+    expect(lookupKnownEntityNames).toHaveBeenCalledWith(text);
+    expect(resolve).toHaveBeenCalledWith("Alice Bond's email address is alice@x.com.");
+  });
+
+  it('fails open to ordinary NER when the optional name index throws', async () => {
+    const lookupKnownEntityNames = vi.fn(() => {
+      throw new Error('local index unavailable');
+    });
+    const { ctx } = makeTurnContext([
+      makeSessionEntry('user', "what is Alice Bond's email address?", 1),
+    ]);
+
+    await expect(runGate(ctx, contextualDeps(lookupKnownEntityNames))).resolves.toEqual({
+      kind: 'short-circuit',
+      text: "Alice Bond's email address is alice@x.com.",
+    });
+  });
+
+  it.each([
+    ['malformed', (() => null) as unknown as NonNullable<GateDeps['lookupKnownEntityNames']>],
+    ['malformed-structured', (() => [{
+      surface: 'alice bond',
+      canonicalValue: 'Alice Bond',
+      referenceKey: 'contact_alice',
+      evidence: 'guessed',
+    }]) as unknown as NonNullable<GateDeps['lookupKnownEntityNames']>],
+    ['over-cap', () => Array.from({ length: 1_001 }, () => 'Alice Bond')],
+  ])('ignores a %s proposal result instead of weakening NER', async (_label, lookup) => {
+    const { ctx, resolve } = makeTurnContext([
+      makeSessionEntry('user', "what is alice bond's email address?", 1),
+    ]);
+
+    await expect(runGate(ctx, contextualDeps(lookup))).resolves.toEqual({
+      kind: 'pass-through',
+      reason: 'no-extraction',
+    });
+    expect(resolve).not.toHaveBeenCalled();
   });
 });
 
@@ -674,14 +774,17 @@ describe('D-164 P10 read-permission surface seam (authorizeShortCircuitRead)', (
 
   it('the seam is the authority on chat too — a denying seam defers the chat surface', async () => {
     const deps = makeDeps();
+    const lookupKnownEntityNames = vi.fn(() => ['Alice Bond']);
     const { ctx, resolve } = makeTurnContext(fireableHistory());
 
     await createPromptCacheMiddleware({
       ...deps.deps,
+      lookupKnownEntityNames,
       authorizeShortCircuitRead: () => false,
     }).prompt?.(ctx);
 
     expect(resolve).not.toHaveBeenCalled();
+    expect(lookupKnownEntityNames).not.toHaveBeenCalled();
     expect(deps.matchTemplate).not.toHaveBeenCalled();
   });
 

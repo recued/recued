@@ -6,7 +6,7 @@
  *  no cross-cloud sync (D-097 / D-168). Same shape as
  *  `auto_run_circuit` and `calendar_watcher_cursors`.
  *
- *  Spec: `docs/d-123-spec.md` §1.2 + `docs/d-132-spec.md` A.1 / A.3. */
+ *  Spec: D-123 §1.2 + D-132 A.1 / A.3. */
 
 import type Database from 'better-sqlite3';
 

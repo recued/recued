@@ -19,7 +19,7 @@
  *  infrastructure (it is the lowering target for every op-step and the
  *  dispatch engine for every kernel `core.*` op — see the comment at
  *  the simple-form branch in `packages/engine/src/step-runner.ts` and
- *  the corrected `docs/d-182-spec.md` §10.4).
+ *  the corrected D-182 §10.4).
  *
  *  Extracted from `mcp-server.ts` (D-177 P2b) so the chat Tier-3
  *  dispatch (`chat-tool-handlers.ts`) can route through the same

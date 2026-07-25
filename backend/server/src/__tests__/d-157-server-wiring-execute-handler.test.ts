@@ -10,6 +10,7 @@ import type {
 } from '@recued/contracts';
 import type { ExecutionContext, ExecutionResult } from '@recued/engine';
 import type { PreflightNotifier } from '@recued/gateway';
+import { NEVER_ASK_OPERATION_OPTION_ID } from '@recued/gateway';
 import {
   createAuditLogStore,
   createInMemoryCollection,
@@ -524,7 +525,24 @@ describe('handleExecute D-157 server-wiring audit and ask fields', () => {
     const log = auditLog();
     const checkpoints = checkpointStore();
     const notes = notifier();
-    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+    const offer = {
+      kind: 'never_ask' as const,
+      ingredient_id: TOOL_SLUG,
+      operation_id: TOOL_SLUG,
+      op_hash: 'a'.repeat(64),
+      approval: 'never' as const,
+    };
+    const paused = pausedResult(recipe.recipe_id);
+    executeRecipeMock.mockResolvedValueOnce({
+      ...paused,
+      awaiting_approval: {
+        ...paused.awaiting_approval!,
+        risk_tier: 'read',
+        owner_override_offer: offer,
+        approval_clamped_from: 'never',
+        authorization_provenance: { pre_lift_approval: 'always' },
+      },
+    });
 
     await handleExecute(
       makeDeps(recipe, {
@@ -556,10 +574,23 @@ describe('handleExecute D-157 server-wiring audit and ask fields', () => {
           recipe_id: recipe.recipe_id,
           gated_step_id: STEP_ID,
           tool_slug: TOOL_SLUG,
-          risk_tier: 'admin',
+          risk_tier: 'read',
           reason: 'admin tier requires approval',
+          owner_override_offer: offer,
+          authorization_provenance: { pre_lift_approval: 'always' },
         }),
       },
     );
+    expect(notes.ask.mock.calls[0]![1].map((option: { id: string }) => option.id)).toContain(
+      NEVER_ASK_OPERATION_OPTION_ID,
+    );
+    const stored = await checkpoints.get(entry.checkpoint_id!);
+    expect(stored?.preflight_context).toMatchObject({
+      tool_slug: TOOL_SLUG,
+      risk_tier: 'read',
+      owner_override_offer: offer,
+      approval_clamped_from: 'never',
+      authorization_provenance: { pre_lift_approval: 'always' },
+    });
   });
 });

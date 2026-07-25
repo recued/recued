@@ -10,7 +10,7 @@
 //
 // The read shape (`ActiveExecutionEntry` / `LaneStatus`) and the rpc request /
 // response types live here; the registry + semaphore queue control + kill
-// mechanisms are the backend impl. See `docs/d-181-spec.md` §4/§7/§13.
+// mechanisms are the backend impl. See D-181 §4/§7/§13.
 //
 // Naming note: the spec §13 calls the active-list read `execution.list`, but that
 // method name is already taken by the D-174 Runs/Audit feed (a paginated read

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
   ActiveExecutionEntry,
+  CliFailureReason,
   ExecutionListQuery,
+  HeavyOpErrorCategory,
   LaneStatus,
   PolicyResult,
   RecipeError,
@@ -11,10 +13,13 @@ import type {
   RunOrigin,
   SessionGrantView,
 } from '@recued/contracts';
+import { RUN_ANCHOR_STATUSES } from '@recued/contracts';
 
 import {
   LOGS_ROUTE_ACTIVE_ATTR,
   LOGS_ROUTE_ACTIVE_ROW_ATTR,
+  LOGS_ROUTE_AFFECTED_ITEMS_ATTR,
+  LOGS_ROUTE_CHAT_RETURN_ATTR,
   LOGS_ROUTE_DEGRADED_ATTR,
   LOGS_ROUTE_CLI_FAILURE_ATTR,
   LOGS_ROUTE_ERROR_CATEGORY_ATTR,
@@ -23,6 +28,7 @@ import {
   LOGS_ROUTE_HOST_ATTR,
   LOGS_ROUTE_LANES_ATTR,
   LOGS_ROUTE_LOAD_MORE_ATTR,
+  LOGS_ROUTE_OUTCOME_ATTR,
   LOGS_ROUTE_PEEK_ATTR,
   LOGS_ROUTE_PASSES_ATTR,
   LOGS_ROUTE_PASS_ROW_ATTR,
@@ -32,6 +38,8 @@ import {
   LOGS_ROUTE_STATUS_ATTR,
   LOGS_ROUTE_STYLES_MARKER,
   bootstrapLogsRoute,
+  projectRunAffectedItems,
+  projectRunOutcomeSummary,
   type RunsActiveCaller,
   type RunsCancelCaller,
   type RunsGetCaller,
@@ -41,6 +49,7 @@ import {
   type RunsSessionGrantListCaller,
   type RunsSessionGrantRevokeCaller,
 } from '../logs/bootstrap-logs-route.js';
+import type { ChatPlanAddress } from '../shell/route.js';
 
 type LogsRouteSubscribe = NonNullable<
   Parameters<typeof bootstrapLogsRoute>[0]['subscribe']
@@ -148,6 +157,19 @@ const makeFakeDocument = (): FakeDoc => {
   };
 };
 
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+}
+
+const deferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
 const NOW = 1_750_000_000_000;
 
 const mcpOrigin = (): RunOrigin => ({
@@ -205,6 +227,8 @@ const runDetail = (
   policy: PolicyResult = 'approval-requested',
   opts: {
     degraded?: RunDetail['audit']['degraded'];
+    errorCategory?: HeavyOpErrorCategory;
+    errors?: RecipeError[];
     trace?: RunDetail['gateway']['per_call_trace'];
   } = {},
 ): RunDetail => ({
@@ -219,9 +243,12 @@ const runDetail = (
     origin: mcpOrigin(),
     trigger_source: 'manual',
     instance_id: 'server-1',
-    errors: [recipeError()],
+    errors: opts.errors ?? [recipeError()],
     output_string: 'SECRET_OUTPUT_SHOULD_NOT_RENDER',
     ...(opts.degraded !== undefined ? { degraded: opts.degraded } : {}),
+    ...(opts.errorCategory !== undefined
+      ? { error_category: opts.errorCategory }
+      : {}),
   },
   approvals: {
     checkpoints: [
@@ -238,7 +265,7 @@ const runDetail = (
     outcome: policy === 'released-after-approval' ? 'allow' : undefined,
     output_string: 'SECRET_APPROVAL_OUTPUT_SHOULD_NOT_RENDER',
   },
-  errors: [recipeError()],
+  errors: opts.errors ?? [recipeError()],
   links: [
     { entity_id: 'conn-1', kind: 'connection', ts: NOW - 1_000 },
     { entity_id: 'contact-1', kind: 'contact', ts: NOW - 900 },
@@ -254,9 +281,20 @@ const mountRoute = (overrides: {
   getCaller?: RunsGetCaller;
   initialRunId?: string;
   initialRecipeId?: string;
+  chatReturn?: ChatPlanAddress;
+  replaceState?: (
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) => void;
   subscribe?: LogsRouteSubscribe;
 } = {}) => {
   const doc = makeFakeDocument();
+  if (overrides.replaceState !== undefined) {
+    (doc as unknown as { defaultView: unknown }).defaultView = {
+      history: { replaceState: overrides.replaceState },
+    };
+  }
   const root = doc.createElement('div');
   const listCaller =
     overrides.listCaller
@@ -280,6 +318,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.initialRecipeId !== undefined
       ? { initialRecipeId: overrides.initialRecipeId }
+      : {}),
+    ...(overrides.chatReturn !== undefined
+      ? { chatReturn: overrides.chatReturn }
       : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
   });
@@ -423,6 +464,377 @@ describe('D-174 P5 - Runs route', () => {
     rig.route.dispose();
   });
 
+  it('projects every run state into a truthful outcome, uncertainty boundary, and safe next step', () => {
+    const scenarios: ReadonlyArray<{
+      status: RunAnchorStatus;
+      tone: ReturnType<typeof projectRunOutcomeSummary>['tone'];
+      title: string;
+      detail: string;
+      nextStep?: string;
+      actionHref?: string;
+    }> = [
+      {
+        status: 'pending',
+        tone: 'attention',
+        title: 'Run is waiting to start',
+        detail: 'has not started yet',
+        nextStep: 'before starting another run',
+        actionHref: '#logs/active',
+      },
+      {
+        status: 'running',
+        tone: 'attention',
+        title: 'Run is still in progress',
+        detail: 'no final outcome',
+        nextStep: 'before starting another run',
+        actionHref: '#logs/active',
+      },
+      {
+        status: 'succeeded',
+        tone: 'positive',
+        title: 'Run completed',
+        detail: 'finished successfully',
+      },
+      {
+        status: 'failed',
+        tone: 'danger',
+        title: 'Run failed',
+        detail: 'Earlier steps may still have made changes',
+        nextStep: 'check the affected app or data before trying again',
+      },
+      {
+        status: 'cancelled',
+        tone: 'neutral',
+        title: 'Run was cancelled',
+        detail: 'Earlier steps may still have made changes',
+        nextStep: 'before starting a new run',
+      },
+      {
+        status: 'killed',
+        tone: 'danger',
+        title: 'Run was stopped',
+        detail: 'still active',
+        nextStep: 'Check the affected app or data before trying again',
+      },
+      {
+        status: 'in_doubt',
+        tone: 'attention',
+        title: 'Outcome needs verification',
+        detail: 'lost confirmation',
+        nextStep: 'will not retry automatically',
+      },
+      {
+        status: 'awaiting_approval',
+        tone: 'attention',
+        title: 'Run is waiting for approval',
+        detail: 'That step has not run',
+        nextStep: 'continue or stop the action',
+        actionHref: '#approvals/ask-1',
+      },
+    ];
+
+    expect(scenarios.map(({ status }) => status)).toEqual(
+      RUN_ANCHOR_STATUSES,
+    );
+    for (const scenario of scenarios) {
+      const policy: PolicyResult = scenario.status === 'awaiting_approval'
+        ? 'approval-requested'
+        : 'allowed';
+      const summary = projectRunOutcomeSummary(
+        runDetail(scenario.status, policy, { errors: [] }),
+      );
+      expect(summary.tone, scenario.status).toBe(scenario.tone);
+      expect(summary.title, scenario.status).toBe(scenario.title);
+      expect(summary.detail, scenario.status).toContain(scenario.detail);
+      if (scenario.nextStep === undefined) {
+        expect(summary.nextStep, scenario.status).toBeUndefined();
+      } else {
+        expect(summary.nextStep, scenario.status).toContain(
+          scenario.nextStep,
+        );
+      }
+      expect(summary.action?.href, scenario.status).toBe(
+        scenario.actionHref,
+      );
+      expect(summary.recordWarnings, scenario.status).toEqual([]);
+    }
+  });
+
+  it('uses structured termination, permission, and CLI causes instead of a generic failed outcome', () => {
+    const categoryCases: ReadonlyArray<
+      readonly [HeavyOpErrorCategory, string]
+    > = [
+      ['timeout', 'Run timed out'],
+      ['oom', 'Run ran out of memory'],
+      ['crashed', 'Run crashed'],
+      ['stalled', 'Run stalled'],
+      ['killed', 'Run was stopped'],
+      ['cancelled_before_dispatch', 'Queued action was cancelled'],
+    ];
+    for (const [errorCategory, title] of categoryCases) {
+      const summary = projectRunOutcomeSummary(
+        runDetail('failed', 'blocked', {
+          errorCategory,
+          errors: [],
+        }),
+      );
+      expect(summary.title, errorCategory).toBe(title);
+    }
+
+    const denied = projectRunOutcomeSummary(
+      runDetail('failed', 'denied', { errors: [] }),
+    );
+    expect(denied.title).toBe('Permission was denied');
+    expect(denied.detail).toContain('denied step was not sent');
+
+    const policyError = projectRunOutcomeSummary(
+      runDetail('failed', 'allowed', {
+        errors: [recipeError()],
+      }),
+    );
+    expect(policyError.title).toBe('Permission was denied');
+
+    // The server's aggregate `blocked` result also covers dispatched commits
+    // that failed / cancelled / became uncertain. It is not proof that policy
+    // stopped a step before dispatch.
+    const blockedAfterDispatch = projectRunOutcomeSummary(
+      runDetail('failed', 'blocked', {
+        errors: [
+          recipeError({
+            code: 'NETWORK_ERROR',
+            message: 'The provider call failed.',
+          }),
+        ],
+      }),
+    );
+    expect(blockedAfterDispatch.title).toBe('Run failed');
+    expect(blockedAfterDispatch.detail).not.toContain('before it was sent');
+
+    const cliCases: ReadonlyArray<readonly [CliFailureReason, string]> = [
+      ['not_found', 'Required tool was not found'],
+      ['spawn_error', 'Required tool could not start'],
+      ['nonzero_exit', 'A required tool returned an error'],
+      ['timeout', 'A required tool timed out'],
+      ['bad_output', 'A required tool returned unreadable output'],
+    ];
+    for (const [reason, title] of cliCases) {
+      const summary = projectRunOutcomeSummary(
+        runDetail('failed', 'allowed', {
+          errors: [
+            recipeError({
+              code: reason === 'not_found'
+                ? 'CLI_TOOL_NOT_FOUND'
+                : 'CLI_TOOL_FAILED',
+              message: 'The local tool failed.',
+              details: {
+                cli_failure: {
+                  reason,
+                  tool: 'example-tool',
+                },
+              },
+            }),
+          ],
+        }),
+      );
+      expect(summary.title, reason).toBe(title);
+    }
+  });
+
+  it('keeps confirmed execution separate from friendly audit-record warnings', () => {
+    const summary = projectRunOutcomeSummary(
+      runDetail('succeeded', 'allowed', {
+        degraded: ['audit_unwritten', 'provenance_incomplete'],
+        errors: [],
+      }),
+    );
+
+    expect(summary.title).toBe('Run completed');
+    expect(summary.detail).toBe('The run finished successfully.');
+    expect(summary.tone).toBe('attention');
+    expect(summary.nextStep).toContain('record warning');
+    expect(summary.recordWarnings).toEqual([
+      {
+        code: 'audit_unwritten',
+        message: 'Part of this run’s history could not be saved.',
+      },
+      {
+        code: 'provenance_incomplete',
+        message: 'Some links to records affected by this run are missing.',
+      },
+    ]);
+  });
+
+  it('projects provenance into deduped exact, source-resolved, and honest fallback targets', () => {
+    const items = projectRunAffectedItems(
+      [
+        {
+          entity_id: 'calendar:event-1',
+          kind: 'execution.action',
+          ts: NOW - 900,
+        },
+        {
+          entity_id: 'calendar:event-1',
+          kind: 'execution.write',
+          ts: NOW - 800,
+        },
+        {
+          entity_id: 'contact:person@example.com',
+          kind: 'execution.action',
+          ts: NOW - 700,
+        },
+        {
+          entity_id:
+            'connection.api.hubspot.deal:hubspot_deal_42',
+          kind: 'execution.derived',
+          ts: NOW - 600,
+        },
+        {
+          entity_id: 'future_collection:item-9',
+          kind: 'execution.write',
+          ts: NOW - 500,
+        },
+        {
+          entity_id: 'not-qualified',
+          kind: 'execution.write',
+          ts: NOW - 400,
+        },
+        { entity_id: 'conn-1', kind: 'connection', ts: NOW - 300 },
+      ],
+      { run_id: 'run-1', status: 'in_doubt' },
+      {
+        sessionId: 'chat/one',
+        planId: 'plan 1',
+      },
+    );
+
+    expect(items).toHaveLength(4);
+    expect(items[0]).toMatchObject({
+      entityId: 'calendar:event-1',
+      title: 'Calendar event',
+      relationship: 'involved',
+      relationshipLabel: 'Involved in change',
+      resolution: 'resolve-source',
+      actionLabel: 'Verify before retrying',
+    });
+    expect(items[0]?.href).toBe(
+      '#data/calendar/verify/event-1/relationship/involved/return/logs/'
+      + 'run-1/return/chat/session/chat%2Fone/plan/plan%201',
+    );
+    expect(items[1]).toMatchObject({
+      title: 'Contact',
+      relationshipLabel: 'Used by action',
+      resolution: 'exact',
+    });
+    expect(items[1]?.href).toContain(
+      '#data/contact/item/person%40example.com/relationship/action/'
+      + 'return/logs/run-1',
+    );
+    expect(items[2]).toMatchObject({
+      title: 'CRM hubspot deal',
+      resolution: 'exact',
+    });
+    expect(items[2]?.href).toContain(
+      'connection.api.hubspot.deal%3Ahubspot_deal_42',
+    );
+    expect(items[3]).toMatchObject({
+      title: 'Future collection',
+      resolution: 'fallback',
+      href: '#data',
+      actionLabel: 'Open Data',
+    });
+
+    const success = projectRunAffectedItems(
+      [{
+        entity_id: 'project:project-1',
+        kind: 'execution.write',
+        ts: NOW,
+      }],
+      { run_id: 'run-2', status: 'succeeded' },
+    );
+    expect(success[0]?.actionLabel).toBe('Verify item');
+  });
+
+  it('puts affected-item verification directly after the outcome and keeps the run/Chat return', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => {
+      const detail = runDetail('in_doubt', 'blocked', { errors: [] });
+      return {
+        run: {
+          ...detail,
+          links: [
+            {
+              entity_id: 'mail:message-1',
+              kind: 'execution.action',
+              ts: NOW - 500,
+            },
+            {
+              entity_id: 'calendar:event-1',
+              kind: 'execution.write',
+              ts: NOW - 400,
+            },
+            {
+              entity_id: 'not-qualified',
+              kind: 'execution.write',
+              ts: NOW - 300,
+            },
+          ],
+        },
+      };
+    });
+    const rig = mountRoute({
+      getCaller,
+      initialRunId: 'run-1',
+      chatReturn: {
+        sessionId: 'chat-1',
+        planId: 'plan-1',
+        messageId: 'answer-1',
+      },
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(LOGS_ROUTE_AFFECTED_ITEMS_ATTR);
+    expect(html).toContain(
+      `${LOGS_ROUTE_OUTCOME_ATTR}="in_doubt" data-tone="attention" `
+      + 'aria-label="Run outcome" tabindex="-1"',
+    );
+    expect(html.indexOf(LOGS_ROUTE_OUTCOME_ATTR)).toBeLessThan(
+      html.indexOf(LOGS_ROUTE_AFFECTED_ITEMS_ATTR),
+    );
+    expect(html).toContain('Recorded items');
+    expect(html).toContain('Check these recorded items before retrying');
+    expect(html).toContain('Used by action');
+    expect(html).toContain('Involved in change');
+    expect(html).toContain('Verify before retrying');
+    expect(html).toContain(
+      'href="#data/mail/verify/message-1/relationship/action/return/logs/'
+      + 'run-1/return/chat/session/chat-1/plan/plan-1/answer/answer-1"',
+    );
+    expect(html).toContain(
+      'Data will check connected sources before opening this record.',
+    );
+    expect(html).not.toContain('execution.action mail:message-1');
+    expect(html).not.toContain('execution.write calendar:event-1');
+    expect(html).toContain('execution.write not-qualified');
+
+    rig.route.dispose();
+  });
+
+  it('gives uncertain runs an honest destination-app fallback when no affected item was recorded', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => {
+      const detail = runDetail('failed', 'allowed', { errors: [] });
+      return { run: { ...detail, links: [] } };
+    });
+    const rig = mountRoute({ getCaller, initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(LOGS_ROUTE_AFFECTED_ITEMS_ATTR);
+    expect(html).toContain('No item links were recorded.');
+    expect(html).toContain('Check the destination app directly before retrying.');
+
+    rig.route.dispose();
+  });
+
   it('renders execution.get detail with approvals, errors, links, real gateway trace, stored verdict, and degraded state without raw secret payloads', async () => {
     const getCaller = vi.fn<RunsGetCaller>(async () => ({
       run: runDetail('failed', 'blocked', {
@@ -455,10 +867,20 @@ describe('D-174 P5 - Runs route', () => {
     expect(html).toContain(LOGS_ROUTE_GATEWAY_TRACE_ATTR);
     expect(html).toContain('commit-real-trace');
     expect(html).toContain('mail-send / send');
-    expect(html).toContain('Permission decision');
+    expect(html).toContain('Recorded result');
     expect(html).toContain('blocked');
+    expect(html).toContain(
+      `${LOGS_ROUTE_OUTCOME_ATTR}="failed" data-tone="danger"`,
+    );
+    expect(html).toContain('aria-label="Run outcome"');
+    expect(html).toContain('Permission was denied');
+    expect(html).toContain('Earlier steps may still have made changes.');
     expect(html).toContain(LOGS_ROUTE_DEGRADED_ATTR);
     expect(html).toContain('provenance_incomplete');
+    expect(html).toContain(
+      'Some links to records affected by this run are missing.',
+    );
+    expect(html).not.toContain('Degraded: provenance_incomplete');
     expect(html).toContain(LOGS_ROUTE_REDACTED_IO_ATTR);
     expect(html).toContain('Redacted output is recorded');
     expect(html).not.toContain('pending-commit-log-read');
@@ -479,6 +901,98 @@ describe('D-174 P5 - Runs route', () => {
 
     expect(getCaller).toHaveBeenCalledWith({ run_id: 'run-1' });
     expect(rig.route.getSelectedRun()?.audit.status).toBe('succeeded');
+
+    rig.route.dispose();
+  });
+
+  it('keeps a reload-safe return to the exact originating Chat action', async () => {
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      initialRunId: 'run-1',
+      chatReturn: {
+        sessionId: 'chat/one',
+        planId: 'plan one',
+        messageId: 'answer #1',
+      },
+      replaceState,
+    });
+    await rig.route.whenLoaded();
+
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#logs/run-1/return/chat/session/chat%2Fone/plan/plan%20one/'
+      + 'answer/answer%20%231',
+    );
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(LOGS_ROUTE_CHAT_RETURN_ATTR);
+    expect(html).toContain('You came here from an action in Chat.');
+    expect(html).toContain(
+      'href="#chat/session/chat%2Fone/plan/plan%20one/answer/answer%20%231"',
+    );
+    expect(html).toContain('Back to this Chat action');
+    expect(html).toContain(
+      'aria-label="Back to the originating Chat action"',
+    );
+    // The detail's existing self-link must not silently discard the return.
+    expect(html).toContain(
+      'href="#logs/run-1/return/chat/session/chat%2Fone/plan/plan%20one/'
+      + 'answer/answer%20%231"',
+    );
+
+    rig.route.dispose();
+  });
+
+  it('loads an exact run beside a slow History list and never rewrites after dispose', async () => {
+    const feed = deferred<{ runs: RunFeedRow[] }>();
+    const detail = deferred<{ run: RunDetail }>();
+    const listCaller = vi.fn<RunsListCaller>(() => feed.promise);
+    const getCaller = vi.fn<RunsGetCaller>(() => detail.promise);
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      listCaller,
+      getCaller,
+      initialRunId: 'run-1',
+      chatReturn: {
+        sessionId: 'chat-1',
+        planId: 'plan-1',
+      },
+      replaceState,
+    });
+
+    // The exact destination must not wait for the unrelated History query.
+    expect(listCaller).toHaveBeenCalledOnce();
+    expect(getCaller).toHaveBeenCalledWith({ run_id: 'run-1' });
+    expect(replaceState).toHaveBeenCalledOnce();
+
+    const hashWritesBeforeDispose = replaceState.mock.calls.length;
+    rig.route.dispose();
+    feed.resolve({ runs: [runRow()] });
+    detail.resolve({ run: runDetail() });
+    await rig.route.whenLoaded();
+
+    expect(replaceState).toHaveBeenCalledTimes(hashWritesBeforeDispose);
+    expect(rig.root.children).toHaveLength(0);
+  });
+
+  it('drops Chat-origin context after the user selects a different run', async () => {
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      initialRunId: 'run-1',
+      chatReturn: {
+        sessionId: 'chat-1',
+        planId: 'plan-1',
+      },
+      replaceState,
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.openRun('run-2');
+
+    expect(replaceState).toHaveBeenLastCalledWith(null, '', '#logs/run-2');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).not.toContain(LOGS_ROUTE_CHAT_RETURN_ATTR);
+    expect(html).not.toContain('Back to this Chat action');
 
     rig.route.dispose();
   });
@@ -506,6 +1020,10 @@ describe('D-174 P5 - Runs route', () => {
     // Suppressing the LINK must not blank the pane — the run is still there,
     // and its awaiting status is still what the reader came for.
     expect(html).toContain('awaiting approval');
+    expect(html).toContain('Run is waiting for approval');
+    expect(html).toContain('That step has not run.');
+    expect(html).toContain('This hold is not linked to the approval queue.');
+    expect(html).not.toContain('Review approval');
     rig.route.dispose();
   });
 
@@ -517,6 +1035,7 @@ describe('D-174 P5 - Runs route', () => {
     await rig.route.openRun('run-1');
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('#approvals/ask-1');
+    expect(html).toContain('Review approval');
     rig.route.dispose();
   });
 
@@ -535,6 +1054,8 @@ describe('D-174 P5 - Runs route', () => {
     await rig.route.openRun('run-1');
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('href="#approvals"');
+    expect(html).toContain('Approval result: Approved');
+    expect(html).not.toContain('Outcome: allow');
     rig.route.dispose();
   });
 

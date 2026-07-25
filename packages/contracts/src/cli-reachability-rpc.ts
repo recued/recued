@@ -26,7 +26,7 @@
  *  Gateway ENFORCES a *dispatched* cli op against the same allowlist
  *  (`resolveCliReachabilityPolicy`); this family writes it.
  *
- *  Spec: `docs/d-182-spec.md` §7.2 (per-contract cli reachability grid). */
+ *  Spec: D-182 §7.2 (per-contract cli reachability grid). */
 
 /** One persisted reachability row — the `cli.reachability.list` projection.
  *  `principal` is the owner (`user_self`) or a door/agent `contract_id`;

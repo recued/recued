@@ -16,7 +16,7 @@
  *  reasoning → mid → fast) — all pinned at substrate level so engine
  *  + tests + Plan IR audit replay agree on the same constants.
  *
- *  Spec: `docs/d-145-spec.md` § B.3 + § B.15.10 + § C.3.6. */
+ *  Spec: D-145 § B.3 + § B.15.10 + § C.3.6. */
 
 import type { ModelTier } from './recued-plan.js';
 import { MODEL_TIERS, MODEL_TIER_SET } from './recued-plan.js';

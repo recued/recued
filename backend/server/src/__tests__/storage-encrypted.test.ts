@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { CacheEntry } from '@recued/cache';
 import { randomBytes, deriveSubDEK } from '@recued/crypto';
-import { createBlobStore, createSQLiteCacheStore, type BlobStore } from '../storage/index.js';
+import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore } from '../storage/index.js';
 
 let workDir: string;
 

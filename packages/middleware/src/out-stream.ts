@@ -20,7 +20,7 @@
  *  framework out-stream is the channel-carrier projection — the
  *  minimal surface the turn loop itself needs.
  *
- *  Spec: docs/d-160-spec.md § N.6 / A.4.
+ *  Spec: D-160 § N.6 / A.4.
  */
 
 import type { Channel } from '@recued/chat';

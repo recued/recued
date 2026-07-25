@@ -8,7 +8,7 @@
  *  Section description is an extrapolation — bench has no recipes arm
  *  yet. TODO(P4-bench): tune once recipes are exercised.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type {
   CatalogAssemblyInput,

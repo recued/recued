@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.aiven.io/doc/openapi.json",
-      "bytes": 1807739,
-      "sha256": "84c2a5ff1f2a6b693a129f54b0be32b8a4e659e7ffa870c350103fbfde88f1b9",
+      "bytes": 1821442,
+      "sha256": "aedf71cf0f9d0e2587ae941a67adf563a14b2c5417697df77c6067f38d9067fe",
       "openapi": "3.0.1",
       "title": "Aiven API Documentation",
       "api_version": "v1",
-      "official_path_count": 317,
-      "retrieved_on": "2026-07-15",
+      "official_path_count": 322,
+      "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -32,21 +32,21 @@
         ]
       }
     ],
-    "official_operation_count": 457,
-    "admitted_operation_count": 392,
+    "official_operation_count": 464,
+    "admitted_operation_count": 399,
     "deprecated_operation_count": 65,
     "official_method_counts": {
-      "DELETE": 68,
-      "GET": 199,
+      "DELETE": 69,
+      "GET": 201,
       "PATCH": 16,
-      "POST": 128,
+      "POST": 132,
       "PUT": 46
     },
     "admitted_method_counts": {
-      "DELETE": 58,
-      "GET": 169,
+      "DELETE": 59,
+      "GET": 171,
       "PATCH": 16,
-      "POST": 110,
+      "POST": 114,
       "PUT": 39
     },
     "official_tag_counts": {
@@ -70,7 +70,7 @@
       "Project_Billing": 4,
       "Project_Key_Management": 1,
       "Secrets": 8,
-      "Service": 49,
+      "Service": 56,
       "Service_Integrations": 12,
       "Service:_ClickHouse": 13,
       "Service:_Flink": 32,
@@ -104,7 +104,7 @@
       "Project": 25,
       "Project_Key_Management": 1,
       "Secrets": 8,
-      "Service": 49,
+      "Service": 56,
       "Service_Integrations": 12,
       "Service:_ClickHouse": 13,
       "Service:_Flink": 32,
@@ -123,47 +123,48 @@
       "aiven-account-users": 46,
       "aiven-billing-payments": 28,
       "aiven-projects-networking": 69,
-      "aiven-services-integrations": 61,
+      "aiven-services-integrations": 68,
       "aiven-kafka": 53,
       "aiven-flink": 32,
       "aiven-data-services": 52
     },
     "composition_bytes": {
-      "aiven-organization-access": 86806,
+      "aiven-organization-access": 86796,
       "aiven-account-users": 73873,
       "aiven-billing-payments": 49809,
       "aiven-projects-networking": 145502,
-      "aiven-services-integrations": 117696,
+      "aiven-services-integrations": 130235,
       "aiven-kafka": 101928,
       "aiven-flink": 78786,
       "aiven-data-services": 98400
     },
     "body_mode_counts": {
-      "none": 255,
-      "raw_json": 137
+      "none": 261,
+      "raw_json": 138
     },
     "success_status_counts": {
-      "200": 370,
+      "200": 377,
       "204": 22
     },
     "selected_response_media_counts": {
-      "application/json": 367,
+      "application/json": 374,
       "application/pdf": 1,
       "none": 22,
       "text/csv": 2
     },
     "risk_counts": {
-      "admin": 109,
-      "destructive": 94,
-      "read": 189
+      "admin": 113,
+      "destructive": 95,
+      "read": 191
     },
     "approval_counts": {
-      "always": 392
+      "always": 208,
+      "never": 191
     },
     "idempotency_counts": {
-      "idempotent": 113,
-      "non_idempotent": 90,
-      "safe": 189
+      "idempotent": 114,
+      "non_idempotent": 94,
+      "safe": 191
     },
     "pagination": {
       "automatic_operation_count": 2,
@@ -194,7 +195,7 @@
     "auth": {
       "selected": "Complete Authorization value in the documented aivenv1 TOKEN format, supplied only by the enrolled aiven connection",
       "official_documentation_model": "Authorization: aivenv1 TOKEN over https://api.aiven.io/v1",
-      "token_or_oauth_operation_count": 370,
+      "token_or_oauth_operation_count": 377,
       "no_auth_requirement_operation_count": 22,
       "no_auth_requirement_operation_keys": [
         "GET /clouds",
@@ -224,7 +225,7 @@
     },
     "authority_notes": {
       "openapi_operation_refs": 0,
-      "openapi_inline_operations": 457,
+      "openapi_inline_operations": 464,
       "exact_path_parameter_contract": true,
       "wire_prefix_path_alias": "/v1",
       "numeric_string_bounds_as_lengths": [
@@ -278,7 +279,7 @@
         "PUT /project/{project}/service/{service_name}/user/{service_username}",
         "PUT /project/{project}/tags"
       ],
-      "optional_request_body_count": 137,
+      "optional_request_body_count": 138,
       "unsafe_integer_response_union_operation_count": 50,
       "nullable_response_union_operation_count": 0
     },
@@ -299,7 +300,7 @@
         "op": "account.account_list",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-inventory-aiven",
@@ -308,7 +309,7 @@
         "op": "organizations.user_organizations_list",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-project-inventory-aiven",
@@ -321,7 +322,7 @@
         "supplied_args": [
           "organization_id"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "billing-group-inventory-aiven",
@@ -334,7 +335,7 @@
         "supplied_args": [
           "organization_id"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "invoice-inventory-aiven",
@@ -347,7 +348,7 @@
         "supplied_args": [
           "organization_id"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "cloud-platform-inventory-aiven",
@@ -356,7 +357,7 @@
         "op": "cloud_platforms.list_clouds",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "project-cloud-inventory-aiven",
@@ -369,7 +370,7 @@
         "supplied_args": [
           "project"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "service-inventory-aiven",
@@ -382,7 +383,7 @@
         "supplied_args": [
           "project"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "service-type-inventory-aiven",
@@ -395,7 +396,7 @@
         "supplied_args": [
           "project"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "service-database-inventory-aiven",
@@ -410,7 +411,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "integration-endpoint-inventory-aiven",
@@ -423,7 +424,7 @@
         "supplied_args": [
           "project"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "static-ip-inventory-aiven",
@@ -436,7 +437,7 @@
         "supplied_args": [
           "project"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "kafka-topic-inventory-aiven",
@@ -451,7 +452,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "kafka-connector-inventory-aiven",
@@ -466,7 +467,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "flink-application-inventory-aiven",
@@ -481,7 +482,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "flink-job-inventory-aiven",
@@ -496,7 +497,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "opensearch-index-inventory-aiven",
@@ -511,7 +512,7 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "postgresql-extension-inventory-aiven",
@@ -526,10 +527,10 @@
           "project",
           "service_name"
         ],
-        "approval": "always"
+        "approval": "never"
       }
     ],
-    "operation_ids_sha256": "8d7cc39e7da15c9cea20e0cd97886732b38a23177f6c95a4dadc5e39b3fec2e1"
+    "operation_ids_sha256": "d51cc28155578c1d6221299646880e504d186938f133f77d0b5de6fc4602f1de"
   },
   "official_operations": [
     {
@@ -10330,6 +10331,33 @@
       "op": "service.service_data_hub_rotate_internal_secrets"
     },
     {
+      "key": "POST /project/{project}/service/{service_name}/rotate-secret-service-encryption-key",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/rotate-secret-service-encryption-key",
+      "operation_id": "ServiceDataHubRotateSecretServiceEncryptionKey",
+      "tag": "Service",
+      "summary": "Rotate the DataHub secret-service encryption key",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "services:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_data_hub_rotate_secret_service_encryption_key"
+    },
+    {
       "key": "POST /project/{project}/service/{service_name}/rotate-token-service-secrets",
       "method": "POST",
       "path": "/project/{project}/service/{service_name}/rotate-token-service-secrets",
@@ -10965,6 +10993,170 @@
       "exclusion_reason": null,
       "pack": "aiven-services-integrations",
       "op": "service.service_privatelink_azure_delete"
+    },
+    {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve",
+      "operation_id": "ServicePrivatelinkGoogleConnectionCreate",
+      "tag": "Service",
+      "summary": "Approve a new Google Private Service Connect connection",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_connection_create"
+    },
+    {
+      "key": "GET /project/{project}/service/{service_name}/privatelink/google/connections",
+      "method": "GET",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/connections",
+      "operation_id": "ServicePrivatelinkGoogleConnectionList",
+      "tag": "Service",
+      "summary": "List Google Private Service Connect connections for a service",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_connection_list"
+    },
+    {
+      "key": "GET /project/{project}/service/{service_name}/privatelink/google",
+      "method": "GET",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleGet",
+      "tag": "Service",
+      "summary": "Return status of Google Private Service Connect endpoint",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_get"
+    },
+    {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleCreate",
+      "tag": "Service",
+      "summary": "Create a Google Private Service Connect endpoint for a service",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_create"
+    },
+    {
+      "key": "DELETE /project/{project}/service/{service_name}/privatelink/google",
+      "method": "DELETE",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleDelete",
+      "tag": "Service",
+      "summary": "Delete a Google Private Service Connect endpoint for a service",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_delete"
+    },
+    {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google/refresh",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/refresh",
+      "operation_id": "ServicePrivatelinkGoogleRefresh",
+      "tag": "Service",
+      "summary": "Initiate fetch from cloud & update to aiven DB of connections to this privatelink",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_refresh"
     },
     {
       "key": "POST /project/{project}/service/{service_name}/query/activity",
@@ -16403,6 +16595,69 @@
         }
       ]
     },
+    "DELETE /project/{project}/service/{service_name}/privatelink/google": {
+      "key": "DELETE /project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleDelete",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_delete",
+      "method": "DELETE",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google",
+      "tag": "Service",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ]
+    },
     "DELETE /project/{project}/service/{service_name}/quota": {
       "key": "DELETE /project/{project}/service/{service_name}/quota",
       "operation_id": "ServiceKafkaQuotaDelete",
@@ -17197,7 +17452,7 @@
       "wire_path": "/v1/access_token",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17232,7 +17487,7 @@
       "wire_path": "/v1/account",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17266,7 +17521,7 @@
       "wire_path": "/v1/account/{account_id}",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17315,7 +17570,7 @@
       "wire_path": "/v1/account/{account_id}/authentication",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17365,7 +17620,7 @@
       "wire_path": "/v1/account/{account_id}/authentication/{account_authentication_method_id}",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17429,7 +17684,7 @@
       "wire_path": "/v1/account/{account_id}/events",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17478,7 +17733,7 @@
       "wire_path": "/v1/account/{account_id}/user/{user_id}/projects",
       "tag": "Account",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17542,7 +17797,7 @@
       "wire_path": "/v1/billing-group/{billing_group_id}/credits",
       "tag": "BillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17591,7 +17846,7 @@
       "wire_path": "/v1/billing-group/{billing_group_id}/events",
       "tag": "BillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17640,7 +17895,7 @@
       "wire_path": "/v1/clouds",
       "tag": "Cloud_platforms",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17667,7 +17922,7 @@
       "wire_path": "/v1/me",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17701,7 +17956,7 @@
       "wire_path": "/v1/me/authentication_methods",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17736,7 +17991,7 @@
       "wire_path": "/v1/me/referral/validation/{referral_code}",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17778,7 +18033,7 @@
       "wire_path": "/v1/mysql/database-metadata-query",
       "tag": "Service:_MySQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -17805,7 +18060,7 @@
       "wire_path": "/v1/organization/{organization_id}",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17854,7 +18109,7 @@
       "wire_path": "/v1/organization/{organization_id}/address/{address_id}",
       "tag": "Billing",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17918,7 +18173,7 @@
       "wire_path": "/v1/organization/{organization_id}/addresses",
       "tag": "Billing",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17968,7 +18223,7 @@
       "wire_path": "/v1/organization/{organization_id}/application-users",
       "tag": "Application_Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18018,7 +18273,7 @@
       "wire_path": "/v1/organization/{organization_id}/application-users/{user_id}",
       "tag": "Application_Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18082,7 +18337,7 @@
       "wire_path": "/v1/organization/{organization_id}/application-users/{user_id}/access-tokens",
       "tag": "Application_Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18146,7 +18401,7 @@
       "wire_path": "/v1/organization/{organization_id}/authentication-methods/{authentication_method_id}/domains",
       "tag": "Authentication_Methods",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18209,7 +18464,7 @@
       "wire_path": "/v1/organization/{organization_id}/billing-group/{billing_group_id}",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18272,7 +18527,7 @@
       "wire_path": "/v1/organization/{organization_id}/billing-groups",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18321,7 +18576,7 @@
       "wire_path": "/v1/organization/{organization_id}/config/api-client-ip-allowlist",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18370,7 +18625,7 @@
       "wire_path": "/v1/organization/{organization_id}/config/authentication",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18420,7 +18675,7 @@
       "wire_path": "/v1/organization/{organization_id}/custom-cloud-environments/{custom_cloud_environment_id}",
       "tag": "Custom_Cloud",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18483,7 +18738,7 @@
       "wire_path": "/v1/organization/{organization_id}/custom-cloud-environments/{custom_cloud_environment_id}/permissions",
       "tag": "Custom_Cloud",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18546,7 +18801,7 @@
       "wire_path": "/v1/organization/{organization_id}/discovered-organizations",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18596,7 +18851,7 @@
       "wire_path": "/v1/organization/{organization_id}/domains",
       "tag": "Domains",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18645,7 +18900,7 @@
       "wire_path": "/v1/organization/{organization_id}/emissions",
       "tag": "OrganizationEmissions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18778,7 +19033,7 @@
       "wire_path": "/v1/organization/{organization_id}/governance/access",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18889,7 +19144,7 @@
       "wire_path": "/v1/organization/{organization_id}/governance/access/{access_id}",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18952,7 +19207,7 @@
       "wire_path": "/v1/organization/{organization_id}/governance/access/{access_id}/credentials",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19015,7 +19270,7 @@
       "wire_path": "/v1/organization/{organization_id}/invitation",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19064,7 +19319,7 @@
       "wire_path": "/v1/organization/{organization_id}/invoice/{invoice_number}",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19127,7 +19382,7 @@
       "wire_path": "/v1/organization/{organization_id}/invoice/{invoice_number}/csv",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19196,7 +19451,7 @@
       "wire_path": "/v1/organization/{organization_id}/invoice/{invoice_number}/lines",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19259,7 +19514,7 @@
       "wire_path": "/v1/organization/{organization_id}/invoice/{invoice_number}/pdf",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19328,7 +19583,7 @@
       "wire_path": "/v1/organization/{organization_id}/invoices",
       "tag": "OrganizationBillingGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19433,7 +19688,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/bank-transfer/{payment_method_id}",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19496,7 +19751,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/bank-transfers",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19545,7 +19800,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/credit-card/{payment_method_id}",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19608,7 +19863,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/credit-cards",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19657,7 +19912,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/custom",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19706,7 +19961,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-method/custom/{payment_method_id}",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19769,7 +20024,7 @@
       "wire_path": "/v1/organization/{organization_id}/payment-methods",
       "tag": "OrganizationPaymentMethod",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19818,7 +20073,7 @@
       "wire_path": "/v1/organization/{organization_id}/permissions/{resource_type}/{resource_id}",
       "tag": "Permissions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19896,7 +20151,7 @@
       "wire_path": "/v1/organization/{organization_id}/project/{project_id}",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19960,7 +20215,7 @@
       "wire_path": "/v1/organization/{organization_id}/projects",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20010,7 +20265,7 @@
       "wire_path": "/v1/organization/{organization_id}/upgrade-pipeline/steps",
       "tag": "Upgrade_pipeline",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20150,7 +20405,7 @@
       "wire_path": "/v1/organization/{organization_id}/upgrade-pipeline/steps/{step_id}",
       "tag": "Upgrade_pipeline",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20214,7 +20469,7 @@
       "wire_path": "/v1/organization/{organization_id}/user",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20277,7 +20532,7 @@
       "wire_path": "/v1/organization/{organization_id}/user-groups",
       "tag": "Groups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20326,7 +20581,7 @@
       "wire_path": "/v1/organization/{organization_id}/user-groups/{user_group_id}",
       "tag": "Groups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20389,7 +20644,7 @@
       "wire_path": "/v1/organization/{organization_id}/user-groups/{user_group_id}/members",
       "tag": "Groups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20452,7 +20707,7 @@
       "wire_path": "/v1/organization/{organization_id}/user/{member_user_id}",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20515,7 +20770,7 @@
       "wire_path": "/v1/organization/{organization_id}/user/{member_user_id}/access-tokens",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20578,7 +20833,7 @@
       "wire_path": "/v1/organization/{organization_id}/user/{member_user_id}/authentication_methods",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20641,7 +20896,7 @@
       "wire_path": "/v1/organization/{organization_id}/user/{member_user_id}/permissions",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20704,7 +20959,7 @@
       "wire_path": "/v1/organization/{organization_id}/user/{member_user_id}/user-groups",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20767,7 +21022,7 @@
       "wire_path": "/v1/organization/{organization_id}/vpc-clouds",
       "tag": "Organization_Vpc",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20816,7 +21071,7 @@
       "wire_path": "/v1/organization/{organization_id}/vpc-peering-connection-types",
       "tag": "Organization_Vpc",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20865,7 +21120,7 @@
       "wire_path": "/v1/organization/{organization_id}/vpc/{organization_vpc_id}",
       "tag": "Organization_Vpc",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20928,7 +21183,7 @@
       "wire_path": "/v1/organization/{organization_id}/vpcs",
       "tag": "Organization_Vpc",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20977,7 +21232,7 @@
       "wire_path": "/v1/organizations",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -21011,7 +21266,7 @@
       "wire_path": "/v1/pg/database-metadata-query",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -21038,7 +21293,7 @@
       "wire_path": "/v1/project/{project}/alerts",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21087,7 +21342,7 @@
       "wire_path": "/v1/project/{project}/clouds",
       "tag": "Cloud_platforms",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21150,7 +21405,7 @@
       "wire_path": "/v1/project/{project}/download-sbom/{file_format}/{download_cookie}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21227,7 +21482,7 @@
       "wire_path": "/v1/project/{project}/events",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21276,7 +21531,7 @@
       "wire_path": "/v1/project/{project}/generate-sbom-download-url/{file_format}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21339,7 +21594,7 @@
       "wire_path": "/v1/project/{project}/integration_endpoint",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21388,7 +21643,7 @@
       "wire_path": "/v1/project/{project}/integration_endpoint_types",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21437,7 +21692,7 @@
       "wire_path": "/v1/project/{project}/integration_endpoint/{integration_endpoint_id}",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21514,7 +21769,7 @@
       "wire_path": "/v1/project/{project}/integration_types",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21563,7 +21818,7 @@
       "wire_path": "/v1/project/{project}/integration/{integration_id}",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21626,7 +21881,7 @@
       "wire_path": "/v1/project/{project}/kms/ca",
       "tag": "Project_Key_Management",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21675,7 +21930,7 @@
       "wire_path": "/v1/project/{project}/pricing/service-types/{service_type}/plans/{service_plan}/clouds/{cloud}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21766,7 +22021,7 @@
       "wire_path": "/v1/project/{project}/privatelink-availability",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21815,7 +22070,7 @@
       "wire_path": "/v1/project/{project}/secrets/cmks",
       "tag": "Secrets",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21864,7 +22119,7 @@
       "wire_path": "/v1/project/{project}/secrets/cmks/{cmk_id}",
       "tag": "Secrets",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21927,7 +22182,7 @@
       "wire_path": "/v1/project/{project}/secrets/cmks/{cmk_id}/service_associations",
       "tag": "Secrets",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21990,7 +22245,7 @@
       "wire_path": "/v1/project/{project}/secrets/cmks/accessors",
       "tag": "Secrets",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22039,7 +22294,7 @@
       "wire_path": "/v1/project/{project}/service",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22102,7 +22357,7 @@
       "wire_path": "/v1/project/{project}/service_types",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22151,7 +22406,7 @@
       "wire_path": "/v1/project/{project}/service-types",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22200,7 +22455,7 @@
       "wire_path": "/v1/project/{project}/service-types/{service_type}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22263,7 +22518,7 @@
       "wire_path": "/v1/project/{project}/service-types/{service_type}/plans",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22326,7 +22581,7 @@
       "wire_path": "/v1/project/{project}/service-types/{service_type}/plans/{service_plan}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22403,7 +22658,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22480,7 +22735,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/acl",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22543,7 +22798,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/alerts",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22606,7 +22861,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/available-connectors",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22669,7 +22924,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/backups",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22732,7 +22987,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/db",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22795,7 +23050,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/query",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22858,7 +23113,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/query/stats",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22977,7 +23232,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/role",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23040,7 +23295,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/tiered-storage/summary",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23103,7 +23358,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/clickhouse/user",
       "tag": "Service:_ClickHouse",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23166,7 +23421,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/connector-plugins/{connector_name}/configuration",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23243,7 +23498,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/connectors",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23306,7 +23561,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/connectors/{connector_name}/status",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23383,7 +23638,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/db",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23486,7 +23741,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23549,7 +23804,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application/{application_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23626,7 +23881,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application/{application_id}/deployment",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23703,7 +23958,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application/{application_id}/deployment/{deployment_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23794,7 +24049,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application/{application_id}/version/{application_version_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23885,7 +24140,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/jar_application",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23948,7 +24203,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/jar_application/{application_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24025,7 +24280,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/jar_application/{application_id}/deployment",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24102,7 +24357,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/jar_application/{application_id}/deployment/{deployment_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24193,7 +24448,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/jar_application/{application_id}/version/{application_version_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24284,7 +24539,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/job",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24347,7 +24602,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/job/{job_id}",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24424,7 +24679,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/overview",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24487,7 +24742,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/index",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24550,7 +24805,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/integration",
       "tag": "Service_Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24613,7 +24868,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/acl",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24676,7 +24931,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/acl/{kafka_acl_id}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24753,7 +25008,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema-registry/acl",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24816,7 +25071,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/config",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24879,7 +25134,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/config/{subject_name}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24956,7 +25211,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/schemas/ids/{schema_id}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25033,7 +25288,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/subjects",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25096,7 +25351,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/subjects/{subject_name}/versions",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25173,7 +25428,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/subjects/{subject_name}/versions/{version_id}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25264,7 +25519,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/tiered-storage/storage-usage/by-topic",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25327,7 +25582,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/tiered-storage/storage-usage/total",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25390,7 +25645,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/tiered-storage/summary",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25453,7 +25708,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/migration",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25516,7 +25771,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/mirrormaker/replication-flows",
       "tag": "Service:_Kafka_MirrorMaker",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25579,7 +25834,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/mirrormaker/replication-flows/{source_cluster}/{target_cluster}",
       "tag": "Service:_Kafka_MirrorMaker",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25670,7 +25925,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25733,7 +25988,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/{repository_name}/_all",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25810,7 +26065,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/{repository_name}/_status",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25887,7 +26142,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/{repository_name}/{snapshot_name}",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25978,7 +26233,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/{repository_name}/{snapshot_name}/_status",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26069,7 +26324,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/restoration_in_progress",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26132,7 +26387,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/acl",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26195,7 +26450,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/security",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26258,7 +26513,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/tiered-storage/summary",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26321,7 +26576,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/pg/available-extensions",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26384,7 +26639,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/aws",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26447,7 +26702,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/aws/connections",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26510,7 +26765,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/azure",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26573,7 +26828,133 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/azure/connections",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "connections",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:read"
+          ]
+        }
+      ]
+    },
+    "GET /project/{project}/service/{service_name}/privatelink/google": {
+      "key": "GET /project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleGet",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_get",
+      "method": "GET",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google",
+      "tag": "Service",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:read"
+          ]
+        }
+      ]
+    },
+    "GET /project/{project}/service/{service_name}/privatelink/google/connections": {
+      "key": "GET /project/{project}/service/{service_name}/privatelink/google/connections",
+      "operation_id": "ServicePrivatelinkGoogleConnectionList",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_connection_list",
+      "method": "GET",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/connections",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google/connections",
+      "tag": "Service",
+      "risk": "read",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26636,7 +27017,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/quota",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26699,7 +27080,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/quota/describe",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26790,7 +27171,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/tags",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26853,7 +27234,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/task/{task_id}",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26930,7 +27311,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/thanos/storage/summary",
       "tag": "Service:_Thanos",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26993,7 +27374,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/topic",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27056,7 +27437,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/topic/{topic_name}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27133,7 +27514,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/user/{service_username}",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27224,7 +27605,7 @@
       "wire_path": "/v1/project/{project}/static-ip-availability",
       "tag": "StaticIP",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27273,7 +27654,7 @@
       "wire_path": "/v1/project/{project}/static-ips",
       "tag": "StaticIP",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27322,7 +27703,7 @@
       "wire_path": "/v1/project/{project}/tags",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27371,7 +27752,7 @@
       "wire_path": "/v1/project/{project}/vpc-peering-connection-types",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27420,7 +27801,7 @@
       "wire_path": "/v1/project/{project}/vpcs",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27469,7 +27850,7 @@
       "wire_path": "/v1/project/{project}/vpcs/{project_vpc_id}",
       "tag": "Project",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27532,7 +27913,7 @@
       "wire_path": "/v1/service_types",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -27559,7 +27940,7 @@
       "wire_path": "/v1/service_versions",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -27586,7 +27967,7 @@
       "wire_path": "/v1/tenants/{tenant}/os-available-plugins",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27628,7 +28009,7 @@
       "wire_path": "/v1/tenants/{tenant}/pg-available-extensions",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27670,7 +28051,7 @@
       "wire_path": "/v1/tenants/{tenant}/privatelink-availability",
       "tag": "Cloud_platforms",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27712,7 +28093,7 @@
       "wire_path": "/v1/tenants/{tenant}/static-ip-availability",
       "tag": "Cloud_platforms",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27754,7 +28135,7 @@
       "wire_path": "/v1/user/credit_code/{credit_code}",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28905,7 +29286,7 @@
       "wire_path": "/v1/account/{account_id}/mysql/query/optimize",
       "tag": "Service:_MySQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28956,7 +29337,7 @@
       "wire_path": "/v1/account/{account_id}/pg/query/optimize",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29125,7 +29506,7 @@
       "wire_path": "/v1/me/password_strength",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -29159,7 +29540,7 @@
       "wire_path": "/v1/mysql/query/metadata-validate",
       "tag": "Service:_MySQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -29188,7 +29569,7 @@
       "wire_path": "/v1/mysql/query/validate",
       "tag": "Service:_MySQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -29438,7 +29819,7 @@
       "wire_path": "/v1/organization/{organization_id}/billing-report",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30364,7 +30745,7 @@
       "wire_path": "/v1/pg/query/metadata-validate",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -30393,7 +30774,7 @@
       "wire_path": "/v1/pg/query/validate",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -30855,7 +31236,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/backup_to_another_region/report",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32177,7 +32558,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/flink/application/{application_id}/version/validate",
       "tag": "Service:_Flink",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32854,7 +33235,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/rest/topics/{topic_name}/messages",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33077,7 +33458,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/kafka/schema/compatibility/subjects/{subject_name}/versions/{version_id}",
       "tag": "Service:_Kafka",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33249,7 +33630,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/logs",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33314,7 +33695,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/metrics",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33444,7 +33825,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/mysql/query/stats",
       "tag": "Service:_MySQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33509,7 +33890,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/opensearch/_snapshot/{repository_name}/_verify",
       "tag": "Service:_OpenSearch",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34149,7 +34530,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/pg/query/stats",
       "tag": "Service:_PostgreSQL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34411,6 +34792,211 @@
         }
       ]
     },
+    "POST /project/{project}/service/{service_name}/privatelink/google": {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google",
+      "operation_id": "ServicePrivatelinkGoogleCreate",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_create",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google",
+      "tag": "Service",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ]
+    },
+    "POST /project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve": {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve",
+      "operation_id": "ServicePrivatelinkGoogleConnectionCreate",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_connection_create",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google/connections/{privatelink_connection_id}/approve",
+      "tag": "Service",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "privatelink_connection_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "privatelink_connection_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ]
+    },
+    "POST /project/{project}/service/{service_name}/privatelink/google/refresh": {
+      "key": "POST /project/{project}/service/{service_name}/privatelink/google/refresh",
+      "operation_id": "ServicePrivatelinkGoogleRefresh",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_privatelink_google_refresh",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/privatelink/google/refresh",
+      "wire_path": "/v1/project/{project}/service/{service_name}/privatelink/google/refresh",
+      "tag": "Service",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "privatelink:write"
+          ]
+        }
+      ]
+    },
     "POST /project/{project}/service/{service_name}/query/activity": {
       "key": "POST /project/{project}/service/{service_name}/query/activity",
       "operation_id": "ServiceQueryActivity",
@@ -34421,7 +35007,7 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/query/activity",
       "tag": "Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34616,6 +35202,69 @@
       "wire_path": "/v1/project/{project}/service/{service_name}/rotate-internal-secrets",
       "tag": "Service",
       "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "services:write"
+          ]
+        }
+      ]
+    },
+    "POST /project/{project}/service/{service_name}/rotate-secret-service-encryption-key": {
+      "key": "POST /project/{project}/service/{service_name}/rotate-secret-service-encryption-key",
+      "operation_id": "ServiceDataHubRotateSecretServiceEncryptionKey",
+      "pack": "aiven-services-integrations",
+      "op": "service.service_data_hub_rotate_secret_service_encryption_key",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/rotate-secret-service-encryption-key",
+      "wire_path": "/v1/project/{project}/service/{service_name}/rotate-secret-service-encryption-key",
+      "tag": "Service",
+      "risk": "admin",
       "approval": "always",
       "idempotency": "non_idempotent",
       "parameters": [
@@ -35369,7 +36018,7 @@
       "wire_path": "/v1/user/password_strength",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [
@@ -35469,7 +36118,7 @@
       "wire_path": "/v1/userauth/login_options",
       "tag": "Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [

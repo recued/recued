@@ -136,8 +136,8 @@
  *  only touches `host` after its `await`, and the seed/subscription run
  *  after `host` is assigned.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX integration);
- *  docs/d-169-spec.md § N.9 (count badge). */
+ *  Spec: D-149 § A.9 (Settings UX integration);
+ *  D-169 § N.9 (count badge). */
 
 import type {
   Conn,

@@ -33,7 +33,7 @@
  *      the previously-landed `d-164-phase-6-6-contracts-deletion`
  *      ratchet whose comment block calls out P6.7's scope).
  *
- *  Spec: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  Spec: D-164
  *  line 521 (P6.7 row). Prior slice: D-164 P6.6 commit `3cd82925`.
  */
 
@@ -60,6 +60,7 @@ import {
   type RecuedPlan,
   type TransparencyEventKind,
 } from '../index.js';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 // `ContractsBarrel` is a runtime namespace import so the barrel-
 // retirement ratchets can walk the loaded module object — type-only
@@ -553,7 +554,7 @@ const REPO_SCAN_SKIP_DIR = new Set([
 const REPO_SCAN_SKIP_FILE_SUFFIX = ['.d.ts', '.d.ts.map', '.js.map'];
 
 const isScannableFile = (filePath: string): boolean => {
-  if (!filePath.endsWith('.ts')) {
+  if (!isTypeScriptSource(filePath)) {
     return false;
   }
   for (const suffix of REPO_SCAN_SKIP_FILE_SUFFIX) {

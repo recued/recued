@@ -1,0 +1,86 @@
+{
+  "recipe_id": "reminder-due-notifier",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Reminder due notifier",
+    "description": "Hidden reminder firing recipe. It watches Recued reminder tasks at due_at, sends a notification through default fanout, and marks the task state as fired so the reminder does not re-notify after the watcher ledger has fired.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["reminder", "task", "notify", "reactive", "hidden", "pack:personal-organizer"],
+    "budget_ms": 10000
+  },
+  "variables": {},
+  "requires": ["notification_send"],
+  "auto_run": { "interval_ms": 60000, "dynamic": false },
+  "trigger_steps": [
+    {
+      "id": "due",
+      "op": "core.watch.time-relative",
+      "args": {
+        "collection": "data.task",
+        "anchor_field": "due_at",
+        "offsets": ["0s"],
+        "filter": "recued_reminder"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "text",
+      "transform": "default",
+      "value": "{{trigger.due.trigger_record.body}}",
+      "fallback": "{{trigger.due.trigger_record.title}}"
+    },
+    {
+      "id": "skip_notification",
+      "transform": "any",
+      "conditions": [
+        "{{trigger.due.trigger_record.state}} not_equal reminder_pending",
+        "{{trigger.due.trigger_record.done}} equal true"
+      ]
+    },
+    {
+      "id": "send",
+      "skip_when": "{{step.skip_notification}} equal true",
+      "op": "core.notification.send",
+      "args": {
+        "title": "Reminder",
+        "text": "{{step.text}}",
+        "link_url": null
+      }
+    },
+    {
+      "id": "delivery_not_confirmed",
+      "transform": "any",
+      "conditions": [
+        "{{step.skip_notification}} equal true",
+        "{{step.send.delivered_to}} is_empty"
+      ]
+    },
+    {
+      "id": "mark_fired",
+      "skip_when": "{{step.delivery_not_confirmed}} equal true",
+      "op": "core.work-entity.task.update",
+      "args": {
+        "id": "{{trigger.due.trigger_record_id}}",
+        "state": "reminder_fired"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Reminder", "value": "{{step.text}}" },
+        { "label": "Task ID", "value": "{{trigger.due.trigger_record_id}}" },
+        { "label": "Delivered to", "value": "{{step.send.delivered_to}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

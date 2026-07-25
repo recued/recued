@@ -39,7 +39,9 @@ import {
   installRecipeBySlug,
   resolvePackBySlug,
 } from '../pack-install-handler.js';
+import { recordPackInventory } from '../pack-inventory.js';
 import { createRecipeStore, type RecipeStore } from '../recipe-store.js';
+import { createContractStore } from '../storage/contract-store.js';
 
 // ────────────────────────────────────────────────────────────────
 // Scaffolding
@@ -210,6 +212,78 @@ describe('installPackBySlug — marketplace-fetch path', () => {
     const stored = recipeStore.getStored('remote-recipe');
     expect(stored?.publisher_id).toBe('other-publisher');
     expect(stored?.publisher_id).not.toBe('recued-core');
+  });
+
+  it('requires the exact resolved manifest review hash for a marketplace update', async () => {
+    const incoming = baseManifest({ version: 2 });
+    const routes: MockRoutes = {
+      packs: { 'remote-pack': incoming },
+      recipes: { 'remote-recipe': marketplaceRow('remote-recipe', 'recued-core') },
+    };
+    const marketplaceFetch = makeMockFetch(routes);
+    const contractStore = createContractStore(db);
+    recordPackInventory(contractStore, {
+      pack_slug: 'remote-pack',
+      pack_version: 1,
+      contents: [],
+      installed_at: 1,
+    });
+
+    const missing = await installPackBySlug(
+      { recipeStore, marketplaceFetch, packDir: dir, contractStore },
+      { slug: 'remote-pack', granted_permissions: [BULK_PACK_INSTALL_PERMISSION] },
+    );
+    expect(missing.result.failure?.code).toBe('review_stale');
+    expect(recipeStore.listStored()).toEqual([]);
+
+    const preview = await resolvePackBySlug(
+      { recipeStore, marketplaceFetch, packDir: dir, contractStore },
+      { slug: 'remote-pack' },
+    );
+    expect(preview.manifest_review_hash).toMatch(/^[0-9a-f]{64}$/);
+    const accepted = await installPackBySlug(
+      { recipeStore, marketplaceFetch, packDir: dir, contractStore },
+      {
+        slug: 'remote-pack',
+        granted_permissions: [BULK_PACK_INSTALL_PERMISSION],
+        expected_manifest_hash: preview.manifest_review_hash,
+      },
+    );
+    expect(accepted.result.ok).toBe(true);
+  });
+
+  it('rejects an update when latest changed after the manifest review', async () => {
+    const routes: MockRoutes = {
+      packs: { 'remote-pack': baseManifest({ version: 2 }) },
+      recipes: { 'remote-recipe': marketplaceRow('remote-recipe', 'recued-core') },
+    };
+    const marketplaceFetch = makeMockFetch(routes);
+    const contractStore = createContractStore(db);
+    recordPackInventory(contractStore, {
+      pack_slug: 'remote-pack',
+      pack_version: 1,
+      contents: [],
+      installed_at: 1,
+    });
+    const preview = await resolvePackBySlug(
+      { recipeStore, marketplaceFetch, packDir: dir, contractStore },
+      { slug: 'remote-pack' },
+    );
+    routes.packs!['remote-pack'] = baseManifest({
+      version: 2,
+      description: 'Changed after the consent surface rendered.',
+    });
+
+    const { result } = await installPackBySlug(
+      { recipeStore, marketplaceFetch, packDir: dir, contractStore },
+      {
+        slug: 'remote-pack',
+        granted_permissions: [BULK_PACK_INSTALL_PERMISSION],
+        expected_manifest_hash: preview.manifest_review_hash,
+      },
+    );
+    expect(result.failure?.code).toBe('review_stale');
+    expect(recipeStore.listStored()).toEqual([]);
   });
 
   it('does not let a same-slug local bundled recipe shadow marketplace authority', async () => {
@@ -609,6 +683,7 @@ describe('resolvePackBySlug — manifest-only preview', () => {
       { slug: 'remote-pack' },
     );
     expect(res.manifest?.slug).toBe('remote-pack');
+    expect(res.manifest_review_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(res.failure).toBeUndefined();
     // No install side effects — nothing persisted.
     expect(recipeStore.listStored()).toEqual([]);
@@ -638,5 +713,75 @@ describe('resolvePackBySlug — manifest-only preview', () => {
     await expect(
       resolvePackBySlug({ recipeStore, packDir: dir }, {} as { slug: string }),
     ).rejects.toBeInstanceOf(RpcError);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Install-vs-browse marker — the POLICY, asserted at the real call sites.
+//
+// The mechanism (does the fetcher set a header) is covered in the marketplace
+// package. What matters here is WHICH call sites opt in: the browse/preview
+// path shares the same route and the same fetcher, so a marker leaking onto it
+// silently turns the install count back into a view count.
+// ────────────────────────────────────────────────────────────────
+
+const capturingFetch = (routes: MockRoutes) => {
+  const inner = makeMockFetch(routes);
+  const calls: Array<{ url: string; marked: boolean }> = [];
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ url, marked: headers['x-recued-install'] === '1' });
+    return inner(input, init);
+  }) as typeof globalThis.fetch;
+  return { calls, fetchFn };
+};
+
+describe('install-manifest marker — which call sites opt in', () => {
+  it('installPackBySlug marks the pack fetch AND every constituent recipe fetch', async () => {
+    const { calls, fetchFn } = capturingFetch({
+      packs: { 'remote-pack': baseManifest() },
+      recipes: { 'remote-recipe': marketplaceRow('remote-recipe', 'recued-core') },
+    });
+
+    const { result } = await installPackBySlug(
+      { recipeStore, marketplaceFetch: fetchFn, packDir: dir },
+      { slug: 'remote-pack', granted_permissions: [BULK_PACK_INSTALL_PERMISSION] },
+    );
+
+    expect(result.ok).toBe(true);
+    // A pack install DOES install its recipes, so each ref is a real recipe
+    // install — 1 for the pack + 1 per recipe is intended, not double counting.
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.every((c) => c.marked)).toBe(true);
+    expect(calls.some((c) => c.url.includes('/packs/remote-pack.json'))).toBe(true);
+    expect(calls.some((c) => c.url.includes('/recipes/remote-recipe.json'))).toBe(true);
+  });
+
+  it('resolvePackBySlug (preview) NEVER marks — it fires on every detail render', async () => {
+    const { calls, fetchFn } = capturingFetch({ packs: { 'remote-pack': baseManifest() } });
+
+    const preview = await resolvePackBySlug(
+      { recipeStore, marketplaceFetch: fetchFn, packDir: dir },
+      { slug: 'remote-pack' },
+    );
+
+    expect(preview.manifest).not.toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].marked).toBe(false);
+  });
+
+  it('installRecipeBySlug marks the standalone recipe install', async () => {
+    const { calls, fetchFn } = capturingFetch({
+      recipes: { 'solo-recipe': marketplaceRow('solo-recipe', 'recued-core') },
+    });
+
+    await installRecipeBySlug(
+      { recipeStore, marketplaceFetch: fetchFn, packDir: dir },
+      { slug: 'solo-recipe' },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].marked).toBe(true);
   });
 });

@@ -78,7 +78,7 @@
  *  Hashing the structure alongside the values is strictly stricter than
  *  rule 6's minimum.
  *
- *  Spec: docs/d-177-spec.md § N.11 / N.3 / N.4; landing order P5b. */
+ *  Spec: D-177 § N.11 / N.3 / N.4; landing order P5b. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import { sha256Hex } from '@recued/crypto/hash';

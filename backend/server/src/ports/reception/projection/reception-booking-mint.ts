@@ -95,7 +95,7 @@
  *  price field (D-200's paid intake does; scheduling does not), so there is
  *  nothing to source it from. Writing 0 would be inventing the money.
  *
- *  Spec: docs/d-210-spec.md § A.2 (booking ⟂ calendar) + § A.8 slice 3. */
+ *  Spec: D-210 § A.2 (booking ⟂ calendar) + § A.8 slice 3. */
 
 import {
   BOOKING_TITLE_MAX,
@@ -108,6 +108,7 @@ import { parseSchedulingLinkConfig } from '../transformations/scheduling-link.js
 import { handleContactUpsert, type ContactRpcDeps } from '../../../contact-handler.js';
 import type { FormSubmissionSummary } from '../../../storage/reception-form-store.js';
 import type { WorkEntityStore } from '../../../storage/work-entity-store.js';
+import { verifyReceptionBookingBinding } from './reception-booking-binding.js';
 
 /** Fallback title when the endpoint's `display_name` is unreachable (the
  *  endpoint row is gone, or its metadata does not parse as a scheduling
@@ -126,6 +127,7 @@ const clamp = (s: string, max: number): string =>
  *  header). The pre-check makes the retry safe. */
 export type ReceptionBookingMintEffect = (input: {
   readonly booking_request_id: string;
+  readonly booking_binding: string;
   /** The DETERMINISTIC booking id (`reception_<request_id>`) — derived by the
    *  drain, carried through the projection as `input.id`. Both the idempotency
    *  anchor (the pre-check reads it) and the row's primary key, so the two can
@@ -174,7 +176,10 @@ export interface ReceptionBookingMintSeamDeps {
   /** Derive the booking-PII AEAD key. THROWS on a locked FileVault — caught
    *  here, since a locked vault must cost the booking its counterparty, not
    *  the booking itself. */
-  readonly getFormSubmissionPiiKey?: () => Uint8Array;
+  /** The reception key verifies the drain-minted request/id binding before any
+   *  caller-selected record is read. Required: without it the seam does not
+   *  have authority to open the reservation. */
+  readonly getFormSubmissionPiiKey: () => Uint8Array;
   /** The live `contact.upsert` path (D-138). Absent → no counterparty. */
   readonly contactDeps?: ContactRpcDeps;
   /** D-210 A.8 slice 3d — send the visitor their confirmation. The recipient is
@@ -205,7 +210,7 @@ const resolveCounterparty = async (
   row: FormSubmissionSummary,
   now: number,
 ): Promise<string | null> => {
-  if (deps.contactDeps === undefined || deps.getFormSubmissionPiiKey === undefined) return null;
+  if (deps.contactDeps === undefined) return null;
   const key = deps.getFormSubmissionPiiKey();
   // ⚠ D-210 A.8 slice 4b-ii — the FORM key + its own column. Reading the address
   // from the dedicated column (never the blob) is what keeps this from unsealing
@@ -410,11 +415,23 @@ export const createReceptionBookingMintSeam = (
   deps: ReceptionBookingMintSeamDeps,
 ): ReceptionBookingMintEffect => async ({
   booking_request_id,
+  booking_binding,
   booking_id,
   slot_start_at,
   slot_end_at,
   notify_visitor,
 }) => {
+  // Verify before even the idempotency read. Both ids are caller-controlled at
+  // this seam; neither may act as a record oracle until the drain-minted pair
+  // has been authenticated.
+  const bindingKey = deps.getFormSubmissionPiiKey();
+  if (!verifyReceptionBookingBinding(bindingKey, {
+    booking_request_id,
+    booking_id,
+    booking_binding,
+  })) {
+    throw new Error('reception booking mint: invalid caller-bound booking provenance');
+  }
   // I-4 — the row this seam would write IS the anchor. A hit means an earlier
   // approve already materialized this reservation: return it and write nothing.
   // ⚠ Returning early is the load-bearing half, not an optimization —

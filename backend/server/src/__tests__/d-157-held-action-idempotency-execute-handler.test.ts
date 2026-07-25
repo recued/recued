@@ -44,7 +44,10 @@ import {
 } from '../held-action-idempotency.js';
 import { createManifestRegistry, type ManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
-import type { ExecuteResponse } from '../types.js';
+import {
+  executeResponseAuditRunId,
+  type ExecuteResponse,
+} from '../types.js';
 
 const TOOL_SLUG = 'held-idempotency-storage-read';
 const STEP_ID = 'gated_step';
@@ -677,9 +680,12 @@ describe('handleExecute D-157 held-action idempotency guard', () => {
     expect(executeRecipeMock).toHaveBeenCalledTimes(2);
     expect(checkpoints.written.size).toBe(1);
     expect(checkpoints.write).toHaveBeenCalledTimes(1);
-    expect(await awaitingAnchors(log, chatSource, recipe)).toHaveLength(1);
+    const [anchor] = await awaitingAnchors(log, chatSource, recipe);
+    expect(anchor).toBeDefined();
     expect(leaderResponse.awaiting_approval).toBe(true);
     expect(followerResponse.awaiting_approval).toBe(true);
+    expect(executeResponseAuditRunId(leaderResponse)).toBe(anchor!.run_id);
+    expect(executeResponseAuditRunId(followerResponse)).toBe(anchor!.run_id);
     expect(awaitInflightHold(heldActionKey)).toBeNull();
   });
 

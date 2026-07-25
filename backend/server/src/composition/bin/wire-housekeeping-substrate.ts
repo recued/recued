@@ -52,7 +52,7 @@ import type { ArchiveUploadService } from '../../archive/archive-upload-service.
 import type { RecipeStore } from '../../recipe-store.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
 import type { ContactMergeCycleObserver } from '../../contact-merge-cycle-observer.js';
-import type { createBlobStore } from '../../storage/index.js';
+import type { BlobStore } from '../../storage/index.js';
 import type {
   HousekeepingConfigStore,
   HousekeepingEnrichmentProducer,
@@ -112,8 +112,6 @@ import type { HousekeepingRpcDeps } from '../../housekeeping-handler.js';
 import type { HousekeepingScopeReadEntry } from '@recued/contracts';
 import type { LLMConfig, QuotaTracker } from '@recued/llm';
 import type { EnrichmentProducerEntry } from './housekeeping-scheduler-instance.js';
-
-type BlobStore = ReturnType<typeof createBlobStore>;
 
 /**
  * STORE COMPOSER — Phase 1.

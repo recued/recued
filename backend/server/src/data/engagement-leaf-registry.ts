@@ -13,7 +13,7 @@
  *  Mirrors `reconciler-registry.ts`'s module-level default-registry pattern —
  *  process-global, boot-populated.
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c2); survey Wall-F. */
+ *  Spec: D-192 (S4c2); survey Wall-F. */
 
 import type { ConnectionVendorEntity } from '@recued/contracts';
 

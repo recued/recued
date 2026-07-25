@@ -84,6 +84,14 @@ import {
  *  through `MasterDekReencryptor.rotate` so partial state cannot
  *  arise. */
 export interface MasterDekReencryptor {
+  /** Does this implementation also rekey the realm DATABASE?
+   *
+   *  D-212 derives the database key from the Master DEK, so an implementation
+   *  that only re-encrypts blobs leaves the file readable by neither factor
+   *  once the Master DEK moves. The rotation substrate refuses unless this is
+   *  explicitly `true`, so an implementation cannot omit the rekey by silence —
+   *  the omission has to be a decision someone typed. */
+  readonly rekeysRealmDatabase?: boolean;
   rotate(args: {
     new_master_dek: Uint8Array;
     /** Caller-provided commit hook. The reencryptor MUST invoke this
@@ -378,6 +386,22 @@ export const createRotationEngine = (
     async rotateMasterDek({ triggered_by_client_id, reason }) {
       if (!opts.master_dek || !opts.master_dek_reencryptor) {
         return { ok: false, op: 'master_dek_rotate', error: 'key_not_loaded' };
+      }
+      // D-212 made the realm DATABASE key a pure function of the Master DEK
+      // (`deriveSubDEK(masterDEK, 'database')`), and this substrate does not
+      // know that. A completed rotation would re-wrap both bundle wraps to the
+      // new Master DEK while the file stayed encrypted under the old `database`
+      // sub-DEK — after which neither the keyfile nor the 24-word recovery key
+      // opens it again. Whole realm, unrecoverable.
+      //
+      // Unreachable today (no composition supplies a reencryptor), which is
+      // exactly why this guard is here rather than a comment: the wiring note
+      // in `wire-cert-stack.ts` invites a future slice to supply one, and
+      // `key-health-panel.ts` already tells users rotation re-encrypts the
+      // whole warehouse. Whoever wires it must add the database rekey and
+      // delete this branch in the same change.
+      if (!opts.master_dek_reencryptor.rekeysRealmDatabase) {
+        return { ok: false, op: 'master_dek_rotate', error: 'database_rekey_unsupported' };
       }
       const result = await guard<RotationResult>('master_dek', async () => {
         const next = genMaster();

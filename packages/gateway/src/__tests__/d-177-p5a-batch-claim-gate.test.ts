@@ -71,6 +71,7 @@ const askDecision = (
   verdict: 'ask',
   risk_tier: 'write',
   detail: 'approval required',
+  authorization_provenance: { pre_lift_approval: 'ask' },
   ...overrides,
 });
 

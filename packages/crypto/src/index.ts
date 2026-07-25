@@ -63,6 +63,7 @@ export {
   openServerBundleWithServerKey,
   openServerBundleWithRecoveryKey,
   openServerBundleWithRecoveryEntropy,
+  rewrapServerBundleForServerKey,
   generateServerKey,
   serverBundleToJSON,
   serverBundleFromJSON,

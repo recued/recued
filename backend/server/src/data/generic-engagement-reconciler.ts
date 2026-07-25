@@ -2,7 +2,7 @@
  *
  *  The reusable de-hardcode every future `sync_kind: 'delta_cursor'` engagement
  *  vendor rides (Microsoft Dynamics 365 is the forcing function; the survey is
- *  `docs/d-192-dynamics-declaration-survey.md`, Wall-D). It is to the engagement
+ *  D-192, Wall-D). It is to the engagement
  *  plane what `buildCanonicalCrmReconciler` (D-190) is to the CRM record plane:
  *  ONE factory that plugs into the SAME `buildVendorReconciliationTask` harness —
  *  connection-enroll + cursor + rate-gate — and writes the `engagements` table +
@@ -34,7 +34,7 @@
  *  the `mapEdges` participant fan-out (Dynamics `activityparty`, analog of
  *  Salesforce `TaskRelation`).
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c2); survey Wall-D. */
+ *  Spec: D-192 (S4c2); survey Wall-D. */
 
 import {
   type ConnectionRecord,

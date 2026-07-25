@@ -5,7 +5,7 @@
  *  worth testing are all about an outcome going missing: a row that isn't there, a
  *  count that gets blanked, a blob that won't parse.
  *
- *  Spec: `docs/d-205-contact-surface.md` §9.1. */
+ *  Spec: D-205 §9.1. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

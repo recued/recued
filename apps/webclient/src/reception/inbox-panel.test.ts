@@ -268,6 +268,7 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
   proposed_action: over.proposed_action ?? 'Create a commitment',
   status: over.status ?? 'pending',
   ...(over.allow_offer !== undefined ? { allow_offer: over.allow_offer } : {}),
+  ...(over.booking_history !== undefined ? { booking_history: over.booking_history } : {}),
 });
 
 const source = (over: Partial<SourceRegistration> = {}): SourceRegistration => ({
@@ -379,6 +380,35 @@ beforeAll(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('reception inbox panel — destination ref-picker', () => {
+  it('renders owner-only prior booking history in the review detail', async () => {
+    const { root } = setup({
+      items: [item({
+        top_tier_kind: 'booking',
+        source: { kind: 'scheduling_link', endpoint_id: 'ep-1', record_ref: 'cp-1' },
+        booking_history: {
+          counterparty_contact_id: 'contact-opaque',
+          total: 1,
+          entries: [{
+            id: 'booking-old',
+            title: 'Earlier consultation',
+            lifecycle_state: 'no_show',
+            created_at: NOW - 2,
+            state_changed_at: NOW - 1,
+          }],
+        },
+      })],
+    });
+    await flush();
+
+    const history = allNodes(root).find((node) => node.className === 'reception-inbox-history');
+    expect(history).toBeDefined();
+    const text = allNodes(history!).map((node) => node.textContent).join('\n');
+    expect(text).toContain('Previous bookings (1)');
+    expect(text).toContain('Earlier consultation — no show');
+    expect(text).not.toContain('contact-opaque');
+    expect(text).not.toContain('@');
+  });
+
   it('renders FormResponse answers as read-only review content', async () => {
     const { root } = setup({
       items: [item({
@@ -456,6 +486,98 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(h.mount.getState().error).toBeNull();
     expect(h.root.querySelector('[data-recued-reception-inbox-picker="source_id"]')).not.toBeNull();
     expect(h.sourceListCount()).toBe(1);
+  });
+
+  it('sends a NEVER-PREFILLED datetime as epoch ms, not the raw string', async () => {
+    // D-210 audit finding 7 — the coercion used to be conditional on the arg
+    // already holding a number:
+    //     if (typeof field.value === 'number') return new Date(raw).getTime();
+    //     return raw;
+    // …so a `datetime` the op never prefilled shipped the raw wall-clock STRING,
+    // and the server's edit validator demands a finite number — `edit_invalid`,
+    // thrown BEFORE release, failing the whole approve. Live on the only path
+    // that reaches it: `reception-approval.json` declares `promised_for_at` as
+    // `datetime` and the approval processor never sets it, so "Due" always
+    // renders empty. The `/ask` landing surface coerced correctly, so the
+    // owner's two surfaces disagreed on the same field — exactly what the
+    // server-side enforcement's own comment says it exists to prevent.
+    //
+    // Asserting the REQUEST: what the client puts on the wire is this module's
+    // responsibility. ⇒ [[a_defaulted_field_is_not_evidence]]
+    const h = setup({
+      items: [item({
+        hold_id: 'hold-dt',
+        // No `promised_for_at` in args — the never-prefilled case.
+        args: { title: 'Follow up' },
+        arg_schema: {
+          fields: [{
+            key: 'promised_for_at',
+            type: 'datetime',
+            label: 'Due',
+            required: false,
+          }],
+        },
+      })],
+    });
+    await flush();
+
+    const input = h.root.querySelector('[data-recued-reception-inbox-field]');
+    if (input === null) throw new Error('edit control not mounted');
+    input.value = '2026-08-01T10:00';
+    dispatch(input, 'input');
+    dispatch(findButton(h.root, 'Approve'), 'click');
+    await flush();
+
+    const approves = h.approveCalls();
+    expect(approves).toHaveLength(1);
+    const sent = approves[0]!.edits.promised_for_at;
+    // ⛔ The finding: pre-fix this was the string '2026-08-01T10:00'.
+    expect(typeof sent).toBe('number');
+    expect(Number.isFinite(sent as number)).toBe(true);
+  });
+
+  it('puts a CLEARED optional field on the wire as null, not a dropped key', async () => {
+    // ⛔ REGRESSION GUARD, and the reason it asserts the REQUEST: `JSON.stringify`
+    // drops own properties valued `undefined`, so `edits[key] = undefined` — what
+    // `parseFieldValue` returns for an emptied optional field — never reached the
+    // server at all. `validateEditsAgainstSchema` iterates `Object.keys(edits)`,
+    // saw nothing, wrote no override, and the promotion fell back to the SEALED
+    // ORIGINAL. The owner clears the visitor's email, the RPC reports
+    // `released: true, edited_keys: []`, and the address they deleted is what
+    // lands on the canonical record. A local assertion on the `edits` object
+    // would have passed — only the serialized request shows it.
+    // ⇒ [[a_defaulted_field_is_not_evidence]]
+    const h = setup({
+      items: [item({
+        hold_id: 'hold-clear',
+        args: { form_response_visitor_email: 'typo@exmaple.test' },
+        arg_schema: {
+          fields: [{
+            key: 'form_response_visitor_email',
+            type: 'string',
+            label: 'Visitor email',
+            required: false,
+          }],
+        },
+      })],
+    });
+    await flush();
+
+    const input = h.root.querySelector('[data-recued-reception-inbox-field]');
+    if (input === null) throw new Error('edit control not mounted');
+    input.value = '';
+    dispatch(input, 'input');
+    dispatch(findButton(h.root, 'Approve'), 'click');
+    await flush();
+
+    const approves = h.approveCalls();
+    expect(approves).toHaveLength(1);
+    const { edits } = approves[0]!;
+    // The key must SURVIVE serialization — this is the half that was broken.
+    const wire = JSON.parse(JSON.stringify(edits)) as Record<string, unknown>;
+    expect(Object.hasOwn(wire, 'form_response_visitor_email')).toBe(true);
+    expect(wire.form_response_visitor_email).toBeNull();
+    expect(JSON.stringify(wire)).not.toContain('exmaple');
   });
 
   it('flows a picked destination into the approve dispatch', async () => {

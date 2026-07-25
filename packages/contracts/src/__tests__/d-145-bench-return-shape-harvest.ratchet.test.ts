@@ -1,7 +1,7 @@
 /** Bench return-shape harvest ratchet.
  *
  *  Locks the invariant that every topic carried by the bench catalog
- *  (`recued-enrichment-benchmark/scenario-engine/src/enrichment-
+ *  (internal benchmarks
  *  episodes/catalog.js`) also carries a non-empty `return_shape: string`
  *  on its `ENRICHMENT_REGISTRY` entry — the bench is the source of truth
  *  for REF<entity> annotations, and recued's registry must mirror them
@@ -41,7 +41,7 @@ const asDef = (topic: EnrichmentTopic): EnrichmentDefinition | undefined =>
   ENRICHMENT_REGISTRY[topic] as EnrichmentDefinition | undefined;
 
 /** Topics the bench catalog declares a `return_shape` for. Harvested
- *  verbatim from `recued-enrichment-benchmark/scenario-engine/src/
+ *  verbatim from internal benchmarks
  *  enrichment-episodes/catalog.js` on 2026-05-27 (41 topics). */
 const BENCH_TOPICS: ReadonlyArray<EnrichmentTopic> = [
   'contact_timeline_rollup',

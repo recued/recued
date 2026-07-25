@@ -21,7 +21,7 @@
  *  ────────────────────────────────────────────────────────────────
  *  WHY THIS IS HAND-DECLARED, not derived from `CONNECTION_VENDOR_ENTITIES`
  *  ────────────────────────────────────────────────────────────────
- *  The spec (`docs/d-192-contact-source-family.md` step 5) floated deriving each
+ *  The spec (D-192 step 5) floated deriving each
  *  CRM vendor's field map from `CONNECTION_VENDOR_ENTITIES.meta_fields` rather
  *  than re-declaring it. **Verified against the registry: it does not work, and a
  *  naive derive would fail SILENTLY.** Of the eight canonical contact fields:
@@ -76,7 +76,7 @@
  *  DECLARED absence rather than one discovered six months on. It is a PROMISE, and
  *  slice 6's sync verifies the leaf kept it — never a silent skip.
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 5; taxonomy §0 / §3c. */
+ *  Spec: D-192 step 5; taxonomy §0 / §3c. */
 
 import {
   CONTACT_ATTRIBUTE_KIND_SET,

@@ -1,7 +1,7 @@
 # Section Descriptions
 
 > Bench-harvested verbatim from
-> `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts:128-140`
+> `the benchmark harness compose-agent:128-140`
 > for the two bench-validated sections (enrichment + entity-query).
 > Mirrored as string constants in `../catalog/sections/*.ts` (the
 > runtime source of truth — see each `<SECTION>_SECTION_DESCRIPTION`).

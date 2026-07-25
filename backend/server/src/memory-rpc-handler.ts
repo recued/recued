@@ -13,7 +13,7 @@
  *  over the already-materialized matched set. Read-only. Slice 1 wires
  *  `memory.list` only; create/update/delete/import land in Slice 2+.
  *
- *  Spec: docs/d-198-spec.md §5 (list) + docs/d-198-build-plan.md §B Slice 1. */
+ *  Spec: D-198 §5 (list) + D-198 §B Slice 1. */
 
 import {
   RpcError,

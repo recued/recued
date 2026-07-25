@@ -25,12 +25,13 @@
  *  no detector: any material change — recipe content, operation, connection,
  *  arg shape, payload, entity scope — fails the equality and re-asks.
  *
- *  Spec: docs/d-177-spec.md § N.3 / N.4 / N.9; landing order P2. */
+ *  Spec: D-177 § N.3 / N.4 / N.9; landing order P2. */
 
 import { isDelegatedMcpToken } from './commits.js';
 import type { Actor, Channel } from './commits.js';
 import { canonicalizeEmail } from './contact.js';
 import type { RiskTier } from './ingredient.js';
+import type { OperationApproval } from './ingredient-catalog.js';
 import {
   contractScopeMatches,
   isContractActive,
@@ -42,12 +43,11 @@ import {
   type OpenProjection,
 } from './open-projection.js';
 
-/** The risk tiers a session grant may absorb an `ask` for (D7): `read` passes
- *  the gate without grants (an ask on a read-tier call holds as today — grants
- *  are never minted for reads, so none can match), and `destructive` NEVER
- *  grants. Doubles as the ceiling for N.6 `grantable_risk_tiers` (P4): a cell
- *  may seed a SUBSET of this, never more. */
-export const SESSION_GRANT_RISK_TIERS = ['write', 'admin'] as const satisfies
+/** The risk tiers a session grant may absorb an `ask` for (D7 + D-211 Slice
+ *  3): read joins write/admin so an explicitly tightened read can occupy the
+ *  session rung; destructive never does. Approval provenance independently
+ *  prevents every tier's `always` posture from matching a live session row. */
+export const SESSION_GRANT_RISK_TIERS = ['read', 'write', 'admin'] as const satisfies
   readonly RiskTier[];
 
 /** D-177 N.13 (P6a) — the risk tiers a DELEGATION RULE may absorb an `ask`
@@ -124,6 +124,10 @@ export interface SessionGrantMatchContext {
   readonly recipe_hash?: string;
   /** The admission decision's tier (the `'ask'` verdict carries it). */
   readonly risk_tier: RiskTier;
+  /** D-209 §1.7 — authorization approval before review/quality lifts. A
+   *  session match requires `never` or `ask`; `always` (and malformed runtime
+   *  input) skips only the session pass, leaving delegation matching live. */
+  readonly pre_lift_approval: OperationApproval;
   /** P1b canonical action identity — both REQUIRED: a dispatch whose payload
    *  could not be canonicalized carries no hashes and must never grant-match
    *  (the Gateway skips the lookup entirely in that degraded form). */
@@ -232,7 +236,7 @@ export interface SessionGrantDefaults {
 export const CHAT_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
   ttl_ms: 3_600_000,
   max_uses: 5,
-  grantable_risk_tiers: ['write', 'admin'],
+  grantable_risk_tiers: ['read', 'write', 'admin'],
 };
 
 /** D-177 P5 (N.6 / resolved Q8) — the `('messenger', 'user_self')` seed: the
@@ -248,7 +252,7 @@ export const CHAT_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
 export const MESSENGER_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
   ttl_ms: 3_600_000,
   max_uses: 5,
-  grantable_risk_tiers: ['write', 'admin'],
+  grantable_risk_tiers: ['read', 'write', 'admin'],
 };
 
 /** D-177 P5 (N.6 / resolved Q8) — the `('mcp', 'contracted_user')` seed: the
@@ -263,7 +267,7 @@ export const MESSENGER_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
 export const MCP_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
   ttl_ms: 3_600_000,
   max_uses: 5,
-  grantable_risk_tiers: ['write', 'admin'],
+  grantable_risk_tiers: ['read', 'write', 'admin'],
 };
 
 /** D-177 N.14 (owner-ratified 2026-07-16) — the `(reception, anonymous)`
@@ -415,9 +419,9 @@ export interface SessionGrantOffer {
  *  for the `(channel × actor)` cell (the attended ask-channel seeds —
  *  {@link SESSION_GRANT_DEFAULT_SEEDS}, N.6 item 2), the hold's `risk_tier`
  *  must be a known tier inside BOTH the cell's `grantable_risk_tiers` and the
- *  {@link SESSION_GRANT_RISK_TIERS} ceiling (D7 — `read` never
- *  asks-for-grants, `destructive` never grants), and an absent/unknown tier
- *  offers nothing. Pure given `scan`; the host adds the run-shape conditions
+ *  {@link SESSION_GRANT_RISK_TIERS} ceiling (D7 — `destructive` never grants),
+ *  and the hold's pre-lift approval must be known and not `always`. An absent /
+ *  unknown tier or provenance offers nothing. The host adds run-shape conditions
  *  it owns (resumable checkpoint path, commit-gateway hold, a wired resolver)
  *  before calling.
  *
@@ -438,10 +442,17 @@ export const resolveSessionGrantOffer = (args: {
    *  `RiskTier`) because legacy raise sites may omit or widen it; anything
    *  not a known grantable tier resolves to no offer. */
   readonly risk_tier: string | undefined;
+  /** D-209 §1.7 provenance from the real admission resolution. Missing is
+   *  fail-closed: a legacy/unclassified hold gets no session-loosening option. */
+  readonly pre_lift_approval: OperationApproval | undefined;
 }): SessionGrantOffer | undefined => {
   const defaults = seededSessionGrantDefaults(args.channel, args.actor);
   if (defaults === undefined) return undefined;
   if (args.risk_tier === undefined) return undefined;
+  if (
+    args.pre_lift_approval !== 'never'
+    && args.pre_lift_approval !== 'ask'
+  ) return undefined;
   if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(args.risk_tier)) {
     return undefined;
   }
@@ -735,10 +746,10 @@ const matchesGateGrant = (
     // are; the vocabulary stays disjoint).
     return false;
   }
-  // D7 — grants absorb asks only within the variant's tier ceiling: session
-  // grants write/admin; delegation rules write ONLY in v1 (N.13 fork 2 —
-  // `admin` delegation stays a deliberate hand-mint). `read` passes the gate
-  // without grants; `destructive` never grants.
+  // D7 + D-211 Slice 3 — grants absorb asks only within the variant's tier
+  // ceiling: session grants read/write/admin; delegation rules write ONLY in
+  // v1 (N.13 fork 2 — `admin` delegation stays a deliberate hand-mint).
+  // `destructive` never session-grants; provenance separately blocks `always`.
   const tierCeiling: readonly string[] =
     variant === 'session' ? SESSION_GRANT_RISK_TIERS : DELEGATION_RULE_RISK_TIERS;
   if (!tierCeiling.includes(ctx.risk_tier)) {
@@ -993,7 +1004,15 @@ export const matchesSessionGrant = (
   grant: ContractDefinition,
   ctx: SessionGrantMatchContext,
   nowMs: number,
-): boolean => matchesGateGrant(grant, ctx, nowMs, 'session');
+): boolean => {
+  // D-209 §1.7 — fail closed on `always` AND on malformed/missing runtime
+  // provenance. This guard is session-specific: the standing delegation pass
+  // below remains the deliberate sanctioned escape for an `always` ruling.
+  if (ctx.pre_lift_approval !== 'never' && ctx.pre_lift_approval !== 'ask') {
+    return false;
+  }
+  return matchesGateGrant(grant, ctx, nowMs, 'session');
+};
 
 /** D-177 N.13 (P6a) — the DELEGATION-RULE match predicate: true iff `grant`
  *  is a live `grant_kind: 'delegation'` row admitting the dispatch described

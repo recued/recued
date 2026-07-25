@@ -14,7 +14,7 @@
  *  faithful no-op (the correction stream is per-pair state the
  *  framework cannot synthesize).
  *
- *  Spec: docs/d-160-spec.md § P2.
+ *  Spec: D-160 § P2.
  */
 
 import type { Middleware, TurnContext } from '@recued/middleware';

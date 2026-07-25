@@ -6,7 +6,7 @@
  *  resolution tool itself, as today). The aim is to save a tool-call turn
  *  on the subset where a mentioned entity resolves — not to be correct.
  *
- *  Design: docs/prefetch-middleware-pending-design.md
+ *  Design: internal design notes
  *
  *  Boundaries:
  *    - Warehouse access is an INJECTED port (`EntitySearchPort`) — the

@@ -46,7 +46,7 @@
  *  responds with `{ manifest, restored_at }` and THEN the server drains, swaps
  *  the db, and restarts — the WS connection drops right after the response, BY
  *  DESIGN (see memory `project_online_server_op_invariants` +
- *  `handovers/handover_archive_scope_b_done.md`). So the commit path treats both
+ *  internal design notes). So the commit path treats both
  *  a resolved call AND a transport-family rejection (the response racing the
  *  drain) as "restore committed — restarting; reconnecting…", leaning on the
  *  global pair/reconnect logic to re-establish the socket. A dropped WS here is
@@ -99,6 +99,10 @@ export const ARCHIVE_RESTORE_PREVIEW_BTN_ATTR =
 export const ARCHIVE_RESTORE_MANIFEST_ATTR =
   'data-recued-archive-restore-manifest';
 export const ARCHIVE_RESTORE_ARM_ATTR = 'data-recued-archive-restore-arm';
+/** The preview's "some tables could not be counted" note — present ONLY when
+ *  the server reported `uncounted_tables`, so `record_count` is a floor. */
+export const ARCHIVE_RESTORE_UNCOUNTED_ATTR =
+  'data-recued-archive-restore-uncounted';
 /** M5 S3.0 — the "this backup needs a newer server" block shown in the restore
  *  preview when `schema_compat.status === 'archive_too_new'` (no arm/commit). */
 export const ARCHIVE_RESTORE_SCHEMA_WARN_ATTR =
@@ -543,6 +547,12 @@ export const ARCHIVE_BACKUP_PANEL_STYLES = `
   font-size: 13px;
   line-height: 1.6;
   color: var(--fg);
+}
+[${ARCHIVE_BACKUP_PANEL_ATTR}] .archive-backup-manifest-warning {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 [${ARCHIVE_BACKUP_PANEL_ATTR}] .archive-backup-result {
   margin: 0;
@@ -1503,8 +1513,26 @@ export const mountArchiveBackupPanel = (
     summary.className = 'archive-backup-manifest';
     if (manifest) {
       const records = doc.createElement('div');
-      records.textContent = `${manifest.record_count.toLocaleString()} records from ${manifest.exported_at}`;
+      // ⚠ "at least" when the server told us it couldn't count everything:
+      // `record_count` is then a floor, and this line is read at the moment
+      // someone decides to restore. Absent field ⇒ the server does not report
+      // it, so the wording stays as it was rather than claiming completeness
+      // it cannot know.
+      const uncounted = manifest.uncounted_tables ?? [];
+      records.textContent = uncounted.length > 0
+        ? `at least ${manifest.record_count.toLocaleString()} records from ${manifest.exported_at}`
+        : `${manifest.record_count.toLocaleString()} records from ${manifest.exported_at}`;
       summary.appendChild(records);
+      if (uncounted.length > 0) {
+        const note = doc.createElement('div');
+        note.setAttribute(ARCHIVE_RESTORE_UNCOUNTED_ATTR, '');
+        note.className = 'archive-backup-manifest-warning';
+        note.textContent =
+          `${uncounted.length} table${uncounted.length === 1 ? '' : 's'} could not be counted `
+          + `(${uncounted.join(', ')}), so the total above is a minimum. The restore itself is `
+          + 'unaffected — this is the preview’s count, not the archive’s contents.';
+        summary.appendChild(note);
+      }
       const files = doc.createElement('div');
       files.textContent = `Includes files: ${manifest.includes_blobs ? 'yes' : 'no'}`;
       summary.appendChild(files);

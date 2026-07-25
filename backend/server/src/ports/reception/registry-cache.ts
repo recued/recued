@@ -30,7 +30,7 @@
  *  endpoint's lifetime, and rotation propagates via the same
  *  invalidation path.
  *
- *  Spec: docs/d-149-spec.md § A.3 + § Must Hold I-5. */
+ *  Spec: D-149 § A.3 + § Must Hold I-5. */
 
 import type { EndpointSummary } from '@recued/contracts';
 

@@ -12,11 +12,12 @@
  *  config explicitly tolerates) are not engine code and do not fail
  *  the ratchet.
  *
- *  Spec: docs/d-159-spec.md section N.3 + I-5 + A.3. */
+ *  Spec: D-159 section N.3 + I-5 + A.3. */
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 const SRC = resolve(__dirname, '..'); // packages/engine/src
 
@@ -59,7 +60,7 @@ const sorted = (xs: string[]): string[] => [...xs].sort();
 /** A first-party source file -- a `.ts` that is not a `.d.ts`
  *  declaration build artifact. */
 const isSource = (name: string): boolean =>
-  name.endsWith('.ts') && !name.endsWith('.d.ts');
+  isTypeScriptSource(name);
 
 describe('D-159 N.3 / I-5 -- packages/engine/src is exactly the keep-list', () => {
   const entries = readdirSync(SRC, { withFileTypes: true });

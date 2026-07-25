@@ -41,7 +41,7 @@
  *  supplied content is JSON.stringify'd (same log-forgery defense
  *  as `BundlePoolError`).
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle / § 3 the deterministic gate (bundle path:
  *  recued.com hash-pinned, content-addressed, verifiable). */
 

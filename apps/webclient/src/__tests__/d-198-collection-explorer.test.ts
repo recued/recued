@@ -9,6 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CollectionInstanceRow, CollectionRecord } from '@recued/contracts';
 import {
+  COLLECTION_DETAIL_HEADING_ATTR,
+  COLLECTION_EXPLORER_STYLES,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_RECORD_ID_ATTR,
   COLLECTION_SELECT_INSTANCE_ACTION,
@@ -76,6 +78,8 @@ describe('collection-explorer — schema-driven list', () => {
     expect(renderCollectionExplorer(base({ instances: [], selectedSlug: null })))
       .toContain('Nothing connected');
     expect(renderCollectionExplorer(base({ records: [] }))).toContain('No records');
+    expect(renderCollectionExplorer(base({ error: 'Source check failed' })))
+      .toContain('class="col-explorer-error" role="alert"');
   });
 
   it('formats future time fields as "in …" (calendar start_at), not "just now"', () => {
@@ -121,6 +125,23 @@ describe('collection-explorer — record detail', () => {
     expect(html).toContain('x@y.com'); // field
     expect(html).toContain('the full message body'); // inline body
     expect(html).toContain('Raw fields'); // hot_fields disclosure
+    expect(html).toContain(
+      `<h2 class="col-explorer-detail-title" `
+      + `${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">Hello</h2>`,
+    );
+  });
+
+  it('uses canonical theme tokens for readable light and dark record details', () => {
+    expect(COLLECTION_EXPLORER_STYLES).toContain('color: var(--fg)');
+    expect(COLLECTION_EXPLORER_STYLES).toContain(
+      'color: var(--on-accent)',
+    );
+    expect(COLLECTION_EXPLORER_STYLES).toContain(
+      'background: var(--surface-sunk)',
+    );
+    expect(COLLECTION_EXPLORER_STYLES).not.toMatch(
+      /--(?:text|text-muted|surface-2)\b/,
+    );
   });
 
   it('notes a CAS blob body instead of rendering it', () => {

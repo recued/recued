@@ -65,7 +65,8 @@
     },
     "selected_by_approval": {
       "always": 31,
-      "never": 42
+      "ask": 32,
+      "never": 10
     },
     "raw_json_request_bodies": 36,
     "captured_downloads": 4,
@@ -211,7 +212,7 @@
       "op": "distributed.cluster_status",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -410,7 +411,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -923,7 +924,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -1157,7 +1158,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -1575,7 +1576,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -1899,7 +1900,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -2109,7 +2110,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -2205,7 +2206,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -2757,7 +2758,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -2853,7 +2854,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -2949,7 +2950,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3045,7 +3046,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3141,7 +3142,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3237,7 +3238,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3333,7 +3334,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": "The documented cursor is returned at result.next_page_offset and must be sent as the top-level offset field inside the next raw JSON request body; the current paginator cannot mutate body_raw without replacing the caller's exact request document.",
@@ -3429,7 +3430,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3525,7 +3526,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3621,7 +3622,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3717,7 +3718,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -3813,7 +3814,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -4130,7 +4131,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -4187,7 +4188,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -4424,7 +4425,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -4501,7 +4502,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -4814,7 +4815,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -4980,7 +4981,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -5245,7 +5246,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -5665,7 +5666,7 @@
       "op": "beta.get_issues",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -5827,7 +5828,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -5901,7 +5902,7 @@
       "op": "snapshots.list_full_snapshots",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -6015,7 +6016,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": null,
       "pagination_transport_gap": null,
@@ -6193,7 +6194,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "result_path": "result",
       "pagination_transport_gap": null,
@@ -6235,7 +6236,7 @@
         "collection_name",
         "id"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "vector-query-qdrant",
@@ -6252,7 +6253,7 @@
         "collection_name",
         "body_raw"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "snapshot-inventory-qdrant",
@@ -6267,7 +6268,7 @@
       "supplied_args": [
         "collection_name"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "cluster-status-qdrant",
@@ -6278,7 +6279,7 @@
       "op": "distributed.cluster_status",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     }
   ],
   "generated": [
@@ -6290,22 +6291,22 @@
     {
       "slug": "qdrant-points",
       "operations": 14,
-      "composition_bytes": 26886
+      "composition_bytes": 27181
     },
     {
       "slug": "qdrant-search",
       "operations": 13,
-      "composition_bytes": 25581
+      "composition_bytes": 26348
     },
     {
       "slug": "qdrant-snapshots",
       "operations": 15,
-      "composition_bytes": 19047
+      "composition_bytes": 19460
     },
     {
       "slug": "qdrant-cluster-service",
       "operations": 17,
-      "composition_bytes": 17928
+      "composition_bytes": 18341
     }
   ]
 }

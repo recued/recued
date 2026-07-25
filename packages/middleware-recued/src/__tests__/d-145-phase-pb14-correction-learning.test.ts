@@ -33,7 +33,7 @@
  *      - corrections older than the window are excluded
  *      - kinds outside the projection map are ignored (no spurious keys)
  *
- *  Spec: `docs/d-145-spec.md` § B.14.3 (steps 1-3). */
+ *  Spec: D-145 § B.14.3 (steps 1-3). */
 
 import { describe, expect, it } from 'vitest';
 

@@ -26,7 +26,7 @@
  *  Without this hook, a user fixing a flagged recipe would still
  *  see the warning until the rolling window aged the failures out.
  *
- *  Spec: `docs/d-123-spec.md` §3.4. */
+ *  Spec: D-123 §3.4. */
 
 import type {
   HousekeepingCursor,

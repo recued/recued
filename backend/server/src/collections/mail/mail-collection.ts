@@ -296,6 +296,26 @@ export interface MailSendInput {
    *  omits the fields. */
   recipe_id?: string;
   step_id?: string;
+  /** D-210 audit finding 3b — suppress the recipient list in the `mail_send`
+   *  audit detail, whatever the count.
+   *
+   *  The threshold logic (`recipient_count <= MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD`)
+   *  is about FEED NOISE — a 200-recipient blast is unreadable, so it collapses
+   *  to a count. It was never a PII decision, and a one-recipient send always
+   *  lands on the attach branch.
+   *
+   *  That is wrong for a caller whose recipient is SEALED visitor PII the
+   *  substrate promises never to surface. `notify-booking-visitor` opens the
+   *  address from `reception_form_submission`, and its kernel manifest tells the
+   *  model the address "is never surfaced in any branch" — but the send wrote it
+   *  verbatim into a durable, backup-travelling `audit_activities.detail`.
+   *
+   *  Set by the caller that KNOWS its recipient is sealed, because only that
+   *  caller does. `recipient_count`, subject and message-id are unaffected: the
+   *  owner still sees that a notice went out, to how many, and can match it to a
+   *  run — they just do not get a plaintext copy of a field the seal exists to
+   *  hold. ⇒ [[provenance_that_lies_is_worse_than_absent]] */
+  redact_audit_recipients?: boolean;
 }
 
 /** D-127 P1.6 — wire-shape return for `MailCollection.send`. Mirrors
@@ -673,7 +693,13 @@ export const createMailCollection = (
         body_bytes: bodyBytes,
         success,
       };
-      if (recipients.length <= MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD) {
+      // `redact_audit_recipients` wins over the count threshold — the threshold
+      // is a noise rule, this is a PII rule, and a sealed address must not be
+      // attached just because there happened to be only one of it.
+      if (
+        args.redact_audit_recipients !== true
+        && recipients.length <= MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD
+      ) {
         detail.recipients = recipients;
       }
       if (extras.warnings && extras.warnings.length > 0) {

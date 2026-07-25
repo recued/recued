@@ -21,7 +21,7 @@
  *    `dsh:eph:<run_id>` id for audit attribution only; nothing is
  *    persisted and no continuity state attaches.
  *
- *  Spec: docs/d-179-spec.md (RATIFIED 2026-06-12).
+ *  Spec: D-179 (RATIFIED 2026-06-12).
  */
 
 /** Prefix for standing dish ids. */

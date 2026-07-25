@@ -32,7 +32,7 @@
  *    - Confidence gate: single-deal contact OR primary-deal
  *      activity in last 14d → gate passes; else fail-closed.
  *
- *  Spec: docs/d-139-spec.md § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -19,7 +19,7 @@
  *  `gateway`. It contains no cognition logic and no middleware
  *  implementation; the middlewares register and do the work (I-3).
  *
- *  Spec: docs/d-160-spec.md § N.2 / A.2.
+ *  Spec: D-160 § N.2 / A.2.
  */
 
 import type { Channel, ChannelInbound, SessionStateStore } from '@recued/chat';
@@ -75,6 +75,18 @@ export interface RunStreamInput {
    *  framework treats it identically to the default map; passing a map
    *  pre-seeded with keys a hook reads is the caller's responsibility. */
   readonly state?: Map<string, unknown>;
+  /** Optional framework-bound validator over the fully source-stamped part.
+   * Used by source-retention consumers to reject malformed entity claims at
+   * the contribution boundary, without adding a middleware lifecycle hook. */
+  readonly validatePromptPart?: (part: PromptPart) => void;
+  /** Framework-owned seam after the first prompt-hook pass and before either a
+   * deterministic completion or provider turn. A hook failure still closes the
+   * source, but is reported distinctly so callers cannot label a partial draft
+   * finalized. */
+  readonly finalizePrompt?: (
+    ctx: TurnContext,
+    outcome: 'complete' | 'prompt_error',
+  ) => Promise<void> | void;
 }
 
 /** What a completed stream reports. */
@@ -100,12 +112,27 @@ const defaultMintId = (): string => {
  *  contributing middleware's id onto every part. The pipeline sets the
  *  contributor before each `prompt` hook so a `PromptPart` records who
  *  wrote it without the hook having to pass its own id. */
-const createPromptDraft = (): {
+const createPromptDraft = (
+  validatePromptPart?: (part: PromptPart) => void,
+): {
   draft: PromptDraft;
   setContributor: (source: string) => void;
 } => {
   const parts: PromptPart[] = [];
   let contributor = 'framework';
+  const cloneAndFreezeEntityValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return Object.freeze(value.map(cloneAndFreezeEntityValue));
+    }
+    if (value !== null && typeof value === 'object') {
+      return Object.freeze(Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(
+          ([key, member]) => [key, cloneAndFreezeEntityValue(member)],
+        ),
+      ));
+    }
+    return value;
+  };
   return {
     draft: {
       contribute(part: PromptContribution): void {
@@ -114,10 +141,26 @@ const createPromptDraft = (): {
         // gather selects parts by `source` (correction-learning text, prompt-cache
         // entity parts), so a spoofable stamp would let any caller feed
         // entity payload/render into the model-bound prefetch context.
-        parts.push({ ...part, source: contributor });
+        const stamped = { ...part, source: contributor } as PromptPart;
+        validatePromptPart?.(stamped);
+        // A producer or later hook must not mutate a validated payload through
+        // a retained reference and thereby bypass contribution-time bounds or
+        // core-shape checks. On validated streams the framework owns a frozen
+        // JSON projection; `render` remains the original read-only callback.
+        const retained =
+          validatePromptPart !== undefined && stamped.role === 'entity'
+            ? Object.freeze({
+                ...stamped,
+                payload: cloneAndFreezeEntityValue(stamped.payload) as
+                  readonly Record<string, unknown>[],
+              })
+            : Object.freeze(stamped);
+        parts.push(retained);
       },
       parts(): readonly PromptPart[] {
-        return parts;
+        // Return a snapshot so a cast cannot append a contribution behind the
+        // validator or forge a framework-stamped source.
+        return Object.freeze([...parts]);
       },
     },
     setContributor(source: string): void {
@@ -180,7 +223,9 @@ export const runStream = async (
       const turn_id = mintId();
       lastTurnId = turn_id;
       const turn_index = turns;
-      const { draft, setContributor } = createPromptDraft();
+      const { draft, setContributor } = createPromptDraft(
+        input.validatePromptPart,
+      );
       let resolvedText: string | undefined;
       let resolveCalled = false;
 
@@ -215,15 +260,27 @@ export const runStream = async (
       };
 
       // ── before-turn — `prompt` hooks ──
-      for (const mw of input.registry.enabled()) {
-        setContributor(mw.id);
-        await mw.prompt?.(turnCtx);
-        // A `prompt` hook may resolve the turn deterministically (the
-        // stage-0 short-circuit, N.2). First resolver wins — the
-        // before-turn phase ends, later `prompt` hooks do not run.
-        if (resolveCalled) break;
+      try {
+        for (const mw of input.registry.enabled()) {
+          setContributor(mw.id);
+          await mw.prompt?.(turnCtx);
+          // A `prompt` hook may resolve the turn deterministically (the
+          // stage-0 short-circuit, N.2). First resolver wins — the
+          // before-turn phase ends, later `prompt` hooks do not run.
+          if (resolveCalled) break;
+        }
+      } catch (error) {
+        setContributor('framework');
+        try {
+          await input.finalizePrompt?.(turnCtx, 'prompt_error');
+        } catch {
+          // Preserve the originating hook error. A source finalizer is cleanup;
+          // its own failure must not replace the failure that aborted the turn.
+        }
+        throw error;
       }
       setContributor('framework');
+      await input.finalizePrompt?.(turnCtx, 'complete');
 
       // ── TURN — one AI call, or a prompt-hook deterministic
       //    short-circuit (the stage-0 case). The turn is internal. ──

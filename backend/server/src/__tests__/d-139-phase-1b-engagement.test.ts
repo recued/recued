@@ -25,7 +25,7 @@
  *    - Edge-table emission with connection_id scoping
  *    - MCP body-content strip applies symmetrically (Salesforce side)
  *
- *  Spec: docs/d-139-spec.md § P1b acceptance. */
+ *  Spec: D-139 § P1b acceptance. */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';

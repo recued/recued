@@ -14,7 +14,7 @@
  *  the reconciler deps. P1c's bin.ts wiring is responsible for
  *  composing both halves before passing into this factory.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.6, § P1c. */
+ *  Spec: D-139 § A.1, § A.6, § P1c. */
 
 import {
   HubSpotEmailEngagementReconciler,

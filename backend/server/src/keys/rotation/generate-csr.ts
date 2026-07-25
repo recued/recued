@@ -64,7 +64,7 @@
  *  hits Settings → Server → TLS rather than an opaque CSR-emit
  *  failure deep in the renewer.
  *
- *  Spec: `docs/d-148-spec.md` § A.5.3 (CSR-only ACME flow) + § A.6.5
+ *  Spec: D-148 § A.5.3 (CSR-only ACME flow) + § A.6.5
  *  (per-domain renewer seam). */
 
 import {

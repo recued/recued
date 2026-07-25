@@ -19,7 +19,7 @@
  *  scoped to send-capable mail Sources only, and an AI-assist sidebar
  *  slot (PA7 ships as a stub — engine integration lands in PB).
  *
- *  Spec: docs/d-145-spec.md § A.5 (Email compose UI). */
+ *  Spec: D-145 § A.5 (Email compose UI). */
 
 /** Closed list of compose modes — `create` opens a fresh compose;
  *  `reply` is opened from a thread context with reply-context

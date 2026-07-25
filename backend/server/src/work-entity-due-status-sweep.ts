@@ -46,7 +46,7 @@
  *                              recipes can render the deadline
  *                              crossing.
  *
- *  Spec: docs/d-145-spec.md § Phase PA4 + § A.1.3. */
+ *  Spec: D-145 § Phase PA4 + § A.1.3. */
 
 import {
   WORK_ENTITY_DUE_SOON_WINDOW_MS,

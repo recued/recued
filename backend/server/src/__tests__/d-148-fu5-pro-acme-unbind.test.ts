@@ -19,7 +19,7 @@
  *    - `'pro_acme_not_found'` + `'pro_acme_ddns_release_failed'` in
  *      `NETWORK_ERROR_CODES`.
  *
- *  Spec: docs/d-148-spec.md § A.5.2 + § A.6.3. */
+ *  Spec: D-148 § A.5.2 + § A.6.3. */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';

@@ -2,6 +2,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import type Database from 'better-sqlite3';
 import type { CacheStore } from '@recued/cache';
+import type { ServerBundle } from '@recued/crypto';
 import type { InternalToolRegistry, ConnectionRow, IngredientManifest } from '@recued/contracts';
 import {
   D165_CONTRACT_SCHEMA,
@@ -48,7 +49,10 @@ import {
   type TunableParamsStore,
 } from '../housekeeping/index.js';
 import { createBundleStore, type BundleStore } from '../bundle-store.js';
-import { createServerBundleStore } from '../server-bundle-store.js';
+import {
+  createServerBundleStore,
+  type ServerBundleStore,
+} from '../server-bundle-store.js';
 import { createKeyManager, type KeyManager } from '../key-manager.js';
 import { createVaultStateBus, type VaultStateBus } from '../vault-state-bus.js';
 import type { PairedInstancesStore } from '../paired-instances-store.js';
@@ -60,7 +64,11 @@ import type { RecipeStore } from '../recipe-store.js';
 import type { AnnotationRpcDeps } from '../annotation-handler.js';
 import type { SharedRpcDeps } from '../shared-handler.js';
 import { createServerStateStore, type ServerStateStore } from '../server-state.js';
-import { createBlobStore, createSQLiteCacheStore, type BlobStore } from '../storage/index.js';
+import {
+  createEncryptedBlobStore,
+  createSQLiteCacheStore,
+  type BlobStore,
+} from '../storage/index.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import {
   createUserMemoryStore,
@@ -71,6 +79,12 @@ import { createAnnotationStore, type AnnotationStore } from '../storage/annotati
 import type { ChatOrchestrator } from '../chat-orchestrator.js';
 import type { SessionForwardedSenderIndex } from '../chat-forwarded-sender-index.js';
 import type { ChatRpcDeps } from '../chat-handler.js';
+import type {
+  ExecutionCaseLifecycle,
+} from '../chat-execution-case-tools.js';
+import {
+  currentExecutionCaseVerificationContext,
+} from '../execution-case-verification-context.js';
 import type { ChatConnectionMcpStore } from '../storage/chat-connection-mcp-store.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 import type { ChatStore } from '../storage/chat-store.js';
@@ -245,6 +259,14 @@ export interface AppContextChatLateBoundGetters {
 export interface ComposeAppContextOptions {
   db: Database.Database | undefined;
   dbPath: string;
+  /** D-212 slice 1 — pre-storage-composed filesystem bundle store. Production
+   *  passes this from the boot layer so enrollment discovery no longer depends
+   *  on an open database. Tests/direct composers may omit it. */
+  serverBundleStore?: ServerBundleStore;
+  /** Bundle read by the boot layer before SQLite opens. When provided (even as
+   *  null), KeyManager construction consumes this snapshot instead of doing
+   *  its initial sidecar read post-storage. Later reads remain live. */
+  initialServerBundle?: ServerBundle | null;
   envLlmConfig: LLMConfig | undefined;
   gateRegistry: GateRegistry | undefined;
   auditLog: AuditLogStore | undefined;
@@ -284,9 +306,9 @@ export interface AppContext extends LlmSubstrate {
   memoryRedactionStore: Collection<MemoryRedactionRecord> | undefined;
   sharedDeps: SharedRpcDeps | undefined;
   sharedStoreRef: SharedStore | undefined;
-  /** The KEYLESS `<data>/blobs` CAS root (shared-store + annotation bodies).
+  /** The ENCRYPTED `<data>/blobs` CAS root (shared-store + annotation bodies).
    *  Handed to the eviction cascade so it sweeps this root against the shared ∪
-   *  annotation reference set — never the encrypted `cacheBlobs` root. Undefined
+   *  annotation reference set — never the separate `cacheBlobs` root. Undefined
    *  on a db-less boot. */
   sharedBlobs: BlobStore | undefined;
   annotationDeps: AnnotationRpcDeps | undefined;
@@ -297,6 +319,7 @@ export interface AppContext extends LlmSubstrate {
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
   chatDeps: ChatRpcDeps | undefined;
+  executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   internalRegistryRef: InternalToolRegistry | undefined;
   /** D-177 N.11 rule 5 (slice D) — the chat bundle's per-session
    *  forwarded-sender candidate index, retained so the execution-context
@@ -316,10 +339,9 @@ export interface AppContext extends LlmSubstrate {
    *  (which upsert one row per CRM record unconditionally) and, at MS3, to the
    *  chat `deal.search` fan-out (which reads it). Undefined on a dbless boot. */
   crmRecordMirrorStoreRef: CrmRecordMirrorStore | undefined;
-  /** D-192 file SOURCE family (slice 4) — the `file_meta_ref` meta-store
-   *  (remote vendor file metadata, bytes never fetched). Consumed by
-   *  `wireFileSourceSync` (the reconcile tasks) and, once slice 5's adapter
-   *  leaves land + Fork B's read resolver, by the `data.file.*` read path.
+  /** D-192 file SOURCE family — the `file_meta_ref` metadata mirror. Consumed
+   *  by `wireFileSourceSync` and the unified `data.file.*` view; explicit reads
+   *  may resolve provider bytes lazily through `getRemoteFileReadDeps` below.
    *  Undefined on a dbless boot. */
   fileMetaStoreRef: FileMetaStore | undefined;
   /** D-192 remote byte-fetch — the file-source connection resolver (decrypt +
@@ -611,7 +633,11 @@ export const composeAppContext = (
   const vaultStateBus = createVaultStateBus();
   if (db) {
     bundleStoreRef = createBundleStore(db);
-    const serverBundleStore = createServerBundleStore(db);
+    // D-212 slice 1 — the server bundle is a db-adjacent filesystem sidecar,
+    // not a `server_config` row. `dbPath` is sufficient to compose it; no read
+    // of the database is needed to discover or unlock an enrolled realm.
+    const serverBundleStore = options.serverBundleStore
+      ?? createServerBundleStore(options.dbPath);
     keys = createKeyManager({
       loadBundle: () => bundleStoreRef!.load(),
       saveBundle: (bundle) => bundleStoreRef!.save(bundle),
@@ -620,6 +646,9 @@ export const composeAppContext = (
       // to `locked`; boot auto-unlock (slice 3) opens it with the
       // keyfile-held server key.
       loadServerBundle: () => serverBundleStore.load(),
+      ...(Object.prototype.hasOwnProperty.call(options, 'initialServerBundle')
+        ? { initialServerBundle: options.initialServerBundle ?? null }
+        : {}),
       saveServerBundle: (bundle) => serverBundleStore.save(bundle),
       // Fan transitions to the (otherwise single-callback) state bus so
       // the autonomous-executor coordinator can pause/resume on lock.
@@ -643,14 +672,12 @@ export const composeAppContext = (
   let cacheDeps: CacheRpcDeps | undefined;
   let cacheBlobs: BlobStore | undefined;
   if (db) {
-    // Archive-blob-encryption fix Phase 1 — split blob roots by encryption
-    // posture. Cache + collections (mail / calendar / file bodies reuse this
-    // SAME `cacheBlobs` instance, so they auto-move) are ENCRYPTED at rest when
-    // a KeyManager is present, so they live at their OWN root `cache_blobs`,
-    // separate from the KEYLESS `blobs` root that shared + annotation write to.
-    // One posture per root removes the mixed-mode dedup-collision hazard and
-    // lets the eviction sweep keep each root's own reference set (the keyless
-    // sweep can no longer reap an encrypted collection blob, and vice versa).
+    // Archive-blob-encryption fix Phase 1 split CAS roots by content family.
+    // Cache + collections (mail / calendar / file bodies reuse this SAME
+    // `cacheBlobs` instance) live at `cache_blobs`, separate from the `blobs`
+    // root that shared + annotation write to. D-212 slice 4 encrypts every
+    // production root; keeping the roots separate still lets each eviction
+    // sweep use its own reference set without reaping another family's blob.
     // Pre-launch → just change the root, no migration.
     const blobRoot = join(dirname(resolve(dbPath)), 'cache_blobs');
     // Wire the key providers UNCONDITIONALLY whenever a KeyManager
@@ -666,10 +693,7 @@ export const composeAppContext = (
     // than landing plaintext — so no plaintext rows are produced in
     // production, and the per-row `inline_enc` flag closes the crash for
     // any that pre-date the fix (cleared on the column-add migration).
-    const blobs = createBlobStore(
-      blobRoot,
-      keys ? { getEncryptionKey: keys.keyProvider('blob-store') } : {},
-    );
+    const blobs = createEncryptedBlobStore(blobRoot, keys!.keyProvider('blob-store'));
     cacheBlobs = blobs;
     cacheStore = createSQLiteCacheStore(
       db,
@@ -704,9 +728,9 @@ export const composeAppContext = (
   let memoryRedactionStore: Collection<MemoryRedactionRecord> | undefined;
   if (db) {
     const memoryBlobRoot = join(dirname(resolve(dbPath)), 'memory_blobs');
-    const memoryBlobs = createBlobStore(
+    const memoryBlobs = createEncryptedBlobStore(
       memoryBlobRoot,
-      keys ? { getEncryptionKey: keys.keyProvider('blob-store') } : {},
+      keys!.keyProvider('blob-store'),
     );
     userMemoryStore = createUserMemoryStore(
       createSQLiteCollection<UserMemoryRow>(db, 'user_memory'),
@@ -720,16 +744,16 @@ export const composeAppContext = (
 
   let sharedDeps: SharedRpcDeps | undefined;
   let sharedStoreRef: SharedStore | undefined;
-  // The KEYLESS `<data>/blobs` root, shared by the shared-store + annotation
+  // The ENCRYPTED `<data>/blobs` root, shared by the shared-store + annotation
   // stores (each opens its own handle onto the same root). Exposed so the
   // eviction cascade can orphan-sweep this root with a keyset of shared ∪
-  // annotation refs — kept distinct from the encrypted `cacheBlobs` root above.
+  // annotation refs — kept distinct from the cache `cacheBlobs` root above.
   // Any handle sweeps the whole root, so the shared-store's handle stands in
   // for both writers.
   let sharedBlobs: BlobStore | undefined;
   if (db) {
     const blobRoot = join(dirname(resolve(dbPath)), 'blobs');
-    sharedBlobs = createBlobStore(blobRoot);
+    sharedBlobs = createEncryptedBlobStore(blobRoot, keys!.keyProvider('blob-store'));
     sharedStoreRef = createSharedStore({
       db,
       blobs: sharedBlobs,
@@ -748,7 +772,10 @@ export const composeAppContext = (
   let annotationStoreRef: AnnotationStore | undefined;
   if (db) {
     const blobRoot = join(dirname(resolve(dbPath)), 'blobs');
-    const annotationBlobs = createBlobStore(blobRoot);
+    const annotationBlobs = createEncryptedBlobStore(
+      blobRoot,
+      keys!.keyProvider('blob-store'),
+    );
     annotationStoreRef = createAnnotationStore({
       db,
       blobs: annotationBlobs,
@@ -1103,6 +1130,14 @@ export const composeAppContext = (
           // execute wiring lands). A vendor CREATE whose run is governed by the OWNER or a
           // granting DOOR is then admitted past the vendor op's `'ask'` gate.
           getOpAdmissionGate: () => chatLateBound.getExecuteDeps()?.opAdmissionGate,
+          ...(chatBundle?.executionCaseVerificationRecorder
+            ? {
+                recordDeterministicVerification:
+                  chatBundle.executionCaseVerificationRecorder.record,
+                getDeterministicVerificationContext:
+                  currentExecutionCaseVerificationContext,
+              }
+            : {}),
           // Slice 6a activates the store for the CREATE-ASSIST preflight (prompt
           // deps fetch their choice list live). The SYNC wire now receives the
           // store too (D-192 #8b fold — `composeWorkEntitySourceSync`), so persist
@@ -1394,6 +1429,7 @@ export const composeAppContext = (
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,
     chatOrchestratorRef: chatBundle?.orchestrator,
     chatDeps: chatBundle?.chatDeps,
+    executionCaseLifecycle: chatBundle?.executionCaseLifecycle,
     internalRegistryRef: chatBundle?.internalRegistry,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     warehouseBus,

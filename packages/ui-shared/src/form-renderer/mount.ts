@@ -50,7 +50,7 @@
  *  wrappers contribute no segments (they're inside the object/union's
  *  own `data-form-field` wrapper, which DOES contribute).
  *
- *  Spec: docs/d-145-spec.md § A.3.1 — Slice 2c addendum. */
+ *  Spec: D-145 § A.3.1 — Slice 2c addendum. */
 
 import {
   type DiscriminatedUnionVariant,

@@ -31,7 +31,7 @@
  *      never appears in any topic's `aggregates_from` — per-type
  *      enumeration is the contract.
  *
- *  Spec: docs/d-139-spec.md § P7 (cross-vendor topic widening) +
+ *  Spec: D-139 § P7 (cross-vendor topic widening) +
  *  § P7 acceptance + § A.5.5 (Deal Identity Asymmetry Invariant) +
  *  § A.10 (cascade behaviors — topic-layer iteration). */
 

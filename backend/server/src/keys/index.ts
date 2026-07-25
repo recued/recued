@@ -292,7 +292,16 @@ export const deriveSubDEKForDomain = (
  *  between save + broadcast can't leave clients chasing a key
  *  that's not on disk. Implementations without async persistence
  *  (in-memory) leave `flush` undefined; callers treat it as a no-op. */
+/** How the keyfile on disk is protected. `none` means its bytes are readable by
+ *  anyone who can read the directory — which is the directory the realm database
+ *  lives in. */
+export type KeyfileSealingPosture = 'machine' | 'passphrase' | 'none';
+
 export interface ServerKeyStore {
+  /** How this keyfile is currently sealed. Reported from the file's own header,
+   *  not from what the caller asked for, so it answers "what is true" rather
+   *  than "what was intended". Absent on stores with no on-disk form. */
+  sealingPosture?(): KeyfileSealingPosture;
   /** Read the persisted server_identity_key. Null when never
    *  initialized. */
   loadServerIdentityKey(): Ed25519Keypair | null;

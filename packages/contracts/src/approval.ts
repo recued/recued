@@ -219,7 +219,7 @@ export interface PendingAction {
 // the heartbeat relay, with the cloud Worker acting as a stateless
 // fire-and-forget broker for slash commands + email magic-link actions.
 //
-// Scope boundaries (see docs/d-113-spec.md):
+// Scope boundaries (see D-113):
 //   - Approvals only (no generalised interaction primitive).
 //   - Single-responder (no multi-user team approvals in v1).
 //   - One server per pairing (no cross-server consolidation).

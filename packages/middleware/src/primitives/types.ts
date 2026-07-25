@@ -10,7 +10,7 @@
  *  per-call `PrimitiveExecuteContext`. Tests substitute mocks for
  *  the dep bundle without touching primitive code.
  *
- *  Spec: `docs/d-145-spec.md` § B.1 + § B.1.3 + § B.5.1. */
+ *  Spec: D-145 § B.1 + § B.1.3 + § B.5.1. */
 
 import type {
   PrimitiveCall,

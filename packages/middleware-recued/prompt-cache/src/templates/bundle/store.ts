@@ -38,7 +38,7 @@
  *      manifest valid but the order is unpredictable. Production has one
  *      writer per host (the poller), so this is acceptable.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle (store + poller layout) / § 3 the deterministic
  *  gate. */
 

@@ -72,8 +72,9 @@
  *  refuses. Every invoke is a first-class `connection_gateway` audit
  *  row (step ids `write_preflight` / `source_write` / `write_verify`).
  *
- *  Spec: docs/d-192-spec.md § Write policy + § Conflict model. */
+ *  Spec: D-192 § Write policy + § Conflict model. */
 
+import { createHash } from 'node:crypto';
 import type {
   ExecutionSource,
   IngredientManifest,
@@ -261,6 +262,19 @@ export interface WorkEntityWriteExecutorDeps {
    *  request (op key, args, audit identity) stays real. Production
    *  omits it. */
   runOperation?: RunGatedCatalogOperationFn;
+  /** D-214 trusted producer. The request-local correlation comes from the
+   * internal registry dispatch context, never from ingredient arguments. */
+  recordDeterministicVerification?(input: {
+    session_id: string;
+    turn_id: string;
+    kind: 'passed' | 'failed';
+    postcondition_key: string;
+    source_event_id: string;
+  }): Promise<unknown>;
+  getDeterministicVerificationContext?: () => {
+    session_id: string;
+    turn_id: string;
+  } | undefined;
 }
 
 /** One resolved catalog op the executor will invoke. */
@@ -1848,18 +1862,68 @@ export const createWorkEntitySourceWriteExecutor = (
     return { ok: true, operation, applied: 'pushed', verified: false };
   };
 
-  const dispatch: WorkEntitySourceWriteExecutor['dispatch'] = async (prepared, target) => {
-    if (prepared.operation === 'create') return dispatchCreate(prepared);
-    if (target === undefined) {
-      return {
+  const dispatch: WorkEntitySourceWriteExecutor['dispatch'] = async (
+    prepared,
+    target,
+  ) => {
+    let outcome: WorkEntityVendorWriteDispatchOutcome;
+    if (prepared.operation === 'create') {
+      outcome = await dispatchCreate(prepared);
+    } else if (target === undefined) {
+      outcome = {
         ok: false,
         kind: 'config',
         reason: `a '${prepared.operation}' dispatch requires the local target row`,
         staged: false,
       };
+    } else if (prepared.operation === 'delete') {
+      outcome = await dispatchDelete(prepared, target);
+    } else {
+      outcome = await dispatchUpdate(prepared, target);
     }
-    if (prepared.operation === 'delete') return dispatchDelete(prepared, target);
-    return dispatchUpdate(prepared, target);
+
+    const context = deps.getDeterministicVerificationContext?.();
+    const verifiedPass =
+      outcome.ok
+      && (outcome.operation === 'update'
+        || outcome.operation === 'complete')
+      && outcome.applied === 'pushed'
+      && outcome.verified;
+    const verifiedFailure = !outcome.ok && outcome.kind === 'verify_failed';
+    if (
+      context
+      && deps.recordDeterministicVerification
+      && (verifiedPass || verifiedFailure)
+    ) {
+      const kind = verifiedPass ? 'passed' as const : 'failed' as const;
+      const sourceEventId = createHash('sha256')
+        .update(JSON.stringify([
+          context.session_id,
+          context.turn_id,
+          prepared.source_id,
+          prepared.kind,
+          prepared.operation,
+          target?.local_id ?? '',
+          kind,
+        ]))
+        .digest('hex');
+      try {
+        await deps.recordDeterministicVerification({
+          session_id: context.session_id,
+          turn_id: context.turn_id,
+          kind,
+          postcondition_key:
+            `work_entity_vendor:${prepared.kind}:${prepared.operation}`,
+          source_event_id: sourceEventId,
+        });
+      } catch (error) {
+        console.error(
+          '[d214] deterministic verification recording failed',
+          error,
+        );
+      }
+    }
+    return outcome;
   };
 
   const resolveCreateDependencies: WorkEntitySourceWriteExecutor['resolveCreateDependencies'] =

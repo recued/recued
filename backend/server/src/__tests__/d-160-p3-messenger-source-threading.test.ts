@@ -55,6 +55,15 @@ import {
   createChatOrchestrator,
   type ExecuteChatAiCall,
 } from '../chat-orchestrator.js';
+import type {
+  ExecutionCaseLifecycle,
+} from '../chat-execution-case-tools.js';
+import type {
+  ExecutionCaseProposalCritic,
+} from '../execution-case-critic.js';
+import {
+  currentExecutionCaseVerificationContext,
+} from '../execution-case-verification-context.js';
 import {
   createChatStore,
   ensureChatSchema,
@@ -245,6 +254,7 @@ const fakeMessengerChannel = (opts: {
 
 const runMessengerDispatchTurn = async (
   dispatchDepth: number,
+  executionCaseLifecycle?: ExecutionCaseLifecycle,
 ): Promise<{
   inbound: ChannelInbound;
   captured: ChatDispatchContext[];
@@ -262,6 +272,9 @@ const runMessengerDispatchTurn = async (
       selfSignature,
       executeAiCall: toolCallingAi(),
       middlewareRegistry: firstPartyRegistry(),
+      ...(executionCaseLifecycle
+        ? { getExecutionCaseLifecycle: () => executionCaseLifecycle }
+        : {}),
       now: () => NOW,
     });
 
@@ -522,6 +535,140 @@ describe('D-160 P3 dispatch identity through the real orchestrator', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('threads the exact direct-chat source into D-214 proposal scope resolution', async () => {
+    const db = new Database(':memory:');
+    try {
+      ensureChatSchema(db);
+      const chatStore = createChatStore(db);
+      chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
+      const critique = vi.fn<ExecutionCaseProposalCritic['critique']>(
+        async () => null,
+      );
+      const orchestrator = createChatOrchestrator({
+        chatStore,
+        registry: registryWithCapture([]),
+        broadcast: { emit: vi.fn() },
+        selfSignature,
+        executeAiCall: toolCallingAi(),
+        middlewareRegistry: firstPartyRegistry(),
+        getExecutionCaseProposalCritic: () => ({ critique }),
+        now: () => NOW,
+      });
+
+      const ack = await orchestrator.runTurn({
+        session_id: SESSION,
+        message: 'find Pat',
+        picker_state: { current: 'self' },
+      });
+
+      expect(critique).toHaveBeenCalledTimes(1);
+      expect(critique.mock.calls[0]?.[0]).toMatchObject({
+        session_id: SESSION,
+        turn_id: ack.turn_id,
+        source: chatSource(SESSION, ack.turn_id),
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('attributes each direct-chat planner packet and trusted dispatch to its exact turn', async () => {
+    const db = new Database(':memory:');
+    try {
+      ensureChatSchema(db);
+      const chatStore = createChatStore(db);
+      chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
+      const verificationContexts: unknown[] = [];
+      const baseRegistry = registryWithCapture([]);
+      const turnRegistry: InternalToolRegistry = {
+        ...baseRegistry,
+        dispatch: vi.fn(async (): Promise<ChatDispatchResult> => {
+          verificationContexts.push(
+            currentExecutionCaseVerificationContext(),
+          );
+          return { ok: true, result: { contacts: [] } };
+        }),
+      };
+      const packetOrder: string[] = [];
+      let aiRound = 0;
+      const executeAiCall = vi.fn<ExecuteChatAiCall>(async () => {
+        packetOrder.push(`model-${aiRound}`);
+        aiRound += 1;
+        return {
+          body: aiRound === 1
+            ? {
+                response: 'checking contacts',
+                events: [],
+                tool_calls: [{
+                  tool: 'contact.search',
+                  args: { query: 'Pat' },
+                }],
+              }
+            : { response: 'done', events: [], tool_calls: [] },
+        };
+      });
+      const recordPlannerRounds = vi.fn();
+      const lifecycle = {
+        markPlannerEgress: vi.fn(() => {
+          packetOrder.push(`egress-${aiRound}`);
+        }),
+        recordPlannerRounds,
+      } as unknown as ExecutionCaseLifecycle;
+      const orchestrator = createChatOrchestrator({
+        chatStore,
+        registry: turnRegistry,
+        broadcast: { emit: vi.fn() },
+        selfSignature,
+        executeAiCall,
+        middlewareRegistry: firstPartyRegistry(),
+        getExecutionCaseLifecycle: () => lifecycle,
+        now: () => NOW,
+      });
+
+      const ack = await orchestrator.runTurn({
+        session_id: SESSION,
+        message: 'find Pat',
+        picker_state: { current: 'self' },
+      });
+
+      expect(packetOrder).toEqual([
+        'egress-0',
+        'model-0',
+        'egress-1',
+        'model-1',
+      ]);
+      expect(recordPlannerRounds).toHaveBeenCalledWith({
+        session_id: SESSION,
+        turn_id: ack.turn_id,
+        rounds: 2,
+      });
+      expect(verificationContexts).toEqual([{
+        session_id: SESSION,
+        turn_id: ack.turn_id,
+      }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('records planner rounds for messenger turns too', async () => {
+    const recordPlannerRounds = vi.fn();
+    const markPlannerEgress = vi.fn();
+    const lifecycle = {
+      markPlannerEgress,
+      recordPlannerRounds,
+    } as unknown as ExecutionCaseLifecycle;
+
+    const { inbound } = await runMessengerDispatchTurn(0, lifecycle);
+
+    expect(markPlannerEgress).toHaveBeenCalledTimes(2);
+    expect(recordPlannerRounds).toHaveBeenCalledWith({
+      session_id: inbound.session_id,
+      turn_id: expect.any(String),
+      rounds: 2,
+    });
   });
 });
 

@@ -31,7 +31,7 @@
  *  must become a SQLite `UPDATE … WHERE state='open' AND
  *  payload_version=?` CAS first.
  *
- *  Spec: docs/d-177-spec.md § N.10; landing order P5a. */
+ *  Spec: D-177 § N.10; landing order P5a. */
 
 import type {
   BatchAskKey,

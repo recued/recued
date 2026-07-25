@@ -99,7 +99,7 @@
       "kind": "task",
       "eligible": true,
       "declared": false,
-      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because docs/d-192-work-entity-sources-fanout-authoring-brief.md requires a separate human field-path verification gate before commit."
+      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because the D-192 work-entity-sources authoring brief requires a separate human field-path verification gate before commit."
     },
     {
       "kind": "note",
@@ -270,7 +270,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -649,7 +649,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -822,7 +822,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -1050,7 +1050,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -1308,7 +1308,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -2550,7 +2550,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -2943,7 +2943,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -3245,7 +3245,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -3492,7 +3492,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -3755,7 +3755,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -3873,7 +3873,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -4283,7 +4283,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -4543,7 +4543,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -4750,7 +4750,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -5074,7 +5074,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -5491,7 +5491,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -5916,7 +5916,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -5990,7 +5990,7 @@
       "result_path": "data.media",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -6281,7 +6281,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -6604,7 +6604,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -6688,7 +6688,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -6901,7 +6901,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -7197,7 +7197,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -7376,7 +7376,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -7689,7 +7689,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -7911,7 +7911,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -8134,7 +8134,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -8357,7 +8357,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -8475,7 +8475,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -8787,7 +8787,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -8956,7 +8956,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -9140,7 +9140,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -9212,7 +9212,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -9594,7 +9594,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -9735,7 +9735,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -9869,7 +9869,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -10346,7 +10346,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -10586,7 +10586,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -10951,7 +10951,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -11085,7 +11085,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -11453,7 +11453,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -11961,7 +11961,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -12584,7 +12584,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -12972,7 +12972,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -13158,7 +13158,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -13365,7 +13365,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -13645,7 +13645,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14098,7 +14098,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14232,7 +14232,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14306,7 +14306,7 @@
       "result_path": "data.tags",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14444,7 +14444,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14582,7 +14582,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14768,7 +14768,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -14931,7 +14931,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -15094,7 +15094,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -15303,7 +15303,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -15459,7 +15459,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -15711,7 +15711,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -15893,7 +15893,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -16099,7 +16099,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -16165,7 +16165,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -16280,7 +16280,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -16469,7 +16469,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -16738,7 +16738,7 @@
       "result_path": "data.jurisdictionReports",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -17030,7 +17030,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -17279,7 +17279,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -17494,7 +17494,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -17704,7 +17704,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18131,7 +18131,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18330,7 +18330,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18516,7 +18516,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18610,7 +18610,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18654,7 +18654,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18765,7 +18765,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -18905,7 +18905,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -19086,7 +19086,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -19322,7 +19322,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -19632,7 +19632,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -19925,7 +19925,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -20495,7 +20495,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21111,7 +21111,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21339,7 +21339,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21415,7 +21415,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21692,7 +21692,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21834,7 +21834,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -21994,7 +21994,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -22132,7 +22132,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -22318,7 +22318,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -22573,7 +22573,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -24088,7 +24088,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -25649,7 +25649,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -25835,7 +25835,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -25933,7 +25933,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -26499,7 +26499,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -26804,7 +26804,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -28033,7 +28033,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -28579,7 +28579,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -29136,7 +29136,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -29605,7 +29605,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -29983,7 +29983,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -30164,7 +30164,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -30399,7 +30399,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -30888,7 +30888,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -31278,7 +31278,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -31462,7 +31462,7 @@
       "result_path": "data.files",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -31618,7 +31618,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -32261,7 +32261,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -32421,7 +32421,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -32581,7 +32581,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -32789,7 +32789,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -32885,7 +32885,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -33487,7 +33487,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -33698,7 +33698,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -34197,7 +34197,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -34341,7 +34341,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -34458,7 +34458,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -34554,7 +34554,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -34750,7 +34750,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -35820,7 +35820,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -35864,7 +35864,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -36205,7 +36205,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -36988,7 +36988,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -37103,7 +37103,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -37442,7 +37442,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -37625,7 +37625,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -38108,7 +38108,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -38294,7 +38294,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -38819,7 +38819,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -39654,7 +39654,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -40326,7 +40326,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -40555,7 +40555,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -40781,7 +40781,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -40915,7 +40915,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -41140,7 +41140,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -41348,7 +41348,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -41829,7 +41829,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -42016,7 +42016,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -42285,7 +42285,7 @@
       "result_path": "data.passengers",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -42418,7 +42418,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -42582,7 +42582,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -43268,7 +43268,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -43415,7 +43415,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -43565,7 +43565,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -43738,7 +43738,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -43885,7 +43885,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -44118,7 +44118,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -44202,7 +44202,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -44506,7 +44506,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -45205,7 +45205,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -45562,7 +45562,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -45730,7 +45730,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46001,7 +46001,7 @@
       "result_path": "data.roles",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46135,7 +46135,7 @@
       "result_path": "assets",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46258,7 +46258,7 @@
       "result_path": "",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46394,7 +46394,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46531,7 +46531,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46644,7 +46644,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -46822,7 +46822,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47151,7 +47151,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47276,7 +47276,7 @@
       "result_path": "authenticationLogs",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47320,7 +47320,7 @@
       "result_path": "vehicles",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47418,7 +47418,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47623,7 +47623,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47785,7 +47785,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -47911,7 +47911,7 @@
       "result_path": "trips",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48010,7 +48010,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48133,7 +48133,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48177,7 +48177,7 @@
       "result_path": "",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48254,7 +48254,7 @@
       "result_path": "",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48471,7 +48471,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48577,7 +48577,7 @@
       "result_path": "visionRuns",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48707,7 +48707,7 @@
       "result_path": "",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48903,7 +48903,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -48977,7 +48977,7 @@
       "result_path": "machines",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49021,7 +49021,7 @@
       "result_path": "machines",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49097,7 +49097,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49173,7 +49173,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49242,7 +49242,7 @@
       "result_path": "results",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49318,7 +49318,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49364,7 +49364,7 @@
       "result_path": "sensors",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49440,7 +49440,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49552,7 +49552,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -49862,7 +49862,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     {
@@ -50398,52 +50398,52 @@
     {
       "slug": "samsara-assets-organization",
       "operations": 28,
-      "composition_bytes": 71763
+      "composition_bytes": 72307
     },
     {
       "slug": "samsara-vehicles-equipment",
       "operations": 34,
-      "composition_bytes": 101717
+      "composition_bytes": 102430
     },
     {
       "slug": "samsara-telematics-safety",
       "operations": 48,
-      "composition_bytes": 159494
+      "composition_bytes": 160854
     },
     {
       "slug": "samsara-drivers-compliance",
       "operations": 54,
-      "composition_bytes": 158976
+      "composition_bytes": 159826
     },
     {
       "slug": "samsara-routing-dispatch",
       "operations": 27,
-      "composition_bytes": 83341
+      "composition_bytes": 83783
     },
     {
       "slug": "samsara-maintenance-work-orders",
       "operations": 27,
-      "composition_bytes": 89651
+      "composition_bytes": 90229
     },
     {
       "slug": "samsara-forms-documents",
       "operations": 14,
-      "composition_bytes": 44271
+      "composition_bytes": 44475
     },
     {
       "slug": "samsara-industrial-readings",
       "operations": 31,
-      "composition_bytes": 74879
+      "composition_bytes": 75627
     },
     {
       "slug": "samsara-admin-platform",
       "operations": 28,
-      "composition_bytes": 73383
+      "composition_bytes": 73825
     },
     {
       "slug": "samsara-hubs-logistics",
       "operations": 25,
-      "composition_bytes": 66379
+      "composition_bytes": 66719
     }
   ]
 }

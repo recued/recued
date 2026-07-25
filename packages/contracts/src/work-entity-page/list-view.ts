@@ -10,7 +10,7 @@
  *  pending commitments ahead of fulfilled ones, etc. A user-pickable
  *  sort menu is post-PA6 follow-up.
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (List/search view per Source) +
+ *  Spec: D-145 § Phase PA6 (List/search view per Source) +
  *  § A.1.6 ("All Sources" read-filter defaults — live + stale_unreachable;
  *  tombstoned + orphaned excluded; resolver applies).
  */
@@ -112,9 +112,9 @@ export const sortEntitiesByDefault = (
     // ⚠ This switch is `break`-style with no default, so a missing arm renders
     // the list in whatever order the store returned — no error, just a list
     // that looks arbitrary. Bookings sort NEWEST FIRST, matching
-    // `listBookings`' own `ORDER BY created_at DESC`; sorting by the
-    // appointment time would mean reading it off the calendar event, which
-    // this pure function cannot reach and must not duplicate.
+    // `listBookings`' own `ORDER BY created_at DESC`. The booking does own its
+    // slot, but creation order keeps this owner inbox-like surface focused on
+    // the newest accepted reservations.
     case 'booking':
       out.sort((a, b) => {
         if (a._kind !== 'booking' || b._kind !== 'booking') return 0;

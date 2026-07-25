@@ -17,7 +17,7 @@
  *    - `approval_link_packet` strips counterparty_aliases +
  *      private_notes from context_raw at the boundary.
  *
- *  Spec: `docs/d-149-spec.md` § A.4 + § A.5. */
+ *  Spec: D-149 § A.4 + § A.5. */
 
 import { describe, expect, it } from 'vitest';
 

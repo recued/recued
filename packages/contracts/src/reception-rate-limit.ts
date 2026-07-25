@@ -31,7 +31,7 @@
  *  P3 lands both the in-memory token-bucket primary + the persistence
  *  cadence + boot-time reload.
  *
- *  Spec: docs/d-149-spec.md § Contract Tightening § Rate-limit substrate. */
+ *  Spec: D-149 § Contract Tightening § Rate-limit substrate. */
 
 import type { ReceptionEndpointKind } from './reception.js';
 

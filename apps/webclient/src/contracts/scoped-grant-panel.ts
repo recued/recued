@@ -20,7 +20,7 @@
  *  Proposals are never model-visible (N.9.1) — the rpc family is reserved
  *  out of MCP; this panel is the only consumer.
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.c); slice C. */
+ *  Spec: D-177 § N.11 rule 5 (5.c); slice C. */
 
 import {
   SCOPED_GRANT_MAX_USES_DEFAULT,

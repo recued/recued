@@ -1,7 +1,8 @@
 /** D-164 P5 — contact-attribute template family + intent-aware matcher.
  *
  *  The first real short-circuit template class: single-slot contact
- *  attribute lookup — "what is `<Name>`'s email / phone?". This is the
+ *  attribute lookup — "what is `<Name>`'s email / phone / company / job
+ *  title / birthday?". This is the
  *  MVP firing path the bench's `21-prompt-cache-short-circuit` tripwire
  *  has been waiting to validate.
  *
@@ -22,12 +23,14 @@
  *  on the POSSESSIVE construction `<Name>'s <attribute>` — which anchors
  *  "asking for this contact's attribute" and rejects both the bare mention
  *  ("tell me about Alice Bond") and the pronoun phrasing ("... and tell
- *  me their email"). `company` is HELD to a stricter rule (see
- *  `matchesCompanyForm`): the word is POLYSEMOUS — "do you enjoy
+ *  me their email"). `company`, `title`, and `birthday` are HELD to
+ *  stricter rules: the words are polysemous or commonly embedded in
+ *  write/reminder requests — "do you enjoy
  *  `<Name>`'s company?" means companionship, not employer — so the
  *  any-lead possessive path that is safe for email/phone would fire a
- *  wrong answer there; company fires only on fully-anchored question
- *  FORMS ("what is `<Name>`'s company?", "where does `<Name>` work?").
+ *  wrong answer there; these fields fire only on fully-anchored question
+ *  FORMS. Birthday values are absolute calendar dates, never relative-time
+ *  calculations.
  *  Anything the matcher doesn't recognise passes through to the
  *  LLM; an over-extracted name is then caught by the data-presence half
  *  of the gate (the contact won't resolve). A dropped real request is a
@@ -42,17 +45,25 @@
  *  missing attribute degrades to the LLM rather than a half-rendered
  *  answer.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 3. */
+ *  See: D-164 § 3. */
 
 import type { TemplateMatcher } from '../gate/index.js';
 import type { RenderTemplate } from '../types.js';
+import {
+  escapeTemplateRegExp,
+  hasMutationIntent,
+  LOCALIZED_TAIL,
+  normaliseTemplateText,
+  resolveTemplateLocale,
+  type SupportedLocale,
+} from './locales.js';
 
 /** The renderable contact attributes this family covers. Extend here +
  *  add a template below + a detector keyword to widen the class — and
  *  decide which matching rule the new attribute rides: the generic
  *  possessive path (only safe for an UNAMBIGUOUS attribute noun, like
  *  email/phone) or its own anchored forms (like company). */
-export type ContactAttribute = 'email' | 'phone' | 'company';
+export type ContactAttribute = 'email' | 'phone' | 'company' | 'title' | 'birthday';
 
 /** The closed-list contact-attribute render templates. Each is a
  *  deterministic `render_template` keyed on a single `entity.name` slot;
@@ -93,6 +104,165 @@ export const CONTACT_ATTRIBUTE_TEMPLATES: Readonly<
     // history.
     body: '{{name}} works at {{company}}.',
   },
+  title: {
+    template_hash: 'recued/contact-title-by-name@v1',
+    kind: 'render_template',
+    slot_grammar: ['entity.name'],
+    action_class: 'read',
+    short_circuit_eligible: true,
+    body: "{{name}}'s job title is {{title}}.",
+  },
+  birthday: {
+    template_hash: 'recued/contact-birthday-by-name@v1',
+    kind: 'render_template',
+    slot_grammar: ['entity.name'],
+    action_class: 'read',
+    short_circuit_eligible: true,
+    // A birthday is a calendar date, not an instant. Reporting the stored
+    // ISO/yearless value needs no user clock or timezone inference.
+    body: "{{name}}'s birthday is {{birthday}}.",
+  },
+};
+
+type ContactAttributeTemplates = Readonly<Record<ContactAttribute, RenderTemplate>>;
+
+const localizedContactTemplates = (
+  locale: Exclude<SupportedLocale, 'en'>,
+  bodies: Readonly<Record<ContactAttribute, string>>,
+): ContactAttributeTemplates => ({
+  email: {
+    ...CONTACT_ATTRIBUTE_TEMPLATES.email,
+    template_hash: `recued/contact-email-by-name-${locale}@v1`,
+    body: bodies.email,
+  },
+  phone: {
+    ...CONTACT_ATTRIBUTE_TEMPLATES.phone,
+    template_hash: `recued/contact-phone-by-name-${locale}@v1`,
+    body: bodies.phone,
+  },
+  company: {
+    ...CONTACT_ATTRIBUTE_TEMPLATES.company,
+    template_hash: `recued/contact-company-by-name-${locale}@v1`,
+    body: bodies.company,
+  },
+  title: {
+    ...CONTACT_ATTRIBUTE_TEMPLATES.title,
+    template_hash: `recued/contact-title-by-name-${locale}@v1`,
+    body: bodies.title,
+  },
+  birthday: {
+    ...CONTACT_ATTRIBUTE_TEMPLATES.birthday,
+    template_hash: `recued/contact-birthday-by-name-${locale}@v1`,
+    body: bodies.birthday,
+  },
+});
+
+/** Locale-specific sibling bodies. The English constants above remain stable
+ * for compatibility; every other locale gets a distinct auditable hash. */
+export const CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE: Readonly<
+  Record<SupportedLocale, ContactAttributeTemplates>
+> = {
+  en: CONTACT_ATTRIBUTE_TEMPLATES,
+  de: localizedContactTemplates('de', {
+    email: 'Die E-Mail-Adresse von {{name}} ist {{email}}.',
+    phone: 'Die Telefonnummer von {{name}} ist {{phone}}.',
+    company: '{{name}} arbeitet bei {{company}}.',
+    title: 'Die Berufsbezeichnung von {{name}} ist {{title}}.',
+    birthday: 'Der Geburtstag von {{name}} ist {{birthday}}.',
+  }),
+  es: localizedContactTemplates('es', {
+    email: 'El correo electrónico de {{name}} es {{email}}.',
+    phone: 'El teléfono de {{name}} es {{phone}}.',
+    company: '{{name}} trabaja en {{company}}.',
+    title: 'El cargo de {{name}} es {{title}}.',
+    birthday: 'El cumpleaños de {{name}} es {{birthday}}.',
+  }),
+  fr: localizedContactTemplates('fr', {
+    email: 'L’adresse e-mail de {{name}} est {{email}}.',
+    phone: 'Le numéro de téléphone de {{name}} est {{phone}}.',
+    company: '{{name}} travaille chez {{company}}.',
+    title: 'Le poste de {{name}} est {{title}}.',
+    birthday: 'La date d’anniversaire de {{name}} est {{birthday}}.',
+  }),
+  ja: localizedContactTemplates('ja', {
+    email: '{{name}}のメールアドレスは{{email}}です。',
+    phone: '{{name}}の電話番号は{{phone}}です。',
+    company: '{{name}}の勤務先は{{company}}です。',
+    title: '{{name}}の役職は{{title}}です。',
+    birthday: '{{name}}の誕生日は{{birthday}}です。',
+  }),
+  pt: localizedContactTemplates('pt', {
+    email: 'O e-mail de {{name}} é {{email}}.',
+    phone: 'O telefone de {{name}} é {{phone}}.',
+    company: '{{name}} trabalha na {{company}}.',
+    title: 'O cargo de {{name}} é {{title}}.',
+    birthday: 'O aniversário de {{name}} é {{birthday}}.',
+  }),
+  zh: localizedContactTemplates('zh', {
+    email: '{{name}}的电子邮件地址是{{email}}。',
+    phone: '{{name}}的电话号码是{{phone}}。',
+    company: '{{name}}就职于{{company}}。',
+    title: '{{name}}的职位是{{title}}。',
+    birthday: '{{name}}的生日是{{birthday}}。',
+  }),
+};
+
+const matchLocalizedContactAttribute = (
+  locale: SupportedLocale,
+  haystack: string,
+  name: string,
+): ContactAttribute | null => {
+  if (locale === 'en') return null;
+  const n = escapeTemplateRegExp(name);
+  const t = LOCALIZED_TAIL;
+  const patterns: ReadonlyArray<readonly [ContactAttribute, RegExp]> = locale === 'de'
+    ? [
+      ['email', new RegExp(`^(?:was ist|wie lautet)\\s+(?:die\\s+)?e-?mail-?adresse\\s+von\\s+${n}${t}`, 'u')],
+      ['phone', new RegExp(`^(?:was ist|wie lautet)\\s+(?:die\\s+)?telefonnummer\\s+von\\s+${n}${t}`, 'u')],
+      ['company', new RegExp(`^wo arbeitet\\s+${n}${t}`, 'u')],
+      ['title', new RegExp(`^(?:was ist|wie lautet)\\s+(?:die\\s+)?berufsbezeichnung\\s+von\\s+${n}${t}`, 'u')],
+      ['birthday', new RegExp(`^wann hat\\s+${n}\\s+geburtstag${t}`, 'u')],
+    ]
+    : locale === 'es'
+      ? [
+        ['email', new RegExp(`^[¿¡]?\\s*(?:cu[aá]l es|dime)\\s+(?:el\\s+)?(?:correo electr[oó]nico|correo|e-?mail)\\s+de\\s+${n}${t}`, 'u')],
+        ['phone', new RegExp(`^[¿¡]?\\s*(?:cu[aá]l es|dime)\\s+(?:el\\s+)?(?:tel[eé]fono|n[uú]mero de tel[eé]fono)\\s+de\\s+${n}${t}`, 'u')],
+        ['company', new RegExp(`^[¿¡]?\\s*d[oó]nde trabaja\\s+${n}${t}`, 'u')],
+        ['title', new RegExp(`^[¿¡]?\\s*cu[aá]l es\\s+(?:el\\s+)?cargo\\s+de\\s+${n}${t}`, 'u')],
+        ['birthday', new RegExp(`^[¿¡]?\\s*cu[aá]ndo es\\s+(?:el\\s+)?cumplea[nñ]os\\s+de\\s+${n}${t}`, 'u')],
+      ]
+      : locale === 'fr'
+        ? [
+          ['email', new RegExp(`^quelle est\\s+(?:l['’]adresse\\s+e-?mail|le courriel)\\s+de\\s+${n}${t}`, 'u')],
+          ['phone', new RegExp(`^quel est\\s+(?:le\\s+)?(?:num[eé]ro de )?t[eé]l[eé]phone\\s+de\\s+${n}${t}`, 'u')],
+          ['company', new RegExp(`^o[uù] travaille\\s+${n}${t}`, 'u')],
+          ['title', new RegExp(`^quel est\\s+(?:le\\s+)?poste\\s+de\\s+${n}${t}`, 'u')],
+          ['birthday', new RegExp(`^quand est\\s+l['’]anniversaire\\s+de\\s+${n}${t}`, 'u')],
+        ]
+        : locale === 'pt'
+          ? [
+            ['email', new RegExp(`^qual [eé]\\s+(?:o\\s+)?e-?mail\\s+d[eo]\\s+${n}${t}`, 'u')],
+            ['phone', new RegExp(`^qual [eé]\\s+(?:o\\s+)?(?:telefone|n[uú]mero de telefone)\\s+d[eo]\\s+${n}${t}`, 'u')],
+            ['company', new RegExp(`^onde trabalha\\s+${n}${t}`, 'u')],
+            ['title', new RegExp(`^qual [eé]\\s+(?:o\\s+)?cargo\\s+d[eo]\\s+${n}${t}`, 'u')],
+            ['birthday', new RegExp(`^quando [eé]\\s+(?:o\\s+)?anivers[aá]rio\\s+d[eo]\\s+${n}${t}`, 'u')],
+          ]
+          : locale === 'ja'
+            ? [
+              ['email', new RegExp(`^${n}のメール(?:アドレス)?(?:は|を)?(?:何ですか|教えて|確認して)?${t}`, 'u')],
+              ['phone', new RegExp(`^${n}の電話番号(?:は|を)?(?:何ですか|教えて|確認して)?${t}`, 'u')],
+              ['company', new RegExp(`^${n}の(?:勤務先|会社)(?:は|を)?(?:どこですか|教えて|確認して)?${t}`, 'u')],
+              ['title', new RegExp(`^${n}の役職(?:は|を)?(?:何ですか|教えて|確認して)?${t}`, 'u')],
+              ['birthday', new RegExp(`^${n}の誕生日(?:は|を)?(?:いつですか|教えて|確認して)?${t}`, 'u')],
+            ]
+            : [
+              ['email', new RegExp(`^(?:请问)?${n}的(?:邮箱|电子邮件地址?)(?:是)?(?:什么|多少)?${t}`, 'u')],
+              ['phone', new RegExp(`^(?:请问)?${n}的(?:电话号码|手机号)(?:是)?(?:什么|多少)?${t}`, 'u')],
+              ['company', new RegExp(`^(?:请问)?${n}的(?:公司|雇主)(?:是)?(?:什么|哪家)?${t}`, 'u')],
+              ['title', new RegExp(`^(?:请问)?${n}的(?:职位|职务)(?:是)?什么${t}`, 'u')],
+              ['birthday', new RegExp(`^(?:请问)?${n}的生日(?:是)?(?:什么时候|哪天)${t}`, 'u')],
+            ];
+  return patterns.find(([, pattern]) => pattern.test(haystack))?.[0] ?? null;
 };
 
 /** Mutation / imperative verbs that turn a possessive-attribute prompt into a
@@ -220,6 +390,29 @@ const matchesCompanyForm = (haystack: string, name: string): boolean => {
   );
 };
 
+/** The two added personal fields deliberately do not ride the permissive
+ * possessive keyword path. Bare `title` is polysemous and birthdays are often
+ * embedded in reminder/write requests, so both require a whole-prompt read
+ * question. A calendar birthday is absolute date data; no current-time or
+ * timezone context is consulted. */
+const matchEnglishTitleOrBirthday = (
+  haystack: string,
+  name: string,
+): Extract<ContactAttribute, 'title' | 'birthday'> | null => {
+  const esc = escapeRegExp(name);
+  const tail = String.raw`\s*[?.!]*$`;
+  if (
+    new RegExp(`^what(?:['’]s| is)\\s+${esc}['’]s\\s+job\\s+title${tail}`).test(haystack)
+    || new RegExp(`^what\\s+job\\s+title\\s+does\\s+${esc}\\s+have${tail}`).test(haystack)
+  ) return 'title';
+  if (
+    new RegExp(`^when\\s+is\\s+${esc}['’]s\\s+birthday${tail}`).test(haystack)
+    || new RegExp(`^what(?:['’]s| is)\\s+${esc}['’]s\\s+birthday${tail}`).test(haystack)
+    || new RegExp(`^what(?:['’]s| is)\\s+${esc}['’]s\\s+date\\s+of\\s+birth${tail}`).test(haystack)
+  ) return 'birthday';
+  return null;
+};
+
 /** A SECOND possessive in the post-possessive remainder means the
  *  attribute belongs to a DIFFERENT entity than the named contact —
  *  "`<Name>`'s BOSS'S email" asks for the boss's address, "`<Name>`'s
@@ -236,17 +429,68 @@ const matchesCompanyForm = (haystack: string, name: string): boolean => {
  *  via "what is her boss's email?".) */
 const CHAINED_POSSESSIVE_RE = /['’]/;
 
-/** Locate the user's POSSESSIVE reference to the named contact. Returns
- *  the index in `haystack` immediately AFTER the possessive clitic, or
- *  `null` when the name isn't used possessively. Handles both the
- *  straight (`'`) and curly (`’`) apostrophe. The caller searches the
- *  remainder for the attribute keyword, so the possessive both anchors
- *  intent AND scopes the keyword search to text that follows the name. */
-const possessiveEnd = (haystack: string, name: string): number | null => {
+/** The possessive attribute core used to admit ANY leading text. That let a
+ * second request hide before an otherwise-valid tail ("how many emails? what
+ * is Pat's email?") and short-circuit the turn with only the last answer.
+ * Keep bare/polite/code-switched forms and harmless comma/colon discourse
+ * preludes, but require the final segment to be read-question scaffolding and
+ * reject any earlier query or completed sentence. */
+const POSSESSIVE_LEAD_WORDS: ReadonlySet<string> = new Set([
+  // English
+  'what', "what's", 'what’s', 'whats', 'about', 'is', 'are', 'do', 'does', 'have',
+  'has', 'got', 'i', 'we', 'you', 'the', 'please', 'can', 'could', 'would',
+  'will', 'tell', 'show', 'give', 'get', 'find', 'know', 'me', 'us',
+  // German / Spanish / French / Portuguese code-switch scaffolding
+  'was', 'ist', 'wie', 'lautet', 'sag', 'mir', 'zeige', 'bitte',
+  'cuál', 'cual', 'es', 'dime', 'muéstrame', 'muestrame', 'por', 'favor',
+  'quel', 'quelle', 'est', 'dis-moi', 'montre-moi', "s'il", 's’il', 'vous',
+  'plaît', 'plait', 'qual', 'é', 'diga-me', 'mostre-me',
+  // CJK code-switch scaffolding remains a single token.
+  '教えて', '確認して', '请问', '告诉我',
+]);
+
+const POSSESSIVE_LEAD_OPENERS: ReadonlySet<string> = new Set([
+  'what', "what's", 'what’s', 'whats', 'is', 'are', 'do', 'does', 'have',
+  'has', 'please', 'can', 'could', 'would', 'will', 'tell', 'show', 'give',
+  'get', 'find', 'was', 'wie', 'sag', 'zeige', 'bitte', 'cuál', 'cual',
+  'dime', 'muéstrame', 'muestrame', 'quel', 'quelle', 'dis-moi',
+  'montre-moi', 'qual', 'diga-me', 'mostre-me', '教えて', '確認して', '请问',
+  '告诉我',
+]);
+
+const LATIN_QUERY_IN_PRELUDE_RE = /(?<!\p{L})(?:what|when|where|who|why|how|tell|show|give|find|search|list|do|does|did|can|could|would|will|e-?mails?|phone|meeting|wie|wann|was|wo|nachrichten|besprechung|cu[aá]ntos?|cu[aá]l|d[oó]nde|dime|muestra|correos?|mensajes?|reuni[oó]n|combien|quel(?:le)?|quand|dis-moi|montre|courriels?|r[eé]union|quantos?|qual|quando|onde|mostre|mensagens?|reuni[aã]o)(?!\p{L})/iu;
+const CJK_QUERY_IN_PRELUDE_RE = /(?:何通|何件|メール|メッセージ|会議|電話番号|多少封|多少个|几封|邮件|消息|会议|邮箱|电子邮件)/u;
+
+const possessiveLeadIsAllowed = (prefix: string): boolean => {
+  // A completed earlier sentence/question is always another clause, never a
+  // harmless lead into this one attribute lookup.
+  if (/[?!.。？！]/u.test(prefix)) return false;
+  const segments = prefix.split(/[,;:]/u);
+  const trimmed = (segments.pop() ?? '').trim().replace(/^[¿¡]\s*/u, '');
+  const prelude = segments.join(' ');
+  if (LATIN_QUERY_IN_PRELUDE_RE.test(prelude) || CJK_QUERY_IN_PRELUDE_RE.test(prelude)) {
+    return false;
+  }
+  if (trimmed.length === 0) return true;
+  const tokens = trimmed.split(' ');
+  return POSSESSIVE_LEAD_OPENERS.has(tokens[0]!)
+    && tokens.every((token) => POSSESSIVE_LEAD_WORDS.has(token));
+};
+
+interface PossessiveReference {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** Locate the user's POSSESSIVE reference to the named contact. Returns its
+ * start plus the index immediately AFTER the possessive clitic, or `null`
+ * when the name isn't used possessively. Handles straight/curly apostrophes.
+ * The caller validates the complete lead and searches only the remainder. */
+const possessiveReference = (haystack: string, name: string): PossessiveReference | null => {
   for (const clitic of ["'s", '’s']) {
     const needle = name + clitic;
     const idx = haystack.indexOf(needle);
-    if (idx !== -1) return idx + needle.length;
+    if (idx !== -1) return { start: idx, end: idx + needle.length };
   }
   return null;
 };
@@ -270,24 +514,36 @@ const possessiveEnd = (haystack: string, name: string): number | null => {
  *  Whitespace is collapsed + lower-cased on both sides so a double-spaced
  *  or differently-cased prompt still matches the NER slot value. The
  *  match is purely lexical — no warehouse read here (that's the probe). */
-export const matchContactAttributeTemplate: TemplateMatcher = ({ text, slots }) => {
+export const matchContactAttributeTemplate: TemplateMatcher = ({ text, slots, locale }) => {
   if (slots.length !== 1) return null;
   const name = slots[0]!;
   if (name.kind !== 'entity.name') return null;
-  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
-  if (MUTATION_RE.test(haystack)) return null;
-  const needleName = name.value.toLowerCase().replace(/\s+/g, ' ');
+  const templateLocale = resolveTemplateLocale(locale);
+  const templates = CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE[templateLocale];
+  const haystack = normaliseTemplateText(text);
+  if (hasMutationIntent(haystack) || MUTATION_RE.test(haystack)) return null;
+  // Match the USER'S surface (`raw`), not the canonical warehouse display
+  // name (`value`). Exact identifier/alias proposals intentionally carry a
+  // different canonical value for the probe while the grammar still contains
+  // the typed email/phone/alias span.
+  const needleName = normaliseTemplateText(name.raw);
   if (needleName.length === 0) return null;
-  const after = possessiveEnd(haystack, needleName);
-  if (after !== null) {
-    const remainder = haystack.slice(after);
+  const possessive = possessiveReference(haystack, needleName);
+  if (possessive !== null && possessiveLeadIsAllowed(haystack.slice(0, possessive.start))) {
+    const remainder = haystack.slice(possessive.end);
     // A chained possessive re-targets the attribute to ANOTHER entity
     // ("<Name>'s boss's email") — defer rather than answer for <Name>.
     if (!CHAINED_POSSESSIVE_RE.test(remainder)) {
       const attribute = detectAttribute(remainder);
-      if (attribute !== null) return CONTACT_ATTRIBUTE_TEMPLATES[attribute];
+      if (attribute !== null) return templates[attribute];
     }
   }
-  if (matchesCompanyForm(haystack, needleName)) return CONTACT_ATTRIBUTE_TEMPLATES.company;
+  if (matchesCompanyForm(haystack, needleName)) return templates.company;
+  const sensitive = templateLocale === 'en'
+    ? matchEnglishTitleOrBirthday(haystack, needleName)
+    : null;
+  if (sensitive !== null) return templates[sensitive];
+  const localized = matchLocalizedContactAttribute(templateLocale, haystack, needleName);
+  if (localized !== null) return templates[localized];
   return null;
 };

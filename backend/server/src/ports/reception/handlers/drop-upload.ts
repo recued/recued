@@ -23,7 +23,7 @@
  *  the per-IP rate limit before this runs. Same-origin is re-checked here on
  *  every state-changing verb (CSRF defense-in-depth, mirroring the single-POST).
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`. */
+ *  Spec: internal design notes. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 

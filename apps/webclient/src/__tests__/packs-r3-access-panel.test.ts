@@ -22,8 +22,23 @@ import {
 } from '../settings/pack-access-controls.js';
 import {
   PACKS_DETAIL_SECTION_ATTR,
+  PACKS_DETAIL_TAB_ATTR,
   mountPacksPanel,
 } from '../settings/packs-panel.js';
+import {
+  createOwnerOperationController,
+  packOperationIngredientSlugs,
+  OWNER_OPERATION_APPROVAL_ATTR,
+  OWNER_OPERATION_ATTR,
+  OWNER_OPERATION_CONFIRM_ATTR,
+  OWNER_OPERATION_ERROR_ATTR,
+  OWNER_OPERATION_RISK_ATTR,
+  OWNER_OPERATION_ROW_ATTR,
+  type OwnerOperationDeleteCaller,
+  type OwnerOperationInventoryCaller,
+  type OwnerOperationListCaller,
+  type OwnerOperationUpsertCaller,
+} from '../settings/owner-operation-controls.js';
 import type {
   GrantCatalogOperationsCaller,
   GrantCliReachabilityListCaller,
@@ -36,6 +51,7 @@ import type {
   BulkPackManifest,
   CatalogIngredientView,
   ContractDefinitionView,
+  OwnerOperationIngredientView,
   PackListEntry,
 } from '@recued/contracts';
 
@@ -52,6 +68,7 @@ interface FakeElement {
   id: string;
   type: string;
   title: string;
+  value: string;
   children: FakeElement[];
   parent: FakeElement | null;
   attrs: Map<string, string>;
@@ -82,6 +99,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
     id: '',
     type: '',
     title: '',
+    value: '',
     children,
     parent: null,
     attrs,
@@ -430,6 +448,8 @@ describe('pack access controller', () => {
     expect(text).toContain('acme/invoice.read');
     expect(text).toContain('acme/invoice.create');
     expect(text).not.toContain('acme/audio.transcribe');
+    expect(findAllByAttr(panel, 'data-risk')).toHaveLength(0);
+    expect(findAllByAttr(panel, 'data-approval')).toHaveLength(0);
   });
 
   it('derives cells like the gate: defaults, explicit rows, cli fail-closed', async () => {
@@ -564,11 +584,204 @@ describe('pack access controller', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────
+// D-211 global owner operation defaults
+// ──────────────────────────────────────────────────────────────────
+
+describe('owner operation defaults controller', () => {
+  const mountOwnerController = (opts: {
+    ingredients?: OwnerOperationIngredientView[];
+    rows?: Awaited<ReturnType<OwnerOperationListCaller>>['overrides'];
+    upsert?: OwnerOperationUpsertCaller;
+    delete?: OwnerOperationDeleteCaller;
+  } = {}) => {
+    const doc = makeFakeDocument();
+    const rows = opts.rows ?? [];
+    const runListOverrides = vi.fn<OwnerOperationListCaller>(async () => ({
+      overrides: rows,
+    }));
+    const runUpsertOverride = vi.fn<OwnerOperationUpsertCaller>(
+      opts.upsert ?? (async (args) => ({
+        ingredient_id: args.ingredient_id,
+        operation_id: args.operation_id,
+        policy: {
+          ...(args.policy.risk !== undefined ? { risk: args.policy.risk } : {}),
+          ...(args.policy.approval !== undefined ? { approval: args.policy.approval } : {}),
+        },
+        ...(args.policy.risk !== undefined ? { risk: args.policy.risk } : {}),
+        ...(args.policy.approval !== undefined ? { approval: args.policy.approval } : {}),
+        written_at: 2,
+      })),
+    );
+    const runDeleteOverride = vi.fn<OwnerOperationDeleteCaller>(
+      opts.delete ?? (async () => ({ deleted: true })),
+    );
+    const ctrl = createOwnerOperationController({
+      document: doc as unknown as Document,
+      runOperations: (async () => ({
+        ingredients: opts.ingredients ?? CATALOG.ingredients,
+      })) as OwnerOperationInventoryCaller,
+      runListOverrides,
+      runUpsertOverride,
+      runDeleteOverride,
+      onChange: () => {},
+    });
+    return { ctrl, runListOverrides, runUpsertOverride, runDeleteOverride };
+  };
+
+  it('shows pack defaults and writes an actorless exact-operation replacement', async () => {
+    const { ctrl, runUpsertOverride } = mountOwnerController({
+      rows: [{
+        ingredient_id: 'stripe-pack-comp',
+        operation_id: 'acme/invoice.create',
+        policy: { risk: 'admin', approval: 'ask' },
+        risk: 'admin',
+        approval: 'ask',
+        written_at: 1,
+      }],
+    });
+    await ctrl.refresh();
+
+    const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement;
+    expect(findByAttr(panel, OWNER_OPERATION_ATTR)).toBe(panel);
+    expect(findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR)).toHaveLength(2);
+    expect(collectTextContent(panel)).toContain('Pack values are the default for every contract');
+    expect(collectTextContent(panel)).toContain('Pack · Automatic');
+    const writeRow = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR).find(
+      (row) => row.getAttribute('data-operation-id') === 'acme/invoice.create',
+    )!;
+    const risk = findByAttr(writeRow, OWNER_OPERATION_RISK_ATTR)!;
+    const approval = findByAttr(writeRow, OWNER_OPERATION_APPROVAL_ATTR)!;
+    expect(risk.value).toBe('admin');
+    expect(approval.value).toBe('ask');
+
+    approval.value = 'always';
+    fireChange(approval);
+    await flush();
+
+    expect(runUpsertOverride).toHaveBeenCalledWith({
+      ingredient_id: 'stripe-pack-comp',
+      operation_id: 'acme/invoice.create',
+      policy: { risk: 'admin', approval: 'always' },
+    });
+    expect(runUpsertOverride.mock.calls[0]![0]).not.toHaveProperty('actor');
+    expect(runUpsertOverride.mock.calls[0]![0]).not.toHaveProperty('contract_id');
+  });
+
+  it('renders the slug-keyed operation of a direct ingredient pack', async () => {
+    const pack = packEntry('mail-pack');
+    (pack as { manifest: BulkPackManifest }).manifest = {
+      ...pack.manifest,
+      contents: [{
+        type: 'ingredient',
+        slug: 'mail-send',
+        version: 1,
+        role: 'operation_wrapper',
+      }],
+    };
+    expect(packOperationIngredientSlugs(pack.manifest)).toEqual(['mail-send']);
+    const { ctrl } = mountOwnerController({
+      ingredients: [{
+        ingredient_id: 'mail-send',
+        name: 'Mail send',
+        operations: [{
+          operation_id: 'mail-send',
+          operation_key: 'mail-send',
+          risk_tier: 'write',
+        }],
+      }],
+    });
+    await ctrl.refresh();
+
+    const panel = ctrl.renderForPack(pack) as unknown as FakeElement;
+    const rows = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.getAttribute('data-operation-id')).toBe('mail-send');
+  });
+
+  it('deletes the exact global row when its last owner facet returns to Pack', async () => {
+    const { ctrl, runDeleteOverride } = mountOwnerController({
+      rows: [{
+        ingredient_id: 'stripe-pack-comp',
+        operation_id: 'acme/invoice.create',
+        policy: { approval: 'ask' },
+        approval: 'ask',
+        written_at: 1,
+      }],
+    });
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement;
+    const writeRow = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR).find(
+      (row) => row.getAttribute('data-operation-id') === 'acme/invoice.create',
+    )!;
+    const approval = findByAttr(writeRow, OWNER_OPERATION_APPROVAL_ATTR)!;
+    approval.value = '';
+    fireChange(approval);
+    await flush();
+
+    expect(runDeleteOverride).toHaveBeenCalledWith({
+      ingredient_id: 'stripe-pack-comp',
+      operation_id: 'acme/invoice.create',
+    });
+  });
+
+  it('names downgrade consequences and resubmits only after owner confirmation', async () => {
+    const upsert = vi.fn<OwnerOperationUpsertCaller>(async (args) => {
+      if (args.policy.confirm_risk_downgrade !== true) {
+        throw {
+          code: 'owner_operation_risk_downgrade_confirm',
+          details: {
+            declared_risk: 'write',
+            new_risk: 'read',
+            floor_before: 'ask',
+            floor_after: 'never',
+            session_grantable_after: true,
+            delegation_learnable_after: false,
+          },
+        };
+      }
+      return {
+        ingredient_id: args.ingredient_id,
+        operation_id: args.operation_id,
+        policy: { risk: 'read' },
+        risk: 'read',
+        written_at: 2,
+      };
+    });
+    const { ctrl } = mountOwnerController({ upsert });
+    await ctrl.refresh();
+    let panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement;
+    let writeRow = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR).find(
+      (row) => row.getAttribute('data-operation-id') === 'acme/invoice.create',
+    )!;
+    const risk = findByAttr(writeRow, OWNER_OPERATION_RISK_ATTR)!;
+    risk.value = 'read';
+    fireChange(risk);
+    await flush();
+
+    panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement;
+    writeRow = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR).find(
+      (row) => row.getAttribute('data-operation-id') === 'acme/invoice.create',
+    )!;
+    expect(findByAttr(writeRow, OWNER_OPERATION_ERROR_ATTR)?.textContent)
+      .toContain('approval floor ask → never');
+    findByAttr(writeRow, OWNER_OPERATION_CONFIRM_ATTR)!.click();
+    await flush();
+
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert.mock.calls[1]![0]).toEqual({
+      ingredient_id: 'stripe-pack-comp',
+      operation_id: 'acme/invoice.create',
+      policy: { risk: 'read', confirm_risk_downgrade: true },
+    });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
 // Packs-panel detail integration
 // ──────────────────────────────────────────────────────────────────
 
 describe('packs detail ACCESS section integration', () => {
-  const mountPanel = (withAccess: boolean) => {
+  const mountPanel = (withAccess: boolean, withOwnerDefaults = false) => {
     const doc = makeFakeDocument();
     const host = makeFakeElement('div');
     const h = makeCallers({ contracts: [door('door-a')] });
@@ -586,6 +799,24 @@ describe('packs detail ACCESS section integration', () => {
             runCliReachabilitySet: h.runCliReachabilitySet,
           }
         : {}),
+      ...(withOwnerDefaults
+        ? {
+            runOwnerOperationInventory: async () => CATALOG,
+            runOwnerOperationList: async () => ({ overrides: [] }),
+            runOwnerOperationUpsert: async (args) => ({
+              ingredient_id: args.ingredient_id,
+              operation_id: args.operation_id,
+              policy: {
+                ...(args.policy.risk !== undefined ? { risk: args.policy.risk } : {}),
+                ...(args.policy.approval !== undefined
+                  ? { approval: args.policy.approval }
+                  : {}),
+              },
+              written_at: 2,
+            }),
+            runOwnerOperationDelete: async () => ({ deleted: true }),
+          }
+        : {}),
     });
     return { host, mount };
   };
@@ -594,6 +825,7 @@ describe('packs detail ACCESS section integration', () => {
     const { host, mount } = mountPanel(true);
     await mount.whenLoaded();
     mount.clickSelectPack('stripe-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
 
     const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
     expect(findByAttr(access, PACK_ACCESS_ATTR)).not.toBeNull();
@@ -606,10 +838,35 @@ describe('packs detail ACCESS section integration', () => {
     const { host, mount } = mountPanel(false);
     await mount.whenLoaded();
     mount.clickSelectPack('stripe-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
 
     const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
     expect(findByAttr(access, PACK_ACCESS_ATTR)).toBeNull();
     expect(collectTextContent(access)).toContain('Open Contracts');
+  });
+
+  it('renders global Operation defaults outside the per-contract Access section', async () => {
+    const { host, mount } = mountPanel(false, true);
+    await mount.whenLoaded();
+    mount.clickSelectPack('stripe-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')!.click();
+
+    const defaults = findByAttrValue(
+      host,
+      PACKS_DETAIL_SECTION_ATTR,
+      'operation-defaults',
+    )!;
+    expect(findByAttr(defaults, OWNER_OPERATION_ATTR)).not.toBeNull();
+    expect(collectTextContent(defaults)).toContain('Owner values replace them globally');
+    expect(findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')).toBeNull();
+
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
+    const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
+    expect(findByAttr(access, OWNER_OPERATION_ATTR)).toBeNull();
+    expect(collectTextContent(access)).toContain('Open Contracts');
+    expect(
+      findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'operation-defaults'),
+    ).toBeNull();
   });
 });
 
@@ -648,6 +905,7 @@ describe('packs route access wiring', () => {
     const mount = route.packsPanel()!;
     await mount.whenLoaded();
     mount.clickSelectPack('stripe-pack');
+    findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
 
     const access = findByAttrValue(root, PACKS_DETAIL_SECTION_ATTR, 'access')!;
     expect(findByAttr(access, PACK_ACCESS_ATTR)).not.toBeNull();

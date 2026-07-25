@@ -117,7 +117,7 @@
  *    audit-grow captures live function-argument shapes, not their
  *    JSON-string forms — but flagged here as a known sharp edge.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/audit-grow/replayability + § 3 Invariant 2 + O-6. */
 
 import { canonicalJSONStringify } from '@recued/crypto';

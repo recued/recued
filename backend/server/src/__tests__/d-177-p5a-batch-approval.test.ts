@@ -6,12 +6,16 @@ import {
   BATCH_ASK_MAX_MEMBERS,
   type Checkpoint,
   type ExecutionSource,
+  type PreflightOverrideOffer,
   type RiskTier,
 } from '@recued/contracts';
 import type {
   PreflightAskContext,
   PreflightNotifier,
   PreflightResumer,
+} from '@recued/gateway';
+import {
+  RELAX_OPERATION_TO_ASK_OPTION_ID,
 } from '@recued/gateway';
 import type { Answer } from '@recued/notification';
 import {
@@ -29,6 +33,11 @@ import {
 import type { SessionGrantResolver } from '../session-grant-resolver.js';
 
 const NOW = Date.parse('2026-06-10T12:00:00.000Z');
+
+const fakeOverrideWriter = (order?: string[]) =>
+  vi.fn(async (_offer: PreflightOverrideOffer): Promise<void> => {
+    order?.push('override');
+  });
 
 const source = (
   overrides: Partial<{
@@ -73,6 +82,7 @@ const hold = (
     operation_id: 'mail.send',
     connection_name: 'gmail-primary',
     risk_tier: 'write',
+    authorization_provenance: { pre_lift_approval: 'ask' },
     recipe_id: 'recipe-1',
     recipe_hash: 'recipe-hash-1',
     arg_shape_hash: 'arg-shape-1',
@@ -83,6 +93,7 @@ const hold = (
       tool_slug: 'mail.send',
       risk_tier: 'write',
       reason: 'write tier requires approval',
+      authorization_provenance: { pre_lift_approval: 'ask' },
     },
     session_grant_offer: {
       ttl_ms: 3_600_000,
@@ -179,6 +190,7 @@ const harness = (
     checkpoints?: readonly Checkpoint[];
     order?: string[];
     sessionGrantResolver?: ReturnType<typeof fakeSessionGrantResolver>;
+    upsertOverride?: ReturnType<typeof fakeOverrideWriter>;
   } = {},
 ): {
   coordinator: BatchApprovalCoordinator;
@@ -188,6 +200,7 @@ const harness = (
   notifier: ReturnType<typeof fakeNotifier>;
   cancelAsk: ReturnType<typeof vi.fn>;
   sessionGrantResolver: ReturnType<typeof fakeSessionGrantResolver>;
+  upsertOverride: ReturnType<typeof fakeOverrideWriter>;
 } => {
   const batchAskStore = createBatchAskStore(createInMemoryCollection());
   const checkpointStore = fakeCheckpointStore(opts.checkpoints ?? []);
@@ -198,6 +211,7 @@ const harness = (
     return 'cancelled' as const;
   });
   const sessionGrantResolver = opts.sessionGrantResolver ?? fakeSessionGrantResolver();
+  const upsertOverride = opts.upsertOverride ?? fakeOverrideWriter(opts.order);
   let batchSeq = 0;
   let now = NOW;
   const coordinator = createBatchApprovalCoordinator({
@@ -207,6 +221,7 @@ const harness = (
     notifier,
     cancelAsk,
     sessionGrantResolver,
+    upsertOverride,
     now: () => {
       now += 1_000;
       return now;
@@ -224,6 +239,7 @@ const harness = (
     notifier,
     cancelAsk,
     sessionGrantResolver,
+    upsertOverride,
   };
 };
 
@@ -258,6 +274,7 @@ describe('createBatchApprovalCoordinator registerHold', () => {
       tool_slug: 'mail.send',
       risk_tier: 'write',
       reason: 'write tier requires approval',
+      authorization_provenance: { pre_lift_approval: 'ask' },
       session_grant: {
         ttl_ms: 3_600_000,
         max_uses: 5,
@@ -327,25 +344,31 @@ describe('createBatchApprovalCoordinator registerHold', () => {
     expect(rows.map((row) => row.payload_version)).toEqual([1, 1]);
   });
 
-  it('falls back without creating rows for non-grantable read and destructive tiers', async () => {
+  it('registers read+ask but falls back for destructive and pre-lift always', async () => {
     const h = harness();
-    for (const risk_tier of ['read', 'destructive'] as const) {
-      await expect(
-        h.coordinator.registerHold(
-          hold(risk_tier === 'read' ? 1 : 2, {
-            risk_tier: risk_tier as RiskTier,
-            ask_context: {
-              tool_slug: 'mail.send',
-              risk_tier,
-              reason: `${risk_tier} tier requires approval`,
-            },
-          }),
-        ),
-      ).resolves.toEqual({ kind: 'fallback' });
-    }
+    await expect(h.coordinator.registerHold(hold(1, {
+      risk_tier: 'read',
+      ask_context: {
+        tool_slug: 'mail.send',
+        risk_tier: 'read',
+        reason: 'read tier requires approval',
+        authorization_provenance: { pre_lift_approval: 'ask' },
+      },
+      session_grant_offer: {
+        ttl_ms: 3_600_000,
+        max_uses: 5,
+        risk_tier: 'read',
+      },
+    }))).resolves.toMatchObject({ kind: 'registered' });
+    await expect(h.coordinator.registerHold(hold(2, {
+      risk_tier: 'destructive',
+    }))).resolves.toEqual({ kind: 'fallback' });
+    await expect(h.coordinator.registerHold(hold(3, {
+      authorization_provenance: { pre_lift_approval: 'always' },
+    }))).resolves.toEqual({ kind: 'fallback' });
 
-    expect(await h.batchAskStore.list()).toEqual([]);
-    expect(h.notifier.ask).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.list()).toHaveLength(1);
+    expect(h.notifier.ask).toHaveBeenCalledTimes(1);
   });
 
   it('falls back when the same-key batch is already at the member cap', async () => {
@@ -545,6 +568,77 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
     expect(await h.batchAskStore.get('batch-1')).toMatchObject({
       state: 'open',
       payload_version: 2,
+    });
+  });
+
+  it('version-guards a standing-ruling answer before persisting it', async () => {
+    const offer = {
+      kind: 'relax_to_ask' as const,
+      ingredient_id: 'mail.send',
+      operation_id: 'mail.send',
+      op_hash: 'a'.repeat(64),
+      approval: 'ask' as const,
+    };
+    const h = harness({ checkpoints: [checkpoint(1), checkpoint(2)] });
+    await h.coordinator.registerHold(hold(1, {
+      ask_context: {
+        tool_slug: 'mail.send',
+        risk_tier: 'write',
+        owner_override_offer: offer,
+      },
+    }));
+    const stalePayload = payloadFromAsk(h.notifier, 0);
+    await h.coordinator.registerHold(hold(2, {
+      ask_context: {
+        tool_slug: 'mail.send',
+        risk_tier: 'write',
+        owner_override_offer: offer,
+      },
+    }));
+
+    await expect(h.coordinator.hooks.handleAnswer(
+      stalePayload,
+      answer(RELAX_OPERATION_TO_ASK_OPTION_ID),
+    )).resolves.toBe('handled');
+
+    expect(h.upsertOverride).not.toHaveBeenCalled();
+    expect(h.resumer.resumeRun).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      state: 'open',
+      payload_version: 2,
+    });
+  });
+
+  it('persists a live standing ruling and treats the held call as approved', async () => {
+    const cp = checkpoint(1);
+    const offer = {
+      kind: 'relax_to_ask' as const,
+      ingredient_id: 'mail.send',
+      operation_id: 'mail.send',
+      op_hash: 'a'.repeat(64),
+      approval: 'ask' as const,
+    };
+    const h = harness({ checkpoints: [cp] });
+    await h.coordinator.registerHold(hold(1, {
+      checkpoint: cp,
+      ask_context: {
+        tool_slug: 'mail.send',
+        risk_tier: 'write',
+        owner_override_offer: offer,
+      },
+    }));
+
+    await expect(h.coordinator.hooks.handleAnswer(
+      payloadFromAsk(h.notifier, 0),
+      answer(RELAX_OPERATION_TO_ASK_OPTION_ID),
+    )).resolves.toBe('handled');
+
+    expect(h.upsertOverride).toHaveBeenCalledWith(offer);
+    expect(h.resumer.resumeRun).toHaveBeenCalledTimes(1);
+    expect(h.resumer.denyRun).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      state: 'answered',
+      answer_option: RELAX_OPERATION_TO_ASK_OPTION_ID,
     });
   });
 

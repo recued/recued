@@ -40,7 +40,7 @@
  *      policy, not here — the allowlist is reception-specific) + drains;
  *      webclient calls `InboundFileCollection.ingest`.
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`
+ *  Spec: internal design notes
  *  (rev 2 protocol + rev 3 shared-split + rev 4 build order). */
 
 import { randomBytes, createHash } from 'node:crypto';
@@ -371,8 +371,13 @@ export const createUploadChunkCore = <F>(
         ttl_ms: ttlMs,
       });
       try {
-        await mkdir(uploadsRoot, { recursive: true });
-        await writeFile(scratch_path, Buffer.alloc(0));
+        // The scratch holds the file's PLAINTEXT for the whole life of the
+        // upload, on the same volume as the encrypted database. Node's defaults
+        // (0777 / 0666 & umask) would leave the tree traversable and the
+        // assembling file readable by every local account, so both are created
+        // owner-only.
+        await mkdir(uploadsRoot, { recursive: true, mode: 0o700 });
+        await writeFile(scratch_path, Buffer.alloc(0), { mode: 0o600 });
       } catch (err) {
         store.delete(upload_id);
         throw err;
@@ -431,7 +436,7 @@ export const createUploadChunkCore = <F>(
         fh = await open(session.scratch_path, 'r+');
       } catch (err) {
         if (isEnoent(err) && input.expected_offset === 0) {
-          await writeFile(session.scratch_path, Buffer.alloc(0));
+          await writeFile(session.scratch_path, Buffer.alloc(0), { mode: 0o600 });
           fh = await open(session.scratch_path, 'r+');
         } else if (isEnoent(err)) {
           return { ok: false, reason: 'scratch_missing' };

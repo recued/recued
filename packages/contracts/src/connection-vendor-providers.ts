@@ -18,7 +18,7 @@
  *  refresh tokens; the reconciler boot-wire (P2) matches connections
  *  via `config.vendor === '<vendor>'` against this list.
  *
- *  Spec: `docs/d-129-spec.md` § A.1. */
+ *  Spec: D-129 § A.1. */
 
 // The Microsoft Graph OAuth substrate (authorize/token URLs + scopes) is
 // shared with the foundational mail + calendar lanes, so the OneDrive vendor
@@ -620,15 +620,15 @@ export const GOOGLE_WEBHOOK_SIGNATURE_HEADER = 'x-goog-channel-token';
 export const GOOGLE_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
 
 // ── Dropbox (D-192 file SOURCE family — files-dropbox pack) ──────────
-// A plain OAuth 2.0 vendor like Google: no realm, no sandbox split. The file
-// SOURCE family mirrors file METADATA only (bytes never fetched — the North
-// star), so the vendor-default scopes are the metadata-read floor
-// (`account_info.read` for the pack's `account.current`, `files.metadata.read`
-// for the folder walk); the `dropbox` app pack's write ops (folder/move/copy/
-// share) union their own `required_scopes` at enroll.
+// A plain OAuth 2.0 vendor like Google: no realm, no sandbox split. File Source
+// sync mirrors metadata only, while explicit reads resolve bytes lazily through
+// Dropbox's content API. The defaults therefore include account + metadata
+// reads and the narrow content-read scope; the `dropbox` app pack's write ops
+// (folder/move/copy/share) union their own `required_scopes` at enroll.
 export const DROPBOX_OAUTH_SCOPES = [
   'account_info.read',
   'files.metadata.read',
+  'files.content.read',
 ] as const;
 export const DROPBOX_OAUTH_AUTHORIZE_URL = 'https://www.dropbox.com/oauth2/authorize';
 export const DROPBOX_OAUTH_TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
@@ -659,10 +659,9 @@ export const DROPBOX_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
 /** Microsoft Graph REST v1.0 root — the OneDrive file SOURCE leaf's
  *  `/me/drive/root/delta` host AND the connection's fixed `config.base_url`. */
 export const MICROSOFT_GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
-/** OneDrive OAuth scopes requested at enrollment. `Files.Read` is the
- *  metadata-read floor for the `/delta` walk (bytes never fetched — the North
- *  star), `offline_access` mints the refresh token, `User.Read` backs a later
- *  `/me` identity read-back (harmless now). */
+/** OneDrive OAuth scopes requested at enrollment. `Files.Read` covers the
+ *  `/delta` metadata walk and lazy explicit byte reads, `offline_access` mints
+ *  the refresh token, and `User.Read` backs identity read-back. */
 export const ONEDRIVE_OAUTH_SCOPES = [
   GRAPH_FILES_READ_SCOPE,
   GRAPH_OFFLINE_SCOPE,
@@ -683,8 +682,8 @@ export const ONEDRIVE_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
 // (`refreshOAuth2` adopts a new `refresh_token` whenever the issuer returns one),
 // so the background mirror survives rotation. Box's app permissions are set in
 // the Box developer console; the authorize `scope` param optionally downscopes,
-// so `root_readonly` is the metadata-read floor here (bytes never fetched — the
-// North star). No sandbox split. BYO Box app.
+// so `root_readonly` covers the metadata walk and lazy explicit byte reads. No
+// sandbox split. BYO Box app.
 /** Box API v2 REST root — the Box file SOURCE leaf's `/2.0/folders/{id}/items`
  *  + `/2.0/events` host AND the connection's fixed `config.base_url` (mirrors the
  *  `box` app pack's http ingredient base). */
@@ -715,8 +714,8 @@ export const BOX_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
  *  metadata-read floor for a SharePoint document library drive (a `Files.Read`
  *  grant is scoped to the user's own OneDrive and 403s on a site drive — which
  *  the leaf surfaces as a graceful `policy` outcome). `offline_access` mints the
- *  refresh token, `User.Read` backs the `/me` identity read-back. Read-only —
- *  bytes are never fetched (the North star). */
+ *  refresh token, `User.Read` backs the `/me` identity read-back. Read-only:
+ *  Source sync mirrors metadata, while explicit reads may fetch file bytes. */
 export const SHAREPOINT_OAUTH_SCOPES = [
   GRAPH_SITES_READ_ALL_SCOPE,
   GRAPH_OFFLINE_SCOPE,
@@ -1103,7 +1102,7 @@ const DROPBOX_PROVIDER: ConnectionVendorProvider = {
   vendor: 'dropbox',
   display_name: 'Dropbox',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse (bytes never fetched); the app pack adds approval-gated organize actions. OAuth 2.0 via your own Dropbox app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse; file bytes stay remote and are fetched only for an explicit read. The app pack adds approval-gated organize actions. OAuth 2.0 via your own Dropbox app.',
   default_base_url: DROPBOX_API_BASE,
   oauth: {
     authorize_url: DROPBOX_OAUTH_AUTHORIZE_URL,
@@ -1122,7 +1121,7 @@ const DROPBOX_PROVIDER: ConnectionVendorProvider = {
 
 /** D-192 file SOURCE family — OneDrive (Microsoft Graph). A plain OAuth 2.0
  *  vendor like Dropbox; the OneDrive adapter leaf mirrors file METADATA via the
- *  `/delta` changes feed (bytes never fetched). The deviation from Dropbox/
+ *  `/delta` changes feed, while explicit reads fetch bytes lazily. The deviation from Dropbox/
  *  Google: NO `authorize_params` — Microsoft mints the refresh token from the
  *  `offline_access` SCOPE, not an authorize param. RFC 6749 § 3.3-compliant
  *  token response echoes `scope`, so no introspection endpoint. BYO Microsoft
@@ -1131,7 +1130,7 @@ const ONEDRIVE_PROVIDER: ConnectionVendorProvider = {
   vendor: 'onedrive',
   display_name: 'OneDrive',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse via Microsoft Graph (bytes never fetched). OAuth 2.0 via your own Microsoft Entra app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse via Microsoft Graph; file bytes stay remote and are fetched only for an explicit read. OAuth 2.0 via your own Microsoft Entra app.',
   default_base_url: MICROSOFT_GRAPH_API_BASE,
   oauth: {
     authorize_url: MICROSOFT_AUTHORIZE_URL,
@@ -1151,7 +1150,7 @@ const ONEDRIVE_PROVIDER: ConnectionVendorProvider = {
 
 /** D-192 file SOURCE family — Box. A plain OAuth 2.0 vendor; the Box adapter leaf
  *  mirrors file METADATA via the `/2.0/events` delta feed + a `/2.0/folders`
- *  tree walk (bytes never fetched). The deviation from Dropbox/Google: NO
+ *  tree walk, while explicit reads fetch bytes lazily. The deviation from Dropbox/Google: NO
  *  `authorize_params` — Box returns a refresh token by default (and rotates it
  *  single-use). Box's read scope is app-level (`root_readonly` downscopes the
  *  authorize request). BYO Box app. */
@@ -1159,7 +1158,7 @@ const BOX_PROVIDER: ConnectionVendorProvider = {
   vendor: 'box',
   display_name: 'Box',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse via the Box events + folders API (bytes never fetched). OAuth 2.0 via your own Box app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse via the Box events + folders API; file bytes stay remote and are fetched only for an explicit read. OAuth 2.0 via your own Box app.',
   default_base_url: BOX_API_BASE,
   oauth: {
     authorize_url: BOX_OAUTH_AUTHORIZE_URL,
@@ -1186,7 +1185,7 @@ const SHAREPOINT_PROVIDER: ConnectionVendorProvider = {
   vendor: 'sharepoint',
   display_name: 'SharePoint',
   description:
-    'SharePoint document libraries — mirror file/folder metadata into your warehouse via Microsoft Graph (bytes never fetched). Point it at a document library drive. OAuth 2.0 via your own Microsoft Entra app.',
+    'SharePoint document libraries — mirror file/folder metadata into your warehouse via Microsoft Graph; file bytes stay remote and are fetched only for an explicit read. Point it at a document library drive. OAuth 2.0 via your own Microsoft Entra app.',
   default_base_url: MICROSOFT_GRAPH_API_BASE,
   oauth: {
     authorize_url: MICROSOFT_AUTHORIZE_URL,

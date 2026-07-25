@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { createBlobStore, createSQLiteCacheStore, listReferencedBlobHashes } from '../storage/index.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore, listReferencedBlobHashes } from '../storage/index.js';
 import type { CacheEntry } from '@recued/cache';
 
 let workDir: string;

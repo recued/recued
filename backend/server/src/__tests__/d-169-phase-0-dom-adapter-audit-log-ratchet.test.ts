@@ -20,7 +20,7 @@
  *                ingredient's `domain_allowlist`
  *    - `timestamp`: the dispatcher's `now()` at emission
  *
- *  Spec: docs/d-169-spec.md § N.9 / A.8 — multi-bridge fall-through. */
+ *  Spec: D-169 § N.9 / A.8 — multi-bridge fall-through. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type {

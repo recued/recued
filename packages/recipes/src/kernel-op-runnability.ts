@@ -39,7 +39,7 @@
  *  record (downstream `{{step.<id>.<field>}}`), so its empty value is `{}` (a
  *  missing field reads `undefined` either way — both shapes are null-safe).
  *
- *  Spec: docs/d-182-spec.md §3 (R1 verb-split) + §10 step 8.
+ *  Spec: D-182 §3 (R1 verb-split) + §10 step 8.
  */
 import {
   isOpStep,

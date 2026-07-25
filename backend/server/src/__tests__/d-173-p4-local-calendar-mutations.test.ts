@@ -4,7 +4,7 @@
  *  `'no'`, so the dispatcher 403'd them. That left the calendar EVERY reception
  *  booking lands on append-only — a booking could never be moved or cancelled,
  *  which is most of running a day (BLOCKER-1 in
- *  `handovers/calendar-reservation-landing-zone-audit.md` § 3a).
+ *  internal design notes § 3a).
  *
  *  ## Scope of this file — read this before trusting it
  *

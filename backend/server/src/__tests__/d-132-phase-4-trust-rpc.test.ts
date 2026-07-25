@@ -15,7 +15,7 @@
  *      runs no-op. Errors / yields don't count. Dismissed topics
  *      don't re-fire.
  *
- *  Spec: `docs/d-132-spec.md` §A.7 + §A.8. */
+ *  Spec: D-132 §A.7 + §A.8. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

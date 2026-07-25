@@ -5,7 +5,7 @@
  *  `SessionStateStore` with the `chat` channel — one conversation, two
  *  windows (D-160 N.5 / A.5).
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5.
+ *  Spec: D-160 § N.5 / A.5.
  */
 
 export {

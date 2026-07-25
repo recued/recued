@@ -387,9 +387,9 @@ export const receptionPairBindingEquals = (
  * config and one exact JSON-clean saved recipe snapshot. The recipe must have
  * passed the standard recipe parser before this helper; this contract does not
  * duplicate that higher-layer semantic validator. Pairing requires later owner
- * promotion, so the form is LOG-ONLY (D-210 WS2: an absent `target_kind` — the
- * paid submission is the immutable form_response, materialized only after
- * payment; it must not mint a destination entity), and the immutable
+ * promotion, so the form explicitly targets `form_response`: the paid response
+ * is the owner's mutable working record, materialized only after payment, while
+ * the sealed submission remains immutable evidence. The immutable
  * pre-acceptance email source must exist. */
 export const receptionPairBinding = (
   input: ReceptionPairBindingInput,

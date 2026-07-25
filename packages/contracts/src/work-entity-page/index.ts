@@ -1,7 +1,7 @@
 /** D-145 PA6 — work-entity page substrate, contracts barrel.
  *
  *  Pairs with `@recued/ui-shared/work-entity-page` (HTML rendering +
- *  DOM read-back). Spec: docs/d-145-spec.md § Phase PA6.
+ *  DOM read-back). Spec: D-145 § Phase PA6.
  */
 
 export {

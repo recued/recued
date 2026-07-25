@@ -17,7 +17,7 @@
  *  owner principal, and the execution-source → principal mapping. The store +
  *  resolver live server-side (`backend/server/src/storage/cli-reachability-store.ts`).
  *
- *  Spec: docs/d-182-spec.md §7.2; decisions-log D-182 amendment (F1 RESOLVED). */
+ *  Spec: D-182 §7.2; decisions-log D-182 amendment (F1 RESOLVED). */
 
 /** The owner's principal key (the "Owner (you)" row of the §7.2 grid). The owner
  *  is D-177 `user_self`; their cli reachability bit lives under this principal,

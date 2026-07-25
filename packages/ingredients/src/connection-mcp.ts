@@ -396,6 +396,158 @@ class McpStreamSession {
   }
 }
 
+/** Result of a short-lived MCP stream probe. JSON-RPC error envelopes are
+ *  returned as data so the connection health layer can preserve its existing
+ *  `auth_failed` classification; transport/open/request failures still throw
+ *  and are classified as unreachable by that layer. */
+export type McpStreamProbeResult =
+  | { ok: true; tools: string[] }
+  | {
+      ok: false;
+      stage: 'initialize' | 'tools_list';
+      reason:
+        | 'jsonrpc_error'
+        | 'invalid_response'
+        | 'pagination_cycle'
+        | 'pagination_limit';
+    };
+
+/** Hard ceiling for a malicious/broken server that emits an endless chain of
+ *  unique cursors. The overall probe deadline is the primary bound; this cap
+ *  also keeps a zero-latency in-process server from spinning forever. */
+export const MCP_TOOL_LIST_PROBE_MAX_PAGES = 100;
+
+export type McpToolListPageResult =
+  | { ok: true; tools: string[]; nextCursor?: string }
+  | { ok: false };
+
+/** Validate one MCP `tools/list` result page. Tool names form an enforcement
+ *  cache, so a malformed/partial page must fail the probe rather than produce
+ *  an incomplete allow-list that later rejects a valid tool. `nextCursor` is
+ *  opaque; an empty string is valid when the property is present. */
+export const parseMcpToolListPage = (result: unknown): McpToolListPageResult => {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return { ok: false };
+  }
+  const record = result as Record<string, unknown>;
+  if (!Array.isArray(record.tools)) return { ok: false };
+  const tools: string[] = [];
+  for (const tool of record.tools) {
+    if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return { ok: false };
+    const name = (tool as Record<string, unknown>).name;
+    if (typeof name !== 'string' || name.length === 0) return { ok: false };
+    tools.push(name);
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'nextCursor')) {
+    if (typeof record.nextCursor !== 'string') return { ok: false };
+    return { ok: true, tools, nextCursor: record.nextCursor };
+  }
+  return { ok: true, tools };
+};
+
+const streamProbeTimeoutError = (timeoutMs: number): Error => {
+  const err = new Error(`MCP stream probe timed out after ${timeoutMs}ms`);
+  err.name = 'AbortError';
+  return err;
+};
+
+/** Open one disposable websocket / stdio MCP channel, perform the mandatory
+ *  initialize handshake, enumerate tools, then close it. This deliberately
+ *  shares `McpStreamSession` with live MCP execution so message framing,
+ *  response-id correlation, timeout behavior, and close/error handling cannot
+ *  drift between "Probe" and a real recipe run. The opener owns transport and
+ *  auth details; the helper owns protocol lifecycle and leak-safe teardown. */
+export const probeMcpStreamTools = async (
+  open: (signal: AbortSignal) => Promise<McpStreamHandle>,
+  timeoutMs: number,
+): Promise<McpStreamProbeResult> => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw streamProbeTimeoutError(timeoutMs);
+  }
+  const deadline = Date.now() + timeoutMs;
+  const remainingMs = (): number => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw streamProbeTimeoutError(timeoutMs);
+    return remaining;
+  };
+  const controller = new AbortController();
+  let openTimer: ReturnType<typeof setTimeout> | undefined;
+  const openPromise = open(controller.signal).then((handle) => {
+    // A capability that ignored abort may resolve after the timeout won the
+    // race. Close that late handle immediately instead of leaking it.
+    if (controller.signal.aborted) {
+      try { handle.close(); } catch { /* already closed */ }
+      throw streamProbeTimeoutError(timeoutMs);
+    }
+    return handle;
+  });
+  const openTimeout = new Promise<never>((_resolve, reject) => {
+    openTimer = setTimeout(() => {
+      controller.abort();
+      reject(streamProbeTimeoutError(timeoutMs));
+    }, remainingMs());
+  });
+
+  let handle: McpStreamHandle;
+  try {
+    handle = await Promise.race([openPromise, openTimeout]);
+  } finally {
+    if (openTimer !== undefined) clearTimeout(openTimer);
+  }
+
+  const session = new McpStreamSession(handle);
+  try {
+    const initialize = await session.request(1, 'initialize', {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'recued-connection-probe', version: '1' },
+    }, remainingMs());
+    if (initialize.jsonrpc !== '2.0') {
+      return { ok: false, stage: 'initialize', reason: 'invalid_response' };
+    }
+    if (initialize.error !== undefined) {
+      return { ok: false, stage: 'initialize', reason: 'jsonrpc_error' };
+    }
+    try {
+      handle.send(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
+    } catch {
+      // Best-effort, matching the long-lived execution session.
+    }
+
+    const tools = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let pageIndex = 0; pageIndex < MCP_TOOL_LIST_PROBE_MAX_PAGES; pageIndex += 1) {
+      const toolsList = await session.request(
+        2 + pageIndex,
+        'tools/list',
+        cursor === undefined ? {} : { cursor },
+        remainingMs(),
+      );
+      if (toolsList.jsonrpc !== '2.0') {
+        return { ok: false, stage: 'tools_list', reason: 'invalid_response' };
+      }
+      if (toolsList.error !== undefined) {
+        return { ok: false, stage: 'tools_list', reason: 'jsonrpc_error' };
+      }
+      const page = parseMcpToolListPage(toolsList.result);
+      if (!page.ok) {
+        return { ok: false, stage: 'tools_list', reason: 'invalid_response' };
+      }
+      for (const name of page.tools) tools.add(name);
+      if (page.nextCursor === undefined) return { ok: true, tools: [...tools] };
+      if (seenCursors.has(page.nextCursor)) {
+        return { ok: false, stage: 'tools_list', reason: 'pagination_cycle' };
+      }
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+    return { ok: false, stage: 'tools_list', reason: 'pagination_limit' };
+  } finally {
+    session.close();
+  }
+};
+
 export interface ConnectionMcpHandlerDeps {
   /** Decrypt at-rest `auth_ciphertext` to a typed `ConnectionAuth`.
    *  Boot site closes over `decodeAuthFromStorage` from
@@ -469,6 +621,87 @@ const readEndpoint = (row: ConnectionRow, transport: McpTransport): string => {
 
 const STDIO_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+export interface StdioMcpLaunchSpec {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+export type StdioMcpLaunchSpecResult =
+  | { ok: true; spec: StdioMcpLaunchSpec }
+  | {
+      ok: false;
+      code:
+        | 'missing_command'
+        | 'command_must_be_absolute_or_bare'
+        | 'args_must_be_strings'
+        | 'env_must_be_strings';
+      message: string;
+    };
+
+/** Validate the user-enrolled stdio launch object once for both live execution
+ *  and manual probing. Besides shape checks, this strips prototype-sensitive
+ *  env keys before the object reaches the Node spawner. */
+export const resolveStdioMcpLaunchSpec = (
+  config: Record<string, unknown>,
+): StdioMcpLaunchSpecResult => {
+  const command = config.command;
+  if (typeof command !== 'string' || command.trim() === '') {
+    return {
+      ok: false,
+      code: 'missing_command',
+      message: 'stdio transport requires a non-empty config.command (re-enroll in Settings → Connections)',
+    };
+  }
+  const cmd = command.trim();
+  if (cmd.includes('/') && !cmd.startsWith('/')) {
+    return {
+      ok: false,
+      code: 'command_must_be_absolute_or_bare',
+      message: `stdio config.command must be an absolute path or a bare executable name (got a relative path '${cmd}')`,
+    };
+  }
+
+  let args: string[] = [];
+  const rawArgs = config.args;
+  if (rawArgs !== undefined && rawArgs !== null) {
+    if (!Array.isArray(rawArgs) || !rawArgs.every((arg) => typeof arg === 'string')) {
+      return {
+        ok: false,
+        code: 'args_must_be_strings',
+        message: 'stdio config.args must be an array of strings',
+      };
+    }
+    args = rawArgs as string[];
+  }
+
+  let env: Record<string, string> | undefined;
+  const rawEnv = config.env;
+  if (rawEnv !== undefined && rawEnv !== null) {
+    if (
+      typeof rawEnv !== 'object' ||
+      Array.isArray(rawEnv) ||
+      !Object.values(rawEnv as Record<string, unknown>)
+        .every((value) => typeof value === 'string')
+    ) {
+      return {
+        ok: false,
+        code: 'env_must_be_strings',
+        message: 'stdio config.env must be an object of string values',
+      };
+    }
+    env = {};
+    for (const [key, value] of Object.entries(rawEnv as Record<string, string>)) {
+      if (!STDIO_PROTOTYPE_KEYS.has(key)) env[key] = value;
+    }
+  }
+
+  return {
+    ok: true,
+    spec: env === undefined ? { command: cmd, args } : { command: cmd, args, env },
+  };
+};
+
 /** Read + validate the stdio launch config (`config.command` / `config.args`
  *  / `config.env`). The command is user-enrolled (Settings → Connections) —
  *  never pack-injected (packs reference connections by name, they don't carry
@@ -480,7 +713,7 @@ const STDIO_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const readStdioCommand = (
   row: ConnectionRow,
   call: ResolvedCall,
-): { command: string; args: string[]; env?: Record<string, string> } => {
+): StdioMcpLaunchSpec => {
   const fail = (msg: string): never => {
     throw new IngredientError(
       'INGREDIENT_OUTPUT_VALIDATION_FAILED',
@@ -495,41 +728,8 @@ const readStdioCommand = (
     return fail('malformed config_json');
   }
   const config = (parsed as Record<string, unknown> | null) ?? {};
-
-  const command = config.command;
-  if (typeof command !== 'string' || command.trim() === '') {
-    return fail('stdio transport requires a non-empty config.command (re-enroll in Settings → Connections)');
-  }
-  const cmd = command.trim();
-  if (cmd.includes('/') && !cmd.startsWith('/')) {
-    return fail(`stdio config.command must be an absolute path or a bare executable name (got a relative path '${cmd}')`);
-  }
-
-  let args: string[] = [];
-  const rawArgs = config.args;
-  if (rawArgs !== undefined && rawArgs !== null) {
-    if (!Array.isArray(rawArgs) || !rawArgs.every((a) => typeof a === 'string')) {
-      return fail('stdio config.args must be an array of strings');
-    }
-    args = rawArgs as string[];
-  }
-
-  let env: Record<string, string> | undefined;
-  const rawEnv = config.env;
-  if (rawEnv !== undefined && rawEnv !== null) {
-    if (typeof rawEnv !== 'object' || Array.isArray(rawEnv)
-        || !Object.values(rawEnv as Record<string, unknown>).every((v) => typeof v === 'string')) {
-      return fail('stdio config.env must be an object of string values');
-    }
-    // Strip prototype-pollution keys defensively (env is spread into spawn).
-    const cleaned: Record<string, string> = {};
-    for (const [k, v] of Object.entries(rawEnv as Record<string, string>)) {
-      if (!STDIO_PROTOTYPE_KEYS.has(k)) cleaned[k] = v;
-    }
-    env = cleaned;
-  }
-
-  return env ? { command: cmd, args, env } : { command: cmd, args };
+  const resolved = resolveStdioMcpLaunchSpec(config);
+  return resolved.ok ? resolved.spec : fail(resolved.message);
 };
 
 const readHealth = (row: ConnectionRow): ConnectionHealth | undefined => {

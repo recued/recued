@@ -89,6 +89,29 @@ describe('top-level shape', () => {
   });
 });
 
+describe('unsupported approval fields', () => {
+  it.each(['prefetch_steps', 'steps', 'trigger_steps'] as const)(
+    'rejects ignored requires_approval in %s',
+    (field) => {
+      const step = field === 'trigger_steps'
+        ? { id: 'watch', ingredient: 'time-watcher', requires_approval: true }
+        : { id: 'read', ingredient: 'deal-reader-hubspot', input: {}, requires_approval: true };
+      const candidate = {
+        ...goodRecipe,
+        ...(field === 'trigger_steps' ? { auto_run: { interval_seconds: 300 } } : {}),
+        [field]: [step],
+      };
+      const issue = validateRecipe(candidate).issues.find(
+        ({ code }) => code === 'step_requires_approval_unsupported',
+      );
+      expect(issue).toMatchObject({
+        severity: 'error',
+        path: `${field}[0].requires_approval`,
+      });
+    },
+  );
+});
+
 // ────────────────────────────────────────────────────────────────
 // recipe_id convention
 // ────────────────────────────────────────────────────────────────

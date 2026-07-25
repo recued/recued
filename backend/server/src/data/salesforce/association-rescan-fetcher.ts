@@ -13,7 +13,7 @@
  *  filtered by parent-id, projecting each junction row into the
  *  generic `EngagementEdgeProjection` shape.
  *
- *  Spec: `docs/d-139-spec.md` § A.6.3, Pass-5 R5.10. */
+ *  Spec: D-139 § A.6.3, Pass-5 R5.10. */
 
 import {
   SALESFORCE_API_VERSION,

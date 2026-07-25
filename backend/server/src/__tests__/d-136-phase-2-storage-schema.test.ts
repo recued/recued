@@ -22,7 +22,7 @@
  *      `(topic, scope, target_id, authored_by)` slot.
  *    - housekeeping default budgets are seeded on a fresh row write
  *
- *  Spec: `docs/d-136-spec.md` §A.6 + P2 phase plan. */
+ *  Spec: D-136 §A.6 + P2 phase plan. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

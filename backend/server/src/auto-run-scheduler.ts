@@ -18,7 +18,7 @@
  *    3. `stop()` clears all timers + waits for in-flight executions
  *       to settle so callers can safely close the database.
  *
- *  Spec: docs/d-115-spec.md §3.1 (Server implementation).
+ *  Spec: D-115 §3.1 (Server implementation).
  */
 
 import type { Database } from 'better-sqlite3';

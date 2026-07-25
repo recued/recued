@@ -15,7 +15,7 @@
  *  dispatch time). Keeping `now` explicit means the unit tests can
  *  drive the clock deterministically.
  *
- *  Spec: docs/d-115-spec.md §"Tier 2 transforms (starter set)".
+ *  Spec: D-115 §"Tier 2 transforms (starter set)".
  */
 
 import type { TransformFn } from './types.js';

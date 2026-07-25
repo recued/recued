@@ -248,7 +248,7 @@ export const assessRunTargets = (
  *  modal's warning, so every surface (and the chat/MCP model reading a
  *  tool result) sees the same teaching: name the exact key(s) to pass and
  *  the resolve-then-rerun route. Tuning this is a model-facing change —
- *  read + append `docs/chat-prompt-optimization-log.md`. */
+ *  read + append internal design notes. */
 export const buildTargetRequiredMessage = (
   recipeId: string,
   missing: ReadonlyArray<TargetRequirement>,

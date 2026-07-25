@@ -21,7 +21,7 @@
  *  wrong — the same persist-everything posture as the D-177 session rows). A
  *  lookback-window prune is a future housekeeping concern, not a correctness one.
  *
- *  Spec: docs/d-202-spec.md §2. */
+ *  Spec: D-202 §2. */
 
 import {
   QUALITY_DELEGATION_SIGNAL_SCOPE,

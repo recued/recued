@@ -74,6 +74,19 @@ const ACCT_ALIAS_SET: ReadonlySet<string> = new Set<string>(ACCT_ALIAS_VALUES);
 const CANONICAL_ACCT_VERBS = ['search', 'read'] as const;
 const CANONICAL_ACCT_VERB_SET: ReadonlySet<string> = new Set<string>(CANONICAL_ACCT_VERBS);
 
+/** `requires_approval` appeared in an old authoring guide but was never part of
+ *  RecipeStep or carried through lowering. Reject it explicitly so a recipe cannot
+ *  present an approval promise that the runtime silently ignores. */
+const validateUnsupportedStepApproval = (
+  step: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+): void => {
+  if (!('requires_approval' in step)) return;
+  add('error', 'step_requires_approval_unsupported', `${path}.requires_approval`,
+    '`requires_approval` is not a live recipe-step field; approval derives from the operation risk, catalog policy, and active dispatch trust policy');
+};
+
 export const validateRequiredFields = (r: Record<string, unknown>, add: AddFn): void => {
   if (typeof r.recipe_id !== 'string' || !r.recipe_id) {
     add('error', 'recipe_id_required', 'recipe_id', 'recipe_id is required and must be a non-empty string');
@@ -857,6 +870,7 @@ export const validateTriggerSteps = (
       continue;
     }
     const s = st as Record<string, unknown>;
+    validateUnsupportedStepApproval(s, path, add);
     if (typeof s.id !== 'string' || !s.id) {
       add('error', 'trigger_step_id_required', `${path}.id`, 'trigger step id is required');
       continue;
@@ -1174,6 +1188,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         continue;
       }
       const s = ps as Record<string, unknown>;
+      validateUnsupportedStepApproval(s, path, add);
       if (typeof s.id !== 'string' || !s.id) {
         add('error', 'prefetch_step_id_required', `${path}.id`, 'prefetch step id is required');
         continue;
@@ -1217,6 +1232,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         continue;
       }
       const s = st as Record<string, unknown>;
+      validateUnsupportedStepApproval(s, path, add);
       if (typeof s.id !== 'string' || !s.id) {
         add('error', 'step_id_required', `${path}.id`, 'step id is required');
         continue;

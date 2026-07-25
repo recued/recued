@@ -95,8 +95,8 @@
     "composition_bytes": {
       "outreach": 70198,
       "outreach-crm-data": 87954,
-      "outreach-engagement-automation": 108210,
-      "outreach-platform-admin": 129067
+      "outreach-engagement-automation": 108278,
+      "outreach-platform-admin": 129645
     },
     "risk_counts": {
       "write": 55,
@@ -106,7 +106,8 @@
     },
     "approval_counts": {
       "always": 160,
-      "never": 93
+      "never": 74,
+      "ask": 19
     },
     "idempotency_counts": {
       "non_idempotent": 92,
@@ -3678,7 +3679,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3777,7 +3778,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3822,7 +3823,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3921,7 +3922,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3966,7 +3967,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -4599,7 +4600,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -4644,7 +4645,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5668,7 +5669,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5815,7 +5816,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5860,7 +5861,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -7039,7 +7040,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -7636,7 +7637,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -7681,7 +7682,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -8543,7 +8544,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -8588,7 +8589,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -10848,7 +10849,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -10893,7 +10894,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -11406,7 +11407,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -11451,7 +11452,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -22179,7 +22180,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -22326,7 +22327,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -25748,7 +25749,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -25793,7 +25794,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -25892,7 +25893,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27496,7 +27497,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27595,7 +27596,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27684,7 +27685,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27777,7 +27778,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29091,7 +29092,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29177,7 +29178,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29351,7 +29352,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29456,7 +29457,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29630,7 +29631,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29741,7 +29742,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29915,7 +29916,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30020,7 +30021,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30333,7 +30334,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30444,7 +30445,7 @@
         }
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"

@@ -14,6 +14,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_RESOLVE_ERROR_ATTR,
   PACKS_DETAIL_RESOLVING_ATTR,
@@ -288,7 +290,11 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
   });
 
   it('installs a marketplace pack via runInstallBySlug + flips Install→Uninstall from installed_versions', async () => {
-    const resolve = vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest() }));
+    const manifestReviewHash = 'a'.repeat(64);
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest(),
+      manifest_review_hash: manifestReviewHash,
+    }));
     let installed = false;
     const installBySlug = vi.fn(async () => {
       installed = true;
@@ -315,12 +321,96 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
 
     // By-slug path (marketplace recipes aren't bundled) — not the by-value install.
     expect(runInstallBySlug).toHaveBeenCalledTimes(1);
-    expect(runInstallBySlug.mock.calls[0]![0]).toMatchObject({ slug: 'mkt-pack' });
+    expect(runInstallBySlug.mock.calls[0]![0]).toMatchObject({
+      slug: 'mkt-pack',
+      expected_manifest_hash: manifestReviewHash,
+    });
 
     // The detail flipped to installed via the inventory (no wrong re-resolve).
     expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).toBeNull();
     expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
     expect(resolve).toHaveBeenCalledTimes(1); // resolved once, not again post-install
+  });
+
+  it('discards a stale marketplace review and returns to a refreshable detail error', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest(),
+      manifest_review_hash: 'a'.repeat(64),
+    }));
+    const installBySlug = vi.fn(async () => ({
+      result: {
+        ok: false as const,
+        installed: [],
+        rolled_back: [],
+        failure: { code: 'review_stale' as const, message: 'stale' },
+      },
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [] }),
+      resolve,
+      installBySlug,
+    });
+    await m.whenLoaded();
+    await tick();
+    m.clickInstall('mkt-pack');
+    await m.clickConfirmInstall();
+    await tick();
+
+    expect(findByAttr(host, PACKS_DETAIL_RESOLVE_ERROR_ATTR)?.textContent)
+      .toContain('changed after you reviewed it');
+    expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).toBeNull();
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an older marketplace version actionable as Update and carries its owner-ruling review', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest({ version: 3 }),
+      owner_operation_review: [{
+        ingredient_id: 'recued-core/acme',
+        operation_id: 'recued-core/acme.deal.read',
+        change: 'changed',
+        owner_policy: { approval: 'ask' },
+        incoming: { risk: 'read', approval: 'never' },
+      }],
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({
+        packs: [],
+        installed_versions: [{ slug: 'mkt-pack', version: 2 }],
+      }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+
+    // Installed-at-any-version is not installed-at-the-incoming-version.
+    expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).not.toBeNull();
+    expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).toBeNull();
+    m.clickInstall('mkt-pack');
+    await tick();
+    expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();
+    expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  it('does not turn an older marketplace preview into a downgrade-shaped Update', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest({ version: 3 }),
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({
+        packs: [],
+        installed_versions: [{ slug: 'mkt-pack', version: 4 }],
+      }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+
+    expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).toBeNull();
+    expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
   });
 
   it('UNINSTALLS an installed marketplace pack from its detail (Delete → Confirm → runUninstall), flipping back to Install', async () => {

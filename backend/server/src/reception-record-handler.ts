@@ -25,7 +25,7 @@
  *  `visitor_email_encrypted` the day someone adds a column, and the test that checks for it
  *  would still pass because it checks the fields it knows about.
  *
- *  Spec: `docs/d-210-spec.md` §2.2 + Appendix A. */
+ *  Spec: D-210 §2.2 + Appendix A. */
 
 import {
   INTAKE_FORM_SUBMISSION_PROCESSING_OUTCOMES,

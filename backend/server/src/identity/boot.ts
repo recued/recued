@@ -25,8 +25,11 @@
  *
  *  Passphrase. Optional. When `RECUED_IDENTITY_PASSPHRASE` is set
  *  the keys file is AEAD-sealed under an Argon2id-derived KEK. When
- *  unset, the file holds cleartext bytes — physical disk access
- *  becomes the trust boundary, matching the cleartext server db.
+ *  unset, the file holds cleartext key bytes. The live database is encrypted
+ *  as of D-212 slice 3, but this same keyfile carries the normal-boot unwrap
+ *  key; disk access to both files can therefore still open the realm. Setting
+ *  the passphrase raises that physical-access boundary, while the recovery key
+ *  remains the keyfile-loss path.
  */
 
 import { dirname, join, resolve } from 'node:path';
@@ -56,6 +59,11 @@ export interface BootServerIdentityOptions {
   /** Absolute or relative server db path. The identity keys file is
    *  resolved next to it via `resolveIdentityKeysPath`. */
   dbPath: string;
+  /** Seal a NEW keyfile against a platform secret store when no passphrase is
+   *  set. Off by default — provisioning writes to the operator's OS keychain,
+   *  which tooling and tests must not do on their behalf. The server's
+   *  composition root turns it on. */
+  machineSealing?: boolean;
   /** Override the passphrase. Tests pass `null` to force cleartext
    *  regardless of the live process env. Default: read from `env`. */
   passphrase?: string | null;
@@ -103,6 +111,12 @@ export const bootServerIdentity = async (
     filePath,
     ...(passphrase ? { passphrase } : {}),
     ...(options.argon2_params ? { argon2_params: options.argon2_params } : {}),
+    // D-212 slice 5 — off unless the caller asks. `bootServerIdentity` is
+    // reached by tooling and by 15 test call sites as well as by the server, and
+    // provisioning writes to the operator's OS keychain; that is a decision for
+    // the composition root, not a default for everyone who boots an identity.
+    // `compose-storage-context` turns it on for the real server.
+    machineSealing: options.machineSealing ?? false,
   });
   // Track whether `ensureServerIdentityKeys` had to generate fresh
   // keys. The store load happens synchronously; a null on either

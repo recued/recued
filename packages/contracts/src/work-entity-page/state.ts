@@ -15,7 +15,7 @@
  *    - Submit-success closes the dialog. The host wires the close
  *      after the rpc returns.
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (Source switching / list /
+ *  Spec: D-145 § Phase PA6 (Source switching / list /
  *  search / create / edit flow).
  */
 

@@ -22,7 +22,7 @@
  *  `system`) rows carry NO attribution field, so the gold path is
  *  unchanged (I-9).
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-9 / I-10 / O-3.
+ *  Spec: D-161 § N.8 / A.7 / I-9 / I-10 / O-3.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';

@@ -315,3 +315,62 @@ describe('D-127 P2.2 — kernel mail-send inherits the P1.7 audit row', () => {
     expect(detail.error?.code).toBe('MAIL_SEND_SELF_LOOP_TO');
   });
 });
+
+/** D-210 code audit, finding 3b — the sealed recipient must not reach the audit row.
+ *
+ *  `notify-booking-visitor` opens a visitor address sealed in
+ *  `reception_form_submission` and hands it to this send path. The recipient
+ *  threshold is a NOISE rule (a 200-address blast is unreadable), never a PII
+ *  rule — and a one-recipient booking notice always fell under it, so the
+ *  address was written verbatim into a durable `audit_activities.detail` that
+ *  travels with `server.archive.export`, while the kernel manifest told the
+ *  model it "is never surfaced in any branch".
+ *
+ *  ⚠ The pre-existing notify test could not see this: it stubs `mailSend` with
+ *  `vi.fn()`, mocking the exact component that leaked. These drive the REAL
+ *  collection + audit store. ⇒ [[a_green_test_over_a_hollow_seam]] */
+describe('D-210 finding 3b — sealed-recipient audit redaction', () => {
+  const detailOf = (h: Harness): MailSendAuditDetail => {
+    const rows = h.audit.rows.filter((r) => r.action === 'mail_send');
+    expect(rows).toHaveLength(1);
+    return JSON.parse(rows[0]!.detail!) as MailSendAuditDetail;
+  };
+
+  it('omits the recipient list on the TRUSTED internal flag, and keeps the count', async () => {
+    const h = withHarness();
+    await handleCollectionMailSend(
+      { registry: h.registry },
+      { instance: 'work', to: ['visitor@example.com'], subject: 's', body_text: 'b' },
+      { redact_audit_recipients: true },
+    );
+    const detail = detailOf(h);
+    // The owner still sees that a notice went out, and to how many.
+    expect(detail.recipient_count).toBe(1);
+    // ⛔ Absence, proven as absence — `toMatchObject` cannot show a missing key.
+    expect(Object.hasOwn(detail, 'recipients')).toBe(false);
+    // Belt and braces: the address is nowhere in the serialized row.
+    const rows = h.audit.rows.filter((r) => r.action === 'mail_send');
+    expect(rows[0]!.detail!).not.toContain('visitor@example.com');
+  });
+
+  it('IGNORES the flag arriving as untrusted WIRE input — audit-evasion is unreachable', async () => {
+    // 🔑 The reason the flag is a separate parameter rather than a field on
+    // `args`. If a wire caller (the rpc method, an MCP agent, a recipe step)
+    // could set it, any caller could suppress the recipient list on its own
+    // audit row — a worse defect than the leak this closes.
+    const h = withHarness();
+    await handleCollectionMailSend(
+      { registry: h.registry },
+      {
+        instance: 'work',
+        to: ['bob@example.com'],
+        subject: 's',
+        body_text: 'b',
+        // Not in the wire vocabulary at all — the cast is the point.
+        redact_audit_recipients: true,
+      } as Parameters<typeof handleCollectionMailSend>[1],
+    );
+    const detail = detailOf(h);
+    expect(detail.recipients).toEqual(['bob@example.com']);
+  });
+});

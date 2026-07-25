@@ -50,7 +50,7 @@
  *    - Malformed `hot_fields` JSON in a single row → row skipped,
  *      aggregation continues.
  *
- *  Spec: `docs/launch-sequence-2026-04-30.md` line 45 +
+ *  Spec: internal design notes line 45 +
  *        `ENRICHMENT_REGISTRY.reply_patterns`. */
 
 import { type ContactRecord } from '@recued/contracts';

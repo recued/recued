@@ -26,7 +26,7 @@
  *  `pack_slug` of `deal` never bleeds into `dealflow`). Scope + segments are the
  *  only public surface — callers never see seg_key.
  *
- *  Spec: `docs/d-165-spec.md` §"Contract namespace"; the schema-entry types +
+ *  Spec: D-165 §"Contract namespace"; the schema-entry types +
  *  write-validator live in `packages/contracts/src/contract-schema.ts`. */
 
 import type Database from 'better-sqlite3';

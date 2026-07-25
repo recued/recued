@@ -30,7 +30,7 @@
  *  detection over engagement volume is the optional richer follow-
  *  up; v1 ships boolean reentry only.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import {
   type AccountReentrySignalValue,

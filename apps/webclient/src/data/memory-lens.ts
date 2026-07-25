@@ -14,7 +14,7 @@
  *  `memory.list` contract (never the full body, §5); the detail view fetches
  *  the full body on demand.
  *
- *  Spec: docs/d-198-spec.md §4/§5 + docs/d-198-build-plan.md §B Slice 1b/2. */
+ *  Spec: D-198 §4/§5 + D-198 §B Slice 1b/2. */
 
 import type { Actor, MemoryGetResponse, MemoryImportResult, MemoryListEntry } from '@recued/contracts';
 

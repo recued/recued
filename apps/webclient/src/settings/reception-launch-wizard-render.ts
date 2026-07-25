@@ -67,7 +67,7 @@
  *  validation `detail` strings, the plan summary copy) flows through
  *  `e()` before interpolation.
  *
- *  Spec: docs/d-149-spec.md § A.20.1 (Reception Launch Wizard) + § DoD
+ *  Spec: D-149 § A.20.1 (Reception Launch Wizard) + § DoD
  *  (the under-10-minute, 3-endpoint onboarding goal). */
 
 import { e } from '@recued/ui-shared/template';

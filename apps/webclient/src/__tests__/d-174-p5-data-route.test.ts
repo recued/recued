@@ -24,22 +24,29 @@ import {
   DATA_ROUTE_CONTACT_PROVENANCE_ATTR,
   DATA_ROUTE_CONTACT_SCAN_ATTR,
   DATA_ROUTE_CONTACT_SOURCES_ATTR,
+  DATA_ROUTE_CHAT_RETURN_ATTR,
   DATA_ROUTE_SCAN_PROGRESS_ATTR,
   DATA_ROUTE_DOWNLOAD_FILE_ATTR,
   DATA_ROUTE_FILE_SOURCES_ATTR,
   DATA_ROUTE_FILE_SOURCE_LINK_ATTR,
   DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR,
   DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR,
+  DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR,
   DATA_ROUTE_FORM_RESPONSE_LOAD_MORE_ATTR,
   DATA_ROUTE_FORM_RESPONSE_RUN_ATTR,
   DATA_ROUTE_FORM_RESPONSE_RUN_PICKER_ATTR,
   DATA_ROUTE_FORM_RESPONSE_RUN_RECIPE_ATTR,
   DATA_ROUTE_FORM_RESPONSE_ROW_ATTR,
+  DATA_ROUTE_FORM_RESPONSE_STATE_ATTR,
+  DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR,
   DATA_ROUTE_HEADING_ATTR,
   DATA_ROUTE_HOST_ATTR,
+  DATA_ROUTE_LOGS_RETURN_ATTR,
   DATA_ROUTE_MIRROR_ATTR,
   DATA_ROUTE_STYLES_MARKER,
   DATA_ROUTE_TAB_ATTR,
+  DATA_ROUTE_VERIFICATION_ACTION_ATTR,
+  DATA_ROUTE_VERIFICATION_NEXT_ATTR,
   DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
   bootstrapDataRoute,
   type BootstrapDataRouteOptions,
@@ -59,7 +66,11 @@ import {
   type DataContactUpsertCaller,
   type DataFileReadCaller,
   type DataFormResponseGetCaller,
+  type DataFormResponseExportCaller,
   type DataFormResponseListCaller,
+  type DataFormResponseSetStateCaller,
+  type DataFormResponseUpdateCaller,
+  type DataManageRescheduleLinkCaller,
   type DataMirrorSearchCaller,
   type DataRecipeListCaller,
   type DataTimelineCaller,
@@ -71,8 +82,11 @@ import {
 } from '../data/bootstrap-data-route.js';
 import {
   COLLECTION_DETAIL_CLOSE_ACTION,
+  COLLECTION_DETAIL_HEADING_ATTR,
+  COLLECTION_INSTANCE_SLUG_ATTR,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_RECORD_ID_ATTR,
+  COLLECTION_SELECT_INSTANCE_ACTION,
 } from '../data/collection-explorer.js';
 
 interface FakeEl {
@@ -215,6 +229,15 @@ const emitInput = (
   }
 };
 
+const emitChange = (
+  routeRoot: FakeEl,
+  target: { value: string; getAttribute(k: string): string | null },
+): void => {
+  for (const listener of routeRoot.listeners.get('change') ?? []) {
+    listener({ target } as unknown as Event);
+  }
+};
+
 // Drive the route's delegated click handler as the DOM would: a synthetic
 // target whose `closest('[data-recued-data-action]')` resolves an element
 // carrying the action (the innerHTML is a string, so there are no real nodes to
@@ -255,6 +278,45 @@ const taskEntity = (
   blocks_task_ids: [],
   ...overrides,
 });
+
+const bookingEntity = (
+  overrides: Partial<Extract<WorkEntity, { _kind: 'booking' }>> = {},
+): Extract<WorkEntity, { _kind: 'booking' }> => ({
+  _kind: 'booking',
+  id: 'booking-1',
+  title: 'Discovery call',
+  lifecycle_state: 'confirmed',
+  state_changed_at: 1,
+  slot_start_at: NOW + 3_600_000,
+  slot_end_at: NOW + 5_400_000,
+  counterparty_contact_id: 'contact-opaque',
+  source_id: 'recued.booking',
+  last_seen_at: 1,
+  sync_state: 'live',
+  conflict_policy: 'recued_wins',
+  created_at: 1,
+  updated_at: 2,
+  ...overrides,
+});
+
+const installFormResponseControls = (
+  routeRoot: FakeEl,
+  input: { values: string; email: string; lifecycle: string },
+): void => {
+  (routeRoot as unknown as { querySelector(selector: string): { value: string } | null })
+    .querySelector = (selector) => {
+      if (selector === `[${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}]`) {
+        return { value: input.values };
+      }
+      if (selector === `[${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}]`) {
+        return { value: input.email };
+      }
+      if (selector === `[${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}]`) {
+        return { value: input.lifecycle };
+      }
+      return null;
+    };
+};
 
 const contactRecord = (
   overrides: Partial<ContactRecord> = {},
@@ -336,6 +398,7 @@ const formResponse = (
   visitor: { email: 'visitor@example.test' },
   submitted_at: 1_700_000_000_000,
   accepted_at: 1_700_000_005_000,
+  updated_at: 1_700_000_005_000,
   origin_actor: 'anonymous',
   origin_surface: 'system',
   lifecycle_state: 'received',
@@ -353,6 +416,9 @@ const formResponseListItem = (
   visitor: { email: 'visitor@example.test' },
   submitted_at: 1_700_000_000_000,
   accepted_at: 1_700_000_005_000,
+  updated_at: 1_700_000_005_000,
+  lifecycle_state: 'received',
+  state_changed_at: 0,
   template_ref: 'foundation:intake/project-brief',
   ...overrides,
 });
@@ -433,6 +499,7 @@ const mountRoute = (overrides: {
   workEntityGetCaller?: DataWorkEntityGetCaller;
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
   workEntityDeleteCaller?: DataWorkEntityDeleteCaller;
+  manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
   contactGetCaller?: DataContactGetCaller;
   /** D-205 item 3 — the per-source view. Opt-in, so the bare rig renders the detail
@@ -460,6 +527,10 @@ const mountRoute = (overrides: {
   contactDeleteCaller?: DataContactDeleteCaller;
   formResponseListCaller?: DataFormResponseListCaller;
   formResponseGetCaller?: DataFormResponseGetCaller;
+  formResponseUpdateCaller?: DataFormResponseUpdateCaller;
+  formResponseSetStateCaller?: DataFormResponseSetStateCaller;
+  formResponseExportCaller?: DataFormResponseExportCaller;
+  formResponseDownload?: NonNullable<BootstrapDataRouteOptions['formResponseDownload']>;
   recipeListCaller?: DataRecipeListCaller;
   recipeExecuteCaller?: NonNullable<BootstrapDataRouteOptions['recipeExecuteCaller']>;
   omitRecipeCallers?: boolean;
@@ -473,11 +544,27 @@ const mountRoute = (overrides: {
   linkListCaller?: BootstrapDataRouteOptions['linkListCaller'];
   sharedListCaller?: BootstrapDataRouteOptions['sharedListCaller'];
   initialTab?: string;
+  initialCollectionSlug?: string;
   initialEntityId?: string;
+  chatReturn?: BootstrapDataRouteOptions['chatReturn'];
+  logsReturn?: BootstrapDataRouteOptions['logsReturn'];
+  verificationRelationship?:
+    BootstrapDataRouteOptions['verificationRelationship'];
+  verifyInitialSourceRecord?: boolean;
+  replaceState?: (
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) => void;
   subscribe?: BootstrapDataRouteOptions['subscribe'];
   liveRefreshDebounceMs?: number;
 } = {}) => {
   const doc = makeFakeDocument();
+  if (overrides.replaceState !== undefined) {
+    (doc as unknown as { defaultView: unknown }).defaultView = {
+      history: { replaceState: overrides.replaceState },
+    };
+  }
   const root = doc.createElement('div');
   const sources = WORK_ENTITY_KINDS.map(sourceRegistration);
   const sourceListCaller =
@@ -554,6 +641,37 @@ const mountRoute = (overrides: {
         submission_id: args.submission_id,
       }),
     }));
+  const formResponseUpdateCaller =
+    overrides.formResponseUpdateCaller
+    ?? vi.fn<DataFormResponseUpdateCaller>(async (args) => ({
+      response: formResponse({
+        _id: args.submission_id,
+        submission_id: args.submission_id,
+        values: args.values,
+        visitor: args.visitor,
+        updated_at: NOW + 1,
+      }),
+    }));
+  const formResponseSetStateCaller =
+    overrides.formResponseSetStateCaller
+    ?? vi.fn<DataFormResponseSetStateCaller>(async (args) => ({
+      response: formResponse({
+        _id: args.submission_id,
+        submission_id: args.submission_id,
+        lifecycle_state: args.lifecycle_state,
+        state_changed_at: NOW + 2,
+      }),
+    }));
+  const formResponseExportCaller =
+    overrides.formResponseExportCaller
+    ?? vi.fn<DataFormResponseExportCaller>(async (args) => ({
+      filename: `form-responses.${args.format}`,
+      mime_type: args.format === 'json' ? 'application/json' : 'text/csv',
+      content: args.format === 'json' ? '[]' : '"submission_id"',
+      record_count: 0,
+    }));
+  const formResponseDownload =
+    overrides.formResponseDownload ?? vi.fn();
   const recipeListCaller =
     overrides.recipeListCaller
     ?? vi.fn<DataRecipeListCaller>(async () => ({
@@ -583,6 +701,9 @@ const mountRoute = (overrides: {
     workEntityGetCaller,
     workEntityUpsertCaller,
     workEntityDeleteCaller,
+    ...(overrides.manageRescheduleLinkCaller !== undefined
+      ? { manageRescheduleLinkCaller: overrides.manageRescheduleLinkCaller }
+      : {}),
     contactListCaller,
     contactGetCaller,
     ...(overrides.contactContributionsCaller !== undefined
@@ -592,6 +713,10 @@ const mountRoute = (overrides: {
     contactDeleteCaller,
     formResponseListCaller,
     formResponseGetCaller,
+    formResponseUpdateCaller,
+    formResponseSetStateCaller,
+    formResponseExportCaller,
+    formResponseDownload,
     ...(overrides.omitRecipeCallers === true
       ? {}
       : { recipeListCaller, recipeExecuteCaller }),
@@ -621,8 +746,26 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.fileReadCaller !== undefined ? { fileReadCaller: overrides.fileReadCaller } : {}),
     ...(overrides.initialTab !== undefined ? { initialTab: overrides.initialTab } : {}),
+    ...(overrides.initialCollectionSlug !== undefined
+      ? { initialCollectionSlug: overrides.initialCollectionSlug }
+      : {}),
     ...(overrides.initialEntityId !== undefined
       ? { initialEntityId: overrides.initialEntityId }
+      : {}),
+    ...(overrides.chatReturn !== undefined
+      ? { chatReturn: overrides.chatReturn }
+      : {}),
+    ...(overrides.logsReturn !== undefined
+      ? { logsReturn: overrides.logsReturn }
+      : {}),
+    ...(overrides.verificationRelationship !== undefined
+      ? {
+          verificationRelationship:
+            overrides.verificationRelationship,
+        }
+      : {}),
+    ...(overrides.verifyInitialSourceRecord === true
+      ? { verifyInitialSourceRecord: true }
       : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
     ...(overrides.liveRefreshDebounceMs !== undefined
@@ -678,6 +821,10 @@ const mountRoute = (overrides: {
     contactDeleteCaller,
     formResponseListCaller,
     formResponseGetCaller,
+    formResponseUpdateCaller,
+    formResponseSetStateCaller,
+    formResponseExportCaller,
+    formResponseDownload,
     recipeListCaller,
     recipeExecuteCaller,
     timelineCaller,
@@ -728,7 +875,7 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
-  it('browses accepted form responses as a read-only Received collection', async () => {
+  it('browses accepted form responses as an owner-editable Received collection', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
 
@@ -740,7 +887,7 @@ describe('D-174 P5 Data route', () => {
     expect(html).toContain(DATA_ROUTE_FORM_RESPONSE_ROW_ATTR);
     expect(html).toContain('visitor@example.test');
     expect(html).toContain('Project Brief');
-    expect(html).toContain('read-only');
+    expect(html).toContain('received');
 
     rig.route.dispose();
   });
@@ -797,6 +944,168 @@ describe('D-174 P5 Data route', () => {
 
     rig.route.closeFormResponse();
     expect(rig.root.children[0]?.innerHTML).toContain(DATA_ROUTE_FORM_RESPONSE_ROW_ATTR);
+    rig.route.dispose();
+  });
+
+  it('saves edited form-response content and lifecycle through the two narrow RPCs', async () => {
+    const formResponseUpdateCaller = vi.fn<DataFormResponseUpdateCaller>(async (args) => ({
+      response: formResponse({
+        values: args.values,
+        visitor: args.visitor,
+        updated_at: NOW + 1,
+      }),
+    }));
+    const formResponseSetStateCaller = vi.fn<DataFormResponseSetStateCaller>(async (args) => ({
+      response: formResponse({
+        values: { project: 'Owner revised', budget: 3000 },
+        visitor: { email: 'corrected@example.test' },
+        lifecycle_state: args.lifecycle_state,
+        state_changed_at: NOW + 2,
+        updated_at: NOW + 1,
+      }),
+    }));
+    const rig = mountRoute({ formResponseUpdateCaller, formResponseSetStateCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: JSON.stringify({ project: 'Owner revised', budget: 3000 }),
+      email: ' corrected@example.test ',
+      lifecycle: 'in_review',
+    });
+
+    await rig.route.saveFormResponse();
+    expect(formResponseUpdateCaller).toHaveBeenCalledWith({
+      submission_id: 'submission-1',
+      values: { project: 'Owner revised', budget: 3000 },
+      visitor: { email: 'corrected@example.test' },
+    });
+    expect(formResponseSetStateCaller).toHaveBeenCalledWith({
+      submission_id: 'submission-1',
+      lifecycle_state: 'in_review',
+    });
+    rig.route.dispose();
+  });
+
+  it('refuses malformed answer JSON in the form-response editor before either write', async () => {
+    const formResponseUpdateCaller = vi.fn<DataFormResponseUpdateCaller>();
+    const formResponseSetStateCaller = vi.fn<DataFormResponseSetStateCaller>();
+    const rig = mountRoute({ formResponseUpdateCaller, formResponseSetStateCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: '["not", "an", "object"]',
+      email: 'visitor@example.test',
+      lifecycle: 'received',
+    });
+
+    await rig.route.saveFormResponse();
+    expect(formResponseUpdateCaller).not.toHaveBeenCalled();
+    expect(formResponseSetStateCaller).not.toHaveBeenCalled();
+    expect(rig.root.children[0]?.innerHTML).toContain('Answers must be a JSON object');
+    rig.route.dispose();
+  });
+
+  it('exports the received collection through the bounded server export', async () => {
+    const file = {
+      filename: 'form-responses-2026-07-21.csv',
+      mime_type: 'text/csv' as const,
+      content: '"submission_id"',
+      record_count: 1,
+    };
+    const formResponseExportCaller = vi.fn<DataFormResponseExportCaller>(async () => file);
+    const formResponseDownload = vi.fn();
+    const rig = mountRoute({ formResponseExportCaller, formResponseDownload });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+
+    await rig.route.exportFormResponses('csv');
+    expect(formResponseExportCaller).toHaveBeenCalledWith({ format: 'csv' });
+    expect(formResponseDownload).toHaveBeenCalledWith(file);
+    rig.route.dispose();
+  });
+
+  it('follows the export resume cursor to assemble ONE complete file', async () => {
+    // ⛔ The server bounds one rpc payload and returns `next_cursor`. If the
+    // client did not loop, that cursor would be an unused seam and an owner
+    // past the ceiling would silently download only the first chunk — the
+    // failure mode that is worse than the refusal this replaced.
+    const cursor = { accepted_at: 1_700_000_000_000, submission_id: 'sub-10000' };
+    const chunks = [
+      {
+        filename: 'form-responses-2026-07-21.csv',
+        mime_type: 'text/csv' as const,
+        content: '"submission_id"\r\n"a"',
+        record_count: 2,
+        next_cursor: cursor,
+      },
+      {
+        filename: 'form-responses-2026-07-21.csv',
+        mime_type: 'text/csv' as const,
+        content: '"b"',
+        record_count: 1,
+      },
+    ];
+    let call = 0;
+    const formResponseExportCaller = vi.fn<DataFormResponseExportCaller>(
+      async () => chunks[call++]!,
+    );
+    const formResponseDownload = vi.fn();
+    const rig = mountRoute({ formResponseExportCaller, formResponseDownload });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+
+    await rig.route.exportFormResponses('csv');
+    expect(formResponseExportCaller).toHaveBeenNthCalledWith(1, { format: 'csv' });
+    // The second call MUST carry the cursor — otherwise it re-reads chunk one.
+    expect(formResponseExportCaller).toHaveBeenNthCalledWith(2, {
+      format: 'csv',
+      before: cursor,
+    });
+    const downloaded = formResponseDownload.mock.calls[0]![0] as {
+      content: string;
+      record_count: number;
+    };
+    // One header, both chunks, and a count spanning them.
+    expect(downloaded.content).toBe('"submission_id"\r\n"a"\r\n"b"');
+    expect(downloaded.record_count).toBe(3);
+    rig.route.dispose();
+  });
+
+  it('concatenates JSON export chunks into one valid document', async () => {
+    const cursor = { accepted_at: 1_700_000_000_000, submission_id: 'sub-x' };
+    const chunks = [
+      {
+        filename: 'form-responses-2026-07-21.json',
+        mime_type: 'application/json' as const,
+        content: JSON.stringify([{ submission_id: 'a' }]),
+        record_count: 1,
+        next_cursor: cursor,
+      },
+      {
+        filename: 'form-responses-2026-07-21.json',
+        mime_type: 'application/json' as const,
+        content: JSON.stringify([{ submission_id: 'b' }]),
+        record_count: 1,
+      },
+    ];
+    let call = 0;
+    const formResponseExportCaller = vi.fn<DataFormResponseExportCaller>(
+      async () => chunks[call++]!,
+    );
+    const formResponseDownload = vi.fn();
+    const rig = mountRoute({ formResponseExportCaller, formResponseDownload });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+
+    await rig.route.exportFormResponses('json');
+    const downloaded = formResponseDownload.mock.calls[0]![0] as { content: string };
+    // ⚠ Text-concatenating two JSON arrays would NOT parse. Re-wrapped instead.
+    expect(JSON.parse(downloaded.content)).toEqual([
+      { submission_id: 'a' },
+      { submission_id: 'b' },
+    ]);
     rig.route.dispose();
   });
 
@@ -1150,6 +1459,243 @@ describe('D-174 P5 Data route', () => {
       }),
     );
 
+    rig.route.dispose();
+  });
+
+  it('sends booking search and lifecycle filters to the server before pagination', async () => {
+    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async () => ({
+      entities: [bookingEntity()],
+      total: 1,
+    }));
+    const rig = mountRoute({ workEntityListCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('booking');
+
+    emitInput(rig.root.children[0]!, {
+      value: 'contact-opaque',
+      hasAttribute: () => false,
+      getAttribute: (attr) => attr === 'data-action'
+        ? 'search-work-entities'
+        : attr === 'data-kind' ? 'booking' : null,
+    });
+    await rig.route.whenLoaded();
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({
+      kind: 'booking',
+      search: 'contact-opaque',
+      limit: 100,
+    });
+
+    emitChange(rig.root.children[0]!, {
+      value: 'completed',
+      getAttribute: (attr) => attr === 'data-action' ? 'filter-booking-lifecycle' : null,
+    });
+    await rig.route.whenLoaded();
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({
+      kind: 'booking',
+      search: 'contact-opaque',
+      booking_lifecycle_states: ['completed'],
+      limit: 100,
+    });
+    rig.route.dispose();
+  });
+
+  it('opens owner booking detail with prior terminal history and the edit affordance', async () => {
+    const booking = bookingEntity();
+    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async () => ({
+      entities: [booking], total: 1,
+    }));
+    const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(async () => ({
+      entity: booking,
+      booking_history: {
+        counterparty_contact_id: 'contact-opaque',
+        total: 1,
+        entries: [{
+          id: 'booking-old',
+          title: 'Earlier call',
+          lifecycle_state: 'no_show',
+          created_at: 1,
+          state_changed_at: 2,
+        }],
+      },
+    }));
+    const rig = mountRoute({ workEntityListCaller, workEntityGetCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('booking');
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking',
+      'data-entity-id': 'booking-1',
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    expect(workEntityGetCaller).toHaveBeenCalledWith({ kind: 'booking', id: 'booking-1' });
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Discovery call');
+    expect(html).toContain('Previous bookings (1)');
+    expect(html).toContain('Earlier call');
+    expect(html).toContain('Edit / reschedule');
+    expect(html).not.toContain('@');
+    rig.route.dispose();
+  });
+
+  it('copies a manage link from Reception booking detail and hides the action for manual bookings', async () => {
+    const manageRescheduleLinkCaller = vi.fn<DataManageRescheduleLinkCaller>(async () => ({
+      url: 'https://recued.test/reception/manage/one-time-secret',
+      expires_at: NOW + 86_400_000,
+    }));
+    const writeText = vi.fn(async (_value: string) => undefined);
+    const receptionBooking = bookingEntity({ reception_record_id: 'reservation-1' });
+    const rig = mountRoute({
+      workEntityListCaller: vi.fn(async () => ({ entities: [receptionBooking], total: 1 })),
+      workEntityGetCaller: vi.fn(async () => ({ entity: receptionBooking })),
+      manageRescheduleLinkCaller,
+    });
+    (rig.doc as unknown as { defaultView: unknown }).defaultView = {
+      navigator: { clipboard: { writeText } },
+    };
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('booking');
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': receptionBooking.id,
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(rig.root.children[0]?.innerHTML).toContain('Copy reschedule link');
+
+    emitClick(rig.root.children[0]!, 'copy-booking-manage-link', {
+      'data-entity-id': receptionBooking.id,
+    });
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(manageRescheduleLinkCaller).toHaveBeenCalledWith({ booking_id: receptionBooking.id });
+    expect(writeText).toHaveBeenCalledWith(
+      'https://recued.test/reception/manage/one-time-secret',
+    );
+    expect(rig.root.children[0]?.innerHTML).toContain('single-use and expires soon');
+    expect(rig.root.children[0]?.innerHTML).not.toContain('one-time-secret');
+    rig.route.dispose();
+
+    const manual = bookingEntity({ id: 'manual-booking' });
+    const manualRig = mountRoute({
+      workEntityListCaller: vi.fn(async () => ({ entities: [manual], total: 1 })),
+      workEntityGetCaller: vi.fn(async () => ({ entity: manual })),
+      manageRescheduleLinkCaller,
+    });
+    await manualRig.route.whenLoaded();
+    await manualRig.route.selectTab('booking');
+    emitClick(manualRig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': manual.id,
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(manualRig.root.children[0]?.innerHTML).not.toContain('Copy reschedule link');
+    manualRig.route.dispose();
+  });
+
+  it('shows the manage URL when clipboard is unavailable and drops a stale mint completion', async () => {
+    let resolveMint!: (value: { url: string; expires_at: number }) => void;
+    const mint = new Promise<{ url: string; expires_at: number }>((resolve) => {
+      resolveMint = resolve;
+    });
+    const manageRescheduleLinkCaller = vi.fn<DataManageRescheduleLinkCaller>(() => mint);
+    const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(async ({ id }) => ({
+      entity: bookingEntity({
+        id,
+        title: id === 'booking-2' ? 'Second booking' : 'First booking',
+        reception_record_id: `reservation-${id}`,
+      }),
+    }));
+    const rig = mountRoute({
+      workEntityListCaller: vi.fn(async () => ({ entities: [], total: 0 })),
+      workEntityGetCaller,
+      manageRescheduleLinkCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('booking');
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': 'booking-1',
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    emitClick(rig.root.children[0]!, 'copy-booking-manage-link');
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': 'booking-2',
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    resolveMint({
+      url: 'https://recued.test/reception/manage/stale-secret',
+      expires_at: NOW + 86_400_000,
+    });
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Second booking');
+    expect(html).not.toContain('stale-secret');
+    expect(html).not.toContain('single-use and expires soon');
+    rig.route.dispose();
+
+    const fallbackCaller = vi.fn<DataManageRescheduleLinkCaller>(async () => ({
+      url: 'https://recued.test/reception/manage/manual-copy',
+      expires_at: NOW + 86_400_000,
+    }));
+    const fallbackBooking = bookingEntity({ reception_record_id: 'reservation-fallback' });
+    const fallbackRig = mountRoute({
+      workEntityListCaller: vi.fn(async () => ({ entities: [fallbackBooking], total: 1 })),
+      workEntityGetCaller: vi.fn(async () => ({ entity: fallbackBooking })),
+      manageRescheduleLinkCaller: fallbackCaller,
+    });
+    await fallbackRig.route.whenLoaded();
+    await fallbackRig.route.selectTab('booking');
+    emitClick(fallbackRig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': fallbackBooking.id,
+    });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    emitClick(fallbackRig.root.children[0]!, 'copy-booking-manage-link');
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(fallbackRig.root.children[0]?.innerHTML).toContain(
+      'https://recued.test/reception/manage/manual-copy',
+    );
+    fallbackRig.route.dispose();
+  });
+
+  it('hydrates a booking deep link and drops a stale detail response', async () => {
+    const deepGet = vi.fn<DataWorkEntityGetCaller>(async () => ({
+      entity: bookingEntity({ id: 'booking-deep', title: 'Deep-linked booking' }),
+      booking_history: {
+        counterparty_contact_id: 'contact-opaque', total: 0, entries: [],
+      },
+    }));
+    const deep = mountRoute({
+      initialTab: 'booking',
+      initialEntityId: 'booking-deep',
+      workEntityListCaller: vi.fn(async () => ({ entities: [], total: 0 })),
+      workEntityGetCaller: deepGet,
+    });
+    await deep.route.whenLoaded();
+    expect(deepGet).toHaveBeenCalledWith({ kind: 'booking', id: 'booking-deep' });
+    expect(deep.root.children[0]?.innerHTML).toContain('Deep-linked booking');
+    deep.route.dispose();
+
+    let resolveFirst!: (value: { entity: WorkEntity | null }) => void;
+    let resolveSecond!: (value: { entity: WorkEntity | null }) => void;
+    const first = new Promise<{ entity: WorkEntity | null }>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<{ entity: WorkEntity | null }>((resolve) => { resolveSecond = resolve; });
+    let call = 0;
+    const staleGet = vi.fn<DataWorkEntityGetCaller>(() => (++call === 1 ? first : second));
+    const rig = mountRoute({
+      workEntityListCaller: vi.fn(async () => ({ entities: [bookingEntity()], total: 1 })),
+      workEntityGetCaller: staleGet,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('booking');
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': 'booking-first',
+    });
+    emitClick(rig.root.children[0]!, 'open-work-entity-detail', {
+      'data-kind': 'booking', 'data-entity-id': 'booking-second',
+    });
+    resolveSecond({ entity: bookingEntity({ id: 'booking-second', title: 'Second booking' }) });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    resolveFirst({ entity: bookingEntity({ id: 'booking-first', title: 'Stale first booking' }) });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(rig.root.children[0]?.innerHTML).toContain('Second booking');
+    expect(rig.root.children[0]?.innerHTML).not.toContain('Stale first booking');
     rig.route.dispose();
   });
 
@@ -2359,17 +2905,8 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
-  // ⛔ D-210 A.2 (slice 3b) — FOUR cases for the on-the-go "Copy reschedule
-  // link" button stood here and were REMOVED with the affordance itself, not
-  // re-pointed. `reception.manage.mint` now names a BOOKING, so the button's one
-  // possible outcome on a calendar event is a 404 — and a booking has no detail
-  // surface in the webclient to move it to (this explorer serves
-  // mail/calendar/files/webhook; the work-entity page is a list + a dialog).
-  //
-  // ⚠ The rpc, its handler and `reschedule-booking-managed` are all built and
-  // covered server-side. Restore these cases against a booking rig when the
-  // detail surface lands — re-pointing them now would have meant asserting a
-  // button on a record type this route cannot open.
+  // D-210 A.2: visitor manage-link coverage now lives with booking-detail tests;
+  // calendar-event detail remains a separate, owner-only reschedule surface.
 
   // ── D-198 Slice 5 Phase 1c — files → collection explorer (+ chrome) ──
   it('files tab browses via the explorer, not the drill-down/picker', async () => {
@@ -2676,6 +3213,524 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     expect(html).toContain('Renewal');
     expect(timelineCaller).not.toHaveBeenCalled();
 
+    rig.route.dispose();
+  });
+
+  it('an exact citation link selects its account, opens the record, and offers the cited-answer return', async () => {
+    const record = {
+      record_id: 'msg-1',
+      received_at: 1,
+      modified_at: 1,
+      hot_fields: { subject: 'Quarterly planning', from: 'lead@example.com' },
+      size_bytes: 0,
+      source_id: 'provider-msg-1',
+      body_inline: 'Agenda and decisions',
+    };
+    const listInstances = vi.fn(async () => ({
+      instances: [
+        {
+          slug: 'personal',
+          platform: 'mail',
+          adapter_type: 'gmail',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        },
+        {
+          slug: 'work',
+          platform: 'mail',
+          adapter_type: 'gmail',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        },
+      ],
+    }));
+    const list = vi.fn(async () => ({ records: [record] }));
+    const get = vi.fn(async () => ({ record }));
+    const rig = mountRoute({
+      initialTab: 'mail',
+      initialCollectionSlug: 'work',
+      initialEntityId: 'msg-1',
+      chatReturn: {
+        sessionId: 'chat/one',
+        messageId: 'answer #1',
+      },
+      collectionListInstancesCaller: listInstances as never,
+      collectionListCaller: list as never,
+      collectionGetCaller: get as never,
+    });
+    await rig.route.whenLoaded();
+
+    expect(list).toHaveBeenCalledWith({
+      platform: 'mail',
+      slug: 'work',
+      limit: expect.any(Number),
+    });
+    expect(list).not.toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'personal' }),
+    );
+    expect(get).toHaveBeenCalledWith({
+      platform: 'mail',
+      slug: 'work',
+      record_id: 'msg-1',
+    });
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(`${DATA_ROUTE_CHAT_RETURN_ATTR}`);
+    expect(html).toContain('You came here from a cited Chat answer.');
+    expect(html).toContain(
+      'href="#chat/session/chat%2Fone/answer/answer%20%231"',
+    );
+    expect(html).toContain('Back to cited answer');
+    expect(html).toContain('Quarterly planning');
+
+    rig.route.dispose();
+  });
+
+  it('resolves a run-affected source record across accounts, opens only the unique match, and preserves the run return', async () => {
+    const record = {
+      record_id: 'event-1',
+      received_at: 1,
+      modified_at: 1,
+      hot_fields: { summary: 'Customer review' },
+      size_bytes: 0,
+      source_id: 'provider-event-1',
+    };
+    const listInstances = vi.fn(async () => ({
+      instances: [
+        {
+          slug: 'personal',
+          platform: 'calendar',
+          adapter_type: 'gcal',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        },
+        {
+          slug: 'work',
+          platform: 'calendar',
+          adapter_type: 'gcal',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        },
+      ],
+    }));
+    const list = vi.fn(async () => ({ records: [record] }));
+    const get = vi.fn(async (request: {
+      platform: string;
+      slug: string;
+      record_id: string;
+    }) => ({
+      record: request.slug === 'work' ? record : null,
+    }));
+    const replaceState = vi.fn();
+    const logsReturn = {
+      runId: 'run/one',
+      returnToChat: {
+        sessionId: 'chat 1',
+        planId: 'plan/2',
+      },
+    };
+    const rig = mountRoute({
+      initialTab: 'calendar',
+      initialEntityId: 'event-1',
+      verifyInitialSourceRecord: true,
+      logsReturn,
+      verificationRelationship: 'derived',
+      replaceState,
+      collectionListInstancesCaller: listInstances as never,
+      collectionListCaller: list as never,
+      collectionGetCaller: get as never,
+    });
+    const loadingHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(loadingHtml).toContain(DATA_ROUTE_VERIFICATION_NEXT_ATTR);
+    expect(loadingHtml).toContain(
+      'Loading the linked item before next steps become available',
+    );
+    expect(loadingHtml).not.toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+    await rig.route.whenLoaded();
+
+    expect(get).toHaveBeenCalledWith({
+      platform: 'calendar',
+      slug: 'personal',
+      record_id: 'event-1',
+    });
+    expect(get).toHaveBeenCalledWith({
+      platform: 'calendar',
+      slug: 'work',
+      record_id: 'event-1',
+    });
+    expect(list).toHaveBeenCalledWith({
+      platform: 'calendar',
+      slug: 'work',
+      limit: expect.any(Number),
+    });
+    expect(list).not.toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'personal' }),
+    );
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(html).toContain('Confirm the created or changed record');
+    expect(html).toContain(
+      'This record was written by the run.',
+    );
+    expect(html).toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+    expect(html).toContain(
+      'href="#chat/session/chat%201/plan/plan%2F2/verification/reviewed/'
+      + 'run/run%2Fone/relationship/derived"',
+    );
+    expect(html).toContain(
+      'href="#chat/session/chat%201/plan/plan%2F2/'
+      + 'verification/needs_help/run/run%2Fone/relationship/derived"',
+    );
+    expect(html).toContain('I reviewed it — continue in Chat');
+    expect(html).toContain('I need help interpreting this');
+    expect(html).toContain(
+      'nothing retries from this page',
+    );
+    expect(html).toContain(
+      'href="#logs/run%2Fone/return/chat/session/chat%201/plan/plan%2F2"',
+    );
+    expect(html).toContain('Back to run outcome');
+    expect(html).toContain('Customer review');
+    expect(html).toContain(
+      `<h2 class="col-explorer-detail-title" `
+      + `${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">Customer review</h2>`,
+    );
+    expect(html.indexOf('Customer review')).toBeLessThan(
+      html.indexOf(DATA_ROUTE_VERIFICATION_NEXT_ATTR),
+    );
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#data/calendar/record/work/event-1/relationship/derived/'
+      + 'return/logs/run%2Fone/return/chat/session/chat%201/plan/plan%2F2',
+    );
+
+    await rig.route.selectTab('contact');
+    const navigatedHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(navigatedHtml).not.toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(navigatedHtml).not.toContain(DATA_ROUTE_VERIFICATION_NEXT_ATTR);
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#data/contact',
+    );
+
+    rig.route.dispose();
+  });
+
+  it('does not guess when a run-affected record id is ambiguous across accounts', async () => {
+    const record = {
+      record_id: 'event-1',
+      received_at: 1,
+      modified_at: 1,
+      hot_fields: { summary: 'Shared id' },
+      size_bytes: 0,
+      source_id: 'event-1',
+    };
+    const list = vi.fn(
+      () => new Promise<{ records: typeof record[] }>(() => {}),
+    );
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      initialTab: 'calendar',
+      initialEntityId: 'event-1',
+      verifyInitialSourceRecord: true,
+      logsReturn: {
+        runId: 'run-1',
+        returnToChat: {
+          sessionId: 'chat-1',
+          planId: 'plan-1',
+        },
+      },
+      replaceState,
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [
+          {
+            slug: 'personal',
+            platform: 'calendar',
+            adapter_type: 'gcal',
+            caps: {},
+            auth_state: 'healthy',
+            last_synced_at: 1,
+          },
+          {
+            slug: 'work',
+            platform: 'calendar',
+            adapter_type: 'gcal',
+            caps: {},
+            auth_state: 'healthy',
+            last_synced_at: 1,
+          },
+        ],
+      })) as never,
+      collectionListCaller: list as never,
+      collectionGetCaller: vi.fn(async () => ({ record })) as never,
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'This record id appears in more than one connected source.',
+    );
+    expect(html).toContain('Choose the source you want to verify.');
+    expect(html).toContain('gcal · personal');
+    expect(html).toContain('gcal · work');
+    expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(list).not.toHaveBeenCalled();
+    expect(html).not.toContain('Record detail');
+    expect(html).toContain(
+      `${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="unresolved"`,
+    );
+    expect(html).not.toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+    expect(html).toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="needs-help"`,
+    );
+    expect(html).toContain('I need help finding this item');
+
+    emitClick(
+      rig.root.children[0]!,
+      COLLECTION_SELECT_INSTANCE_ACTION,
+      { [COLLECTION_INSTANCE_SLUG_ATTR]: 'personal' },
+    );
+    expect(list).toHaveBeenCalledWith({
+      platform: 'calendar',
+      slug: 'personal',
+      limit: expect.any(Number),
+    });
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#data/calendar/verify/event-1/return/logs/run-1/return/chat/'
+      + 'session/chat-1/plan/plan-1',
+    );
+
+    rig.route.dispose();
+  });
+
+  it('does not claim a unique source when another account could not be checked', async () => {
+    const record = {
+      record_id: 'event-1',
+      received_at: 1,
+      modified_at: 1,
+      hot_fields: { summary: 'Apparent match' },
+      size_bytes: 0,
+      source_id: 'event-1',
+    };
+    const list = vi.fn(async () => ({ records: [record] }));
+    const get = vi.fn(async (request: { slug: string }) => {
+      if (request.slug === 'work') throw new Error('account unavailable');
+      return { record };
+    });
+    const rig = mountRoute({
+      initialTab: 'calendar',
+      initialEntityId: 'event-1',
+      verifyInitialSourceRecord: true,
+      logsReturn: { runId: 'run-1' },
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [
+          {
+            slug: 'personal',
+            platform: 'calendar',
+            adapter_type: 'gcal',
+            caps: {},
+            auth_state: 'healthy',
+            last_synced_at: 1,
+          },
+          {
+            slug: 'work',
+            platform: 'calendar',
+            adapter_type: 'gcal',
+            caps: {},
+            auth_state: 'degraded',
+            last_synced_at: 1,
+          },
+        ],
+      })) as never,
+      collectionListCaller: list as never,
+      collectionGetCaller: get as never,
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'Recued could not check every connected source.',
+    );
+    expect(html).toContain('Choose a source to verify this item.');
+    expect(html).toContain('gcal · personal');
+    expect(html).toContain('gcal · work');
+    expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(list).not.toHaveBeenCalled();
+    expect(html).not.toContain('Record detail');
+
+    rig.route.dispose();
+  });
+
+  it('explains a missing run-affected source record without dropping the run return', async () => {
+    const rig = mountRoute({
+      initialTab: 'mail',
+      initialEntityId: 'message-deleted',
+      verifyInitialSourceRecord: true,
+      logsReturn: { runId: 'run-1' },
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [
+          {
+            slug: 'personal',
+            platform: 'mail',
+            adapter_type: 'gmail',
+            caps: {},
+            auth_state: 'healthy',
+            last_synced_at: 1,
+          },
+          {
+            slug: 'work',
+            platform: 'mail',
+            adapter_type: 'gmail',
+            caps: {},
+            auth_state: 'healthy',
+            last_synced_at: 1,
+          },
+        ],
+      })) as never,
+      collectionListCaller: vi.fn(async () => ({ records: [] })) as never,
+      collectionGetCaller: vi.fn(async () => ({ record: null })) as never,
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'This affected item is not currently in connected Data.',
+    );
+    expect(html).toContain('It may have been deleted or not synced yet.');
+    expect(html).toContain('Back to run outcome');
+    expect(html).not.toContain('Record detail');
+
+    rig.route.dispose();
+  });
+
+  it('keeps the run return on a globally addressable Data item after hydration', async () => {
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      initialTab: 'contact',
+      initialEntityId: 'sam@example.com',
+      logsReturn: { runId: 'run-1' },
+      verificationRelationship: 'action',
+      replaceState,
+      contactGetCaller: vi.fn(async () => ({
+        contact: contactRecord({ email: 'sam@example.com', name: 'Sam' }),
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
+    expect(html).toContain('Back to run outcome');
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#data/contact/item/sam%40example.com/relationship/action/'
+      + 'return/logs/run-1',
+    );
+    expect(html).toContain('Review the record used by the action');
+    expect(html).not.toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+
+    rig.route.dispose();
+  });
+
+  it('drops a queued citation open after the user switches Data tabs', async () => {
+    let resolveInitialInstances!: (value: {
+      instances: Array<Record<string, unknown>>;
+    }) => void;
+    const initialInstances = new Promise<{
+      instances: Array<Record<string, unknown>>;
+    }>((resolve) => {
+      resolveInitialInstances = resolve;
+    });
+    let instanceReads = 0;
+    const listInstances = vi.fn(() => {
+      instanceReads += 1;
+      if (instanceReads === 1) return initialInstances;
+      return Promise.resolve({
+        instances: [{
+          slug: 'office',
+          platform: 'calendar',
+          adapter_type: 'gcal',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        }],
+      });
+    });
+    const get = vi.fn(async () => ({ record: null }));
+    const rig = mountRoute({
+      initialTab: 'mail',
+      initialCollectionSlug: 'work',
+      initialEntityId: 'mail-1',
+      collectionListInstancesCaller: listInstances as never,
+      collectionListCaller: vi.fn(async () => ({ records: [] })) as never,
+      collectionGetCaller: get as never,
+    });
+    const initialLoad = rig.route.whenLoaded();
+
+    await rig.route.selectTab('calendar');
+    resolveInitialInstances({
+      instances: [{
+        slug: 'work',
+        platform: 'mail',
+        adapter_type: 'gmail',
+        caps: {},
+        auth_state: 'healthy',
+        last_synced_at: 1,
+      }],
+    });
+    await initialLoad;
+
+    expect(rig.route.activeTab()).toBe('calendar');
+    expect(get).not.toHaveBeenCalled();
+    rig.route.dispose();
+  });
+
+  it('keeps the Chat return available when the cited source was disconnected', async () => {
+    const get = vi.fn(async () => ({ record: null }));
+    const rig = mountRoute({
+      initialTab: 'mail',
+      initialCollectionSlug: 'work',
+      initialEntityId: 'mail-1',
+      chatReturn: {
+        sessionId: 'chat_1',
+        messageId: 'msg_cited',
+      },
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [{
+          slug: 'personal',
+          platform: 'mail',
+          adapter_type: 'gmail',
+          caps: {},
+          auth_state: 'healthy',
+          last_synced_at: 1,
+        }],
+      })) as never,
+      collectionListCaller: vi.fn(async () => ({ records: [] })) as never,
+      collectionGetCaller: get as never,
+    });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'The connected source for this cited record is no longer available.',
+    );
+    expect(html).toContain('Back to cited answer');
+    expect(get).not.toHaveBeenCalled();
     rig.route.dispose();
   });
 
@@ -3182,6 +4237,51 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     });
     return { promise, resolve };
   };
+
+  it('withholds reviewed until the exact work entity finishes loading', async () => {
+    const detail = deferred<{ entity: WorkEntity | null }>();
+    const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(
+      () => detail.promise,
+    );
+    const rig = mountRoute({
+      initialTab: 'task',
+      initialEntityId: 'task-1',
+      logsReturn: {
+        runId: 'run-1',
+        returnToChat: {
+          sessionId: 'chat-1',
+          planId: 'plan-1',
+        },
+      },
+      workEntityGetCaller,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(workEntityGetCaller).toHaveBeenCalledWith({
+      kind: 'task',
+      id: 'task-1',
+    });
+    const loadingHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(loadingHtml).toContain(
+      `${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="loading"`,
+    );
+    expect(loadingHtml).not.toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+
+    detail.resolve({ entity: taskEntity({ id: 'task-1' }) });
+    await rig.route.whenLoaded();
+
+    const readyHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(readyHtml).toContain(
+      `${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="ready"`,
+    );
+    expect(readyHtml).toContain(
+      `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
+    );
+
+    rig.route.dispose();
+  });
 
   it('drops a stale edit fetch superseded by a newer open (no stale dialog)', async () => {
     const d1 = deferred<{ entity: WorkEntity | null }>();

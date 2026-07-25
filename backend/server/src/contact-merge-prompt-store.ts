@@ -18,7 +18,7 @@
  *    resolved_at     INTEGER         — set when user dispatched
  *    resolution      TEXT            — `'remerge' | 'treat_as_deletion'`
  *
- *  Spec: `docs/d-138-spec.md` § A.5 + § A.10. */
+ *  Spec: D-138 § A.5 + § A.10. */
 
 import type Database from 'better-sqlite3';
 import {

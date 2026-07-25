@@ -44,7 +44,7 @@
  *  MUST NOT reference the Pro entitlement registry or per-tier flags
  *  (Must Hold I-3 + same lint).
  *
- *  Spec: docs/d-149-spec.md § A.2 + § A.3 + § A.16 + § A.18. */
+ *  Spec: D-149 § A.2 + § A.3 + § A.16 + § A.18. */
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -111,7 +111,6 @@ import {
 import type { StatusProjectionStore } from '../../storage/reception-status-projection-store.js';
 import { lookupReceptionStaticAsset } from './static-assets.js';
 import type { ReceptionEndpointContext, ReceptionPacketKind } from './redacted-packet.js';
-import type { FormResponseStore } from '../../storage/form-response-store.js';
 import type { FormSubmissionStore } from '../../storage/reception-form-store.js';
 import type { ReceptionIpBlockStore } from '../../storage/reception-ip-block-store.js';
 import type { SellerClaimStore } from '../../storage/seller-claim-store.js';
@@ -186,15 +185,6 @@ export interface ReceptionPortHandlerDeps {
    *  either is absent the dispatcher falls back to the kind-registry
    *  503 stub. */
   readonly getIntakeFormSubmissionStore?: () => FormSubmissionStore;
-  /** D-210 WS2 — the canonical `form_response` log the submit handler writes
-   *  at submit. Required for the POST path (see `intakeFormPostReady`): a
-   *  submission the substrate accepts but cannot record is not acceptable. */
-  readonly getFormResponseStore?: () => Pick<FormResponseStore, 'accept'>;
-  /** D-210 WS2 — best-effort first-create fan-out for that log (owner Data
-   *  invalidation + warehouse trigger bus). Absent ⇒ the row is still written. */
-  readonly onFormResponseCreated?: (
-    response: import('@recued/contracts').FormResponse,
-  ) => void;
   readonly getIntakeFormNonceStore?: () => IntakeFormNonceStore;
   /** D-200 Slice 6g.2 — optional source-checked pair resolver. Absent keeps
    * the generic D-149 intake path; stale configured pairs fail closed. */
@@ -580,10 +570,6 @@ export const createReceptionPortHandler = (
   const intakeFormPostReady =
     intakeFormGetReady &&
     deps.getIntakeFormSubmissionStore !== undefined &&
-    // D-210 WS2 — the canonical log is written at submit, so an unwired
-    // response store means the POST path could accept submissions it cannot
-    // record. Gate it here rather than degrade silently to an unlogged accept.
-    deps.getFormResponseStore !== undefined &&
     deps.getIntakeFormSubmissionPiiKey !== undefined &&
     deps.auditLog !== undefined;
 
@@ -622,14 +608,10 @@ export const createReceptionPortHandler = (
     ? createIntakeFormSubmitHandler({
         getStore: deps.getStore,
         getSubmissionStore: deps.getIntakeFormSubmissionStore!,
-        getFormResponseStore: deps.getFormResponseStore!,
         getFormNonceStore: deps.getIntakeFormNonceStore!,
         getFormSubmissionPiiKey: deps.getIntakeFormSubmissionPiiKey!,
         auditLog: deps.auditLog!,
         now: deps.now,
-        ...(deps.onFormResponseCreated
-          ? { onFormResponseCreated: deps.onFormResponseCreated }
-          : {}),
         ...(resolvePublicIntakeFormRecipePair
           ? { resolveRecipePair: resolvePublicIntakeFormRecipePair }
           : {}),

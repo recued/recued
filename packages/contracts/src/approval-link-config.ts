@@ -52,7 +52,7 @@
  *  shape at admin-write time so a corrupt config never reaches the
  *  visitor path.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.5 + § Must Hold I-11 + I-12. */
+ *  Spec: D-149 § A.5.5 + § Must Hold I-11 + I-12. */
 
 import {
   APPROVAL_LINK_ACTION_KIND_SET,

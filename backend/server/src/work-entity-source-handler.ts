@@ -10,7 +10,7 @@
  *    set_default          — pin a per-kind default Source.
  *    clear_default        — drop a per-kind default.
  *
- *  Spec: `docs/d-145-spec.md` § A.2 + § PA11. */
+ *  Spec: D-145 § A.2 + § PA11. */
 
 import {
   RpcError,

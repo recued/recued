@@ -29,7 +29,7 @@
  *  revoking the door contract is a live kill-switch over an already-enrolled vendor
  *  endpoint.
  *
- *  Spec: `docs/d-209-spec.md` §1.4; `docs/d-207-spec.md` §5.1 / §5.3 (the reception
+ *  Spec: D-209 §1.4; D-207 §5.1 / §5.3 (the reception
  *  precedent this mirrors). */
 
 import {
@@ -39,11 +39,8 @@ import {
   type ExecutionSource,
 } from '@recued/contracts';
 
+import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
-
-/** Stub, as on the MCP + reception paths: contract versioning is not yet a live
- *  substrate; the snapshot's authority fields are re-resolved per dispatch. */
-const STUB_CONTRACT_VERSION = 'v1';
 
 export interface WebhookContractSnapshotDeps {
   readonly definitionStore: Pick<ContractDefinitionStore, 'get'>;
@@ -78,9 +75,10 @@ export const buildWebhookContractSnapshot = (
   // wildcard convention). A trigger row somehow stamped with a reception door — or
   // any other contract — resolves DEAD here, so its ceiling can never be borrowed
   // across door classes. Same fail-closed shape as liveness: empty tools, no ceiling.
+  const resolvedAt = deps.now();
   const def = deps.definitionStore.get(contractId);
   const live = def !== null
-    && isContractActive(def, deps.now())
+    && isContractActive(def, resolvedAt)
     && contractPermitsDoorType(def, 'webhook');
 
   // A dead / revoked / deleted door authorizes NOTHING. `allowed_tools: []` denies every
@@ -90,18 +88,17 @@ export const buildWebhookContractSnapshot = (
   // axes can never disagree about what the door may do.
   const allowed_tools = live ? [...(def.scope?.ingredient_ids ?? [])] : [];
 
-  return Object.freeze({
+  return buildVersionedContractSnapshot({
     contract_id: contractId,
-    contract_version: STUB_CONTRACT_VERSION,
-    allowed_tools: Object.freeze(allowed_tools),
-    approval_required: Object.freeze([]),
-    scope_restrictions: Object.freeze([]),
-    resolved_at: deps.now(),
+    allowed_tools,
+    approval_required: [],
+    scope_restrictions: [],
+    resolved_at: resolvedAt,
     // The per-door authored ceiling (D-209 §1.4, minted `'admin'`) — copied from the
     // LIVE definition only. A dead door must not keep relaxing writes: dropping the
     // field leaves the anonymous dispatch at the pinned LOW `read` ceiling.
     ...(live && def.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: def.max_risk_without_approval }
       : {}),
-  }) as ContractSnapshot;
+  });
 };

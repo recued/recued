@@ -30,7 +30,7 @@
  *  contracts) keeps the substrate constants in lockstep with `MODEL_TIERS`.
  *
  *  Spec: § B.3 + § B.15.10 + § B.15.8 +
- *  docs/d-164-prompt-cache-consolidation-pending-design.md § P6.2. */
+ *  D-164 § P6.2. */
 
 import {
   TIER_RANK,

@@ -35,7 +35,7 @@
  *  attributed row stays in the warehouse and reachable; attribution only
  *  shapes how it is *presented*. The abuse gate is upstream (D-149).
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-10 / O-3.
+ *  Spec: D-161 § N.8 / A.7 / I-10 / O-3.
  */
 
 import type { Actor, ContractSnapshot, ExecutionSource } from './commits.js';

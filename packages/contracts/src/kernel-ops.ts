@@ -19,11 +19,11 @@
  *     bound connection families. Recomputing that set from the live connections
  *     on the connection broadcast is runtime wiring (slice 5 / engine), not here.
  *
- *  Spec: docs/d-182-spec.md §3 (Tier-K + R1 verb-split), §10 step 8, §11/§12.
+ *  Spec: D-182 §3 (Tier-K + R1 verb-split), §10 step 8, §11/§12.
  *  Wires on top of the already-built `crm_alias`/`acct_alias` registry
  *  (`connection-vendors.ts`) — `conventionFamilyForVendor` derives a vendor's
  *  family from it, so a 3rd-party CRM/acct pack's vendor participates with no new
- *  code. Pickup: recued-project/handovers/handover_d182_s1_done_s2_start.md.
+ *  code. Pickup: internal design notes.
  */
 import { parseOpId } from './op-model.js';
 import { type CanonicalCrmVerb } from './connection-agnostic.js';

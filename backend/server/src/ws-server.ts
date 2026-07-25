@@ -810,6 +810,11 @@ export interface AttachWebSocketOptions {
    *  it, the rpc returns `not_configured` and pair flows can't
    *  cross-bind the account. */
   recoveryKeyCheck?: import('./recovery-key-store.js').RecoveryKeyCheckStore;
+  /** Encryption handles for `pair.registerRecoveryKey`. Wired alongside
+   *  `recoveryKeyCheck` so the WS enrollment door turns at-rest encryption
+   *  on exactly as the HTTP `/auth/pair` twin does. Absent ⇒ sentinel-only
+   *  enrollment, which is correct ONLY for db-less test compositions. */
+  recoveryVaultDeps?: import('./recovery-key-processor.js').RecoveryVaultDeps;
   /** D-148 § A.2.1 — `ClientTokenStore` verify / touch slice for
    *  WS-handshake bearer-validation tightening. When provided AND the
    *  incoming bearer carries the structured `<token_id>.<bearer>`
@@ -1340,7 +1345,7 @@ const buildWsBinding = (
     llmConfigManager, runtimeConfig, sellerStore, sellerOrderStore, sellerContractStore, sellerInboundTokenStore,
     sellerClaimStore,
     bootstrapDeps,
-    serverId, pairedInstances, pairRevokeAuditLog, accountBindingDeps, proConvenienceDeps, ddnsDeps, updateDeps, recoveryKeyCheck, clientTokens, pressureDeps,
+    serverId, pairedInstances, pairRevokeAuditLog, accountBindingDeps, proConvenienceDeps, ddnsDeps, updateDeps, recoveryKeyCheck, recoveryVaultDeps, clientTokens, pressureDeps,
     lifecycleHandlers, lifecycleState, collectionDeps,
     auditExportDeps, triggersDeps, elementWatchDeps, autoRunDeps, watchDeps, archiveDeps,
     watcherRpcDeps, triggerTestRpcDeps,
@@ -1529,7 +1534,7 @@ const buildWsBinding = (
     makeDdnsHandlers(ddnsDeps),
     makeSupervisionHandlers(supervisionDeps),
     makeUpdateHandlers(updateDeps),
-    makeRecoveryHandlers(recoveryKeyCheck),
+    makeRecoveryHandlers(recoveryKeyCheck, recoveryVaultDeps),
     makeConfigHandlers(llmConfigManager, runtimeConfig),
     makeSellerOverviewHandlers(sellerStore ? {
       sellerStore,

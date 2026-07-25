@@ -30,7 +30,7 @@
  *       mail domain matches a CRM affiliation; no job change).
  *    5. No match → `is_multi_account = true`.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2b + § P4 acceptance. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
 import {
   type CoverageMetadata,

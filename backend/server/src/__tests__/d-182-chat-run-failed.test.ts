@@ -6,7 +6,10 @@ import { describe, expect, it } from 'vitest';
 
 import { wrapRecipeRunResult } from '../chat-tool-handlers.js';
 import { toolCallProvenanceEntry } from '../chat-turn-executor.js';
-import type { ExecuteResponse } from '../types.js';
+import {
+  stampExecuteResponseAuditRun,
+  type ExecuteResponse,
+} from '../types.js';
 
 type ProvenanceArgs = Parameters<typeof toolCallProvenanceEntry>;
 const provEntry = (result: ProvenanceArgs[1]) =>
@@ -25,6 +28,19 @@ const resp = (over: Partial<ExecuteResponse>): ExecuteResponse =>
   ({ recipe_id: 'r1', success: true, errors: [], ...over }) as ExecuteResponse;
 
 describe('D-182 — wrapRecipeRunResult run_failed', () => {
+  it('threads only a host-stamped durable run id outside the model-visible result', () => {
+    const response = stampExecuteResponseAuditRun(
+      resp({ success: true }),
+      'run-exact-1',
+    );
+    const r = wrapRecipeRunResult(response);
+
+    expect(r.ok).toBe(true);
+    expect(r.run_id).toBe('run-exact-1');
+    expect(JSON.stringify(response)).not.toContain('run-exact-1');
+    expect(Object.keys(response)).not.toContain('run_id');
+  });
+
   it('a FAILED run → ok:true (model anti-loop) + run_failed = the first error message', () => {
     const r = wrapRecipeRunResult(resp({
       success: false,

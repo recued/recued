@@ -6,7 +6,7 @@
  *  + scheduler live in `backend/server/src/housekeeping/` (server-
  *  internal; never reaches the WS rpc surface as data).
  *
- *  Design + load-bearing decisions: `docs/d-123-spec.md`. */
+ *  Design + load-bearing decisions: D-123. */
 
 import type { EnrichmentTag } from './enrichment-registry.js';
 

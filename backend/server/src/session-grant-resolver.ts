@@ -35,7 +35,7 @@
  *  `match` scans two empty candidate sets and the gate behaves exactly as
  *  pre-D-177.
  *
- *  Spec: docs/d-177-spec.md § N.4 / N.9; landing order P2. */
+ *  Spec: D-177 § N.4 / N.9; landing order P2. */
 
 import {
   BATCH_GRANT_TTL_MS,
@@ -44,6 +44,7 @@ import {
   matchesSessionGrant,
   type Actor,
   type Channel,
+  type OperationApproval,
   type RiskTier,
   type SessionGrantMatchContext,
   type SessionGrantMintContext,
@@ -106,6 +107,8 @@ export interface SessionGrantRawOpMintContext {
   /** The resolved connection, when the op binds one (omit for ai/storage). */
   readonly connection_name?: string;
   readonly risk_tier: RiskTier;
+  /** D-209 §1.7 — copied from the held catalog resolution. */
+  readonly pre_lift_approval: OperationApproval;
   readonly arg_shape_hash: string;
   readonly canonical_payload_hash: string;
   readonly entity_scope?: string;
@@ -258,9 +261,10 @@ export const createSessionGrantResolver = (
     },
     mintBatch(ctx): string | undefined {
       try {
-        // D7 re-check — same posture as the exact mint: `read` never
-        // grants, `destructive` never grants. The batch path upstream
-        // only registers write/admin holds, so this is defense-in-depth.
+        // D7 re-check — same posture as the exact mint: read/write/admin may
+        // grant, while `destructive` never grants. The batch path upstream
+        // registers only those session-grantable tiers, so this is
+        // defense-in-depth.
         if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(ctx.risk_tier)) {
           console.warn(
             `[session-grant-resolver] batch mint refused: risk_tier '${ctx.risk_tier}' `
@@ -382,9 +386,21 @@ export const createSessionGrantResolver = (
     },
     mintRawOp(ctx): string | undefined {
       try {
-        // D7 re-check (same posture as `mint`/`mintBatch`): `read` never asks
-        // for a grant and `destructive` never grants. The raw-op hold path only
-        // offers `allow_session` for write/admin tiers, so this is
+        if (
+          ctx.pre_lift_approval !== 'never'
+          && ctx.pre_lift_approval !== 'ask'
+        ) {
+          console.warn(
+            `[session-grant-resolver] raw_op mint refused: pre-lift approval `
+              + `'${String(ctx.pre_lift_approval)}' is not session-skippable — op `
+              + `'${ctx.operation_id}' on '${ctx.ingredient_slug}', run `
+              + `${ctx.approved_action_ref}`,
+          );
+          return undefined;
+        }
+        // D7 re-check (same posture as `mint`/`mintBatch`): read/write/admin may
+        // grant and `destructive` never grants. The raw-op hold path only
+        // offers `allow_session` for session-grantable tiers, so this is
         // defense-in-depth against a tier that drifted while the ask was open.
         if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(ctx.risk_tier)) {
           console.warn(
@@ -497,10 +513,24 @@ export const createSessionGrantResolver = (
     },
     mint(ctx): void {
       try {
+        // D-209 §1.7 — an in-the-moment session grant must never turn an
+        // `always` ruling into a repeatable approval. Unknown/missing runtime
+        // provenance fails the same way; the one-shot human resume still runs.
+        if (
+          ctx.pre_lift_approval !== 'never'
+          && ctx.pre_lift_approval !== 'ask'
+        ) {
+          console.warn(
+            `[session-grant-resolver] mint refused: pre-lift approval `
+              + `'${String(ctx.pre_lift_approval)}' is not session-skippable — `
+              + `ingredient '${ctx.ingredient_slug}', run ${ctx.approved_action_ref}`,
+          );
+          return;
+        }
         // D7 re-check at the mint (the offer already gated on the tier, but
         // the tier here is the RESUME decision's — policy can mutate while
-        // an ask is outstanding): `read` never grants, `destructive` never
-        // grants. Fail closed to a warn — the approval itself stands.
+        // an ask is outstanding): read/write/admin may grant, `destructive`
+        // never grants. Fail closed to a warn — the approval itself stands.
         if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(ctx.risk_tier)) {
           console.warn(
             `[session-grant-resolver] mint refused: risk_tier '${ctx.risk_tier}' is not `

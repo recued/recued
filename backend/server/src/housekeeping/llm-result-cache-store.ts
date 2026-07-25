@@ -26,7 +26,7 @@
  *  Hard-ordered AFTER § A.7.9 (universal cleanup) — without that, the
  *  cache accumulates dangling refs without bound.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.10. */
+ *  Spec: D-145 § A.7.10. */
 
 import { createHash } from 'node:crypto';
 

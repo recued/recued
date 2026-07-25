@@ -255,6 +255,76 @@ describe('D-173 A.1 — runReceptionProjection routing (D5)', () => {
     expect(res.target_id).toBe(contact.contact_id ?? 'visitor@example.com');
   });
 
+  // ── D-210 audit finding 5 — the visitor-typed name's RUNG ────────────────
+  //
+  // `contact_name` is text a VISITOR typed about themselves at a public door,
+  // and the owner is never shown it (`intake.materialize` exposes only title /
+  // body / destination). It used to land at `source: 'manual'` — rank 0 of the
+  // contribution ladder, above `user_confirmed`, above CRM — so it outranked
+  // every future correction forever. The BOOKING path refuses the same write in
+  // a 12-line comment; only intake applied no rule.
+  //
+  // These assert the OUTCOME (who wins the name column), not the label — the
+  // label is only interesting because of what it does to the ladder.
+
+  it('a visitor-typed name does NOT overwrite a name the owner typed', async () => {
+    // The owner's own hand-typed contact, at the top rung.
+    env.contactStore.upsertManual(
+      { email: 'jane@acme.example', name: 'Jane Okafor' },
+      NOW,
+      { origin_actor: 'user_self' },
+    );
+
+    // A visitor submits an intake naming themselves "jane".
+    await runReceptionProjection(env.deps, {
+      top_tier_kind: 'contact',
+      id: 'reception_x2',
+      title: 'ignored',
+      contact_email: 'jane@acme.example',
+      contact_name: 'jane',
+    });
+
+    // ⛔ THE FINDING: pre-fix this read 'jane', permanently.
+    expect(env.contactStore.get('jane@acme.example')!.name).toBe('Jane Okafor');
+  });
+
+  it('the owner can still correct a name the visitor supplied — the ladder runs the right way', async () => {
+    // The pairing that makes the previous test meaningful rather than a freeze:
+    // a `derived` contribution must LOSE to the owner, not become immovable.
+    await runReceptionProjection(env.deps, {
+      top_tier_kind: 'contact',
+      id: 'reception_x3',
+      title: 'ignored',
+      contact_email: 'sam@acme.example',
+      contact_name: 'sam',
+    });
+    expect(env.contactStore.get('sam@acme.example')!.name).toBe('sam');
+
+    // The owner types the real name through the ordinary `contact.upsert` path.
+    env.contactStore.upsertManual(
+      { email: 'sam@acme.example', name: 'Samira Haddad' },
+      NOW + 1,
+      { origin_actor: 'user_self' },
+    );
+
+    expect(env.contactStore.get('sam@acme.example')!.name).toBe('Samira Haddad');
+  });
+
+  it('still RECORDS the visitor name on a new contact — the fix is the rung, not a drop', async () => {
+    // ⛔ The over-correction guard. Unlike a booking's counterparty, this
+    // destination exists to record the person: dropping the name (the booking
+    // path's remedy) would trade a provenance bug for data loss.
+    await runReceptionProjection(env.deps, {
+      top_tier_kind: 'contact',
+      id: 'reception_x4',
+      title: 'ignored',
+      contact_email: 'newcomer@acme.example',
+      contact_name: 'Newcomer Nadia',
+    });
+
+    expect(env.contactStore.get('newcomer@acme.example')!.name).toBe('Newcomer Nadia');
+  });
+
   it('honors an explicit external Source id for write-back (D6)', async () => {
     // Register an external task Source so the write resolves against it.
     env.workStore.registerSource({
@@ -395,7 +465,7 @@ describe('D-173 — commitment due-time + slot guard (generic, D7 / I-7)', () =>
   });
 });
 
-describe('D-173 P4.3 — scheduling calendar event (slot → start/end, D7 amended / I-7)', () => {
+describe('D-173 P4.3 — intake calendar destination (slot → start/end / I-7)', () => {
   const FUTURE = NOW + 86_400_000; // +1 day
 
   it('materializes a calendar event (start_at + duration → end_at, summary, tz)', async () => {
@@ -412,7 +482,6 @@ describe('D-173 P4.3 — scheduling calendar event (slot → start/end, D7 amend
     expect(res).toEqual({ top_tier_kind: 'calendar.event', target_id: 'evt-1' });
     expect(env.calendarCalls).toHaveLength(1);
     expect(env.calendarCalls[0]).toEqual({
-      booking_request_id: 'req-1',
       summary: 'Booking with Alex — design review',
       start_at: FUTURE,
       end_at: FUTURE + 45 * 60_000, // start + duration (so an edited start shifts the end)

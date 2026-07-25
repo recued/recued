@@ -1,23 +1,17 @@
-/** D-210 §4c slice 2 — the accepted-response lens of `#reception/records`.
+/** D-210 §4c slice 2 — read lens over accepted `form_response` records.
  *
- *  A faithful move of the `#data` → Received surface, on the owner's rule (2026-07-18):
- *  **`#reception/records` is IMMUTABLE, `#data/*` is MUTABLE.** `form_response` is layer 2 of
- *  the §4 table — an *addition*, append-only, never edited (`accept` / `findById` / `list` /
- *  `listSummaries`, no update) — so it belongs here, beside the sealed records it comes from,
- *  not in the warehouse browser next to entities you can change.
- *
- *  🔑 The old surface had already noticed: its own heading rendered
- *  `Form responses <span class="data-pill">read-only</span>`. It was the one immutable tab in a
- *  mutable route, labelling itself as the exception. The rule just names what it was doing.
+ *  This lens remains non-mutating, but the canonical destination it reads is
+ *  an owner-editable working record. The sealed `reception_form_submission`
+ *  stays the immutable evidence twin; editing happens through the paired Data
+ *  RPCs, not through this renderer.
  *
  *  ## ⚠ Why this is a SEPARATE lens and not a fourth record `kind`
  *
  *  ⛔ **The two layers have opposite disclosure postures, and blending them would be a surprise.**
  *  `reception.record.list` is *"redacted by construction — neither the visitor's values NOR the
  *  ciphertext to recover them"* (D-149 § N.6 / D-173 I-3). A `FormResponse` carries `values` (the
- *  visitor's actual answers) and `visitor` in PLAINTEXT — deliberately, because acceptance is the
- *  point at which the owner has taken the content (D-210 WS2: written at submit, *"plaintext still
- *  live ⇒ no decrypt"*). One list mixing redacted rows with full answers would teach the owner the
+ *  visitor's actual answers) and `visitor` in PLAINTEXT — deliberately, because approval is the
+ *  point at which the owner has taken the content into a working record. One list mixing redacted rows with full answers would teach the owner the
  *  wrong thing about both. Two lenses, each honest about what it shows.
  *
  *  ## What moved and what did not

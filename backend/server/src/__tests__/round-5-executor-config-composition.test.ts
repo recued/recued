@@ -272,9 +272,10 @@ const auditLog = (): AuditLogStore =>
 const sharedStore = (): SharedStore => ({}) as unknown as SharedStore;
 const formResponseStore = (): Pick<
   FormResponseStore,
-  'findById' | 'setLifecycleState'
+  'findById' | 'list' | 'setLifecycleState'
 > => ({
   findById: vi.fn(() => null),
+  list: vi.fn(() => []),
   setLifecycleState: vi.fn(() => null),
 });
 const contactStore = (): ContactStore => ({}) as unknown as ContactStore;
@@ -596,6 +597,8 @@ describe('composeExecutorConfig top-level shape', () => {
     }));
     expect(config.connectionMcp).toEqual(expect.objectContaining({
       decodeAuth: expect.any(Function),
+      wsConnect: expect.any(Function),
+      spawnStdioMcp: expect.any(Function),
     }));
     expect(config.connectionNotification).toBe(notificationDeps);
   });
@@ -845,7 +848,9 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
     expectPresentFunctions(kernel, alwaysKernelKeys);
     expectAbsent(kernel, [
       ...sharedKernelKeys,
+      'formResponseList',
       'formResponseGet',
+      'formResponseSetState',
       'contactUpsert',
       'contactResolve',
       ...annotationKernelKeys,
@@ -880,20 +885,43 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
     expectPresentFunctions(withShared, sharedKernelKeys);
   });
 
-  it('gates formResponseGet on the canonical response store and returns its record', async () => {
+  it('gates all form-response recipe dispatchers on the canonical store', async () => {
     const withoutStore = kernelOf((await composeWith()).config);
-    expectAbsent(withoutStore, ['formResponseGet']);
+    expectAbsent(withoutStore, [
+      'formResponseList',
+      'formResponseGet',
+      'formResponseSetState',
+    ]);
 
-    const record = { submission_id: 'submission-1' } as never;
+    const record = { submission_id: 'submission-1', accepted_at: 2_000 } as never;
+    const second = { submission_id: 'submission-0', accepted_at: 1_000 } as never;
     const store = formResponseStore();
     vi.mocked(store.findById).mockReturnValue(record);
+    vi.mocked(store.list).mockReturnValue([record, second]);
+    vi.mocked(store.setLifecycleState).mockReturnValue(record);
     const withStore = kernelOf((await composeWith({ formResponseStore: store })).config);
 
-    expectPresentFunctions(withStore, ['formResponseGet']);
+    expectPresentFunctions(withStore, [
+      'formResponseList',
+      'formResponseGet',
+      'formResponseSetState',
+    ]);
+    await expect(withStore.formResponseList?.({ limit: 1, lifecycle_states: ['received'] }))
+      .resolves.toEqual({
+        records: [record],
+        next_cursor: { accepted_at: 2_000, submission_id: 'submission-1' },
+      });
+    expect(store.list).toHaveBeenCalledWith({ limit: 2, lifecycle_states: ['received'] });
     await expect(
       withStore.formResponseGet?.({ submission_id: 'submission-1' }),
     ).resolves.toEqual({ record });
     expect(store.findById).toHaveBeenCalledWith('submission-1');
+    await expect(withStore.formResponseSetState?.({
+      submission_id: 'submission-1', lifecycle_state: 'accepted',
+    })).resolves.toEqual({ record });
+    expect(store.setLifecycleState).toHaveBeenCalledWith(
+      'submission-1', 'accepted', expect.any(Number),
+    );
   });
 
   it('uses the same canonical store to complete a store-only reception approval', async () => {

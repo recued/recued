@@ -13,7 +13,7 @@ import type {
   WorkEntitySourceDependency,
 } from '@recued/contracts';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSourceDependencyEntityStore,
   ensureSourceDependencyEntitySchema,
@@ -61,11 +61,16 @@ import {
 } from '../work-entity-source-sync.js';
 import {
   createWorkEntitySourceWriteExecutor,
+  type WorkEntityWriteExecutorDeps,
   type WorkEntitySourceWriteExecutor,
   type WorkEntityVendorWriteDispatchOutcome,
   type WorkEntityVendorWritePrepared,
   type WorkEntityVendorWritePrepareResult,
 } from '../work-entity-write-executor.js';
+import {
+  currentExecutionCaseVerificationContext,
+  runWithExecutionCaseVerificationContext,
+} from '../execution-case-verification-context.js';
 
 const NOW = 1_700_000_000_000;
 const SOURCE_ID = 'hubspot.acme.task';
@@ -247,6 +252,10 @@ const makeExecutor = (
     dependencyStore?: { getSelected: (source_id: string, ref: string) => { entity_pk: string; label: string } | null };
     /** D-192 — the bound connection's parsed config (create_arg_bindings source). */
     connection_config?: Record<string, unknown>;
+    recordDeterministicVerification?:
+      WorkEntityWriteExecutorDeps['recordDeterministicVerification'];
+    getDeterministicVerificationContext?:
+      WorkEntityWriteExecutorDeps['getDeterministicVerificationContext'];
   } = {},
 ): ExecutorHarness => {
   const declaration = opts.declaration === undefined ? taskDeclaration() : opts.declaration;
@@ -276,6 +285,18 @@ const makeExecutor = (
       ? { dependencyStore: opts.dependencyStore as never }
       : {}),
     ...(opts.runOperation !== undefined ? { runOperation: opts.runOperation } : {}),
+    ...(opts.recordDeterministicVerification !== undefined
+      ? {
+          recordDeterministicVerification:
+            opts.recordDeterministicVerification,
+        }
+      : {}),
+    ...(opts.getDeterministicVerificationContext !== undefined
+      ? {
+          getDeterministicVerificationContext:
+            opts.getDeterministicVerificationContext,
+        }
+      : {}),
   });
   return { executor, stageCalls };
 };
@@ -1141,17 +1162,30 @@ describe('dispatch update', () => {
         updatedAt: VERSION_2,
       })),
     );
-    const harness = makeExecutor({ runOperation: script.runOperation });
+    const recordDeterministicVerification = vi.fn(async () => ({
+      recorded: true,
+    }));
+    const harness = makeExecutor({
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext:
+        () => currentExecutionCaseVerificationContext(),
+    });
     const prepared = prepareUpdate(harness.executor, {
       title: 'Local title',
       body: 'Local complete body',
     });
 
-    const outcome = requireUpdateOutcome(await harness.executor.dispatch(prepared, {
-      local_id: prior.id,
-      prior,
-      current,
-    }));
+    const outcome = requireUpdateOutcome(
+      await runWithExecutionCaseVerificationContext(
+        { session_id: 'chat-session', turn_id: 'chat-turn' },
+        () => harness.executor.dispatch(prepared, {
+          local_id: prior.id,
+          prior,
+          current,
+        }),
+      ),
+    );
 
     expect(outcome).toMatchObject({
       ok: true,
@@ -1159,6 +1193,14 @@ describe('dispatch update', () => {
       applied: 'pushed',
       verified: true,
     });
+    expect(recordDeterministicVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+        kind: 'passed',
+        postcondition_key: 'work_entity_vendor:task:update',
+      }),
+    );
     expect(harness.stageCalls).toHaveLength(1);
     expect(harness.stageCalls[0]).toMatchObject({
       kind: 'task',
@@ -2196,7 +2238,15 @@ describe('post-write verify — assert the write LANDED', () => {
       // write "succeeds" — but the title never moved.
       opOk(vendorTask('rid-unlanded', { title: 'Base title', updatedAt: VERSION_2 })),
     );
-    const harness = makeExecutor({ runOperation: script.runOperation });
+    const recordDeterministicVerification = vi.fn();
+    const harness = makeExecutor({
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext: () => ({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+      }),
+    });
     const prepared = prepareUpdate(harness.executor, { title: 'Local title' });
 
     const outcome = requireDispatchFailure(
@@ -2216,6 +2266,14 @@ describe('post-write verify — assert the write LANDED', () => {
     // that clears the pending write, so the row stays honest dirty state.
     expect(harness.stageCalls).toHaveLength(1);
     expect(harness.stageCalls[0]).toMatchObject({ pending: { state: 'pending' } });
+    expect(recordDeterministicVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+        kind: 'failed',
+        postcondition_key: 'work_entity_vendor:task:update',
+      }),
+    );
   });
 
   it('FOLDS a value the vendor normalised (it moved the field) — an exact echo is NOT required', async () => {
@@ -2374,7 +2432,16 @@ describe('dispatch delete — a 2xx is not proof', () => {
       opOk({}),
       opError('unavailable', 'connection timed out'), // NOT proof of deletion
     );
-    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
+    const recordDeterministicVerification = vi.fn();
+    const harness = makeExecutor({
+      declaration: deleteDecl(),
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext: () => ({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+      }),
+    });
 
     const outcome = await harness.executor.dispatch(prepareDelete(harness.executor), {
       local_id: prior.id, prior, current: prior,
@@ -2383,6 +2450,7 @@ describe('dispatch delete — a 2xx is not proof', () => {
     // Falls back to the 2xx rather than erroring — but it never CLAIMED to have
     // proven the record gone. The safety property is the refutation, not this.
     expect(outcome).toMatchObject({ ok: true, operation: 'delete' });
+    expect(recordDeterministicVerification).not.toHaveBeenCalled();
   });
 
   it('a Source with no read binding still deletes on the 2xx alone (no regression)', async () => {

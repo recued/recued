@@ -7,7 +7,7 @@
  *  D-132 P5 adds the detail-drawer component + its scope-read /
  *  recent-runs / trust-radio props.
  *
- *  Spec: `docs/d-123-spec.md` §5.2 + `docs/d-132-spec.md` §A.7. */
+ *  Spec: D-123 §5.2 + D-132 §A.7. */
 
 export {
   renderHousekeepingPanel,

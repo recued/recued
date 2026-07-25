@@ -4,7 +4,7 @@
  *  boundary-crossing tool call = one commit. The **Gateway** is the
  *  chokepoint that writes those commits — it wraps an ingredient
  *  executor so every call follows the crash-safe dispatch-outbox
- *  protocol (`docs/d-153-spec.md` § Dispatch-outbox + crash-recovery):
+ *  protocol (D-153 § Dispatch-outbox + crash-recovery):
  *
  *    1. write a `'pending'` commit BEFORE crossing the boundary — the
  *       durable marker that an external side-effect was about to
@@ -29,7 +29,7 @@
  *  import would cycle). The engine assigns a gateway-wrapped executor
  *  into `ctx.ingredientExecutor` by structural compatibility.
  *
- *  Spec: docs/d-153-spec.md § Gateway / § Dispatch-outbox + crash-
+ *  Spec: D-153 § Gateway / § Dispatch-outbox + crash-
  *  recovery / § Commit substrate.
  */
 
@@ -352,7 +352,7 @@ export interface CommitGatewayDeps {
    *  unprovable, failing an op-scoped contract closed — additive, exactly as
    *  pre-slice.
    *
-   *  Spec: docs/d-157-spec.md § N.3 / A.2 / I-4 / TR-4. */
+   *  Spec: D-157 § N.3 / A.2 / I-4 / TR-4. */
   evaluateAdmission?: (
     slug: string,
     input: Record<string, unknown>,
@@ -512,7 +512,7 @@ export interface CommitGatewayDeps {
    *  here). When a quality delegation matches `(recipe, op)`, is un-paused, and
    *  the whole-document conjunct passes, the Gateway composes the three-conjunct
    *  gate ({@link resolveQualityGateDecision}) against the authorization verdict
-   *  re-derived WITHOUT the review lift — a `send` verdict skips the ask; a
+   *  captured before the review lift — a `send` verdict skips the ask; a
    *  genuine authorization ask (a contracted write, a destructive op) still holds
    *  (§12.1). Absent dep ⇒ no quality check; every `ask` holds exactly as
    *  pre-D-202 (additive — inert until the owner mints a quality delegation). */
@@ -1105,6 +1105,10 @@ export const wrapWithCommitGateway = (
             && deps.sessionGrants?.mint !== undefined
             && identity !== undefined
             && argHashes !== undefined
+            && (
+              decision.authorization_provenance.pre_lift_approval === 'never'
+              || decision.authorization_provenance.pre_lift_approval === 'ask'
+            )
           ) {
             try {
               // D-177 P5b (N.11) — an `'open'`-mode instruction recomputes
@@ -1137,6 +1141,8 @@ export const wrapWithCommitGateway = (
                     ? { connection_name: resolvedConnectionName }
                     : {}),
                   risk_tier: decision.risk_tier,
+                  pre_lift_approval:
+                    decision.authorization_provenance.pre_lift_approval,
                   arg_shape_hash: argHashes.arg_shape_hash,
                   canonical_payload_hash: argHashes.canonical_payload_hash,
                   // entity_scope deliberately absent — nothing stamps it yet
@@ -1224,6 +1230,8 @@ export const wrapWithCommitGateway = (
                     ? { connection_name: resolvedConnectionName }
                     : {}),
                   risk_tier: decision.risk_tier,
+                  pre_lift_approval:
+                    decision.authorization_provenance.pre_lift_approval,
                   arg_shape_hash: argHashes.arg_shape_hash,
                   canonical_payload_hash: argHashes.canonical_payload_hash,
                   // entity_scope deliberately absent — nothing stamps it yet
@@ -1245,23 +1253,20 @@ export const wrapWithCommitGateway = (
               // grant matched, so today this holds for approval. Before raising,
               // consult a QUALITY delegation: the owner can, per `(recipe, op)`,
               // delegate the "is this AI draft good?" review while authorization
-              // stays re-derived every send (§12.1). The three-conjunct gate
-              // composes the authorization verdict WITHOUT the review lift (a
+              // stays independently checked every send (§12.1). The
+              // three-conjunct gate consumes the authorization provenance
+              // captured BEFORE the review lift (a
               // lift-driven owner send resolves to `admit`; a contracted write /
               // destructive op stays `ask` and holds regardless of quality) with
               // the matching, un-paused delegation and the whole-document
               // conjunct. Only a `send` verdict skips the ask. Gated on
-              // `identity` (the source drives the trust ceiling); a throwing
-              // lookup or absent dep fails closed to the ask. Behaviour-
+              // `identity` (the dispatch/recipe scope); a throwing lookup or
+              // absent dep fails closed to the ask. Behaviour-
               // preserving at zero delegations: no match ⇒ `quality_not_delegated`
               // ⇒ raise, exactly as pre-D-202.
               //
-              // ⚠ The authorization conjunct is an args-BLIND op-risk recompute —
-              // sound only while op-risk+lift is the sole `ask` source (true
-              // today). A spec §1 value-bound (args-keyed `ask`) must route this
-              // conjunct through the real suppressed-lift admission before it can
-              // ship, else it would wrongly skip. See the SOUNDNESS BOUND on
-              // `admitByOpRiskWithoutQualityLifts` (D-202 review Finding 1).
+              // D-211 Slice 3 removed the former args-blind risk reconstruction:
+              // source/profile and owner tightening now survive here verbatim.
               let qualitySkip = false;
               // D-202 Slice 1b — the quality-RELEVANCE marker: `true` iff the
               // three-conjunct gate held the send purely because no quality
@@ -1277,9 +1282,8 @@ export const wrapWithCommitGateway = (
               if (deps.qualityDelegations !== undefined && identity !== undefined) {
                 try {
                   const qualityDecision = resolveQualityGateDecision({
-                    slug,
-                    risk_tier: decision.risk_tier,
-                    source: identity.source,
+                    authorization_provenance:
+                      decision.authorization_provenance,
                     qualityDelegationMatches: deps.qualityDelegations.match({
                       ingredient_slug: slug,
                       ...(surfaceDispatch

@@ -429,7 +429,7 @@ describe('D-137 Trio #A — enrichment.search handler', () => {
   it('returns a guided EMPTY result (ok:true), NOT invalid_args, when topic is missing — so a tool-looping agent does not retry to a timeout', async () => {
     // Substrate-support: a missing `topic` used to return invalid_args, which
     // made a capable model (qwen3.7-plus) RETRY blindly until the turn timed
-    // out (recued-substrate-bench gap #2). It now mirrors memory.search —
+    // out (internal benchmarks gap #2). It now mirrors memory.search —
     // ok:true + empty + a hint to supply a topic — so the agent answers in one
     // more turn. The store is NOT touched on the missing-topic path.
     const list = vi.fn(() => []);
@@ -1241,6 +1241,7 @@ describe('D-137 Trio #A Codex P2a — calendar.search uses CalendarCollectionTab
   it('uses table.listSnapshots() for time-window queries (no query string)', async () => {
     const listSnapshots = vi.fn().mockReturnValue([
       {
+        record_id: 'cal:canonical-1',
         source_id: 'src-1',
         received_at: 100,
         hot: { calendar_id: 'primary', summary: 'Standup', start_at: 1, end_at: 2 },
@@ -1276,7 +1277,7 @@ describe('D-137 Trio #A Codex P2a — calendar.search uses CalendarCollectionTab
     );
     if (result.ok) {
       const r = result.result as { matches: Array<{ record_id: string }> };
-      expect(r.matches[0]?.record_id).toBe('src-1');
+      expect(r.matches[0]?.record_id).toBe('cal:canonical-1');
     }
   });
 

@@ -1,0 +1,93 @@
+{
+  "recipe_id": "recent-notes-by-topic",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Recent notes by topic (D-145 PA10)",
+    "description": "Surface your still-warm notes: ranks notes by ongoing relevance (recently touched and frequently referenced rise; dormant ones decay over 180 days) and shows the freshest decile. Private notes stay private by default. Auto-refreshes weekday mornings.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["productivity", "note", "recent", "dashboard", "ai_surface", "reactive", "pack:personal-organizer"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "note_limit": {
+      "label": "Max recent-notes entries to surface",
+      "type": "number",
+      "default": 10
+    }
+  },
+  "requires": [],
+  "auto_run": {
+    "interval_ms": 600000
+  },
+  "trigger_steps": [
+    {
+      "id": "morning_window",
+      "op": "core.watch.time",
+      "args": {
+        "weekdays": [1, 2, 3, 4, 5],
+        "start_hour": 8,
+        "end_hour": 9
+      }
+    }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "relevance_rows",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "note_relevance_decay",
+        "scope": "note",
+        "limit": "{{config.note_limit}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "row_count",
+      "transform": "count",
+      "input": "{{step.relevance_rows.entries}}"
+    },
+    {
+      "id": "note_ids",
+      "transform": "pluck",
+      "array": "{{step.relevance_rows.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "note_ids_text",
+      "transform": "join",
+      "array": "{{step.note_ids}}",
+      "separator": ", "
+    },
+    {
+      "id": "first_note_id",
+      "transform": "default",
+      "value": "{{step.relevance_rows.entries.0.target_id}}",
+      "fallback": ""
+    },
+    {
+      "id": "first_relevance_score",
+      "transform": "default",
+      "value": "{{step.relevance_rows.entries.0.value.relevance_score}}",
+      "fallback": 0
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Recent notes (relevance-ranked)", "value": "{{step.row_count:number}}" },
+        { "label": "Top note ID", "value": "{{step.first_note_id}}" },
+        { "label": "Top note relevance", "value": "{{step.first_relevance_score:number}}" },
+        { "label": "All recent note IDs", "value": "{{step.note_ids_text}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

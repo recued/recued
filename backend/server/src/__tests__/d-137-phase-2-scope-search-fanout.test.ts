@@ -1,6 +1,6 @@
 /** D-137 P2 § A.4 — Server-side read consolidation tests.
  *
- *  Covers the P2 acceptance set from `docs/d-137-spec.md`:
+ *  Covers the P2 acceptance set from D-137:
  *    - `contact.search` merges local + HubSpot — both return Peter;
  *      provenance per source preserved; dedup is the agent's concern
  *      (D-137 leaves multiple-source candidates in place, attributed).

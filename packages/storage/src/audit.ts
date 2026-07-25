@@ -170,7 +170,7 @@ export interface AuditEntry {
   // P1.A; the Engine substrate (D-145) is what populates them with
   // non-null values. Today's synchronous recipe-runner leaves them
   // undefined except where the engine wires them through.
-  // Spec: docs/d-153-spec.md § Commit substrate.
+  // Spec: D-153 § Commit substrate.
   // ──────────────────────────────────────────────────────────────
   /** Observable category — `'action'` (outbound side-effect),
    *  `'query'` (inbound read), or `'cognition_output'` (composition /
@@ -225,7 +225,7 @@ export interface AuditEntry {
   // (a preflight-approval gate paused the run). Cleared on terminal
   // transitions — a fresh audit row at `Approve` / `Deny` mints a
   // new run row that pins to the same `run_id` but resets these
-  // fields. Spec: docs/d-157-spec.md § A.3.
+  // fields. Spec: D-157 § A.3.
   // ──────────────────────────────────────────────────────────────
   /** FK to the persisted `Checkpoint` whose `run_id` matches this
    *  anchor's. Set iff `commit_status === 'awaiting_approval'`; a
@@ -624,6 +624,19 @@ export type ActivityAction =
   // of "what did the human approve, from which utterance, bounded how"
   // survives retention pruning.
   | 'scoped_grant_minted'
+  // D-211 — the owner wrote / deleted an actorless exact-operation row (the
+  // global owner-default plane: `approval` REPLACES the authored default,
+  // clamped to
+  // `[floor(effective_risk), always]`; `risk` may reclassify DOWNWARD behind a
+  // warned confirm). `target` = `<operation_id>`; `detail` carries
+  // `{ingredient_id, operation_id, policy, prior_policy|null, declared_risk?,
+  // effective_risk?, floor_before?, floor_after?, op_hash?}` — the ruling +
+  // its floor/grantability consequences, never arg values. Reserve-class: a
+  // standing override is a durable re-ruling of the ask gate (an
+  // `approval:'never'` silences a held op durably — the same access-surface
+  // class as the grant-mint family); the delete restoring the authored
+  // default is the other half of that ledger.
+  | 'owner_operation_override_written' | 'owner_operation_override_deleted'
   // D-149 P3 § A.3 + § N.3 — Reception substrate high-assurance audit
   // kinds. Mirrors `RECEPTION_HIGH_ASSURANCE_AUDIT_KINDS` from
   // `@recued/contracts/src/reception.ts` verbatim. The signing audit-
@@ -691,6 +704,18 @@ export type ActivityAction =
   // Reserve-class: an operator forensically reconstructing "what version
   // ran when, and which update reverted it" must keep these past retention.
   | 'update_applied' | 'update_rolled_back'
+  // D-212 follow-on — the keyfile's sealing changed: `rotate-passphrase` or
+  // `recover-keyfile`. Both run with the server STOPPED, so the row cannot be
+  // written when it happens; it is replayed at the next boot from the
+  // append-only `keyfile-events.log` beside the database, idempotent on the
+  // ledger entry id. `target` carries the keyfile path; `detail` is JSON
+  // `{kind, posture, previous_keyfile?, server_identity_fingerprint?,
+  // recorded_at_boot}`. ONE action rather than one per command because the
+  // question it answers — "when did the sealing factor last change?" — is one
+  // filter, and `kind` inside the detail is what separates a rotation (identity
+  // preserved) from a regeneration (identity replaced). Reserve-class: it is
+  // asked months later, after a compromise.
+  | 'keyfile_sealing_changed'
   // D-182 §7.2 — the owner granted / revoked a per-contract cli reachability
   // cell (the `cli.reachability.set` grid write). `target` carries the cli
   // ingredient slug (`whisper` / `ffmpeg` / …); `detail` is JSON
@@ -832,6 +857,12 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // rolled back must survive eviction for forensic version-history.
   'update_applied',
   'update_rolled_back',
+  // D-212 follow-on — "when did the sealing factor last change, and did I do
+  // it?" is a months-later question asked after a compromise, and this row is
+  // the only structured answer (the `.pre-rotate-<ms>` backup's filename is the
+  // alternative). Evictable would mean the record expires before the question
+  // is asked. Volume is a handful over a realm's lifetime.
+  'keyfile_sealing_changed',
   // D-182 §7.2 — cli reachability grant/revoke. Granting a cell authorizes a
   // local binary for Gateway-dispatched invocation under a principal
   // (access-surface change, grant class); the forensic ledger of "which
@@ -939,6 +970,16 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'quality_delegation_minted',
   // D-177 N.11 rule 5 (5.c, slice C) — same reserve rationale, session-bound.
   'scoped_grant_minted',
+  // D-211 Slice 1 — an owner override is a STANDING re-ruling of an op's
+  // approval/risk: `approval:'never'` on a held op is a standing loosening of
+  // the ask gate, the same reserve rationale as `session_grant_minted` below
+  // (a loosening of the ask gate whose ledger — "what did the human silence /
+  // reclassify, when" — must survive retention pruning), and it is UNBOUNDED
+  // in time where a session grant is bounded, so the case is stronger. The
+  // delete that restores the authored default is the other half of that
+  // ledger and must survive with it.
+  'owner_operation_override_written',
+  'owner_operation_override_deleted',
   // D-175 P5 — account ↔ server binding lifecycle. Reserve-class so the
   // forensic ledger of who owned this server (bind / rebind / unbind),
   // the ownership-contention conflicts, and the failed-exchange attack

@@ -35,8 +35,8 @@
  *  whose `event_kind` is the recipe's trigger event, so the held op appears in
  *  the inbox (and only there — the filter never leaks arbitrary gated ops).
  *
- *  Spec: docs/d-173-spec.md § A.7 / D3 / N.1 / I-1; docs/d-170-spec.md § N.18;
- *  docs/d-157-spec.md § A.2 / Flow 2. */
+ *  Spec: D-173 § A.7 / D3 / N.1 / I-1; D-170 § N.18;
+ *  D-157 § A.2 / Flow 2. */
 
 import type { ExecutionSource } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';

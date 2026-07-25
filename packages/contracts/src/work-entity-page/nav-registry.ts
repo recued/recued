@@ -6,7 +6,7 @@
  *  top_tier_kind UIs land their own registrations after marketplace
  *  review (not in scope at PA6).
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (per-kind icon registration in
+ *  Spec: D-145 § Phase PA6 (per-kind icon registration in
  *  primary UI nav).
  */
 
@@ -87,8 +87,7 @@ export const WORK_ENTITY_NAV: Readonly<Record<WorkEntityKind, WorkEntityNavSpec>
       plural_label: 'Bookings',
       singular_label: 'Booking',
       empty_state_copy:
-        'No bookings yet. Approving a reservation from your Reception inbox creates one here, '
-        + 'alongside the calendar event it books.',
+        'No bookings yet. Approving a reservation from your Reception inbox creates one here.',
     },
   });
 

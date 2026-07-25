@@ -53,7 +53,7 @@
  *  but the handler accepts foundation slugs for symmetry + power-user
  *  scripted scenarios.
  *
- *  Spec: `docs/d-145-spec.md` § PA10 follow-on (Settings → Packs Slice
+ *  Spec: D-145 § PA10 follow-on (Settings → Packs Slice
  *  B uninstall affordance). */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';

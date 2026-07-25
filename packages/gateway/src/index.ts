@@ -8,7 +8,7 @@
  *  Authored INERT — slice 3b.3 wires `wrapWithCommitGateway` into the
  *  engine's executor chokepoint.
  *
- *  Spec: docs/d-153-spec.md § Gateway / § Commit substrate.
+ *  Spec: D-153 § Gateway / § Commit substrate.
  */
 
 export {
@@ -170,12 +170,15 @@ export {
   // D-177 P3 — the conditional `allow_session` third option (N.5) + the
   // three-option list an offering ask renders.
   ALLOW_SESSION_ASK_OPTION,
+  NEVER_ASK_OPERATION_OPTION_ID,
+  RELAX_OPERATION_TO_ASK_OPTION_ID,
   PREFLIGHT_ASK_OPTIONS_WITH_SESSION,
   buildPreflightAsk,
   createPreflightAnswerHandler,
   // D-177 P5a — exported for the batch answer flow's degenerate
   // single-member `allow_session` arm (one payload reader, two consumers).
   readSessionGrantPayload,
+  readPreflightOverrideOffer,
   registerPreflightHandler,
   raisePreflightAsk,
   // D-210 Phase C — the passive twin, for `inbox_fanout_mode: 'notify'`.

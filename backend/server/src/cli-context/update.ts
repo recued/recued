@@ -21,9 +21,9 @@
  *  resolves to `not-configured` and says so.
  */
 
-import Database from 'better-sqlite3';
 import { getArg, parsePositionals } from '../cli/parse.js';
 import type { BootTrace } from '../cli/boot-trace.js';
+import { openDatabase } from '../open-database.js';
 import { buildReleaseCheckDeps, resolveDistributionChannel } from '../update/release-config.js';
 import { runReleaseCheck } from '../update/release-check.js';
 import type { ReleaseCheckResponse } from '@recued/contracts';
@@ -114,7 +114,7 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
   }
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

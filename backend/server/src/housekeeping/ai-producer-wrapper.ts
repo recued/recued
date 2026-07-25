@@ -32,7 +32,7 @@
  *  for the per-record degenerate) is computed BEFORE PII
  *  replacement, so unchanged source content always hits dedup.
  *
- *  Spec: `docs/d-136-spec.md` §A.3. */
+ *  Spec: D-136 §A.3. */
 
 import {
   computeInputFingerprintHash,

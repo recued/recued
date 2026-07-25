@@ -14,7 +14,7 @@
  *  each `UiNotificationEvent` to a D-121 `ServerEvent`. This is the same
  *  injected-narrow-seam pattern D-160's `ChatBusSink` uses.
  *
- *  Spec: docs/d-158-spec.md § A.4 / A.7 + docs/d-163-spec.md § N.7.
+ *  Spec: D-158 § A.4 / A.7 + D-163 § N.7.
  */
 
 import type { Channel } from './channel.js';

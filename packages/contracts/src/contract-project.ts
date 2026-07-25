@@ -43,7 +43,7 @@
  *  schema + lattice registry (a build-time ratchet, the same idiom as
  *  `validateContractSchemaRegistry`).
  *
- *  Spec: `docs/d-166-spec.md` §"Composition algorithm" (value_shape → canonical
+ *  Spec: D-166 §"Composition algorithm" (value_shape → canonical
  *  projection step) + §"Merge algebra formalization". */
 
 import { ContractMergeError, FIELD_LATTICES } from './contract-merge.js';
@@ -88,7 +88,10 @@ export const POLICY_PROJECTIONS: Readonly<Record<string, PolicyProjection>> = {
   },
   /** `denied`→`allowed` as a one-way DENY-FLAG (denied:true → allowed:false;
    *  denied:false drops — a `tightening_only` override may only restrict, never
-   *  grant); everything else is already canonical. */
+   *  grant); every other field is already canonical. D-211's replace-if-present
+   *  `{risk, approval}` pair lives in the separate actorless
+   *  `owner_operation_policy` inventory, so legacy contract approval tightening
+   *  remains part of this projection and the existing admission flow. */
   override_policy: {
     rename: {
       denied: 'allowed',

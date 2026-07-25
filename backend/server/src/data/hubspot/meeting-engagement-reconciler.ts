@@ -23,7 +23,7 @@
  *  `calendar_twin` is emitted pointing at `data.calendar.<id>`. The
  *  matcher's TZ field populates `event_at_tz_hint` per § A.3.7.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.2, § A.3.3, § A.3.6,
+ *  Spec: D-139 § A.1, § A.3, § A.3.2, § A.3.3, § A.3.6,
  *  § A.3.7, § A.4. */
 
 import {

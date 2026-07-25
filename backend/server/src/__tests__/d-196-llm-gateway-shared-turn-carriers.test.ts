@@ -29,6 +29,10 @@ import {
   createChatStore,
   ensureChatSchema,
 } from '../storage/chat-store.js';
+import {
+  RECALL_SEARCH_TOOL_ENTRY,
+  RECALL_SEARCH_TOOL_NAME,
+} from '../chat-recall-search-tool.js';
 
 const SELF_SIGNATURE: RecuedServerSignature = {
   server_kind: 'recued',
@@ -392,6 +396,37 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
     expect(firstPrompt.available_tools).toEqual([]);
     expect(result.assistant_content).toBe('unavailable');
     expect(resolver).not.toHaveBeenCalled();
+    expect(h.localDispatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the synthetic interaction-recall broker out of the stateless gateway even if named by the caller', async () => {
+    const aiInputs: Record<string, unknown>[] = [];
+    const executeAiCall: ExecuteChatAiCall = vi.fn(async (_manifest, input) => {
+      aiInputs.push(input);
+      return {
+        body: { response: 'unavailable', events: [], tool_calls: [] },
+      };
+    });
+    const h = createHarness({
+      entries: [RECALL_SEARCH_TOOL_ENTRY],
+      executeAiCall,
+    });
+
+    await h.orchestrator.runLlmGatewayTurn!({
+      session_id: 'gateway-recall',
+      user_id: 'customer-token',
+      contract_id: 'customer-contract',
+      content: { chat_tail: [], user_message: 'recall the owner history' },
+      allowed_tool_names: [RECALL_SEARCH_TOOL_NAME],
+      resolve_contract_snapshot: async () => SNAPSHOT,
+      execute_ai_call: executeAiCall,
+      model_layer: 'byok',
+    });
+
+    const firstPrompt = JSON.parse(String(aiInputs[0]?.['llm.prompt'])) as {
+      available_tools: unknown[];
+    };
+    expect(firstPrompt.available_tools).toEqual([]);
     expect(h.localDispatch).not.toHaveBeenCalled();
   });
 

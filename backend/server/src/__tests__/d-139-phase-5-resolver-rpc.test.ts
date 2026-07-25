@@ -14,7 +14,7 @@
  *  field-copy + live mail-twin flip, the cross-account mail union, and the
  *  per-token tool-checklist gate.
  *
- *  Spec: docs/d-139-spec.md § A.5.1 + § P1a.1 + § A.9.5. */
+ *  Spec: D-139 § A.5.1 + § P1a.1 + § A.9.5. */
 
 import Database from 'better-sqlite3';
 import { describe, it, expect } from 'vitest';

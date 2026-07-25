@@ -33,9 +33,13 @@ export const quoteSqliteIdent = (name: string): string =>
  *  Those are skipped via a STRUCTURAL column probe (bound parameter, no
  *  interpolation), NOT by swallowing the resulting "no such column" — so a
  *  genuine transient error on a real body table is never mistaken for a missing
- *  column. The archive's best-effort `collectBlobHashesByStore` opts into
- *  leniency by wrapping this call in its own try/catch; the cascade calls it
- *  unguarded. */
+ *  column.
+ *
+ *  Both consumers now hold this line. The archive's `collectBlobHashesByStore`
+ *  used to opt out, catching everything as "absent" — which turned a transient
+ *  error into a signed backup missing the payloads its database references.
+ *  Reaping live bodies and shipping an incomplete backup are the same mistake
+ *  at different moments, so neither caller is lenient. */
 export const listCollectionReferencedBlobHashes = (
   db: Database.Database,
 ): Set<string> => {

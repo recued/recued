@@ -13,7 +13,7 @@
  *  (`resolveContractScopeRestrictions`) — this resolver is the keyed lookup once the
  *  bound `contract_id` is in hand.
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block §3; handover
+ *  Spec: D-187 AMENDMENT block §3; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
 import { resolveGrantEntry } from '@recued/contracts';

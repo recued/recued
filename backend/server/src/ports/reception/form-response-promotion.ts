@@ -40,6 +40,10 @@ import type {
 } from '../../storage/reception-form-store.js';
 import type { AdmitPaidDocumentDirectCheckoutReview } from '../../paid-document-direct-checkout-review-admission.js';
 import { openFormSubmissionField } from './form-pii.js';
+import {
+  FormResponseWorkingContentValidationError,
+  validateFormResponseWorkingContent,
+} from '../../form-response-working-content.js';
 
 /** ⛔ THE TRIGGER'S EVENT KIND IS NOT A FLOW IDENTITY — do not reintroduce it
  *  as the discriminator here (D-210 A.8, 2026-07-19).
@@ -101,7 +105,10 @@ export interface FormResponsePromotionDeps {
    * workflow, rather than an arbitrary recipe carrying look-alike metadata. */
   readonly auditLog: Pick<AuditLogStore, 'get'>;
   readonly submissionStore?: Pick<FormSubmissionStore, 'findById'>;
-  readonly formResponseStore?: Pick<FormResponseStore, 'accept'>;
+  readonly formResponseStore?: Pick<
+    FormResponseStore,
+    'accept' | 'acceptWithWorkingContent'
+  >;
   /** Best-effort first-create event fan-out. It runs immediately after the
    * canonical insert, before optional downstream resume; idempotent retries
    * never call it again. Callers may invalidate owner Data surfaces and signal
@@ -126,6 +133,9 @@ const asObject = (value: unknown): JsonObject | null =>
 
 const invalid = (message: string): FormResponsePromotionError =>
   new FormResponsePromotionError('source_invalid', message);
+
+const hasOwn = (object: Readonly<Record<string, unknown>>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(object, key);
 
 /** Read the original materialize args. `arg_overrides` are deliberately not
  * consulted: provenance is substrate-authored at dispatch and cannot be
@@ -338,13 +348,35 @@ export const createFormResponsePromotion = (
     // transaction. A second check below closes the async decryption window.
     await requireDirectCheckoutAdmission();
 
-    // D-210 WS2 — an UNPAIRED submission was already logged at submit, with
-    // the plaintext the handler held before sealing. Everything above still
-    // ran (the held provenance must match the submission row, or this approval
-    // does not resume); from here down there is nothing left to do for it, and
-    // deliberately no PII is decrypted. Only a D-200 pair continues: its log is
-    // the paid deliverable and could not be written before payment.
-    if (row.pair_binding === null) return;
+    // D-210 audit finding 3a (2026-07-20) — THE UNPAIRED WRITE MOVED BACK HERE.
+    //
+    // WS2 had put it at SUBMIT, inside the public visitor POST, "where the
+    // plaintext is still live and no decrypt is needed". That made approval gate
+    // NOTHING about the destination row's existence: a `form_response` row —
+    // a first-class `data.*` collection with owner-default grants — existed, and
+    // was queryable by the owner's AI, before the owner had seen the submission.
+    // A.1 is explicit that stage 2 → 3 has exactly one door: "The inbox HOLDS.
+    // Approve is the only door, and it is where the record becomes real."
+    //
+    // Writing here costs a decrypt the submit path did not need. That is the
+    // correct price: the sealed `reception_form_submission` row is stage-2
+    // evidence and is never mutated, so nothing is lost by deferring — and the
+    // paid-pair path below already proves the decrypt-then-write shape works at
+    // approve time.
+    //
+    // The destination discriminator comes from the held projection payload, which
+    // is substrate-authored at dispatch (`arg_overrides` are deliberately not
+    // consulted — see `readProjectionArgs`). It decides only WHETHER to write; every
+    // value written below is still re-derived from the stored row and re-checked
+    // against it. ⇒ [[close_toctou_by_rederiving_at_act_site]]
+    //
+    // ⛔ An unpaired submission whose destination is `task` / `contact` / `calendar`
+    // / `note` still writes NO `form_response` row — that was true at submit (the
+    // handler gated on `target_kind === 'form_response'`) and must stay true here,
+    // or every intake would mint a spurious row. A D-200 pair continues regardless
+    // of destination: its row is the paid deliverable.
+    const isFormResponseDestination = args?.top_tier_kind === 'form_response';
+    if (row.pair_binding === null && !isFormResponseDestination) return;
 
     const key = deps.getFormSubmissionPiiKey();
     const [blobJson, separatelySealedEmail] = await Promise.all([
@@ -379,11 +411,13 @@ export const createFormResponsePromotion = (
     // observation.
     await requireDirectCheckoutAdmission();
 
-    const accepted = deps.formResponseStore.accept({
+    const definitionSnapshot = definitionSnapshotFor(row);
+    const acceptedAt = Math.max(approvedAt, row.submitted_at);
+    const acceptance = {
       submission_id: row.submission_id,
       endpoint_id: row.endpoint_id,
       form_definition_id: row.form_definition_id,
-      definition_snapshot: definitionSnapshotFor(row),
+      definition_snapshot: definitionSnapshot,
       values: decoded.fields,
       ...(decoded.visitor_email !== undefined
         ? { visitor: { email: decoded.visitor_email } }
@@ -392,9 +426,64 @@ export const createFormResponsePromotion = (
       // A wall-clock correction between submit and approve must not make a
       // valid response impossible to persist; clamp only to the submission
       // floor while otherwise retaining the durable answer timestamp exactly.
-      accepted_at: Math.max(approvedAt, row.submitted_at),
+      accepted_at: acceptedAt,
       metadata: responseMetadataFor(row),
-    });
+    };
+
+    // Provenance continues to come only from the substrate-authored input
+    // above. The two dedicated override keys are working-copy content, and are
+    // honored only for an actual form_response destination. Validate them
+    // again at this act site against the frozen definition even though the
+    // paired-admin inbox already enforced its key/type allowlist.
+    const overrides = checkpoint.arg_overrides ?? {};
+    const hasValuesEdit = isFormResponseDestination
+      && hasOwn(overrides, 'form_response_values');
+    const hasEmailEdit = isFormResponseDestination
+      && hasOwn(overrides, 'form_response_visitor_email');
+    let accepted;
+    if (hasValuesEdit || hasEmailEdit) {
+      const editedEmail = hasEmailEdit
+        ? overrides.form_response_visitor_email
+        : decoded.visitor_email;
+      // ⛔ `null` IS A CLEAR, not a value. `validateEditsAgainstSchema` accepts
+      // and forwards an explicit `null` as the documented way to clear a
+      // non-required field, and the webclient now sends exactly that (an
+      // `undefined` would be dropped by `JSON.stringify` and never arrive).
+      // Testing only `''`/`undefined` here would carry `{ email: null }` into
+      // `validateFormResponseWorkingContent`, which demands a non-empty string
+      // and throws — turning a legitimate clear into `source_invalid` AFTER the
+      // arg overrides, the audit row and `submitAnswer` are already durable.
+      const visitor = editedEmail === ''
+        || editedEmail === undefined
+        || editedEmail === null
+        ? {}
+        : { email: editedEmail };
+      let working;
+      try {
+        working = validateFormResponseWorkingContent(
+          {
+            form_definition_id: row.form_definition_id,
+            definition_snapshot: definitionSnapshot,
+          },
+          {
+            values: hasValuesEdit ? overrides.form_response_values : decoded.fields,
+            visitor,
+          },
+        );
+      } catch (error) {
+        if (error instanceof FormResponseWorkingContentValidationError) {
+          throw invalid(`form response promotion: owner edit is invalid: ${error.message}`);
+        }
+        throw error;
+      }
+      accepted = deps.formResponseStore.acceptWithWorkingContent(
+        acceptance,
+        working,
+        acceptedAt,
+      );
+    } else {
+      accepted = deps.formResponseStore.accept(acceptance);
+    }
     if (accepted.status === 'created') {
       try {
         deps.onCreated?.(accepted.response);

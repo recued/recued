@@ -295,3 +295,31 @@ describe('D-210 §7 — notify-booking-visitor is an outbound send', () => {
     expect(isOutboundSendSlug('core-notify-booking-visitor')).toBe(true);
   });
 });
+
+/** D-210 code audit, finding 3b. */
+describe('D-210 finding 3b — the sealed recipient is kept out of the audit row', () => {
+  it('declares `redact_audit_recipients` on every send it makes', async () => {
+    // This seam already scrubs the address from step state, from the output, and
+    // from send errors. The `mail_send` audit row was the one remaining escape:
+    // a booking notice has exactly ONE recipient, so it always fell under the
+    // noise-redaction threshold and the address was attached in plaintext.
+    //
+    // Asserting the REQUEST, not a downstream effect — the flag is what this seam
+    // is responsible for; that the flag actually suppresses the row is pinned
+    // against the real collection + audit store in the D-127 audit suite.
+    // ⇒ [[a_defaulted_field_is_not_evidence]]
+    await seedBooking('req-1', VISITOR_EMAIL);
+    seedEntity('bk-1', 'req-1');
+
+    const result = await handleNotifyBookingVisitor(deps(), {
+      booking_id: 'bk-1',
+      sender_mail_instance: SENDER,
+      subject: 'Your appointment moved',
+      body: 'It is now 4pm.',
+    });
+
+    expect(result).toEqual({ notified: true });
+    const sent = mailSend.mock.calls[0][0];
+    expect(sent.redact_audit_recipients).toBe(true);
+  });
+});

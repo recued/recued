@@ -33,7 +33,7 @@
  *  `sweepAwaitingCheckpoints` is mocked to a zero-result no-op so each test
  *  isolates the durable-ASK recovery invariant from the checkpoint sweep
  *  (which `recoverNotificationBlockAtBoot` also drives — covered by its own
- *  tests). Spec: docs/d-158-spec.md § A.2 / I-2 / I-4.
+ *  tests). Spec: D-158 § A.2 / I-2 / I-4.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';

@@ -17,7 +17,7 @@
  *  from the compiled-in vendor leaf it binds to by slug (Tier-3, §2), not from
  *  a review of the descriptor.
  *
- *  Spec: `docs/d-194-spec.md` §4 (the manifest block) / §5 (the auth union) /
+ *  Spec: D-194 §4 (the manifest block) / §5 (the auth union) /
  *  §11 (the interim seed). The manifest field + its first-party validator gate
  *  live on `BulkPackManifest` (`bulk-pack.ts`).
  */

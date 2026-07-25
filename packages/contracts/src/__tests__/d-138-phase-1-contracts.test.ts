@@ -571,7 +571,10 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
     // `mintContract` / `revokeContract` / `listContracts` Settings → Privacy →
     // Contracts methods). An MCP-channel agent must never mint itself a
     // contract, author/remove its own policy override, nor enumerate the
-    // user's posture. Channel-isolation invariant.
+    // user's posture. D-211 adds `'collection.operation.'` for the global
+    // owner-authored risk / approval replacement on a pack operation. An MCP
+    // caller is governed by that replacement but may never author or enumerate
+    // it. Channel-isolation invariant.
     expect([...MCP_RESERVED_RPC_PREFIXES].sort()).toEqual([
       // D-175 P5 — account ↔ server binding (operator / local-UI only).
       'account.',
@@ -580,6 +583,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // autonomous-execution policy.
       'auto_run.',
       'bridge.',
+      // D-214 — owner-only explicit execution feedback.
+      'chat.execution.',
       'chat.inbound_token.',
       // D-182 §7.2 — cli reachability grid rpc (owner-only; authors a
       // connection-less cli tool's per-contract reachability allowlist).
@@ -587,6 +592,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'collection.connection.',
       'collection.contract.',
       'collection.hostname.',
+      'collection.operation.',
       'contact.alias.',
       'contact.identity.',
       // D-205 #5 — selective CRM promotion. Deciding that a stranger belongs in your

@@ -19,7 +19,7 @@
  *  touched by the cascade (invariant 4 — no source linkage by
  *  definition).
  *
- *  Spec: docs/d-145-spec.md § A.7.9. */
+ *  Spec: D-145 § A.7.9. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

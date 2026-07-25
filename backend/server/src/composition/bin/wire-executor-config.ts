@@ -170,12 +170,12 @@ export interface ComposeExecutorConfigDeps {
   serviceStack: ServiceStack | undefined;
   sharedStore: SharedStore | undefined;
   /** Intake responses are reachable by recipes only through the owner-only
-   *  `form-response-get` (read) and `form-response-set-state` (lifecycle write)
+   *  `form-response-list/get` reads and `form-response-set-state` lifecycle write
    *  kernel operations. Undefined in runtimes without the canonical
-   *  FormResponse store, leaving BOTH dispatchers absent so the adapter fails
+   *  FormResponse store, leaving all of those dispatchers absent so the adapter fails
    *  closed with SERVER_NOT_REACHABLE. */
   formResponseStore:
-    | Pick<FormResponseStore, 'findById' | 'setLifecycleState'>
+    | Pick<FormResponseStore, 'findById' | 'list' | 'setLifecycleState'>
     | undefined;
   /** D-210 Phase C (§4b) — the intake submission store, for the
    *  RESOLVED-POINTER WRITE-BACK on the approve-resume leg.
@@ -231,13 +231,9 @@ export interface ComposeExecutorConfigDeps {
    *  contact-kind reception can run; a contact projection without it
    *  fail-closes inside `runReceptionProjection`. */
   receptionProjectionContactDeps: ContactRpcDeps | undefined;
-  /** D-173 P4.3 — the scheduling booking store, the calendar-event branch's
-   *  idempotency anchor (pre-check / populate `resolved_calendar_event_id`,
-   *  I-4). Paired with `calendarStack` to build the `createCalendarEvent`
-   *  seam; absent either → the seam is omitted and a `calendar.event`
-   *  projection fail-closes inside `runReceptionProjection`. */
-  // D-210 A.8 slice 4b-ii — the MERGED store. A booking is a
-  // `reception_form_submission` row with a slot.
+  /** D-210 — the merged sealed scheduling-submission store. The booking mint
+   *  opens it server-side for the original slot and visitor provenance, then
+   *  verifies the caller-bound request/booking pair before writing. */
   receptionProjectionBookingStore: FormSubmissionStore | undefined;
   /** D-210 WS3 — the `contact` branch's sealed-visitor-email resolver. An
    *  INTAKE targeting a contact carries no email in its held payload; the
@@ -567,6 +563,27 @@ export const composeExecutorConfig = async (
         : {}),
       ...(deps.formResponseStore
         ? {
+            formResponseList: async (input) => {
+              const requested = input.limit ?? 100;
+              const fetched = deps.formResponseStore!.list({
+                ...input,
+                limit: requested + 1,
+              });
+              const hasMore = fetched.length > requested;
+              const records = hasMore ? fetched.slice(0, requested) : fetched;
+              const last = records.at(-1);
+              return {
+                records,
+                ...(hasMore && last !== undefined
+                  ? {
+                      next_cursor: {
+                        accepted_at: last.accepted_at,
+                        submission_id: last.submission_id,
+                      },
+                    }
+                  : {}),
+              };
+            },
             formResponseGet: async ({ submission_id }) => ({
               record: deps.formResponseStore!.findById(submission_id),
             }),
@@ -1014,7 +1031,9 @@ export const composeExecutorConfig = async (
               // partial substrate costs the booking a FIELD, never the row.
               const mintStore = deps.receptionBookingMintStore;
               const createBooking =
-                mintStore !== undefined && bookingStore !== undefined
+                mintStore !== undefined
+                  && bookingStore !== undefined
+                  && deps.getFormSubmissionPiiKey !== undefined
                   ? await (async () => {
                       const { createReceptionBookingMintSeam } = await import(
                         '../../ports/reception/projection/reception-booking-mint.js'
@@ -1031,9 +1050,7 @@ export const composeExecutorConfig = async (
                                 deps.receptionEndpointRegistryStore!.findById(endpoint_id),
                             }
                           : {}),
-                        ...(deps.getFormSubmissionPiiKey
-                          ? { getFormSubmissionPiiKey: deps.getFormSubmissionPiiKey }
-                          : {}),
+                        getFormSubmissionPiiKey: deps.getFormSubmissionPiiKey!,
                         // D-210 A.8 slice 3d — the visitor-confirmation send,
                         // built from the SAME pieces the `notifyBookingVisitor`
                         // dispatcher below uses, so the form-option path and the
@@ -1190,6 +1207,15 @@ export const composeExecutorConfig = async (
                     handleCollectionMailSend(
                       { registry: deps.collectionRegistry },
                       mailInput,
+                      // D-210 audit finding 3b — promote the seam's own declaration
+                      // into the TRUSTED third parameter. `notify-booking-visitor`
+                      // sets this because its `to` is a sealed visitor address; the
+                      // handler deliberately refuses to read the flag out of `args`,
+                      // so a wire caller cannot suppress its own audit recipients.
+                      {
+                        redact_audit_recipients:
+                          mailInput.redact_audit_recipients === true,
+                      },
                     ),
                 },
                 input,

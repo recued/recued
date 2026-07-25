@@ -44,6 +44,7 @@ import {
 } from '../storage/work-entity-store.js';
 import { createContactStore, type ContactStore } from '../storage/contact-store.js';
 import { createReceptionBookingMintSeam } from '../ports/reception/projection/reception-booking-mint.js';
+import { mintReceptionBookingBinding } from '../ports/reception/projection/reception-booking-binding.js';
 // ⚠ The FORM key, not the booking one, and ONE blob instead of four columns —
 // the row's readers open with `openFormSubmissionField` (`booking-blob.ts`).
 import {
@@ -74,7 +75,6 @@ let calendarCreates: number;
 interface EnvOptions {
   /** Omit the contact path (or the PII key) → no counterparty resolvable. */
   readonly withContact?: boolean;
-  readonly withPiiKey?: boolean;
   /** Omit the endpoint registry → the fallback title. */
   readonly withEndpoint?: boolean;
   /** Force the booking write to throw, to prove the anchor survives it. */
@@ -164,7 +164,7 @@ const buildSeam = (opts: EnvOptions = {}) =>
               : null,
         }
       : {}),
-    ...(opts.withPiiKey !== false ? { getFormSubmissionPiiKey: piiKey } : {}),
+    getFormSubmissionPiiKey: piiKey,
     ...(opts.withContact !== false ? { contactDeps: { store: contactStore } } : {}),
     ...(opts.withNotifyPath !== false
       ? {
@@ -247,6 +247,10 @@ const approve = async (
   mint({
     booking_request_id: request_id,
     booking_id: bookingIdFor(request_id),
+    booking_binding: mintReceptionBookingBinding(piiKey(), {
+      booking_request_id: request_id,
+      booking_id: bookingIdFor(request_id),
+    }),
     slot_start_at: slot?.start ?? NOW + DAY,
     slot_end_at: slot?.end ?? NOW + DAY + 30 * 60_000,
     // Defaults OFF here for the same reason it defaults off in the pack: every
@@ -400,10 +404,11 @@ describe('D-210 slice 3 — a reservation approve mints its booking', () => {
     // display string.
     await insertReservation('req-1');
     const seam = createReceptionBookingMintSeam({
-writeBooking: (input, now) => workStore.writeBooking(input, now),
+      writeBooking: (input, now) => workStore.writeBooking(input, now),
       readBooking: (id) => workStore.readBooking(id),
       findBooking: (request_id) => bookingStore.findById(request_id),
       markProcessed: (input) => bookingStore.markProcessed(input),
+      getFormSubmissionPiiKey: piiKey,
       findEndpoint: () => {
         throw new Error('registry unavailable');
       },
@@ -536,7 +541,7 @@ writeBooking: (input, now) => workStore.writeBooking(input, now),
     expect(rawBookingText(booking!.id)).not.toContain(VISITOR_EMAIL);
   });
 
-  it('still mints when the vault is locked (the PII key throws)', async () => {
+  it('refuses when the vault is locked because caller-selected ids cannot be authenticated', async () => {
     await insertReservation('req-1');
     const seam = createReceptionBookingMintSeam({
 writeBooking: (input, now) => workStore.writeBooking(input, now),
@@ -549,11 +554,40 @@ writeBooking: (input, now) => workStore.writeBooking(input, now),
       contactDeps: { store: contactStore },
       now: () => NOW,
     });
-    await approve(seam, 'req-1');
+    await expect(approve(seam, 'req-1')).rejects.toThrow(/FileVault is locked/);
+    expect(workStore.readBooking(bookingIdFor('req-1'))).toBeNull();
+  });
 
-    const booking = workStore.readBooking(bookingIdFor('req-1'));
-    expect(booking).not.toBeNull();
-    expect(booking!.counterparty_contact_id).toBeUndefined();
+  it('rejects missing, forged, and cross-pair bindings before either caller-selected id is read', async () => {
+    const readBooking = vi.fn(() => null);
+    const findBooking = vi.fn(() => null);
+    const writeBooking = vi.fn(() => {
+      throw new Error('must not write');
+    });
+    const seam = createReceptionBookingMintSeam({
+      readBooking: readBooking as never,
+      findBooking,
+      writeBooking: writeBooking as never,
+      getFormSubmissionPiiKey: piiKey,
+      now: () => NOW,
+    });
+    const crossPair = mintReceptionBookingBinding(piiKey(), {
+      booking_request_id: 'req-other',
+      booking_id: bookingIdFor('req-other'),
+    });
+    for (const booking_binding of ['', 'a'.repeat(43), crossPair]) {
+      await expect(seam({
+        booking_request_id: 'req-1',
+        booking_id: bookingIdFor('req-1'),
+        booking_binding,
+        slot_start_at: NOW + DAY,
+        slot_end_at: NOW + DAY + 30 * 60_000,
+        notify_visitor: false,
+      })).rejects.toThrow(/invalid caller-bound booking provenance/);
+    }
+    expect(readBooking).not.toHaveBeenCalled();
+    expect(findBooking).not.toHaveBeenCalled();
+    expect(writeBooking).not.toHaveBeenCalled();
   });
 
   it('🔴 a mint failure THROWS — an approve must never report success with no record', async () => {
@@ -629,6 +663,7 @@ writeBooking: (input, now) => workStore.writeBooking(input, now),
       markProcessed: () => {
         throw new Error('SQLITE_BUSY');
       },
+      getFormSubmissionPiiKey: piiKey,
       now: () => NOW,
     });
     // The approve completes rather than throwing…

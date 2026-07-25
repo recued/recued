@@ -21,7 +21,7 @@
  *  here is CASE-INSENSITIVE by design — a chat intent signal ("I'll send")
  *  should not be case-sensitive, unlike the recipe `contains` operator.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` § 3a (M-1). */
+ *  Spec: D-192 § 3a (M-1). */
 
 // ────────────────────────────────────────────────────────────────
 // Closed enums + caps (fail-closed bounds)

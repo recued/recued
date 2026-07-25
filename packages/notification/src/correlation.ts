@@ -14,7 +14,7 @@
  *  `status` is then the single dedup truth — within a process via the
  *  serializer, across a restart via the persisted row itself.
  *
- *  Spec: docs/d-158-spec.md § A.5 / I-6.
+ *  Spec: D-158 § A.5 / I-6.
  */
 
 import type { AskOption, PendingAsk } from './types.js';
@@ -29,11 +29,34 @@ import type { AskOption, PendingAsk } from './types.js';
  *  injected minter for deterministic tests; production omits it for
  *  this default. */
 export const mintAskId = (): string => {
-  const g = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  const g = (globalThis as {
+    crypto?: {
+      randomUUID?: () => string;
+      getRandomValues?: <T extends ArrayBufferView>(a: T) => T;
+    };
+  }).crypto;
   if (typeof g?.randomUUID === 'function') return `ask-${g.randomUUID()}`;
-  // Browserless fallback — same shape as the gateway's commit-identity.
+  // ⛔ D-210 audit finding 21 — this MINTS A BEARER CAPABILITY. The value is the
+  // only thing standing between a stranger and the owner's pending decision, so
+  // it may never come from `Math.random()`: a recoverable PRNG stream makes every
+  // future ask_id predictable from a few observed ones.
+  //
+  // The old comment called this a "browserless fallback", which read as harmless
+  // — but the SERVER is the caller, and `engines: node >= 20` (where
+  // `globalThis.crypto` is always present) is advisory metadata, not an enforced
+  // guarantee. Unreachable-in-practice is not the same as safe-by-construction.
   const bytes = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  if (typeof g?.getRandomValues === 'function') {
+    g.getRandomValues(bytes);
+  } else {
+    // Fail CLOSED. A caller with no CSPRNG at all cannot be handed a weak
+    // capability quietly — an ask that never mints is recoverable; one minted
+    // from a guessable stream is not. ⇒ [[fail_before_the_commit_when_the_failure_is_invisible_after]]
+    throw new Error(
+      'mintAskId: no cryptographic random source available — refusing to mint a '
+      + 'guessable ask capability (Node >= 19 or any Web Crypto host is required)',
+    );
+  }
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');

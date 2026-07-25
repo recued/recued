@@ -32,7 +32,7 @@
  *  deterministically without fake clocks. Each toast owns its handle; a
  *  manual dismiss or a maxVisible eviction cancels it.
  *
- *  Spec: docs/d-169-spec.md § N.5 #3 (live surface). */
+ *  Spec: D-169 § N.5 #3 (live surface). */
 
 import type { BroadcastSubscriber } from './realtime/subscriber.js';
 

@@ -4,7 +4,7 @@
  *  pure name/shape predicates the section assemblers share so the
  *  parsing logic lives in one place.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type { IngredientKind, ToolEntry } from '@recued/contracts';
 

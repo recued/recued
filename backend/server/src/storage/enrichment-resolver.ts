@@ -29,8 +29,8 @@
  *    - an array of records for `*` listings
  *    - `null` when the topic / scope / id doesn't match
  *
- *  Spec: `docs/d-122-spec.md` §"Enrichment substrate" — Unified namespace.
- *  Spec: `docs/d-125-spec.md` §"Phase 6: Enrichment substrate convention". */
+ *  Spec: D-122 §"Enrichment substrate" — Unified namespace.
+ *  Spec: D-125 §"Phase 6: Enrichment substrate convention". */
 
 import {
   CONNECTION_ENRICHMENT_SCOPES,

@@ -64,7 +64,7 @@
  *  stale on every transition — same cascade flow `commitment_imbalance`
  *  + `outbound_commitment_overdue_count` ride.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 753) + A.7.2 + A.7.3 +
+ *  Spec: D-145 §§ A.7.1 (line 753) + A.7.2 + A.7.3 +
  *        A.7.5 + A.7.6 #1 +
  *        `ENRICHMENT_REGISTRY.open_loop_pressure` +
  *        `packages/contracts/src/enrichment-declarations/open-loop-pressure.ts`. */

@@ -50,8 +50,6 @@ import type { PreviewHashStore } from '../../ports/reception/preview-hash.js';
 import type { SchedulingFormNonceStore } from '../../ports/reception/handlers/scheduling-link.js';
 import { NULL_SCHEDULING_CALENDAR_EVENTS_READER } from '../../ports/reception/handlers/scheduling-link.js';
 import type { FormSubmissionStore } from '../../storage/reception-form-store.js';
-import type { FormResponseStore } from '../../storage/form-response-store.js';
-import { emitFormResponseCreatedEvents } from '../../form-response-events.js';
 import type { ReceptionIntakeRecipePairStore } from '../../storage/reception-intake-recipe-pair-store.js';
 import type { IntakeFormNonceStore } from '../../ports/reception/handlers/intake-form.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -171,12 +169,6 @@ export interface ComposeReceptionSubstrateDeps {
   readonly ipBlockStore: ReceptionIpBlockStore | undefined;
   readonly schedulingFormNonceStore: SchedulingFormNonceStore | undefined;
   readonly intakeFormSubmissionStore: FormSubmissionStore | undefined;
-  /** D-210 WS2 — the canonical `form_response` log. The intake POST handler
-   *  writes it at SUBMIT (where the plaintext is live), so it gates the POST
-   *  path the same way the submission store does; absent ⇒ the dispatcher
-   *  keeps serving the kind-registry 503 stub rather than accepting a
-   *  submission it cannot record. */
-  readonly formResponseStore?: Pick<FormResponseStore, 'accept'> | undefined;
   /** D-200 Slice 6g.2 — compact pair registry plus current saved recipes.
    * Pair storage enables the resolver; a missing recipe store makes any
    * configured row stale rather than silently generic. */
@@ -257,8 +249,6 @@ export interface ComposeReceptionSubstrateDeps {
  *  form_response fan-out. Named rather than inlined so a reader can see that
  *  the warehouse half of the fan-out is genuinely absent on a pre-warehouse
  *  harness, instead of reading a `{ emit: () => {} }` literal as live wiring. */
-const NO_WAREHOUSE_BUS: Pick<WarehouseEventBus, 'emit'> = { emit: () => {} };
-
 /** Bundle returned to the caller. Both fields populated together — if
  *  the gate fires the helper returns `undefined` (caller leaves both
  *  let-bindings untouched). */
@@ -818,26 +808,6 @@ export const composeReceptionSubstrate = async (
     ...(deps.intakeFormSubmissionStore
       ? { getIntakeFormSubmissionStore: () => deps.intakeFormSubmissionStore! }
       : {}),
-    // D-210 WS2 — the submit-time canonical log, plus the SAME first-create
-    // fan-out the approve-time promotion uses (`compose-execution-context.ts`),
-    // so a log written at submit invalidates owner Data and signals the
-    // warehouse trigger bus exactly as one written at approval did.
-    ...(deps.formResponseStore
-      ? {
-          getFormResponseStore: () => deps.formResponseStore!,
-          onFormResponseCreated: (response) => emitFormResponseCreatedEvents(
-            {
-              realtimeBus: eventBus,
-              // A pre-warehouse harness composes no trigger bus. Realtime
-              // owner-Data invalidation still fans out; the recipe trigger
-              // simply has no bus to ride, which is the same posture every
-              // other warehouse emitter takes on that harness.
-              warehouseBus: deps.warehouseBus ?? NO_WAREHOUSE_BUS,
-            },
-            response,
-          ),
-        }
-      : {}),
     ...(deps.intakeFormNonceStore
       ? { getIntakeFormNonceStore: () => deps.intakeFormNonceStore! }
       : {}),
@@ -1075,9 +1045,8 @@ export const composeReceptionSubstrate = async (
   }
 
   // D-173 P4 § D7 — register the scheduling_link booking drain. A pending
-  // booking → a HELD review-then-approve op (the materialize is an inbound
-  // commitment, slot → promised_for_at; the calendar event is the optional
-  // write-back, P4.3). Scheduling NEVER auto-books (I-7), so there is no
+  // reservation → a HELD review-then-approve op whose materialize target is a
+  // booking with its own slot. Scheduling NEVER auto-books (I-7), so there is no
   // auto-accept branch and no work-entity store dep — the drain only
   // dispatches the review workflow (the approve-time materialize rides the
   // `reception-materialize` kernel like every other reception kind). Gated on

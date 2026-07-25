@@ -65,7 +65,7 @@
  *  No reactive harness needed — the registry-driven cascade is the
  *  reactivity primitive.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 (line 742) + A.7.3 + A.7.5 +
+ *  Spec: D-145 §§ A.7.1 (line 742) + A.7.3 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.task_signal_density_per_thread` +
  *        `packages/contracts/src/enrichment-declarations/task-signal-density-per-thread.ts`. */
 

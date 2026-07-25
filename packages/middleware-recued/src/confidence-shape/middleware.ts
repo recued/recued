@@ -15,7 +15,7 @@
  *  the empty list and resolves Pattern 4 (empty / refuse-cleanly) — a
  *  real, valid result, not a no-op.
  *
- *  Spec: docs/d-160-spec.md § P2.
+ *  Spec: D-160 § P2.
  */
 
 import type { Middleware, TurnResult } from '@recued/middleware';

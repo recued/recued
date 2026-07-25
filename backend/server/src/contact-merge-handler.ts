@@ -19,7 +19,7 @@
  *    prompt store is wired via housekeeping (P3) so the handler
  *    surfaces `not_configured` when the cycle hasn't run yet
  *
- *  Spec: `docs/d-138-spec.md` § A.6, § A.8, § Contract Tightening. */
+ *  Spec: D-138 § A.6, § A.8, § Contract Tightening. */
 
 import { randomUUID } from 'node:crypto';
 

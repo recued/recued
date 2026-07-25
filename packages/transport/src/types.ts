@@ -14,7 +14,7 @@
  *  here — it is the server-resident D-148 P9 webhook port's concern.
  *  The transport only parses an already-verified payload (`parseInbound`).
  *
- *  Spec: docs/d-160-spec.md § N.5 / N.7 / A.5.
+ *  Spec: D-160 § N.5 / N.7 / A.5.
  */
 
 import type { Buffer } from 'node:buffer';

@@ -24,7 +24,7 @@
  *  POST consumes. That split is the caller's (`peek` vs `consume`), mirroring
  *  the `/reception/claim` seller-claim surface this is modelled on.
  *
- *  Spec: docs/d-210-spec.md Appendix B. */
+ *  Spec: D-210 Appendix B. */
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';

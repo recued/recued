@@ -32,7 +32,7 @@
  *  import them from here). Delta 4 retired the former global grant-matrix panel
  *  (which had held structurally-identical copies) and repointed the imports here.
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT §6; handover
+ *  Spec: D-187 AMENDMENT §6; handover
  *  `handover_contracts_list_detail_NEXT.md` (delta 3). */
 
 import {
@@ -63,8 +63,6 @@ import {
   cliRowsForPrincipal,
   effectiveGrantState,
   hasExplicitGrant,
-  riskApprovalCopy,
-  riskLabel,
   type GrantUniverseEntry,
 } from './grant-op-universe.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -237,24 +235,22 @@ export const CONTRACT_GRANTS_KIND_GROUP_ATTR = 'data-recued-contract-grants-kind
 export const CONTRACT_GRANTS_CELL_ATTR = 'data-recued-contract-grants-cell';
 /** The cell's checkbox. Carries the same `data-*` as its cell row. */
 export const CONTRACT_GRANTS_CELL_TOGGLE_ATTR = 'data-recued-contract-grants-cell-toggle';
-/** A cell's risk-tier badge (ops). Carries `data-risk`. */
+/** Retired compatibility hook. Contract rows render Access only. */
 export const CONTRACT_GRANTS_RISK_ATTR = 'data-recued-contract-grants-risk';
-/** The "asks" mark on a write/admin/destructive op. */
+/** Retired compatibility hook. Contract rows render Access only. */
 export const CONTRACT_GRANTS_ASKS_ATTR = 'data-recued-contract-grants-asks';
 /** The "also reads: <container>" transitive-admission disclosure on an op that
  *  binds a `source_dependency` (D-192 Slice 7). Carries `data-reads` = the
  *  comma-joined container refs. */
-/** The two-axis note above the OPS list (never the entities list — it is a claim
- *  about op approval). Owner 2026-07-17: the enforcement is right, the reader's
- *  mental model is what needs fixing, so the fix is words. */
+/** Access note above the OPS list (never the entities list). */
 export const CONTRACT_GRANTS_AXIS_NOTE_ATTR = 'data-recued-contract-grants-axis-note';
 
 /** ⛔ Say REACH, never "visibility". An ungranted op is a HARD DENY, not a hidden
  *  one — calling the toggle "visibility" would undersell it in the opposite
  *  direction from the error it exists to correct. */
 export const CONTRACT_GRANTS_AXIS_NOTE =
-  'Granting an op decides what this contract can reach — not what it may do without '
-  + 'asking you. A granted Read runs silently; anything past Read is held for your approval.';
+  'Access decides which operations this contract can reach. Risk and approval '
+  + 'defaults are global pack settings and do not vary by contract.';
 
 export const CONTRACT_GRANTS_ALSO_READS_ATTR = 'data-recued-contract-grants-also-reads';
 /** The explicit-vs-default source marker on a cell. Carries `data-source`. */
@@ -518,39 +514,6 @@ export const mountContractGrantsPanel = (
     name.className = 'cg-cell-name';
     name.textContent = entry.label;
     rowLabel.appendChild(name);
-
-    if (entry.kind === 'op' && entry.risk_tier !== undefined) {
-      const badge = doc.createElement('span');
-      badge.setAttribute(CONTRACT_GRANTS_RISK_ATTR, '');
-      badge.setAttribute('data-risk', entry.risk_tier);
-      badge.className = ['cg-risk', `cg-risk-${entry.risk_tier}`].join(' ');
-      badge.textContent = riskLabel(entry.risk_tier);
-      rowLabel.appendChild(badge);
-      // The APPROVAL chip — now on EVERY tier, `read` included. It used to be
-      // suppressed for read (`riskAsks`), which said "nothing to say here" about the
-      // one decision nothing downstream will check: a read is never-class, so the
-      // grant IS the whole authorization. An unknown tier yields no copy ⇒ no chip:
-      // absence of a claim, never a wrong one. See `riskApprovalCopy`.
-      const approval = riskApprovalCopy(entry.risk_tier);
-      if (approval !== undefined) {
-        const asks = doc.createElement('span');
-        asks.setAttribute(CONTRACT_GRANTS_ASKS_ATTR, '');
-        asks.setAttribute('data-approval', entry.risk_tier);
-        // ⛔ ONE flat class, deliberately — the chip stays uniformly QUIET on every
-        // tier (muted italic). CAUTION is the BADGE's axis (`cg-risk-*` turns
-        // `--danger` red for write/admin/destructive); the chip's axis is the
-        // CONSEQUENCE STATEMENT. Browser-measured 2026-07-17 in both themes: chip
-        // #71717a/#a1a1aa grey 400 italic on all four tiers vs badge #dc2626/#f87171
-        // red 600 bordered — different registers, so 125 chips cannot drown 7 badges.
-        // A per-tier chip class (there was an unbacked `cg-asks-${tier}` here, styled
-        // by nothing and read by nothing) re-opens that settled split — if a tier ever
-        // needs more weight, it goes on the BADGE. Tests hook `data-approval`.
-        asks.className = 'cg-asks';
-        asks.textContent = approval.chip;
-        asks.title = approval.title;
-        rowLabel.appendChild(asks);
-      }
-    }
 
     // D-192 Slice 7 — disclose the container reads granting this op TRANSITIVELY
     // admits (e.g. Linear "Create issues" also reads `team.search` to resolve the
@@ -1022,27 +985,6 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-name {
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
-}
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-write,
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-admin,
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-destructive {
-  color: var(--danger, #b3261e);
-  border-color: var(--danger, #b3261e);
-}
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-asks {
-  font-size: 10px;
-  color: var(--muted);
-  font-style: italic;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-also-reads {
   font-size: 10px;

@@ -9,7 +9,7 @@
  *  a HubSpot-shaped step admits a granted read, dispatches over the operation's
  *  REST surface binding with the resolved connection, and audits.
  *
- *  Spec: docs/d-165-spec.md § Runtime flow. */
+ *  Spec: D-165 § Runtime flow. */
 
 import { describe, it, expect } from 'vitest';
 import type {

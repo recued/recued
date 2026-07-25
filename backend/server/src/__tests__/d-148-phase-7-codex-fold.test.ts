@@ -151,6 +151,9 @@ describe('Codex P1 #2 — markCompromised cascade failure surfacing', () => {
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async () => {
           throw new Error('blob-store down');
         },
@@ -211,6 +214,9 @@ describe('Codex P1 #3 — master_dek install atomicity', () => {
         },
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           // Simulate transactional flow: re-encrypt blobs + commit
           // active key flip via the install callback inside the same
@@ -243,6 +249,9 @@ describe('Codex P1 #3 — master_dek install atomicity', () => {
         },
       },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           // Simulated production path: reencryptor catches install
           // failure and rolls back re-encryption; the substrate

@@ -10,7 +10,7 @@
  *       'mail_link'` + `mail_twin_id` LIVE at read time — so add/remove-
  *       mailbox-later is correct by construction, no re-ingest.
  *
- *  Spec: `docs/d-184-engagement-sync-unification-pending-design.md`
+ *  Spec: D-184
  *  § Decision 2; decisions-log § D-184. */
 
 import Database from 'better-sqlite3';

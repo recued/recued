@@ -5,7 +5,7 @@
  *  prepopulated. Other fields (cc / bcc / body / attachments) are left
  *  untouched — the user composes those.
  *
- *  Spec: docs/d-145-spec.md § A.5.4 (Reply-context handling). */
+ *  Spec: D-145 § A.5.4 (Reply-context handling). */
 
 import type { MailComposeValues, MailReplyContext } from './types.js';
 

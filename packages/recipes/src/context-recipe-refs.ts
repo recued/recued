@@ -12,7 +12,7 @@
  *  always produces the same list, sorted lexicographically for stable
  *  hashes / diffs.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import { collectRefs, type RecipeDefinition } from '@recued/contracts';

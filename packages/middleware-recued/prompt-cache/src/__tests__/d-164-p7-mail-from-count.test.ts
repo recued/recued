@@ -189,6 +189,7 @@ describe('D-164 P7 mail from-count probe', () => {
     expect(count).toHaveBeenCalledWith(['pat@x.com']);
     expect(out?.data).toEqual({
       name: 'Pat Lee',
+      count: '2',
       count_phrase: '2 emails',
     });
     expect(Object.isFrozen(out?.data)).toBe(true);
@@ -201,7 +202,7 @@ describe('D-164 P7 mail from-count probe', () => {
     ];
     const out = await runProbe({ contact: merged, count });
     expect(count).toHaveBeenCalledWith(['pat@x.com', 'pat@old.com']);
-    expect(out?.data).toEqual({ name: 'Pat Lee', count_phrase: '5 emails' });
+    expect(out?.data).toEqual({ name: 'Pat Lee', count: '5', count_phrase: '5 emails' });
   });
 
   it('pluralizes a single email as "1 email"', async () => {
@@ -215,7 +216,7 @@ describe('D-164 P7 mail from-count probe', () => {
       { name: 'pat lee', email: 'pat@x.com', emails: ['pat@x.com'] },
     ];
     const out = await runProbe({ contact });
-    expect(out?.data).toEqual({ name: 'pat lee', count_phrase: '2 emails' });
+    expect(out?.data).toEqual({ name: 'pat lee', count: '2', count_phrase: '2 emails' });
   });
 
   it('defers (null) a ZERO count — a confident "no emails" is the least-safe answer', async () => {
@@ -250,6 +251,7 @@ describe('D-164 P7 mail from-count probe', () => {
     ['negative', -1],
     ['NaN', Number.NaN],
     ['fractional', 2.5],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
   ])('passes through (null) on a %s count (lookup bug)', async (_label, n) => {
     expect(await runProbe({ count: () => n })).toBeNull();
   });

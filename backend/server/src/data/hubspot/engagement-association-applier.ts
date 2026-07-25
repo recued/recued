@@ -25,7 +25,7 @@
  *  fires per-engagement on demand (latency: ~1 sec from CRM-side
  *  change) rather than per-cycle batched.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6.3. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6.3. */
 
 import {
   resolveContactIdentity,

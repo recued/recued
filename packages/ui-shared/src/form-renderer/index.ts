@@ -1,7 +1,7 @@
 /** D-145 PA5 — form-renderer barrel.
  *
  *  Pairs with `@recued/contracts/form-renderer` (types + generators +
- *  validators). Spec: docs/d-145-spec.md § A.3.
+ *  validators). Spec: D-145 § A.3.
  */
 
 export {

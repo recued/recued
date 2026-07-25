@@ -16,10 +16,13 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { generateRecoveryKey } from '@recued/crypto';
+import { generateRecoveryKey, createServerBundle, generateServerKey } from '@recued/crypto';
 
 import { createArchiveRuntime } from '../archive/archive-runtime.js';
+import { createKeyManager } from '../key-manager.js';
+import type { KeyManager } from '../key-manager.js';
 import { exportArchive } from '../archive/archive-export.js';
+import { ARCHIVE_FORMAT_VERSION } from '../archive/archive-format.js';
 import { EXPORT_TTL_MS } from '../archive/export-store.js';
 import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
@@ -59,7 +62,9 @@ const stagedFiles = (dir: string): string[] =>
       !f.endsWith('-shm'),
   );
 
-const newHarness = (opts: { serverVersion?: string } = {}): Harness => {
+const newHarness = (
+  opts: { serverVersion?: string; getKeys?: () => KeyManager | undefined } = {},
+): Harness => {
   const dir = mkdtempSync(join(tmpdir(), 'archive-rpc-rt-'));
   const dbPath = join(dir, 'test.db');
   const db = new Database(dbPath);
@@ -78,6 +83,7 @@ const newHarness = (opts: { serverVersion?: string } = {}): Harness => {
     configPath: null,
     serverVersion: opts.serverVersion ?? SERVER_VERSION,
     now: () => FIXED_NOW,
+    ...(opts.getKeys ? { getKeys: opts.getKeys } : {}),
     requestRestart: (cb) => {
       restarts += 1;
       onDrained = cb;
@@ -165,6 +171,62 @@ describe('archive online runtime', () => {
       ).resolves.toEqual({ realm: 'same', authorized: true });
     });
 
+    // A KeyManager wired to a real server bundle, WITHOUT enrolling a sentinel.
+    // This is the crash state the enrollment door's own comment describes: the
+    // enroll step-2→step-3 window is not transactional, so a realm can be
+    // bundle-owned with no `recovery_key_check` row, permanently.
+    const bundleOwnedKeys = async (recoveryKey: string): Promise<KeyManager> => {
+      const { bundle, masterDEK } = await createServerBundle({
+        recoveryKey,
+        serverKey: generateServerKey(),
+      });
+      masterDEK.fill(0);
+      return createKeyManager({
+        loadBundle: () => null,
+        saveBundle: () => {},
+        loadServerBundle: () => bundle,
+        saveServerBundle: () => {},
+      });
+    };
+
+    // ⛔ The bug: the gate read ownership from the SENTINEL alone. A realm that
+    // is bundle-owned but sentinel-missing looks `not_enrolled`, which (a) let
+    // a FOREIGN key overwrite an empty realm via the fresh-server bypass and
+    // (b) blocked the OWNER's own key on a non-empty realm as `target_not_empty`.
+    it('bundle-owned realm with a MISSING sentinel: a foreign key does NOT inherit the empty-server bypass', async () => {
+      const { mnemonic } = generateRecoveryKey();
+      const keys = await bundleOwnedKeys(mnemonic);
+      h = newHarness({ getKeys: () => keys });
+      h.db.exec('DELETE FROM example'); // EMPTY — the bypass case
+
+      // The owner OWNS via the bundle — not via an empty-server accident.
+      await expect(h.runtime.verifyRestoreRealm({ recoveryKey: mnemonic }))
+        .resolves.toEqual({ realm: 'same', authorized: true });
+
+      // THE FIX: sentinel-only returned { same, authorized:true } here. The
+      // bundle says this key is foreign, so the destructive swap now demands
+      // current-realm proof.
+      const foreign = generateRecoveryKey().mnemonic;
+      await expect(h.runtime.verifyRestoreRealm({ recoveryKey: foreign }))
+        .resolves.toEqual({ realm: 'cross', authorized: false, reason: 'realm_mismatch' });
+
+      // …and the current-realm key is proven against the BUNDLE, not a sentinel.
+      await expect(
+        h.runtime.verifyRestoreRealm({ recoveryKey: foreign, currentRealmKey: mnemonic }),
+      ).resolves.toEqual({ realm: 'cross', authorized: true });
+    });
+
+    it('bundle-owned realm with a MISSING sentinel: the OWNER is not blocked on a non-empty warehouse', async () => {
+      const { mnemonic } = generateRecoveryKey();
+      const keys = await bundleOwnedKeys(mnemonic);
+      h = newHarness({ getKeys: () => keys }); // `example` row present ⇒ non-empty
+
+      // Sentinel-only misread this as not_enrolled → target_not_empty and
+      // refused the owner's own backup. The bundle says owns → authorized.
+      await expect(h.runtime.verifyRestoreRealm({ recoveryKey: mnemonic }))
+        .resolves.toEqual({ realm: 'same', authorized: true });
+    });
+
     it('cross-realm: a foreign archive key needs the current-realm key', async () => {
       h = newHarness();
       await processRecoveryKey(createRecoveryKeyCheckStore(h.db), h.mnemonic); // realm bound to h.mnemonic
@@ -191,12 +253,25 @@ describe('archive online runtime', () => {
     h = newHarness();
     const { path } = await h.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: h.mnemonic });
     const manifest = await h.runtime.readManifest(path, h.mnemonic);
-    // Blob-encryption fix Phase 2 bumped the archive format version to 2.
-    expect(manifest.format_version).toBe(2);
+    // D-212 slice 1 adds the server-bundle sidecar record (format v3).
+    expect(manifest.format_version).toBe(ARCHIVE_FORMAT_VERSION);
     expect(manifest.includes_blobs).toBe(false);
     expect(manifest.tables.example).toBe(1);
     expect(manifest.record_count).toBeGreaterThanOrEqual(1);
     expect(() => new Date(manifest.exported_at).toISOString()).not.toThrow();
+  });
+
+  it('omits uncounted_tables entirely when every table was counted', async () => {
+    // ⛔ `Object.hasOwn`, not `toEqual([])`: the contract says an ABSENT field
+    // means "this server does not report it" while an EMPTY array would mean
+    // "nothing was skipped". Emitting `[]` on every healthy archive collapses
+    // those two into one wire value and makes the distinction undeclarable —
+    // the same absent-vs-known-good confusion `keyfile_sealing` exists to
+    // avoid. A renderer may only claim an exact total on the empty array.
+    h = newHarness();
+    const { path } = await h.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: h.mnemonic });
+    const manifest = await h.runtime.readManifest(path, h.mnemonic);
+    expect(Object.hasOwn(manifest, 'uncounted_tables')).toBe(false);
   });
 
   it('readManifest with the wrong recovery key throws (validates before any preview)', async () => {

@@ -15,7 +15,7 @@
  *  safest minimum. A user-only history (no assistant reply yet) yields
  *  `null` and the gate degrades gracefully.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 2.
+ *  See: D-164 § 2.
  */
 
 import type { SessionEntry } from '@recued/chat';

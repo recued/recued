@@ -10,7 +10,7 @@
  *  the bulk write. Per-run dedupe (engine-side) already covers the
  *  common case; this is belt-and-suspenders for transport retries.
  *
- *  Spec: docs/d-120-spec.md (Phase 3).
+ *  Spec: D-120 (Phase 3).
  */
 
 import type Database from 'better-sqlite3';

@@ -21,7 +21,7 @@
  *    - `housekeeping-reset-retry`       — error view, re-fires the
  *      dry-run rpc
  *
- *  Spec: docs/d-136-spec.md §A.12 + §A.13.5. */
+ *  Spec: D-136 §A.12 + §A.13.5. */
 
 import { e } from '../../template.js';
 import { button } from '../../primitives/button.js';

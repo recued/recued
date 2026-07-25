@@ -21,7 +21,7 @@
  *      `subscription_required` / `storage_io_error`) pass through
  *      verbatim.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { TLSDomainCertListEntry } from '@recued/contracts';

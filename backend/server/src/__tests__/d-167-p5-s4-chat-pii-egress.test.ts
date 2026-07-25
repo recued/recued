@@ -79,6 +79,8 @@ const makePlan = (over: Partial<PiiEgressPlan> = {}): PiiEgressPlan => ({
   ledger: freshLedger().ledger,
   resolver: piiEgress.noopFieldPrivacyResolver,
   summary: { value: { mode: 'alias', scope_kind: 'session', counts: {} } },
+  restoreAuthority: {},
+  restoredAssistantText: {},
   ...over,
 });
 
@@ -421,6 +423,275 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     expect(seen).toBe('not json {{{');
   });
 
+  it('P3 leaves a guessed session alias raw when this request did not show it', async () => {
+    const plan = makePlan();
+    const seeded = piiEgress.aliasPacketForEgress({
+      ledger: plan.ledger,
+      packet: { email: 'alice@acme.com' },
+      resolver: () => [{ path: 'email', kind: 'email' }],
+    });
+    const guessed = (seeded.aliased as { email: string }).email;
+    const real: ExecuteChatAiCall = async () => ({
+      body: {
+        response: `guessed ${guessed}`,
+        events: [],
+        tool_calls: [{ tool: 'mail.send', args: { to: guessed } }],
+      } satisfies AIOutput,
+    });
+
+    const result = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      { 'llm.prompt': JSON.stringify({ user_message: 'hello' }) },
+    );
+    expect((result.body as AIOutput).response).toBe(`guessed ${guessed}`);
+    expect((result.body as AIOutput).tool_calls[0]?.args).toEqual({ to: guessed });
+  });
+
+  it('P3 admits an alias shown inside a key-aware identifier key', () => {
+    const ledger = freshLedger().ledger;
+    const seeded = piiEgress.aliasPacketForEgress({
+      ledger,
+      packet: { owner: 'Alice Ada' },
+      resolver: () => [{ path: 'owner', kind: 'name' }],
+    });
+    const alias = (seeded.aliased as { owner: string }).owner;
+    const exposedKey = `owner_${alias}`;
+    const authority = piiEgress.deriveRequestRestoreAuthority(
+      ledger,
+      JSON.stringify({ [exposedKey]: true }),
+    );
+    expect(
+      piiEgress.restoreArgsAndKeysForApprovalWithAuthority(
+        authority,
+        { [exposedKey]: true },
+      ),
+    ).toEqual({ 'owner_Alice Ada': true });
+  });
+
+  it('P3 escapes a literal alias-shaped request key before granting key-aware restore authority', async () => {
+    const plan = makePlan({ resolver: ownerNameResolver });
+    expect(
+      (piiEgress.aliasPacketForEgress({
+        ledger: plan.ledger,
+        packet: { owner: 'Pat Lee' },
+        resolver: () => [{ path: 'owner', kind: 'name' }],
+      }).aliased as { owner: string }).owner,
+    ).toBe('pii.Person1');
+
+    let exposedKey = '';
+    let exposedOwner = '';
+    const real: ExecuteChatAiCall = async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as Record<
+        string,
+        unknown
+      >;
+      exposedKey = Object.keys(packet).find(
+        (key) => key.startsWith('pii.Person'),
+      ) ?? '';
+      exposedOwner = String(packet.owner);
+      return {
+        body: {
+          response: `literal ${exposedKey}`,
+          events: [],
+          tool_calls: [{ tool: 'noop', args: { copied: exposedKey } }],
+        } satisfies AIOutput,
+      };
+    };
+
+    const result = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      {
+        'llm.prompt': JSON.stringify({
+          owner: 'Pat Lee',
+          user_message: 'hello',
+          'pii.Person1': 'literal data',
+        }),
+      },
+    );
+    expect(exposedKey).toBe('pii.Person2');
+    // Both mappings are request-authorized. Key restoration must still be one
+    // pass so Person2 -> literal Person1 does not cascade into Pat Lee.
+    expect(exposedOwner).toBe('pii.Person1');
+    expect((result.body as AIOutput).response).toBe('literal pii.Person1');
+    expect((result.body as AIOutput).tool_calls[0]?.args).toEqual({
+      copied: 'pii.Person1',
+    });
+    expect((result.body as AIOutput).response).not.toContain('Pat Lee');
+  });
+
+  it('P3 escapes a literal alias embedded after a request-key separator', async () => {
+    const plan = makePlan({ resolver: ownerNameResolver });
+    expect(
+      (piiEgress.aliasPacketForEgress({
+        ledger: plan.ledger,
+        packet: { owner: 'Pat Lee' },
+        resolver: () => [{ path: 'owner', kind: 'name' }],
+      }).aliased as { owner: string }).owner,
+    ).toBe('pii.Person1');
+
+    let exposedKey = '';
+    const real: ExecuteChatAiCall = async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as Record<
+        string,
+        unknown
+      >;
+      exposedKey = Object.keys(packet).find(
+        (key) => key.startsWith('owner_pii.Person'),
+      ) ?? '';
+      return {
+        body: {
+          response: exposedKey,
+          events: [],
+          tool_calls: [{ tool: 'noop', args: { [exposedKey]: true } }],
+        } satisfies AIOutput,
+      };
+    };
+
+    const result = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      {
+        'llm.prompt': JSON.stringify({
+          owner: 'Pat Lee',
+          user_message: 'hello',
+          'owner_pii.Person1': 'literal data',
+        }),
+      },
+    );
+    expect(exposedKey).toBe('owner_pii.Person2');
+    expect((result.body as AIOutput).response).toBe('owner_pii.Person1');
+    expect((result.body as AIOutput).tool_calls[0]?.args).toEqual({
+      'owner_pii.Person1': true,
+    });
+    expect(JSON.stringify(result.body)).not.toContain('Pat Lee');
+  });
+
+  it('P3 escapes a colliding literal email alias before request authority is derived', async () => {
+    const plan = makePlan({ resolver: userMessageEmailResolver });
+    expect(
+      (piiEgress.aliasPacketForEgress({
+        ledger: plan.ledger,
+        packet: { user_message: 'alice@acme.com' },
+        resolver: userMessageEmailResolver,
+      }).aliased as { user_message: string }).user_message,
+    ).toBe('m1@d1.invalid');
+
+    let exposed = '';
+    const real: ExecuteChatAiCall = async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as {
+        user_message: string;
+      };
+      exposed = packet.user_message;
+      return {
+        body: {
+          response: exposed,
+          events: [],
+          tool_calls: [],
+        } satisfies AIOutput,
+      };
+    };
+
+    const result = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      {
+        'llm.prompt': JSON.stringify({
+          user_message: 'm1@d1.invalid',
+        }),
+      },
+    );
+    expect(exposed).toBe('m2@d2.invalid');
+    expect((result.body as AIOutput).response).toBe('m1@d1.invalid');
+    expect((result.body as AIOutput).response).not.toBe('alice@acme.com');
+  });
+
+  it('discards staged mappings and capture authority when the provider fails', async () => {
+    const plan = makePlan({ resolver: userMessageEmailResolver });
+    let captured = 0;
+    const real: ExecuteChatAiCall = async () => {
+      throw new Error('provider unavailable');
+    };
+    const wrapped = wrapExecuteAiCallForPii(
+      real,
+      plan,
+      () => {
+        captured += 1;
+      },
+    );
+
+    await expect(
+      wrapped(
+        MANIFEST,
+        { 'llm.prompt': JSON.stringify({ user_message: 'alice@acme.com' }) },
+      ),
+    ).rejects.toThrow('provider unavailable');
+    expect(plan.ledger.byKindRealValue.size).toBe(0);
+    expect(plan.ledger.byKindBaseAlias.size).toBe(0);
+    expect(plan.restoreAuthority?.value).toBeUndefined();
+    expect(captured).toBe(0);
+  });
+
+  it('serializes overlapping requests on one ledger so aliases cannot collide at commit', async () => {
+    const plan = makePlan({
+      resolver: () => [{
+        path: 'prior_tool_calls.0.result.name',
+        kind: 'name',
+      }],
+    });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const providerPackets: Record<string, unknown>[] = [];
+    const real = vi.fn<ExecuteChatAiCall>(async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as Record<
+        string,
+        unknown
+      >;
+      providerPackets.push(packet);
+      if (providerPackets.length === 1) await firstGate;
+      const name = (
+        packet.prior_tool_calls as Array<{ result: { name: string } }>
+      )[0]!.result.name;
+      return {
+        body: {
+          response: name,
+          events: [],
+          tool_calls: [],
+        } satisfies AIOutput,
+      };
+    });
+    const wrapped = wrapExecuteAiCallForPii(real, plan);
+    const first = wrapped(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        prior_tool_calls: [{ result: { name: 'Alice Ada' } }],
+      }),
+    });
+    await vi.waitFor(() => expect(real).toHaveBeenCalledTimes(1));
+    const second = wrapped(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        prior_tool_calls: [{ result: { name: 'Bob Baker' } }],
+      }),
+    });
+    await Promise.resolve();
+    expect(real).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({
+      body: { response: 'Alice Ada' },
+    });
+    await expect(second).resolves.toMatchObject({
+      body: { response: 'Bob Baker' },
+    });
+    expect(providerPackets.map((packet) => (
+      packet.prior_tool_calls as Array<{ result: { name: string } }>
+    )[0]!.result.name)).toEqual(['pii.Person1', 'pii.Person2']);
+    expect(plan.ledger.byKindRealValue.get('name::Alice Ada')?.alias_value).toBe(
+      'pii.Person1',
+    );
+    expect(plan.ledger.byKindRealValue.get('name::Bob Baker')?.alias_value).toBe(
+      'pii.Person2',
+    );
+  });
+
   it('accumulates the redaction summary across multiple egress packets', async () => {
     const plan = makePlan({ resolver: userMessageEmailResolver });
     const real: ExecuteChatAiCall = async (_m, input) => ({
@@ -464,7 +735,7 @@ describe('D-167 P5 S4 — pii-restore update hook (total-restore backstop)', () 
     expect(readPiiRestoredText(state)).toBe('plain reply');
   });
 
-  it('restores a surviving alias against a populated ledger', () => {
+  it('restores only an alias present in the successful request authority', () => {
     const { ledger } = freshLedger();
     // Populate the ledger by aliasing an email.
     const { aliased } = piiEgress.aliasPacketForEgress({
@@ -473,11 +744,83 @@ describe('D-167 P5 S4 — pii-restore update hook (total-restore backstop)', () 
       resolver: () => [{ path: 'email', kind: 'email' }],
     });
     const alias = (aliased as { email: string }).email;
+    const restoreAuthority = {
+      value: piiEgress.deriveRequestRestoreAuthority(
+        ledger,
+        JSON.stringify({ email: alias }),
+      ),
+    };
     const mw = createPiiRestoreMiddleware();
     const state = new Map<string, unknown>();
-    state.set(CHAT_PII_EGRESS_PLAN_STATE_KEY, makePlan({ ledger }));
+    state.set(
+      CHAT_PII_EGRESS_PLAN_STATE_KEY,
+      makePlan({ ledger, restoreAuthority }),
+    );
     mw.update!(updateCtx(state, `reply about ${alias}`));
     expect(readPiiRestoredText(state)).toBe('reply about alice@acme.com');
+  });
+
+  it('does not restore a session alias absent from the request authority', () => {
+    const { ledger } = freshLedger();
+    const { aliased } = piiEgress.aliasPacketForEgress({
+      ledger,
+      packet: { email: 'alice@acme.com' },
+      resolver: () => [{ path: 'email', kind: 'email' }],
+    });
+    const alias = (aliased as { email: string }).email;
+    const restoreAuthority = {
+      value: piiEgress.deriveRequestRestoreAuthority(
+        ledger,
+        JSON.stringify({ user_message: 'nothing sensitive' }),
+      ),
+    };
+    const mw = createPiiRestoreMiddleware();
+    const state = new Map<string, unknown>();
+    state.set(
+      CHAT_PII_EGRESS_PLAN_STATE_KEY,
+      makePlan({ ledger, restoreAuthority }),
+    );
+    mw.update!(updateCtx(state, `guessed ${alias}`));
+    expect(readPiiRestoredText(state)).toBe(`guessed ${alias}`);
+  });
+
+  it('does not second-pass an escaped alias literal already restored by the wire seam', () => {
+    const { ledger } = freshLedger();
+    expect(
+      (piiEgress.aliasPacketForEgress({
+        ledger,
+        packet: { owner: 'Pat Lee' },
+        resolver: () => [{ path: 'owner', kind: 'name' }],
+      }).aliased as { owner: string }).owner,
+    ).toBe('pii.Person1');
+    const escaped = piiEgress.preScanPacketForEgress(
+      ledger,
+      'pii.Person1',
+    ).value;
+    expect(escaped).toBe('pii.Person2');
+    const authority = piiEgress.deriveRequestRestoreAuthority(
+      ledger,
+      JSON.stringify({ owner: 'pii.Person1', literal: escaped }),
+    );
+    const alreadyRestored = piiEgress.restoreForDisplayWithAuthority(
+      authority,
+      String(escaped),
+    );
+    expect(alreadyRestored).toBe('pii.Person1');
+
+    const plan = makePlan({
+      ledger,
+      restoreAuthority: { value: authority },
+      restoredAssistantText: { value: alreadyRestored },
+    });
+    const state = new Map<string, unknown>([
+      [CHAT_PII_EGRESS_PLAN_STATE_KEY, plan],
+    ]);
+    createPiiRestoreMiddleware().update!(
+      updateCtx(state, alreadyRestored),
+    );
+    expect(readPiiRestoredText(state)).toBe('pii.Person1');
+    expect(readPiiRestoredText(state)).not.toBe('Pat Lee');
   });
 });
 
@@ -544,6 +887,7 @@ interface E2EResult {
   readonly messageComplete: string | undefined;
   readonly tokenStreamed: string | undefined;
   readonly assistantAudit: Record<string, unknown> | undefined;
+  readonly sourceLifecycles: readonly string[];
 }
 
 const runOrchestratorTurn = async (opts: {
@@ -610,11 +954,19 @@ const runOrchestratorTurn = async (opts: {
       .filter((r) => r.action === 'chat_message_sent')
       .map((r) => JSON.parse(r.detail ?? '{}') as Record<string, unknown>)
       .find((d) => d.role === 'assistant');
+    const sourceLifecycles = (
+      db.prepare(`
+        SELECT source_lifecycle
+          FROM chat_messages
+         ORDER BY ts ASC, message_id ASC
+      `).all() as Array<{ source_lifecycle: string }>
+    ).map((row) => row.source_lifecycle);
     return {
       egressPacket,
       messageComplete: (messageComplete?.final as { content?: string } | undefined)?.content,
       tokenStreamed: tokenStreamed?.delta as string | undefined,
       assistantAudit,
+      sourceLifecycles,
     };
   } finally {
     db.close();
@@ -632,6 +984,7 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
     expect(result.messageComplete).toBe('done');
     expect(result.assistantAudit).toBeDefined();
     expect(result.assistantAudit).not.toHaveProperty('redaction_summary');
+    expect(result.sourceLifecycles).toEqual(['finalized', 'finalized']);
   });
 
   it('aliases on egress, restores on display, and stamps the audit summary', async () => {
@@ -759,6 +1112,18 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
       expect((messageComplete?.final as { content?: string } | undefined)?.content).toBe(
         'found bob@acme.com',
       );
+      const harvested = await chatStore.harvestPiiSources!({
+        session_id: 'sess-1',
+        max_rows: 256,
+        max_bytes: 1_048_576,
+        max_candidates: 1_024,
+      });
+      expect(
+        harvested.rows.flatMap((row) => row.candidates),
+      ).toEqual(expect.arrayContaining([
+        { value: 'alice@acme.com', kind: 'email' },
+        { value: 'bob@acme.com', kind: 'email' },
+      ]));
     } finally {
       db.close();
     }

@@ -23,7 +23,7 @@
  *  verbatim — the off-by-one in spec text is a rounding artefact.
  *  Ratchet test asserts every documented field present.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.5. */
+ *  Spec: D-145 § A.7.5. */
 
 import {
   isSourceDegradationReason,
@@ -337,7 +337,7 @@ export interface EnrichmentDeclaration {
   /** D-164 P2 — bench-style `{ field: type }` annotation literal that
    *  the catalog substrate renders into the system prompt for this
    *  topic. Uses `REF<X>` markers on fields whose value is a key into
-   *  collection `X` (per `recued-enrichment-benchmark/scenario-engine/
+   *  collection `X` (per internal benchmarks
    *  src/enrichment-episodes/catalog.js` convention). Non-empty
    *  (validator-enforced); shape is opaque to the validator beyond
    *  presence. */

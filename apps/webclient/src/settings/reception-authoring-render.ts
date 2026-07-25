@@ -61,7 +61,7 @@
  *  interpolation. Field `key`s and closed-list option values come from
  *  the contract, but flow through `e()` anyway — cheap + uniform.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX) + § A.5.1-A.5.6
+ *  Spec: D-149 § A.9 (Settings UX) + § A.5.1-A.5.6
  *  (per-kind config contracts) + § A.3 (preview-hash-gated create). */
 
 import { e } from '@recued/ui-shared/template';
@@ -821,8 +821,7 @@ const renderSchedulingLinkBody = (m: SchedulingLinkFormModel): string =>
       renderNumberField(m.max_bookings_per_day),
     ]),
     formSection('On booking', [
-      renderToggleField(m.create_calendar_event),
-      renderToggleField(m.create_commitment_entity),
+      renderTextField(m.notify_visitor_sender),
     ]),
   ].join('');
 

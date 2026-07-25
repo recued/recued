@@ -77,7 +77,7 @@
  *  hook. Mirrors the dispose discipline of every other host in this
  *  layer.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX integration). */
+ *  Spec: D-149 § A.9 (Settings UX integration). */
 
 import type {
   IntakeFormConfig,

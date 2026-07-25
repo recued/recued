@@ -260,10 +260,52 @@ describe('D-192 E3 — propose → gateway hold → inbox approve → mint (full
       'promised_for_at',
       'statement',
     ]);
-    // The list PII-redacts the args (D-173 I-3 — no sealed args leave the row
-    // through the list; the real prefill applies at resume off the checkpoint,
-    // proven by the mint tests below).
-    expect(item.args).toEqual({});
+    // ⛔ THIS ASSERTION WAS INVERTED, and its old comment was WRONG ABOUT THE
+    // MECHANISM. It read `expect(item.args).toEqual({})` under the claim that
+    // *"the list PII-redacts the args (D-173 I-3)"*. Nothing redacts
+    // `item.args` — it is `resolved.args` verbatim, and the `form_response`
+    // arm deliberately ADDS the sealed visitor email to it. The `{}` here was
+    // an ARTIFACT: kernel ops dispatch through the engine's simple-form branch,
+    // which recorded nothing under the gated step id, so this path had no args
+    // to show rather than args withheld.
+    //
+    // The contract already assigned the two roles: `InboxItem.args` is
+    // *"concrete values — what the held op will dispatch"*, and
+    // `InboxItem.preview` is the field carrying the I-3 obligation (*"REDACTED
+    // … never carries un-revealed PII"*). The owner ruled the same way: for a
+    // custom intake there is no knowing in advance which fields someone needs
+    // in order to approve, so the list lays them out.
+    //
+    // 🔑 The tell that the empty prefill was a DEFECT is three lines up — the
+    // allowlist offers `counterparty_contact_id` and `statement` as EDITABLE,
+    // so the owner was handed edit fields the form could not fill in.
+    // `evidence_blob` is deliberately not editable yet appears here anyway,
+    // correctly: it is not something to change, it is the reason to decide.
+    //
+    // Owner-only by construction — `reception.inbox.list` is `requireAdmin`
+    // gated and is a WS rpc, which does not bridge to MCP.
+    expect(item.args).toEqual({
+      counterparty_contact_id: 'anna@acme.com',
+      derivation: 'evidence_captured',
+      direction: 'inbound',
+      evidence_blob: [
+        {
+          actor_email: 'anna@acme.com',
+          captured_at: 1_700_000_000_000,
+          confidence: 0.82,
+          full_target_id: 'hubspot_email_conn_e1',
+          kind: 'mail',
+          snippet: 'send the revised SOW by Friday',
+          source: 'engagement_email',
+          source_at: 1_699_996_400_000,
+        },
+      ],
+      promised_at: 1_699_996_400_000,
+      statement: 'send the revised SOW by Friday',
+    });
+    // The card itself stays redacted — that is where I-3 actually lives.
+    expect(JSON.stringify(item.preview)).not.toContain('@');
+    expect(JSON.stringify(item.preview)).not.toContain('SOW');
   });
 
   it('THE CAPSTONE — approve with owner edits → resume MINTS an evidence_captured commitment', async () => {

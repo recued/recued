@@ -37,7 +37,7 @@
  *  per-process; the cycle catches up on cold-start gaps via cursor
  *  advance.
  *
- *  Spec: `docs/d-130-spec.md` § A.4 + § Phase 5. */
+ *  Spec: D-130 § A.4 + § Phase 5. */
 
 import {
   SALESFORCE_PUSHTOPIC_CHANNEL_PREFIX,

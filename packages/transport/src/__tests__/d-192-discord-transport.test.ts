@@ -201,6 +201,47 @@ describe('D-192 Discord — inbound', () => {
     expect(transport.parseConversationId({ type: 3 })).toBeNull();
   });
 
+  it('TRIMS an over-cap send instead of losing it silently — send, prompt AND close', async () => {
+    // ⛔ THE DEFECT. Discord ships as a NOTIFY **+ APPROVE** channel, but its
+    // send sites had no length guard while the option-count, button-label and
+    // custom-id caps were all enforced. Past the 2000-char content cap the API
+    // 400s, the remote channel throws, and `fanOutAsk` CATCHES it — so the
+    // owner never learns a decision is waiting and the run sits paused on an
+    // answer nobody was asked for. Its siblings got `fitText`; this file did
+    // not. A trimmed approval beats a vanished one, PROVIDED the trim is
+    // disclosed. [[complete_the_fence_dont_predict_the_default]]
+    const long = 'y'.repeat(5000);
+
+    const sendFetch = vi.fn(async () => okResponse({ id: 'MSG-1' }));
+    await createDiscordTransport({ fetchImpl: sendFetch as unknown as typeof fetch })
+      .send({ recipient: CHANNEL, token: TOKEN, text: long });
+
+    const promptFetch = vi.fn(async () => okResponse({ id: 'MSG-2' }));
+    await createDiscordTransport({ fetchImpl: promptFetch as unknown as typeof fetch })
+      .sendPrompt({
+        recipient: CHANNEL,
+        token: TOKEN,
+        correlation_id: 'ask_1',
+        text: `${long}\n\nApprove?`,
+        options: [{ id: 'approve', label: 'Approve' }],
+      });
+
+    for (const [label, f] of [['send', sendFetch], ['sendPrompt', promptFetch]] as const) {
+      const [, init] = f.mock.calls[0]! as unknown as [string, RequestInit];
+      const content = JSON.parse(init.body as string).content as string;
+      // Fits the vendor cap …
+      expect([label, content.length <= 2000]).toEqual([label, true]);
+      // … and SAYS what it cut, rather than shortening in silence.
+      expect([label, content.includes('trimmed to fit Discord')])
+        .toEqual([label, true]);
+    }
+
+    // Middle-out, so the closing question the buttons answer survives the cut.
+    const [, promptInit] = promptFetch.mock.calls[0]! as unknown as [string, RequestInit];
+    expect((JSON.parse(promptInit.body as string).content as string).trimEnd())
+      .toMatch(/Approve\?$/);
+  });
+
   it('surfaces the interaction snowflake — the dedup key and the declared id_field', () => {
     expect(discordInteractionId(press('ask-1|approve'))).toBe('111222333444555666');
     expect(discordInteractionId({ type: 3 })).toBeNull();

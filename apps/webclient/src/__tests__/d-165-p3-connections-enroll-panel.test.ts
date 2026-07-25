@@ -247,7 +247,9 @@ const mountPanel = (opts: MountOpts = {}) => {
           kind: args.kind,
           display_name: args.display_name,
         }),
-        probe: { status: 'ok' } as ConnectionHealth,
+        // Enrollment's stored baseline is deliberately not a live check. The
+        // submit controller must call runProbe to turn this into `ok`.
+        probe: { status: 'unknown' } as ConnectionHealth,
       })),
   );
   const runUpdate = vi.fn<ConnectionsUpdateCaller>();
@@ -910,6 +912,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(payload.display_name).toBe('My API');
     expect(payload.config).toMatchObject({ base_url: 'https://api.example.com' });
     expect(payload.auth).toMatchObject({ type: 'bearer', token: 'secret-123' });
+    expect(calls.runProbe).toHaveBeenCalledTimes(1);
+    expect(calls.runProbe).toHaveBeenCalledWith({ name: 'my-api', kind: 'api' });
 
     // Dialog closed; the post-save probe banner is retained.
     expect(mount.getState().dialog.stage).toBe('closed');
@@ -919,6 +923,37 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       status: 'ok',
     });
     // Re-listed after the write.
+    expect(calls.runList).toHaveBeenCalledTimes(2);
+    mount.dispose();
+  });
+
+  it('keeps a successful enrollment when the follow-up probe rpc fails', async () => {
+    const { mount, click, field, calls } = mountPanel({
+      connections: [],
+      runProbe: async () => {
+        throw new Error('probe transport unavailable');
+      },
+    });
+    await mount.whenLoaded();
+
+    click({ action: 'connections-open-add' });
+    click({ action: 'connections-pick-kind', kind: 'api' });
+    field('name', 'saved-api');
+    field('display_name', 'Saved API');
+    field('config.base_url', 'https://api.example.com');
+    field('auth.token', 'secret-123');
+    click({ action: 'connections-submit-form' });
+    await tick();
+
+    expect(calls.runEnroll).toHaveBeenCalledTimes(1);
+    expect(calls.runProbe).toHaveBeenCalledWith({ name: 'saved-api', kind: 'api' });
+    expect(mount.getState().dialog.stage).toBe('closed');
+    expect(mount.getState().dialog.error).toBeNull();
+    expect(mount.getState().dialog.recentProbe).toEqual({
+      kind: 'api',
+      name: 'saved-api',
+      status: 'probe transport unavailable',
+    });
     expect(calls.runList).toHaveBeenCalledTimes(2);
     mount.dispose();
   });

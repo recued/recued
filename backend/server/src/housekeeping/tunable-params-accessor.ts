@@ -28,7 +28,7 @@
  *  prefer these helpers over `ctx.tunableParams.getNumber(...)?` to
  *  keep call sites uncluttered.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.8. */
+ *  Spec: D-145 § A.7.8. */
 
 import { type EnrichmentTopic } from '@recued/contracts';
 

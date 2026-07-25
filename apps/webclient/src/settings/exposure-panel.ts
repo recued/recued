@@ -62,7 +62,7 @@
  *  the modal + surfaces the humanized message in the inline action
  *  banner — a dropped socket isn't a phrase problem.
  *
- *  Spec: docs/d-148-spec.md § A.7 + the R26.2 design
+ *  Spec: D-148 § A.7 + the R26.2 design
  *  (`handover_webclient_ia_implementation.md` § Exposure & Serving). */
 
 import {

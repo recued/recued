@@ -25,7 +25,7 @@
  *  dynamic-imports `decode`/`encode` (keeping the connection-handler module out
  *  of the static boot graph) and injects them.
  *
- *  Spec: `docs/d-192-file-source-family.md`; the refresh gate is
+ *  Spec: D-192; the refresh gate is
  *  `packages/ingredients/src/connection-api.ts` (`createEnsureFreshAuth`); the
  *  persist template is `composition/bin/wire-executor-config.ts`
  *  (`makeRefreshPersistAuth`) + `wire-vendor-substrate.ts`. */

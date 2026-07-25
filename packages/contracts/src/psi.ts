@@ -3,7 +3,7 @@
  *  Pure / portable / testable in isolation. The producer in
  *  `backend/server/src/housekeeping/producers/confidence-drift-signal.ts`
  *  + future UI logic + tests share this module. Spec:
- *  `docs/d-133-spec.md`. */
+ *  D-133. */
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -138,7 +138,7 @@ export interface ConfidenceDriftSignal {
   computed_at: number;
   /** Set when the user dismissed the drift banner for the latest
    *  `(source_topic, severity-transition)` pair. Cleared on the next
-   *  severity transition. Per `docs/d-133-spec.md` decision §8 — kept
+   *  severity transition. Per D-133 decision §8 — kept
    *  on the row to avoid a parallel dismissal-tracking schema. */
   dismissed_at?: number;
 }

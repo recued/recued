@@ -23,7 +23,7 @@
  *  hardening (multi-channel close, the staleness guard); P4 the
  *  D-149 / D-152 existing-consumer migration.
  *
- *  Spec: docs/d-158-spec.md § N.1-N.9 / A.1-A.9 / P0.
+ *  Spec: D-158 § N.1-N.9 / A.1-A.9 / P0.
  */
 
 import { CHANNEL_ROLES } from '@recued/contracts';

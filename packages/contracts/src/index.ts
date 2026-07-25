@@ -604,7 +604,20 @@ export {
   // D-182 §7.1 — install grant dialog selection.
   INSTALL_ACCESS_TIERS, INSTALL_SCOPE_WHO,
   isInstallGrantSelection, isInstallAudienceSelection,
+  // Install-vs-browse marker on the apex install-manifest fetch (shared by the
+  // server-side sender and the D-180 SSR worker that reads it).
+  INSTALL_MANIFEST_MARKER_HEADER,
 } from './bulk-pack.js';
+// Storable-encoding gate — strings Postgres jsonb cannot hold (lone surrogates,
+// raw NUL). Shared by the publish validators, the authoring gate, and the
+// community corpus guard so the walk cannot drift between them.
+export {
+  findUnstorableStrings,
+  describeUnstorable,
+  UNSTORABLE_FINDING_LIMIT,
+} from './storable-encoding.js';
+export type { UnstorableFinding, UnstorableKind } from './storable-encoding.js';
+
 export type {
   BulkPackManifest,
   BulkPackRecipeRef,
@@ -756,12 +769,15 @@ export type { ValueHintType, ValueHint } from './value-hint.js';
 // D-165 P0 — provider-catalog seed (minimal): catalog-form detection +
 // per-connection operation-profile policy resolution + gateway audit shape.
 export type {
-  OperationRiskTier, OperationApproval, OperationBoundWebhookDeclaration,
+  OperationRiskTier, OperationApproval, AuthorizationProvenance,
+  OperationBoundWebhookDeclaration,
   OperationSpec, OperationGroupSpec,
   // D-165 P3.path-picker (Slice 3) — per-operation path-scope contract.
   PathScopeContract, PathScopeCheck,
   ProviderDefaultPolicy, ConnectionOperationProfile,
   CatalogVerdict, CatalogDenyReason, CatalogOperationResolution, GatewayCallAudit,
+  // D-211 §2 — the owner's replace-if-present override ruling ({risk?, approval?}).
+  OwnerOverridePolicy,
   // D-165 follow-on — operation-group grant view (user-facing grant rpc).
   OperationGroupGrantState, OperationGroupGrantView,
   // D-165 P2 — full catalog policy shape (enums + compound-op + metadata).
@@ -804,8 +820,12 @@ export type {
 export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
-  // the composition/manifest authoring validators derive from).
-  RISK_APPROVAL_FLOOR, approvalFloorForRisk, isApprovalBelowRiskFloor,
+  // the composition/manifest authoring validators derive from). D-211 §2 adds
+  // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
+  // plus the ONE canonical approval vocabulary (ordered list + membership guard)
+  // every consumer derives from instead of hand-copying the closed list.
+  RISK_APPROVAL_FLOOR, approvalFloorForRisk, isApprovalBelowRiskFloor, clampToFloor,
+  OPERATION_APPROVALS, isOperationApproval,
   // D-187 policy-matrix retirement (slice 3) — the op-risk APPROVAL replacement for the
   // (channel × actor) matrix: simple-form op-risk base + the stage-trust ceiling RELAX.
   resolveSimpleFormOperationPolicy, applyTrustCeiling,
@@ -968,8 +988,8 @@ export {
   qualityDelegationPaused,
   evaluateThreeConjunctGate,
 } from './quality-delegation.js';
-// D-202 task 4a — the pure quality-gate decision orchestrator (re-derive the
-// authorization conjunct without the review lifts + compose the three-conjunct gate).
+// D-202 task 4a / D-211 Slice 3 — compose the captured pre-lift authorization
+// conjunct with the quality three-conjunct gate.
 export { resolveQualityGateDecision } from './quality-gate-decision.js';
 export type { QualityGateDecisionInputs } from './quality-gate-decision.js';
 // D-196 Seller Economy — seller settings/tier/customer/usage substrate shapes.
@@ -1312,6 +1332,18 @@ export {
   OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy,
   catalogIngredientViews,
 } from './contract-override.js';
+// D-211 — global owner replacements for pack operation defaults. Separate from
+// actor-scoped contract.override tightening by construction.
+export type {
+  OwnerOperationPolicyInput, OwnerOperationView,
+  OwnerOperationSpecView, OwnerOperationIngredientView,
+  OwnerOperationUpdateReviewItem,
+} from './owner-operation-override.js';
+export {
+  OWNER_OPERATION_SCOPE, ownerOperationRowValue,
+  isEmptyOwnerOperationPolicy, readOwnerOperationOverride,
+  ownerOperationIngredientViews, operationSpecHash, isOperationSpecHash,
+} from './owner-operation-override.js';
 // D-166 §"Merge algebra formalization" — the pure contract-policy merge engine
 // (field lattices + applyMergeRule + composeRows + wouldLoosen). composeForRole
 // dispatcher + tightening_only write-enforcement consume these in a later slice.
@@ -1641,7 +1673,11 @@ export type {
 // preflight-gated run is re-instantiated from; contracts ship the
 // shape + guard, `@recued/storage` ships the `CheckpointStore`.
 export { isCheckpoint } from './checkpoint.js';
-export type { Checkpoint, PreflightApprovedTarget } from './checkpoint.js';
+export type {
+  Checkpoint,
+  PreflightApprovedTarget,
+  PreflightCheckpointContext,
+} from './checkpoint.js';
 // D-157 P1 — preflight pause signal. Thrown from an `ingredientExecutor`
 // when the policy matrix yields `'ask'`; the engine catches it distinctly
 // from a normal step error, snapshots `step.*`, and ends the run with
@@ -1652,7 +1688,10 @@ export {
   PreflightRequiredSignal,
   isPreflightRequiredSignal,
 } from './preflight-signal.js';
-export type { PreflightSignalDetails } from './preflight-signal.js';
+export type {
+  PreflightSignalDetails,
+  PreflightOverrideOffer,
+} from './preflight-signal.js';
 // D-153 / D-187 — admission-decision primitives: the AdmissionDecision shape +
 // the scope fence (the matrix merge/tool-gate were retired with the matrix).
 export {
@@ -2622,7 +2661,11 @@ export type {
   RecipeBundle,
   VaultScope,
   InstallSource,
-  RedirectFollower,
+  NonRemoteInstallSource,
+  RemoteBundleInstallDescriptor,
+  RemoteBundleInstallSource,
+  RedirectResolvedBundleUrl,
+  FetchedRemoteBundle,
   BundleSignatureStatus,
   BundleSignatureResult,
   PubkeyTrustState,
@@ -2687,7 +2730,7 @@ export {
 
 // D-168: SYNC_OBJECTS substrate retired. `sync_transport` on
 // `contract.*` composite_keys is now the sole declaration surface for
-// sync policy (see docs/d-166-spec.md §"Per-scope sync policy").
+// sync policy (see D-166 §"Per-scope sync policy").
 
 // Pair-scoped instance preferences (pair-rpc/storage path; no SYNC_OBJECTS registry).
 export {
@@ -3521,6 +3564,11 @@ export type {
   FormResponseGetRpcResponse,
   FormResponseSetStateRpcRequest,
   FormResponseSetStateRpcResponse,
+  FormResponseUpdateRpcRequest,
+  FormResponseUpdateRpcResponse,
+  FormResponseExportFormat,
+  FormResponseExportRpcRequest,
+  FormResponseExportRpcResponse,
 } from './form-response.js';
 
 // D-149 P11 § A.10 — pre-built intake_form templates (Foundation pack
@@ -3787,6 +3835,7 @@ export {
   SCHEDULING_LINK_INSTRUCTIONS_MAX,
   SCHEDULING_LINK_SUCCESS_MESSAGE_MAX,
   SCHEDULING_LINK_TZ_MAX,
+  SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX,
   SCHEDULING_LINK_VISITOR_NAME_MAX,
   SCHEDULING_LINK_VISITOR_EMAIL_MAX,
   SCHEDULING_LINK_VISITOR_PHONE_MAX,
@@ -3846,6 +3895,15 @@ export {
   CHAT_MESSAGE_ROLES,
   CHAT_MESSAGE_ROLE_SET,
   isChatMessageRole,
+  CHAT_DATA_DIAGNOSIS_RELATIONSHIPS,
+  CHAT_DATA_DIAGNOSIS_RELATIONSHIP_SET,
+  isChatDataDiagnosisRelationship,
+  CHAT_DATA_DIAGNOSIS_INTENTS,
+  CHAT_DATA_DIAGNOSIS_INTENT_SET,
+  isChatDataDiagnosisIntent,
+  CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUSES,
+  CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUS_SET,
+  isChatDataDiagnosisResolutionStatus,
   CHAT_RPC_METHODS,
   CHAT_RPC_METHOD_SET,
   isChatRpcMethod,
@@ -3882,6 +3940,7 @@ export {
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
   modelTierToModelHint,
   // D-167 (recall path) — recall-tool classification + prior-tool-call partition
+  NON_RETAINABLE_RECALL_TOOL_NAMES,
   MEMORY_RECALL_TOOL_NAMES,
   partitionPriorToolCalls,
   // D-137 P2 § A.4 — Server-side read consolidation
@@ -3927,6 +3986,7 @@ export type {
   ChatDispatchContext,
   ChatDispatchReason,
   ChatDispatchResult,
+  ChatRunHeld,
   InternalToolRegistry,
   ChatModelRoutingLayer,
   ChatModelSourceId,
@@ -3943,6 +4003,12 @@ export type {
   ChatPriorToolCall,
   ChatProvenanceRef,
   ChatMessageAttachment,
+  ChatDataDiagnosisRelationship,
+  ChatDataDiagnosisIntent,
+  ChatDataDiagnosisResolutionStatus,
+  ChatDataDiagnosisResolution,
+  ChatDataDiagnosisRequest,
+  ChatDataDiagnosisContext,
   ChatMessage,
   ChatEgressPacket,
   ChatSessionSummary,
@@ -4000,6 +4066,8 @@ export type {
   // D-137 P3 § A.11 — plan-approval substrate
   ChatPlanStatus,
   ChatPlanProposal,
+  ChatPlanExecutionReceipt,
+  ChatPlanRecord,
 } from './chat.js';
 
 // D-137 Trio #E — per-call token usage telemetry.
@@ -4469,8 +4537,8 @@ export {
   PROJECT_STATE_SET,
   PROJECT_TITLE_MAX,
   PROJECT_HIERARCHY_MAX_DEPTH,
-  // D-210 — booking: the mutable business entity beside a reservation's
-  // calendar event (time on the event, business on the booking).
+  // D-210 — booking: the canonical mutable business reservation, including
+  // its own agreed slot and lifecycle.
   BOOKING_LIFECYCLE_STATES,
   BOOKING_LIFECYCLE_STATE_SET,
   BOOKING_DEFAULT_LIFECYCLE_STATE,
@@ -4528,6 +4596,8 @@ export type {
   ProjectState,
   Booking,
   BookingLifecycleState,
+  BookingHistoryEntry,
+  BookingHistorySummary,
   WorkEntity,
   SourceSelectInput,
   TaskCreateInput,
@@ -4544,10 +4614,13 @@ export type {
   ProjectCreateInput,
   ProjectUpdateInput,
   ProjectArchiveInput,
+  BookingCreateInput,
+  BookingUpdateInput,
   TaskWriteOutput,
   NoteWriteOutput,
   CommitmentWriteOutput,
   ProjectWriteOutput,
+  BookingWriteOutput,
   WorkEntityDeleteOutput,
   WorkEntityDerivedEventKind,
 } from './work-entities.js';
@@ -5214,7 +5287,7 @@ export type {
   RecuedPlanValidationIssue,
 } from './recued-plan.js';
 
-// D-150 — dependency-free `recued-bench` extraction support facade.
+// D-150 — dependency-free internal benchmarks extraction support facade.
 // Namespaced to avoid shadowing the canonical RecuedPlan/contact exports
 // above while giving extraction tooling one explicit allowlist target.
 export * as D150BenchSupport from './d-150-bench-support.js';
@@ -5726,6 +5799,12 @@ export * from './stall-detection.js';
 // LaneStatus / KillDescriptor / HeavyOpErrorCategory / LiveControlCapability +
 // the `execution.{active,kill,cancel,promote}` rpc shapes).
 export * from './execution-control.js';
+// D-214 execution cases — request → flow precedent, harvested at the governed
+// boundary and fed back as ADVISORY evidence (OutcomeReport / RequestShape /
+// FlowPattern / ExecutionCase / ExecutionCaseCard / CaseCandidateSource).
+// Nothing here gates or permits; `outcome.report` is chat-only and is
+// deliberately NOT a kernel op — no OPS entry, no contract toggle, no grant.
+export * from './execution-case.js';
 // D-172 resumable uploads — webclient binary-WS transport contract (chunk-frame
 // codec + ack shape + the `upload.{create,probe,finalize,delete}` rpc shapes).
 export * from './upload-frame.js';

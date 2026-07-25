@@ -70,6 +70,7 @@ const askDecision = (
   verdict: 'ask',
   risk_tier: 'write',
   detail: 'approval required',
+  authorization_provenance: { pre_lift_approval: 'ask' },
   ...overrides,
 });
 
@@ -241,6 +242,7 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
       operation_id: 'mail.send',
       connection_name: 'gmail-primary',
       risk_tier: 'admin',
+      pre_lift_approval: 'ask',
       arg_shape_hash: withConnectionHashes.arg_shape_hash,
       canonical_payload_hash: withConnectionHashes.canonical_payload_hash,
     } satisfies SessionGrantGateCall);
@@ -251,6 +253,7 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
       ingredient_slug: 'mail.forged',
       connection_name: 'gmail-primary',
       risk_tier: 'admin',
+      pre_lift_approval: 'ask',
       arg_shape_hash: withConnectionHashes.arg_shape_hash,
       canonical_payload_hash: withConnectionHashes.canonical_payload_hash,
     } satisfies SessionGrantGateCall);
@@ -260,6 +263,7 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
       channel_session_id: 's',
       ingredient_slug: 'mail.no_connection',
       risk_tier: 'admin',
+      pre_lift_approval: 'ask',
       arg_shape_hash: withoutConnectionHashes.arg_shape_hash,
       canonical_payload_hash: withoutConnectionHashes.canonical_payload_hash,
     } satisfies SessionGrantGateCall);

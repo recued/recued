@@ -43,7 +43,7 @@
  *  Checkboxes + buttons carry real listeners, so the dialog builds via
  *  `createElement` (the same shape as `local-tools-panel.ts`), not an HTML string.
  *
- *  Spec: docs/d-182-spec.md §7.1 (the install grant dialog); the rpc shapes live
+ *  Spec: D-182 §7.1 (the install grant dialog); the rpc shapes live
  *  in `packages/contracts/src/cli-reachability-rpc.ts`; the post-install
  *  adjustment lens is `local-tools-panel.ts` (§7.2). */
 

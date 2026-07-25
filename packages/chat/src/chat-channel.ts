@@ -10,7 +10,7 @@
  *  orchestrator rewire onto this substrate is incremental (D-160 O-5)
  *  and out of P0 scope — P0 ships the channel, P1 wires the framework.
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5.
+ *  Spec: D-160 § N.5 / A.5.
  */
 
 import type { ExecutionSource } from '@recued/contracts';

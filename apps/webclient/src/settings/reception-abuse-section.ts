@@ -17,7 +17,7 @@
  *  detail deep-link (`#reception/endpoints/<id>`), which the spine routes to
  *  that endpoint's detail view on mount (R19 Slice 4).
  *
- *  Design record: `recued-project/handovers/webclient-ia-treemap.md` §9
+ *  Design record: internal design notes §9
  *  + Review log R19 / R19.1. */
 
 import { e } from '@recued/ui-shared/template';

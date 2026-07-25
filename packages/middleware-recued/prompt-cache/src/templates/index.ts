@@ -29,7 +29,7 @@
  *    registerPromptCacheMiddleware(registry, deps);
  *    ```
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates. */
 
 import type { DataSnapshot } from '../gate/data-presence.js';
@@ -46,24 +46,39 @@ export {
 
 export {
   CONTACT_ATTRIBUTE_TEMPLATES,
+  CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE,
   matchContactAttributeTemplate,
   type ContactAttribute,
 } from './contact-attribute.js';
 
 export {
+  CONTACT_ATTRIBUTE_LIST_MAX,
+  CONTACT_ATTRIBUTE_LIST_MIN,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATE_DESCRIPTORS,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATES_BY_LOCALE,
+  matchContactAttributeListTemplate,
+  type ContactAttributeListTemplateDescriptor,
+} from './contact-attribute-list.js';
+
+export {
   CALENDAR_NEXT_MEETING_TEMPLATE,
+  CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE,
   matchCalendarNextMeetingTemplate,
 } from './calendar-next-meeting.js';
 
 export {
   MAIL_FROM_COUNT_TEMPLATE,
+  MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE,
   matchMailFromCountTemplate,
 } from './mail-from-count.js';
 
 export {
   CONTACT_HAS_EMAIL_TEMPLATE,
+  CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE,
   CONTACT_HAS_NO_EMAIL_TEMPLATE,
+  CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE,
   matchContactHasEmailTemplate,
+  resolveContactHasNoEmailTemplate,
 } from './contact-has-email.js';
 
 export {

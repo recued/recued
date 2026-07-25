@@ -99,6 +99,14 @@ describe('deriveKEKFromRecoveryKey', () => {
 });
 
 describe('deriveSubDEK — domain separation', () => {
+  it('D-212 database key is distinct from every existing server-data key', () => {
+    const master = randomBytes(32);
+    const database = deriveSubDEK(master, 'database');
+    expect(Array.from(database)).not.toEqual(Array.from(deriveSubDEK(master, 'server-data')));
+    expect(Array.from(database)).not.toEqual(Array.from(deriveSubDEK(master, 'blob-store')));
+    expect(Array.from(database)).not.toEqual(Array.from(deriveSubDEK(master, 'vault')));
+  });
+
   it('different domains produce different sub-DEKs from same Master DEK', () => {
     const master = randomBytes(32);
     const a = deriveSubDEK(master, 'server-data');

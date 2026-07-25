@@ -14,7 +14,7 @@
  *  core partition. Mirrors the Housekeeping mount's run-now confirm flow
  *  + `housekeeping_cycle` live refresh.
  *
- *  Spec: `handovers/webclient-ia-treemap.md` §R25 (LOCKED) point 4. */
+ *  Spec: internal design notes §R25 (LOCKED) point 4. */
 
 import {
   initialHousekeepingRunNowDialogState,

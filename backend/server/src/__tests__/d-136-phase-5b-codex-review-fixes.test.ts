@@ -13,7 +13,7 @@
  *         declarers (`invalidates_on_pulse_change: false`) are
  *         skipped.
  *
- *  Spec: docs/d-136-spec.md §A.5 + §A.7 + §A.14.1. */
+ *  Spec: D-136 §A.5 + §A.7 + §A.14.1. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

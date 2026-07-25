@@ -60,7 +60,7 @@
  *  delegated click listener. The renderer's HTML is owned wholesale
  *  by the mount's host element; clearing innerHTML is a clean wipe.
  *
- *  Spec: docs/d-156-pair-substrate-retirement-pending-design.md
+ *  Spec: D-156
  *  § Settings → Devices page shape. */
 
 import type { ServerPairedDevice } from '@recued/contracts';

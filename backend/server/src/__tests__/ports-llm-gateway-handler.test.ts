@@ -1424,6 +1424,7 @@ describe('createLlmGatewayPortHandler', () => {
       });
       expect(snapshot).toEqual(expect.objectContaining({
         contract_id: CONTRACT_ID,
+        contract_version: expect.stringMatching(/^authority-sha256-v1:[0-9a-f]{64}$/),
         allowed_tools: ['ingredient.allowed'],
       }));
       const baseCall = {

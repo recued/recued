@@ -11,7 +11,7 @@
  *  ## Why a mount file and not a panel-render fold
  *
  *  PA11's spec scope was narrow: "Settings → Housekeeping per-pair tab
- *  gains a 'LLM result cache' summary card" (docs/d-145-spec.md line
+ *  gains a 'LLM result cache' summary card" (D-145 line
  *  1261). The full housekeeping panel (preset picker / trust radios /
  *  topic-reset modal / detail drawer) has roughly 15 rpcs + 3 realtime
  *  event subscriptions; mounting it wholesale is a ~1000+ LOC slice.
@@ -57,7 +57,7 @@
  *  `Date.now`; tests pin a fixed instant so the rendered "Last GC: Xh
  *  ago" text is reproducible.
  *
- *  Spec: docs/d-145-spec.md § A.7.10 + PA11 widening (line 1261). */
+ *  Spec: D-145 § A.7.10 + PA11 widening (line 1261). */
 
 import { LLM_RESULT_CACHE_GC_TASK_ID } from '@recued/contracts';
 import {

@@ -40,7 +40,7 @@
  *      inline. On rpc success the host clears both slices + refreshes
  *      the roster.
  *
- *  Spec: docs/d-156-pair-substrate-retirement-pending-design.md
+ *  Spec: D-156
  *  § Settings → Devices page shape. */
 
 import { e } from '../template.js';

@@ -48,7 +48,22 @@
  *      done ── Close ──▶ loading              (re-fetch so banners refresh)
  *      error ── Back ──▶ idle
  *
- *  Spec: docs/d-148-spec.md § A.11 (Key Health + Rotation Center). */
+ *  ── D-212 §7.10: the keyfile posture rides along ────────────────────
+ *
+ *  This page answers "how are my keys protected", so it is where the
+ *  keyfile's own protection belongs — the keyfile is what the server
+ *  unwraps its vault key from at boot, i.e. the thing that guards every
+ *  class listed below it. It renders FIRST for that reason, from a
+ *  separate `system.status` read.
+ *
+ *  ⚠ That read is deliberately NOT part of the page's load contract. A
+ *  `system.status` failure leaves the key inventory rendered and shows the
+ *  posture card in its own "couldn't read" state; only `key.health` can put
+ *  the page in `load_error`. Two independent reads, two independent
+ *  failures — folding them would let a missing posture hide the inventory.
+ *
+ *  Spec: D-148 § A.11 (Key Health + Rotation Center);
+ *  D-212 § 7.10 (standing posture surface). */
 
 import {
   type KeyClass,
@@ -58,8 +73,13 @@ import {
   type RotationAvailability,
   type RotationErrorCode,
   type RotationResult,
+  type ServerSystemStatus,
 } from '@recued/contracts';
 
+import {
+  describeKeyfilePosture,
+  type KeyfilePostureInput,
+} from './keyfile-posture.js';
 import { ROTATION_COPY, ROTATION_ERROR_COPY } from './rotation-center.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
@@ -81,6 +101,13 @@ export const KEY_HEALTH_RETRY_BTN_ATTR = 'data-recued-key-health-retry';
 export const KEY_HEALTH_STATUS_ATTR = 'data-recued-key-health-status';
 export const KEY_HEALTH_COMPROMISE_BANNER_ATTR = 'data-recued-key-health-compromise-banner';
 export const KEY_HEALTH_ERROR_CODE_ATTR = 'data-recued-key-health-error-code';
+/** D-212 §7.10 — the keyfile posture card + its parts. The tone attribute
+ *  is the machine-readable posture: `sealed` / `unsealed` / `unreported` /
+ *  `unreadable`, never collapsed to two. */
+export const KEYFILE_POSTURE_CARD_ATTR = 'data-recued-keyfile-posture';
+export const KEYFILE_POSTURE_TONE_ATTR = 'data-recued-keyfile-posture-tone';
+export const KEYFILE_POSTURE_CONSEQUENCE_ATTR = 'data-recued-keyfile-posture-consequence';
+export const KEYFILE_POSTURE_REMEDIATION_ATTR = 'data-recued-keyfile-posture-remediation';
 
 // ════════════════════════════════════════════════════════════════
 // Per-class copy
@@ -194,6 +221,12 @@ export type KeyHealthLoader = () => Promise<KeyHealthView>;
  *  de-pairing op (which means the rotation committed + de-paired us). */
 export type KeyRotateCaller = (req: KeyRotateRequest) => Promise<RotationResult>;
 
+/** D-212 §7.10 — `system.status` rpc caller seam. Resolves the whole
+ *  snapshot rather than just `keyfile_sealing`: the rpc returns one status
+ *  object, and a seam narrowed to a single field would have to be widened
+ *  (and every caller rewritten) the moment this page shows a second one. */
+export type SystemStatusLoader = () => Promise<ServerSystemStatus>;
+
 export interface MountKeyHealthPanelOptions {
   host: HTMLElement;
   document?: Document;
@@ -201,6 +234,14 @@ export interface MountKeyHealthPanelOptions {
   loadHealth: KeyHealthLoader;
   /** `key.rotate` rpc caller. */
   runRotate: KeyRotateCaller;
+  /** D-212 §7.10 — `system.status` rpc caller. Optional: absent → the
+   *  keyfile posture card is not rendered at all.
+   *
+   *  ⚠ Absent must mean ABSENT, not "assume sealed" and not "assume
+   *  unsealed" — a host that cannot read the posture has nothing to say
+   *  about it, and saying nothing is the only honest option. Wiring the
+   *  caller is what opts a host into making the claim. */
+  loadSystemStatus?: SystemStatusLoader;
   /** `Date.now`-compatible clock for the "last rotated" copy. Defaults
    *  to `Date.now`. */
   now?: () => number;
@@ -304,6 +345,14 @@ export const mountKeyHealthPanel = (
   let lastErrorCode: RotationErrorCode | null = null;
   let lastErrorMessage = '';
   let loadErrorMessage = '';
+  // D-212 §7.10 — posture state, independent of the page state machine.
+  // `null` here means "no seam wired" (render nothing); every other value
+  // is something we can honestly show.
+  let posture: KeyfilePostureInput | 'loading' | null =
+    opts.loadSystemStatus === undefined ? null : 'loading';
+  // Guards against a stale `system.status` answer landing after a newer
+  // load started (Retry / Close both re-enter `runLoad`).
+  let postureToken = 0;
   // Latch the in-flight load / rotate so the test seams can await them.
   let pendingLoadPromise: Promise<void> | null = null;
   let pendingRotatePromise: Promise<void> | null = null;
@@ -323,9 +372,33 @@ export const mountKeyHealthPanel = (
   };
 
   // ── Load ─────────────────────────────────────────────────────────
+
+  /** D-212 §7.10 — the posture read. Never rejects: its failure is a card
+   *  state, not a page state, so a `system.status` outage cannot take the
+   *  key inventory down with it. */
+  const runPostureLoad = async (): Promise<void> => {
+    const load = opts.loadSystemStatus;
+    if (load === undefined) return;
+    const token = (postureToken += 1);
+    posture = 'loading';
+    try {
+      const status = await load();
+      if (disposed || token !== postureToken) return;
+      posture = { kind: 'value', sealing: status.keyfile_sealing };
+    } catch (err) {
+      if (disposed || token !== postureToken) return;
+      posture = { kind: 'unreadable', message: messageOf(err) };
+    }
+    render();
+  };
+
   const runLoad = async (): Promise<void> => {
     if (disposed) return;
     transitionTo('loading');
+    // Concurrent + un-awaited until the end: the inventory paints as soon
+    // as `key.health` settles, and `whenReady()` still covers both reads so
+    // a test never observes a half-loaded page.
+    const posturePending = runPostureLoad();
     try {
       const result = await opts.loadHealth();
       if (disposed) return;
@@ -336,6 +409,8 @@ export const mountKeyHealthPanel = (
       if (disposed) return;
       loadErrorMessage = messageOf(err);
       transitionTo('load_error');
+    } finally {
+      await posturePending;
     }
   };
 
@@ -495,6 +570,70 @@ export const mountKeyHealthPanel = (
     return card;
   };
 
+  /** D-212 §7.10 — the standing posture card. Returns null when no seam is
+   *  wired (nothing to claim) or while the first read is still in flight
+   *  (a posture that flickers through a default is a posture that lied for
+   *  a frame). */
+  const renderKeyfilePostureCard = (): HTMLElement | null => {
+    if (posture === null || posture === 'loading') return null;
+    const view_ = describeKeyfilePosture(posture);
+
+    const card = doc.createElement('div');
+    card.setAttribute(KEYFILE_POSTURE_CARD_ATTR, '');
+    card.setAttribute(KEYFILE_POSTURE_TONE_ATTR, view_.tone);
+    card.className = `key-health-card keyfile-posture-card keyfile-posture-card-${view_.tone}`;
+
+    const title = doc.createElement('h4');
+    title.className = 'key-health-card-title';
+    title.textContent = 'Keyfile';
+    card.appendChild(title);
+
+    const desc = doc.createElement('p');
+    desc.className = 'key-health-card-desc';
+    desc.textContent =
+      'The file this server unwraps its own vault key from at boot — what '
+      + 'protects every key below it.';
+    card.appendChild(desc);
+
+    const meta = doc.createElement('div');
+    meta.className = 'key-health-card-meta';
+    const chip = doc.createElement('span');
+    // ⚠ Own tone classes rather than the rotation chips' severity classes:
+    // those reference `--success-bg` / `--warning-bg` / `--warning`, none of
+    // which the canonical D-174 token set defines (it ships `--ok-bg` /
+    // `--warn-bg` / `--danger-bg`, and `--success` / `--warn` resolve to
+    // neutral `--fg` on purpose — "no new hues"). Inheriting them would
+    // inherit a chip that renders with no background at all.
+    chip.className = `keyfile-posture-chip keyfile-posture-chip-${view_.tone}`;
+    chip.textContent = view_.status;
+    meta.appendChild(chip);
+    card.appendChild(meta);
+
+    const detail = doc.createElement('p');
+    detail.className = 'keyfile-posture-detail';
+    detail.textContent = view_.detail;
+    card.appendChild(detail);
+
+    if (view_.consequence !== null) {
+      const consequence = doc.createElement('p');
+      consequence.setAttribute(KEYFILE_POSTURE_CONSEQUENCE_ATTR, '');
+      consequence.setAttribute('role', 'alert');
+      consequence.className = 'keyfile-posture-consequence';
+      consequence.textContent = view_.consequence;
+      card.appendChild(consequence);
+    }
+
+    if (view_.remediation !== null) {
+      const remediation = doc.createElement('p');
+      remediation.setAttribute(KEYFILE_POSTURE_REMEDIATION_ATTR, '');
+      remediation.className = 'keyfile-posture-remediation';
+      remediation.textContent = view_.remediation;
+      card.appendChild(remediation);
+    }
+
+    return card;
+  };
+
   const renderLoading = (): void => {
     const status = doc.createElement('p');
     status.className = 'key-health-help';
@@ -534,6 +673,11 @@ export const mountKeyHealthPanel = (
 
     const list = doc.createElement('div');
     list.className = 'key-health-list';
+    // D-212 §7.10 — first, deliberately: it is the protection the whole
+    // list below inherits, and burying it under seven rotation cards is
+    // how a standing disclosure stops standing.
+    const keyfileCard = renderKeyfilePostureCard();
+    if (keyfileCard !== null) list.appendChild(keyfileCard);
     for (const key_class of KEY_HEALTH_DISPLAY_ORDER) {
       list.appendChild(renderCard(key_class));
     }
@@ -928,6 +1072,55 @@ export const KEY_HEALTH_PANEL_STYLES = `
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   word-break: break-all;
+}
+/* D-212 §7.10 — the keyfile posture card. It inherits .key-health-card, so
+   these rules carry only what makes the posture legible.
+
+   ⚠ Every token here is one the canonical D-174 set actually defines.
+   That set is deliberately near-monochrome — ONE accent, ONE danger, and
+   --success / --warn resolve to neutral --fg because status is meant to
+   read from glyph + label + weight, not hue (WCAG 1.4.1). So the three
+   non-danger tones separate by BORDER STYLE, not colour: solid = the
+   server answered, dashed = it did not. */
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-card {
+  border-left: 3px solid var(--border-strong);
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-card-unsealed {
+  border-left-color: var(--danger);
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-card-unreported,
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-card-unreadable {
+  border-left-style: dashed;
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--surface-sunk);
+  color: var(--fg);
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-chip-unsealed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-detail {
+  margin: 0;
+  line-height: 1.45;
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-consequence {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-radius: 4px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+[${KEY_HEALTH_PANEL_ATTR}] .keyfile-posture-remediation {
+  margin: 0;
+  line-height: 1.45;
+  color: var(--fg-muted);
 }
 [${KEY_HEALTH_PANEL_ATTR}] .key-health-error {
   margin: 0;

@@ -14,7 +14,7 @@
  *  re-verifies the load-bearing substrate primitive here so the
  *  cross-cutting suite stays self-contained.
  *
- *  Spec: docs/d-149-spec.md § A.11 + § P10. */
+ *  Spec: D-149 § A.11 + § P10. */
 
 import Database from 'better-sqlite3';
 import { IncomingMessage, ServerResponse } from 'node:http';

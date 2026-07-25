@@ -9,6 +9,7 @@ import {
   restoreInString,
   restoreArgs,
   restoreArgsAndKeys,
+  restoreArgKeys,
   aliasArgs,
   preScanReservePii,
   summarizeRedactions,
@@ -19,6 +20,9 @@ import {
   phoneMatchDigits,
   parseAddressComponents,
   ledgerKindForAlias,
+  buildKnownValueIndex,
+  seedKnownValuesFromContent,
+  aliasKnownValuesInContent,
 } from '../pii-alias.js';
 
 /* ──────────────── ledgerKindForAlias (D-167 B3) ──────────────── */
@@ -1479,12 +1483,44 @@ describe('D-167 Slice 3 — pre-scan reserve/escape of user-typed pii.* literals
     expect(escaped).toBe(false);
   });
 
-  it('does not pre-scan a pii.*-shaped OBJECT KEY (key-blind, like restore)', () => {
+  it('pre-scans a pii.*-shaped OBJECT KEY before key-aware egress authority is derived', () => {
     const l = createLedger('s311');
     aliasIdentifierField(l, 'name', 'Pat Lee'); // pii.Person1 occupied
     const { value, escaped } = preScanReservePii(l, { 'pii.Person1': 'real data' });
-    expect(value).toEqual({ 'pii.Person1': 'real data' }); // key untouched
-    expect(escaped).toBe(false);
+    expect(value).toEqual({ 'pii.Person2': 'real data' });
+    expect(escaped).toBe(true);
+    expect(restoreArgsAndKeys(l, value)).toEqual({ 'pii.Person1': 'real data' });
+    expect(restoreInString(l, 'pii.Person1')).toBe('Pat Lee');
+  });
+
+  it('pre-scans an alias embedded after a machine-key separator', () => {
+    const l = createLedger('s311a');
+    aliasIdentifierField(l, 'name', 'Pat Lee'); // pii.Person1 occupied
+    const { value, escaped } = preScanReservePii(l, {
+      'owner_pii.Person1': 'real data',
+    });
+    expect(value).toEqual({ 'owner_pii.Person2': 'real data' });
+    expect(escaped).toBe(true);
+    expect(restoreArgKeys(l, value)).toEqual({
+      'owner_pii.Person1': 'real data',
+    });
+    expect(restoreInString(l, 'pii.Person1')).toBe('Pat Lee');
+  });
+
+  it('key-only restore does not reprocess an already-restored escaped value', () => {
+    const l = createLedger('s311b');
+    aliasIdentifierField(l, 'name', 'Pat Lee'); // pii.Person1 occupied
+    const { value } = preScanReservePii(l, {
+      'pii.Person1': 'pii.Person1',
+    });
+    expect(value).toEqual({ 'pii.Person2': 'pii.Person2' });
+
+    // The enclosing value pass has already turned Person2 back into the
+    // user-authored Person1 literal. The subsequent key-only pass must restore
+    // the key once while leaving that value untouched.
+    expect(restoreArgKeys(l, { 'pii.Person2': 'pii.Person1' })).toEqual({
+      'pii.Person1': 'pii.Person1',
+    });
   });
 
   it('MIXED packet — occupied typed literal escapes while a free different kind reserves in place', () => {
@@ -1607,11 +1643,81 @@ describe('D-167 Slice 3 — pre-scan reserve/escape of user-typed pii.* literals
     expect(restoreInString(l, 'CAP_PII.Org1')).toBe('CAP_PII.Org1');
   });
 
-  it('does not pre-scan email composites or bare domain aliases', () => {
+  it('reserves a free email composite and domain so later real aliases skip both slots', () => {
     const l = createLedger('s317');
     const { value, escaped } = preScanReservePii(l, 'mail m1@d1.invalid via d1.invalid');
 
     expect(value).toBe('mail m1@d1.invalid via d1.invalid');
     expect(escaped).toBe(false);
+    expect(restoreInString(l, value)).toBe(value);
+    expect(aliasIdentifierField(l, 'email', 'alice@acme.com'))
+      .toBe('m2@d2.invalid');
+  });
+
+  it('escapes colliding email and domain literals without restoring them into real PII', () => {
+    const l = createLedger('s318');
+    expect(aliasIdentifierField(l, 'email', 'alice@acme.com'))
+      .toBe('m1@d1.invalid');
+
+    const email = preScanReservePii(l, 'mail m1@d1.invalid');
+    expect(email).toEqual({
+      value: 'mail m2@d2.invalid',
+      escaped: true,
+    });
+    expect(restoreInString(l, email.value)).toBe('mail m1@d1.invalid');
+
+    const domain = preScanReservePii(l, 'visit d1.invalid');
+    expect(domain).toEqual({
+      value: 'visit d2.invalid',
+      escaped: true,
+    });
+    expect(restoreInString(l, domain.value)).toBe('visit d1.invalid');
+    expect(restoreInString(l, 'm1@d1.invalid')).toBe('alice@acme.com');
+  });
+});
+
+describe('P1 — seed and replace consult ONE rule', () => {
+  // ⛔ `scanContent` withholds an all-digit value from blind prose replacement
+  // (`94043` is indistinguishable from an invoice number). The SEED half did
+  // not consult that rule, so it allocated an alias the packet would never
+  // carry — a P1 violation, contained one layer down by D-167 P3's per-request
+  // restore authority. The outcome was safe; the named enforcement point did
+  // no work. Both halves now derive from `isBlindReplaceableKnownValue`.
+  const indexOf = (value: string, kind: 'name' | 'org' | 'address') =>
+    buildKnownValueIndex([{ value, kind }]);
+
+  it('allocates nothing for a value the content pass will refuse to replace', () => {
+    const ledger = createLedger('p1');
+    seedKnownValuesFromContent(ledger, 'invoice 94043 paid', indexOf('94043', 'address'));
+    expect([...ledger.byKindRealValue.keys()]).toEqual([]);
+    expect([...ledger.byKindBaseAlias.keys()]).toEqual([]);
+  });
+
+  it('leaves that value untouched end to end, and consumes no alias number', () => {
+    const ledger = createLedger('p1');
+    const out = aliasKnownValuesInContent(
+      ledger, 'invoice 94043 paid', indexOf('94043', 'address'),
+    );
+    expect(out.text).toBe('invoice 94043 paid');
+    // The next REAL address still takes Address1 — a withheld value must not
+    // burn a slot the model then sees skipped.
+    expect(aliasIdentifierField(ledger, 'address', '1 Main Street'))
+      .toBe('pii.Address1');
+  });
+
+  it('still seeds and replaces a value the content pass WILL replace', () => {
+    const ledger = createLedger('p1');
+    const out = aliasKnownValuesInContent(
+      ledger, 'ship to 1 Main Street today', indexOf('1 Main Street', 'address'),
+    );
+    expect(out.text).toBe('ship to pii.Address1 today');
+    expect([...ledger.byKindRealValue.keys()]).toEqual(['address::1 Main Street']);
+  });
+
+  it('keeps the phone exemption — all-digit by construction, own matching logic', () => {
+    const ledger = createLedger('p1');
+    aliasIdentifierField(ledger, 'phone', '+14155550199');
+    const out = scanContent(ledger, 'call 4155550199 now');
+    expect(out.text).not.toContain('4155550199');
   });
 });

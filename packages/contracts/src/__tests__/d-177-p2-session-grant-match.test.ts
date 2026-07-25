@@ -56,6 +56,7 @@ const baseCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -107,13 +108,18 @@ describe('D-177 P2 matchesSessionGrant common predicate', () => {
     expect(matches(baseGrant({ channel_session_id: 'other-session' }))).toBe(false);
   });
 
-  it('allows only write and admin risk tiers to grant-match', () => {
-    for (const risk_tier of ['read', 'destructive'] satisfies RiskTier[]) {
+  it('allows read, write, and admin risk tiers to grant-match', () => {
+    for (const risk_tier of ['destructive'] satisfies RiskTier[]) {
       expect(matches(baseGrant({ risk_tier }), baseCtx({ risk_tier })), risk_tier).toBe(false);
     }
-    for (const risk_tier of ['write', 'admin'] satisfies RiskTier[]) {
+    for (const risk_tier of ['read', 'write', 'admin'] satisfies RiskTier[]) {
       expect(matches(baseGrant({ risk_tier }), baseCtx({ risk_tier })), risk_tier).toBe(true);
     }
+  });
+
+  it('does not let a session grant satisfy a pre-lift always ruling', () => {
+    expect(matches(baseGrant(), baseCtx({ pre_lift_approval: 'always' }))).toBe(false);
+    expect(matches(baseGrant(), baseCtx({ pre_lift_approval: undefined as never }))).toBe(false);
   });
 
   it('requires the grant to pin the approved tier and the envelope to dispatch at exactly it', () => {

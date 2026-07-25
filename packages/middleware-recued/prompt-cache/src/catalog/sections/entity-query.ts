@@ -33,9 +33,9 @@
  *  but does not surface in the chat-facing catalog.
  *
  *  Section description is the verbatim bench-validated label per
- *  `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts:134-140`.
+ *  internal benchmarks:134-140`.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type {
   CatalogAssemblyInput,

@@ -30,7 +30,7 @@
  *  URLs, so the named entity set suffices for safe interpolation into
  *  text content, attribute values, and href-equals targets.
  *
- *  Spec: docs/d-149-spec.md § A.5.1 + § A.11 TR-8. */
+ *  Spec: D-149 § A.5.1 + § A.11 TR-8. */
 
 import {
   RECEPTION_PAGE_PLACEHOLDER_TEXT,

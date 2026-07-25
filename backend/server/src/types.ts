@@ -87,10 +87,10 @@ export interface ExecuteRequest {
    *  system-actor channels (`schedule` / `reactive` / `housekeeping`)
    *  leave this absent; a webhook dispatch carries it exactly when its
    *  trigger row is door-stamped (D-209 #1 W3 — the webhook runner
-   *  resolves it via `buildWebhookContractSnapshot`). The producer
-   *  resolves it (mcp-server.ts stubs from manifest registry +
-   *  inbound-token grants today); the formal Gateway-side resolver
-   *  per spec line 443 is a later phase. */
+   *  resolves it via `buildWebhookContractSnapshot`). Each producer resolves
+   *  the live authority available to its door (for example, MCP joins the
+   *  manifest registry with inbound-token grants), then content-versions the
+   *  resulting authority through the shared snapshot finalizer. */
   contract_snapshot?: import('@recued/contracts').ContractSnapshot;
   /** Instance that executed this recipe. Set by the server for attribution. */
   instance_id?: string;
@@ -213,10 +213,22 @@ export interface InternalExecuteOverrides {
   };
 }
 
+/** Internal-only metadata key for the durable audit row written by
+ * `handleExecute`. A symbol keeps this host-owned address out of JSON / model
+ * projections while allowing the in-process Chat dispatcher to correlate an
+ * execution receipt with the exact Logs run. It is absent when no audit anchor
+ * was durably written. */
+export const EXECUTE_RESPONSE_AUDIT_RUN_ID: unique symbol = Symbol(
+  'recued.execute_response_audit_run_id',
+);
+
 /** POST /execute response on success. Mirrors engine ExecutionResult.
  *  Render blocks carry an index signature for block-specific extras
  *  (label, source, etc.) — same shape as engine/src/types.ts. */
 export interface ExecuteResponse {
+  /** Host-internal, non-serializable audit address. See
+   * `stampExecuteResponseAuditRun`. */
+  readonly [EXECUTE_RESPONSE_AUDIT_RUN_ID]?: string;
   recipe_id: string;
   recipe_hash: string;
   success: boolean;
@@ -296,6 +308,28 @@ export interface ExecuteResponse {
    *  here. Present only when ≥1 read warning fired. */
   runnability_warnings?: string[];
 }
+
+/** Attach a trustworthy Logs address without widening the wire response or the
+ * agent-visible execution result. Non-enumerable symbol properties are omitted
+ * by JSON serialization and object spread. */
+export const stampExecuteResponseAuditRun = (
+  response: ExecuteResponse,
+  run_id: string | undefined,
+): ExecuteResponse => {
+  if (run_id === undefined) return response;
+  Object.defineProperty(response, EXECUTE_RESPONSE_AUDIT_RUN_ID, {
+    value: run_id,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return response;
+};
+
+/** Read the host-stamped durable Logs address, if this response has one. */
+export const executeResponseAuditRunId = (
+  response: ExecuteResponse,
+): string | undefined => response[EXECUTE_RESPONSE_AUDIT_RUN_ID];
 
 // ────────────────────────────────────────────────────────────────
 // Recipe store — pair-sync cache of recipes the extension pushed

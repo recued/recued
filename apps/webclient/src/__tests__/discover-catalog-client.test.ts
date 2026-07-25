@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   fetchPackCatalog,
+  fetchPackRecipeRefs,
   fetchRecipeCatalog,
   parsePackRow,
   parseRecipeRow,
@@ -192,5 +193,58 @@ describe('fetchRecipeCatalog / fetchPackCatalog', () => {
     );
     const res = await fetchPackCatalog({ origin: 'https://recued.com', fetchFn });
     expect(res.status).toBe('error');
+  });
+});
+
+
+describe('fetchPackRecipeRefs (membership from the per-pack install artifact)', () => {
+  /** `recipe_refs` left the meta catalog: it is pack MEMBERSHIP, which belongs
+   *  to `/packs/<slug>.json`, and carrying it in the meta was the only reason
+   *  the catalog's server-side read had to touch all 927 manifests. */
+  const fetchOf = (body: unknown, ok = true): CatalogFetch =>
+    (async () => new Response(JSON.stringify(body), { status: ok ? 200 : 503 })) as CatalogFetch;
+
+  const manifest = (over: Record<string, unknown> = {}) => ({
+    slug: 'task-closure', publisher: 'recued-core',
+    recipes: [{ slug: 'watch-task', version: 2 }, { slug: 'create-task', version: 1 }],
+    ...over,
+  });
+
+  it('reads membership from the artifact', async () => {
+    expect(await fetchPackRecipeRefs('task-closure', { fetchFn: fetchOf(manifest()) }))
+      .toEqual([{ slug: 'create-task', version: 1 }, { slug: 'watch-task', version: 2 }]);
+  });
+
+  it('requests the slug it was asked for', async () => {
+    let seen = '';
+    const fetchFn = (async (url: string) => {
+      seen = String(url);
+      return new Response(JSON.stringify(manifest()), { status: 200 });
+    }) as unknown as CatalogFetch;
+    await fetchPackRecipeRefs('task-closure', { fetchFn, origin: 'https://recued.com' });
+    expect(seen).toBe('https://recued.com/packs/task-closure.json');
+  });
+
+  it('REFUSES a manifest that names a different pack', async () => {
+    // The projection applied this identity guard before extracting; a manifest
+    // that does not name the pack it was served for cannot speak for its
+    // membership, whatever the URL said.
+    expect(await fetchPackRecipeRefs('task-closure', { fetchFn: fetchOf(manifest({ slug: 'other-pack' })) }))
+      .toEqual([]);
+  });
+
+  it('fails CLOSED on a manifest the validator rejects', async () => {
+    // Same fail-closed validator the worker ran — conflicting versions for one
+    // slug reject the WHOLE projection rather than picking one.
+    const conflicting = manifest({
+      recipes: [{ slug: 'watch-task', version: 2 }, { slug: 'watch-task', version: 3 }],
+    });
+    expect(await fetchPackRecipeRefs('task-closure', { fetchFn: fetchOf(conflicting) })).toEqual([]);
+  });
+
+  it('returns [] rather than throwing on a bad response or a dead network', async () => {
+    expect(await fetchPackRecipeRefs('task-closure', { fetchFn: fetchOf(manifest(), false) })).toEqual([]);
+    const boom = (async () => { throw new Error('offline'); }) as unknown as CatalogFetch;
+    expect(await fetchPackRecipeRefs('task-closure', { fetchFn: boom })).toEqual([]);
   });
 });

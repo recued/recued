@@ -55,7 +55,7 @@
  *  the producer next cycle via the staleness sweep + cascade hook on
  *  `data.note.accessed`.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.1.2 + A.7.1 + A.7.3 + A.7.5 +
+ *  Spec: D-145 §§ A.1.2 + A.7.1 + A.7.3 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.note_relevance_decay` +
  *        `packages/contracts/src/enrichment-declarations/note-relevance-decay.ts`. */
 

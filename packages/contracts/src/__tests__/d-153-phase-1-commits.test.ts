@@ -5,7 +5,7 @@
  *  Substrate-only — engine wiring + rpc query surfaces land in later
  *  slices (P1.B+ / P2 / P3) and get their own tests.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate. */
+ *  Spec: D-153 § Commit substrate. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -39,7 +39,6 @@ import { e } from '../template.js';
 import { button } from '../primitives/button.js';
 import { textInput, select as selectField, formRow } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineMessage } from '../primitives/message.js';
-import { emptyHint } from '../primitives/empty-hint.js';
 
 // ════════════════════════════════════════════════════════════════
 // Schema model
@@ -114,9 +113,14 @@ export interface AccountLane {
   id: AccountLaneId;
   label: string;
   blurb: string;
+  /** Outcome-led first-run copy and action. Kept on the lane so the empty
+   *  state stays truthful as provider support changes. */
+  emptyTitle: string;
+  emptyDescription: string;
+  addLabel: string;
   providers: readonly AccountProvider[];
-  /** Honest one-liner shown when the lane has providers that are not yet
-   *  buildable (OAuth / CalDAV — later slices). Plain text, escaped. */
+  /** Optional informational note beneath the lane heading. Plain text,
+   *  escaped by the renderer. */
   pending?: string;
 }
 
@@ -271,10 +275,10 @@ const IMAP_PROVIDER: AccountProvider = {
 const mailOAuthFields = (sendHelp: string): readonly AccountField[] => [
   {
     key: 'name',
-    label: 'Account name',
+    label: 'Mailbox name',
     type: 'identifier',
     placeholder: 'work',
-    help: 'A short id for this mailbox (lowercase letters, digits, - and _).',
+    help: 'A short name used inside Recued, such as work or personal. Use lowercase letters, numbers, - or _.',
   },
   {
     key: 'send_enabled',
@@ -364,8 +368,10 @@ const S3_PROVIDER: AccountProvider = {
       label: 'Path-style URLs',
       type: 'boolean',
       optional: true,
-      default: 'false',
-      help: 'On for MinIO and some S3-compatible stores.',
+      default: 'true',
+      help:
+        'On by default for R2 / B2 / MinIO and most custom endpoints. '
+        + 'Turn off only when your endpoint explicitly requires virtual-host-style bucket names.',
     },
   ],
   project: (v) => {
@@ -389,10 +395,10 @@ const S3_PROVIDER: AccountProvider = {
 const calendarOAuthFields: readonly AccountField[] = [
   {
     key: 'name',
-    label: 'Calendar account name',
+    label: 'Calendar name',
     type: 'identifier',
     placeholder: 'work',
-    help: 'A short id for this calendar (lowercase letters, digits, - and _).',
+    help: 'A short name used inside Recued, such as work or personal. Use lowercase letters, numbers, - or _.',
   },
 ];
 
@@ -483,13 +489,21 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
   {
     id: 'mail',
     label: 'Mail',
-    blurb: 'Mailboxes Recued reads and (optionally) sends from.',
+    blurb: 'Mailboxes Recued can search and use in your work. Sending stays optional.',
+    emptyTitle: 'Connect your first mailbox',
+    emptyDescription:
+      'Find messages in Chat and let Recued help with inbox work. You choose whether Recued can send.',
+    addLabel: 'Connect mailbox',
     providers: [IMAP_PROVIDER, GMAIL_PROVIDER, MICROSOFT_MAIL_PROVIDER],
   },
   {
     id: 'calendar',
     label: 'Calendar',
-    blurb: 'Calendars Recued reads events from.',
+    blurb: 'Calendars Recued can use to understand your schedule and help with events.',
+    emptyTitle: 'Connect your first calendar',
+    emptyDescription:
+      'Bring upcoming work into context and let Recued help with calendar tasks.',
+    addLabel: 'Connect calendar',
     providers: [
       GOOGLE_CALENDAR_PROVIDER,
       MICROSOFT_CALENDAR_PROVIDER,
@@ -499,9 +513,13 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
   {
     id: 'file',
     label: 'Files',
-    blurb: 'Folders and buckets Recued reads files from.',
+    blurb: 'Approved folders and buckets Recued can search and use for file tasks.',
+    emptyTitle: 'Add your first file source',
+    emptyDescription:
+      'Make a local folder or S3-compatible bucket available to Recued when you need it.',
+    addLabel: 'Add file source',
     providers: [FS_PROVIDER, S3_PROVIDER],
-    pending: 'Google Drive sign-in arrives in a later update.',
+    pending: 'Using Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files. Installed packs can add more provider actions.',
   },
 ];
 
@@ -531,6 +549,8 @@ export interface AccountRow {
   sublabel?: string;
   /** True for send-capable mail rows (a small "can send" hint). */
   sendCapable?: boolean;
+  /** True only when this lane owns an executable reauthorization action. */
+  reauthAvailable?: boolean;
   /** Unix-ms of last successful sync, or null before the first tick. */
   lastSyncedAt?: number | null;
 }
@@ -549,6 +569,14 @@ export type AccountsPanelStage =
 export interface OAuthCredValues {
   client_id: string;
   client_secret: string;
+}
+
+/** The most recent OAuth account saved by this mounted panel. Kept separate
+ *  from the list row because enrollment can succeed before the follow-up list
+ *  can prove that account's first sync state. */
+export interface AccountConnectionSuccess {
+  slug: string;
+  providerId: string;
 }
 
 export interface AccountsPanelState {
@@ -578,6 +606,9 @@ export interface AccountsPanelState {
    *  refreshed yet). Renders a "Finishing sign-in…" card with an immediate
    *  "Back to accounts" escape so the brief wait never feels stuck. */
   oauthFinishing: boolean;
+  /** Post-connect confirmation. Persists while the refreshed list moves from
+   *  "saved" to a first successful sync, or until the user dismisses it. */
+  connectionSuccess: AccountConnectionSuccess | null;
   /** BYO OAuth-app status per issuer (`server.getOAuthAppConfig`), mount-
    *  hydrated on the Mail / Calendar lanes. `null` = not loaded (or the
    *  caller is absent on this mount) → the OAuth form falls back to the
@@ -609,6 +640,7 @@ export const initialAccountsPanelState = (
   formError: null,
   saving: false,
   oauthFinishing: false,
+  connectionSuccess: null,
   oauthAppConfig: null,
   oauthCredValues: { client_id: '', client_secret: '' },
   detailSlug: null,
@@ -653,12 +685,60 @@ const OAUTH_ISSUER_COVERS: Record<OAuthAppIssuer, string> = {
   microsoft: 'One Microsoft app covers both Outlook mail and calendar sign-in.',
 };
 
+/** Direct entry points for the one-time provider work. Keeping these beside
+ *  the issuer copy makes the checklist actionable without asking the owner to
+ *  search for the right console first. */
+const OAUTH_ISSUER_CONSOLE: Readonly<Record<OAuthAppIssuer, {
+  readonly href: string;
+  readonly label: string;
+}>> = {
+  google: {
+    href: 'https://console.cloud.google.com/apis/credentials',
+    label: 'Open Google Cloud Console',
+  },
+  microsoft: {
+    href: 'https://entra.microsoft.com/',
+    label: 'Open Microsoft Entra',
+  },
+};
+
 /** Resolve the OAuth-app issuer for an OAuth provider (id is one of
  *  `gmail` / `gcal` / `graph`). Returns null for non-OAuth providers. */
 const issuerForProvider = (provider: AccountProvider): OAuthAppIssuer | null =>
   isOAuthAccountTransport(provider.transport)
     ? oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph')
     : null;
+
+const isReusableOAuthApp = (
+  status: OAuthAppConfigSnapshot[OAuthAppIssuer] | null,
+): boolean => status !== null && status.source !== null && status.has_secret;
+
+/** Whether the active provider form has everything needed to submit.
+ *  OAuth forms additionally require either a reusable server-side app or a
+ *  complete replacement Client ID + secret. A null app snapshot is the legacy
+ *  unknown state: blank fields may still reuse operator-provided config, but a
+ *  newly typed secret must always have a Client ID beside it. */
+export const canSubmitAccountForm = (
+  provider: AccountProvider,
+  state: AccountsPanelState,
+): boolean => {
+  if (validateAccountForm(provider, state.values) !== null) return false;
+  const issuer = issuerForProvider(provider);
+  if (issuer === null) return true;
+
+  const clientId = state.oauthCredValues.client_id.trim();
+  const clientSecret = state.oauthCredValues.client_secret.trim();
+  if (clientSecret.length > 0) return clientId.length > 0;
+  if (state.oauthAppConfig === null) return clientId.length === 0;
+
+  const status = state.oauthAppConfig[issuer];
+  if (!isReusableOAuthApp(status)) return false;
+  // The configured Client ID is prefilled as reference. Leaving it alone (or
+  // clearing the optional replacement draft) reuses the server app; changing
+  // it starts a replacement and therefore also requires its matching secret.
+  const configuredClientId = status.client_id?.trim() ?? '';
+  return clientId.length === 0 || clientId === configuredClientId;
+};
 
 const fieldDomId = (key: string): string => `acct-field-${key.replace(/_/g, '-')}`;
 
@@ -702,36 +782,51 @@ const renderField = (field: AccountField, values: AccountFormValues): string => 
   });
 };
 
-/** Operator setup note on the OAuth forms: the EXACT callback URL that must
- *  be registered as an authorized redirect URI in the provider's OAuth app.
- *  Built from the same `buildOpenerRelayRedirectUri` the flow embeds in the
- *  authorize URL and passes to `enrollOAuth`, so the shown value byte-matches
- *  what the provider receives — the fix for a `redirect_uri_mismatch`. */
-const renderOAuthRedirectHint = (appOrigin: string, noQueryMarker = false): string => {
-  const redirectUri = buildOpenerRelayRedirectUri(appOrigin, noQueryMarker);
-  return inlineMessage({
-    tone: 'hint',
-    htmlMessage:
-      'Your OAuth app must allow this exact authorized redirect URI: '
-      + `<code class="accounts-oauth-redirect">${e(redirectUri)}</code>`,
-  });
+/** Exact callback control for provider-console setup. The URI comes from the
+ *  same builder used by the authorize + enroll paths, and stays visible for
+ *  manual selection if clipboard access is unavailable. */
+const renderOAuthRedirectControl = (
+  appOrigin: string,
+  issuer: OAuthAppIssuer,
+  numbered: boolean,
+): string => {
+  const redirectUri = buildOpenerRelayRedirectUri(
+    appOrigin,
+    issuer === 'microsoft',
+  );
+  return `
+    <div class="accounts-oauth-callback">
+      <p class="accounts-oauth-step-title">
+        ${numbered ? '2. ' : ''}Register this callback URL
+      </p>
+      <p class="accounts-oauth-step-desc">
+        Add this exact value to the app's authorized redirect URIs.
+      </p>
+      <div class="accounts-oauth-callback-row">
+        <code class="accounts-oauth-redirect">${e(redirectUri)}</code>
+        ${button({
+          label: 'Copy',
+          size: 'xs',
+          action: 'accounts-copy-oauth-redirect',
+          data: { 'copy-value': redirectUri },
+          ariaLabel: 'Copy authorized redirect URI',
+        })}
+      </div>
+    </div>
+  `;
 };
 
-/** Inline "Your {Google/Microsoft} sign-in app" section on the OAuth provider
- *  form — the BYO client_id + client_secret fields (rendered alongside the
- *  account name / send toggle, NOT a separate stage), with the exact redirect
- *  URI to register and a collapsible per-issuer guide. The credentials are
- *  saved (`setOAuthAppConfig`) as part of Connect when entered; when an app is
- *  already configured the fields can be left blank to reuse it. */
+/** Progressive server OAuth-app setup. A reusable app renders as one compact
+ *  ready row; replacement credentials live behind native disclosure. Missing
+ *  config renders the one-time provider checklist in the order users need it. */
 const renderOAuthAppSection = (
   issuer: OAuthAppIssuer,
   state: AccountsPanelState,
 ): string => {
   const label = OAUTH_ISSUER_LABEL[issuer];
   const status = state.oauthAppConfig?.[issuer] ?? null;
-  // "Reusable without a secret" needs an actual saved/env secret — an env
-  // client_id with no secret (`has_secret: false`) still requires one entered.
-  const reusable = status !== null && status.source !== null && status.has_secret === true;
+  const configKnown = state.oauthAppConfig !== null;
+  const reusable = isReusableOAuthApp(status);
   const clientId = state.oauthCredValues.client_id ?? '';
   const clientSecret = state.oauthCredValues.client_secret ?? '';
 
@@ -766,38 +861,95 @@ const renderOAuthAppSection = (
       data: { 'oauth-cred-field': 'client_secret' },
     }),
     hint: status?.has_secret
-      ? 'Saved on your server — leave blank to reuse, or re-enter to change it.'
+      ? 'A secret is already saved. Enter a new one only when replacing this app.'
       : 'From your OAuth app. Stored encrypted on your server; never shown again.',
   });
 
-  const savedNote = reusable
-    ? inlineMessage({
-        tone: 'ok',
-        message:
-          status?.source === 'env'
-            ? `${label} sign-in is configured on this server. Leave the fields blank to use it.`
-            : `Your ${label} app is saved. Leave the fields blank to reuse it, or re-enter to change it.`,
-      })
-    : '';
-  // Microsoft Entra rejects query strings in redirect URIs, so the Microsoft
-  // redirect URI (and the value shown here to register) drops the marker.
-  const redirectHint =
-    state.appOrigin !== undefined
-      ? renderOAuthRedirectHint(state.appOrigin, issuer === 'microsoft')
-      : '';
+  const callback = (numbered: boolean): string =>
+    state.appOrigin === undefined
+      ? ''
+      : renderOAuthRedirectControl(state.appOrigin, issuer, numbered);
 
-  return `
-    <div class="accounts-oauth-app">
-      <p class="accounts-oauth-app-title">Your ${e(label)} sign-in app</p>
-      ${inlineHint(OAUTH_ISSUER_COVERS[issuer])}
+  const credentials = (title: string): string => `
+    <div class="accounts-oauth-credentials">
+      <p class="accounts-oauth-step-title">${e(title)}</p>
+      <p class="accounts-oauth-step-desc">
+        These credentials are encrypted and stored only on your Recued server.
+      </p>
       <div class="accounts-form-fields">
         ${clientIdField}
         ${clientSecretField}
       </div>
-      ${savedNote}
-      ${redirectHint}
-      ${oauthAppGuide(issuer)}
     </div>
+  `;
+
+  if (reusable) {
+    const sourceCopy = status?.source === 'env'
+      ? 'Provided by this server. No app credentials are needed here.'
+      : 'Saved securely on this server. No app credentials are needed here.';
+    return `
+      <section class="accounts-oauth-app accounts-oauth-app--ready"
+        data-oauth-app-state="ready" aria-label="${e(label)} sign-in status">
+        <div class="accounts-oauth-app-header">
+          <span class="accounts-oauth-state-icon" aria-hidden="true">✓</span>
+          <div>
+            <p class="accounts-oauth-app-title">${e(label)} sign-in is ready</p>
+            <p class="accounts-oauth-app-desc">${e(sourceCopy)}</p>
+          </div>
+        </div>
+        <details class="accounts-oauth-manage">
+          <summary>Change ${e(label)} sign-in app</summary>
+          <div class="accounts-oauth-manage-body">
+            ${inlineHint(OAUTH_ISSUER_COVERS[issuer])}
+            ${oauthAppGuide(issuer)}
+            ${callback(false)}
+            ${credentials(`Replacement ${label} app credentials`)}
+          </div>
+        </details>
+      </section>
+    `;
+  }
+
+  if (configKnown) {
+    const setupCopy = status?.source === 'env'
+      ? `${label} sign-in is only partly configured on this server. Add the matching secret to finish setup.`
+      : `This server needs a ${label} OAuth app before it can connect ${label} accounts.`;
+    return `
+      <section class="accounts-oauth-app accounts-oauth-app--setup"
+        data-oauth-app-state="setup" aria-labelledby="accounts-${e(issuer)}-setup-title">
+        <div class="accounts-oauth-app-header">
+          <span class="accounts-oauth-setup-badge">One-time server setup</span>
+          <div>
+            <h3 class="accounts-oauth-app-title" id="accounts-${e(issuer)}-setup-title">
+              Set up ${e(label)} sign-in
+            </h3>
+            <p class="accounts-oauth-app-desc">${e(setupCopy)}</p>
+          </div>
+        </div>
+        <p class="accounts-oauth-shared-note">${e(OAUTH_ISSUER_COVERS[issuer])}</p>
+        ${oauthAppGuide(issuer, true)}
+        ${callback(true)}
+        ${credentials('3. Paste the app credentials')}
+      </section>
+    `;
+  }
+
+  return `
+    <section class="accounts-oauth-app accounts-oauth-app--unknown"
+      data-oauth-app-state="unknown">
+      <div class="accounts-oauth-app-header">
+        <div>
+          <p class="accounts-oauth-app-title">${e(label)} sign-in settings</p>
+          <p class="accounts-oauth-app-desc">
+            If this server already provides ${e(label)} sign-in, leave these blank.
+            Otherwise enter an OAuth app below.
+          </p>
+        </div>
+      </div>
+      ${oauthAppGuide(issuer)}
+      ${callback(false)}
+      ${credentials(`${label} app credentials`)}
+    </section>
   `;
 };
 
@@ -806,36 +958,48 @@ const renderProviderForm = (
   provider: AccountProvider,
   state: AccountsPanelState,
 ): string => {
-  const valid = validateAccountForm(provider, state.values) === null;
   const fields = provider.fields.map((f) => renderField(f, state.values)).join('');
   const backAction = lane.providers.length > 1 ? 'accounts-open-add' : 'accounts-back-to-list';
 
   const isOAuth = isOAuthAccountTransport(provider.transport);
   const issuer = issuerForProvider(provider);
+  const canSubmit = canSubmitAccountForm(provider, state);
+  const needsOAuthSetup = issuer !== null
+    && state.oauthAppConfig !== null
+    && !isReusableOAuthApp(state.oauthAppConfig[issuer]);
+  const formVerb = lane.id === 'file' ? 'Add' : 'Connect';
+  const submitLabel = state.saving
+    ? lane.id === 'file' ? 'Adding…' : 'Connecting…'
+    : lane.id === 'file' ? 'Add file source' : 'Connect account';
   // BYO OAuth-app credential fields render INLINE on the provider form.
   const oauthSection = isOAuth && issuer !== null ? renderOAuthAppSection(issuer, state) : '';
 
   const primary = isOAuth
     ? button({
-        label: state.saving ? 'Connecting…' : 'Connect ' + provider.label,
+        label: state.saving
+          ? 'Connecting…'
+          : needsOAuthSetup
+            ? 'Save setup & connect ' + provider.label
+            : 'Connect ' + provider.label,
         variant: 'primary',
         size: 'sm',
         action: 'accounts-oauth-connect',
-        disabled: state.saving || !valid,
+        disabled: state.saving || !canSubmit,
       })
     : button({
-        label: state.saving ? 'Adding…' : 'Add account',
+        label: submitLabel,
         variant: 'primary',
         size: 'sm',
         action: 'accounts-submit-form',
-        disabled: state.saving || !valid,
+        disabled: state.saving || !canSubmit,
       });
 
   return `
-    <div class="accounts-form">
-      <h3 class="accounts-form-title">Add ${e(provider.label)}</h3>
+    <div class="accounts-form${isOAuth ? ' accounts-form--oauth' : ''}">
+      <h2 class="accounts-form-title">${formVerb} ${e(provider.label)}</h2>
       <p class="accounts-form-desc">${e(provider.description)}</p>
       ${state.formError !== null ? inlineError(state.formError) : ''}
+      ${isOAuth ? '<p class="accounts-form-section-title">Connection details</p>' : ''}
       <div class="accounts-form-fields">${fields}</div>
       ${oauthSection}
       <div class="accounts-form-actions">
@@ -851,9 +1015,13 @@ const renderProviderForm = (
   `;
 };
 
-const renderProviderPicker = (lane: AccountLane): string => `
+const renderProviderPicker = (lane: AccountLane): string => {
+  const title = lane.id === 'file'
+    ? 'Choose a file source'
+    : `Choose a ${lane.label.toLowerCase()} provider`;
+  return `
   <div class="accounts-picker">
-    <h3 class="accounts-picker-title">Add a ${e(lane.label.toLowerCase())} account</h3>
+    <h2 class="accounts-picker-title">${e(title)}</h2>
     <div class="accounts-picker-grid">
       ${lane.providers
         .map(
@@ -871,13 +1039,154 @@ const renderProviderPicker = (lane: AccountLane): string => `
     </div>
   </div>
 `;
+};
 
 const providerLabelFor = (lane: AccountLane, adapterType: string): string => {
   const match = lane.providers.find((p) => p.id === adapterType);
   return match ? match.label : adapterType;
 };
 
+type AccountDisplayState = CollectionAuthState | 'syncing';
+
+const displayStatusFor = (
+  row: AccountRow,
+): { state: AccountDisplayState; label: string } =>
+  row.authState === 'healthy'
+    && (row.lastSyncedAt === undefined || row.lastSyncedAt === null)
+    ? { state: 'syncing', label: 'First sync pending' }
+    : { state: row.authState, label: AUTH_STATE_LABEL[row.authState] };
+
+const renderConnectionSuccess = (
+  lane: AccountLane,
+  state: AccountsPanelState,
+): string => {
+  const success = state.connectionSuccess;
+  if (success === null) return '';
+
+  const row = state.rows.find((candidate) => candidate.slug === success.slug);
+  const provider = findAccountProvider(lane, success.providerId);
+  const providerLabel = provider?.label
+    ?? providerLabelFor(lane, row?.adapterType ?? success.providerId);
+  const identity = row?.sublabel ?? success.slug;
+
+  let syncState: 'checking' | 'pending' | 'ready' | 'attention' | 'unknown';
+  let title: string;
+  let badge: string;
+  let description: string;
+  let detail = '';
+
+  if (state.loading) {
+    syncState = 'checking';
+    title = `${providerLabel} connected`;
+    badge = 'Checking sync status';
+    description = 'The connection is saved. Checking whether its first sync has finished…';
+  } else if (state.error !== null || row === undefined) {
+    syncState = 'unknown';
+    title = 'Connection saved';
+    badge = 'Sync status unavailable';
+    description = state.error === null
+      ? `Recued saved ${success.slug}, but it has not appeared in the account list yet.`
+      : `Recued saved ${success.slug}, but could not refresh its sync status.`;
+    detail = 'Try checking again. You do not need to repeat the sign-in flow.';
+  } else if (row.authState !== 'healthy') {
+    syncState = 'attention';
+    title = `${providerLabel} connected, but needs attention`;
+    badge = AUTH_STATE_LABEL[row.authState];
+    description = 'The account is saved, but the server reports a connection problem that needs attention.';
+    detail = 'Open the account details to review it. You do not need to repeat setup unless the issue persists.';
+  } else if (row.lastSyncedAt === undefined || row.lastSyncedAt === null) {
+    syncState = 'pending';
+    title = `${providerLabel} connected`;
+    badge = 'First sync pending';
+    description = 'You can leave this page—syncing continues on your server.';
+    detail = 'Continue to Chat now; Recued will prepare a first question when this account is searchable.';
+  } else {
+    syncState = 'ready';
+    title = `${providerLabel} is ready`;
+    badge = 'Ready for Chat';
+    description = 'The first sync finished. This account is now available in Chat.';
+    detail = `Last synced ${new Date(row.lastSyncedAt).toLocaleString()}.`;
+  }
+
+  const primary = syncState === 'unknown'
+    ? button({
+        label: 'Check sync status',
+        variant: 'primary',
+        size: 'sm',
+        action: 'accounts-success-refresh',
+      })
+    : syncState === 'attention'
+      ? button({
+          label: 'View account',
+          variant: 'primary',
+          size: 'sm',
+          action: 'accounts-open-detail',
+          data: { slug: success.slug },
+        })
+      : button({
+          label: syncState === 'ready' ? 'Ask about this account' : 'Continue to Chat',
+          variant: 'primary',
+          size: 'sm',
+          action: 'accounts-success-go-chat',
+        });
+  const adjacentLane = lane.id === 'mail'
+    ? { id: 'calendar', label: 'Connect a calendar' }
+    : lane.id === 'calendar'
+      ? { id: 'mail', label: 'Connect a mailbox' }
+      : null;
+  const adjacentAction = adjacentLane === null
+    ? ''
+    : button({
+        label: adjacentLane.label,
+        size: 'sm',
+        action: 'accounts-success-open-lane',
+        data: { lane: adjacentLane.id },
+      });
+  const checkAction = syncState === 'pending'
+    ? button({
+        label: 'Check status',
+        variant: 'link',
+        size: 'sm',
+        action: 'accounts-success-refresh',
+      })
+    : '';
+
+  return `
+    <section class="accounts-success" data-accounts-connection-success
+      data-sync-state="${e(syncState)}"
+      tabindex="-1"
+      aria-labelledby="accounts-success-${e(lane.id)}-${e(success.slug)}-title">
+      <div class="accounts-success-icon" aria-hidden="true">✓</div>
+      <div class="accounts-success-content">
+        <div class="accounts-success-live" role="status" aria-live="polite" aria-atomic="true">
+          <div class="accounts-success-heading">
+            <p class="accounts-success-eyebrow">Account connected</p>
+            <span class="accounts-success-badge" data-state="${e(syncState)}">${e(badge)}</span>
+          </div>
+          <h2 class="accounts-success-title"
+            id="accounts-success-${e(lane.id)}-${e(success.slug)}-title">${e(title)}</h2>
+          <p class="accounts-success-identity">${e(identity)}</p>
+          <p class="accounts-success-desc">${e(description)}</p>
+          ${detail ? `<p class="accounts-success-detail">${e(detail)}</p>` : ''}
+        </div>
+        <div class="accounts-success-actions">
+          ${primary}
+          ${adjacentAction}
+          ${checkAction}
+          ${button({
+            label: 'Dismiss',
+            variant: 'link',
+            size: 'sm',
+            action: 'accounts-dismiss-success',
+          })}
+        </div>
+      </div>
+    </section>
+  `;
+};
+
 const renderRow = (lane: AccountLane, row: AccountRow): string => {
+  const status = displayStatusFor(row);
   return `
     <li class="accounts-row" data-account-slug="${e(row.slug)}">
       <button type="button" class="accounts-row-main"
@@ -885,7 +1194,7 @@ const renderRow = (lane: AccountLane, row: AccountRow): string => {
         <span class="accounts-row-name">${e(row.slug)}</span>
         <span class="accounts-row-meta">
           <span class="accounts-badge">${e(providerLabelFor(lane, row.adapterType))}</span>
-          <span class="accounts-status" data-state="${e(row.authState)}">${e(AUTH_STATE_LABEL[row.authState])}</span>
+          <span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span>
           ${row.sendCapable ? '<span class="accounts-badge accounts-badge--send">can send</span>' : ''}
         </span>
         ${row.sublabel ? `<span class="accounts-row-sub">${e(row.sublabel)}</span>` : ''}
@@ -894,23 +1203,66 @@ const renderRow = (lane: AccountLane, row: AccountRow): string => {
   `;
 };
 
+const renderEmptyState = (lane: AccountLane): string => `
+  <section class="accounts-empty" data-accounts-empty
+    aria-labelledby="accounts-empty-${e(lane.id)}-title">
+    <div class="accounts-empty-copy">
+      <h2 class="accounts-empty-title" id="accounts-empty-${e(lane.id)}-title">
+        ${e(lane.emptyTitle)}
+      </h2>
+      <p class="accounts-empty-desc">${e(lane.emptyDescription)}</p>
+      <div class="accounts-empty-providers">
+        <p class="accounts-empty-providers-label"
+          id="accounts-empty-${e(lane.id)}-providers-label">Available options</p>
+        <ul class="accounts-empty-provider-list"
+          aria-labelledby="accounts-empty-${e(lane.id)}-providers-label">
+          ${lane.providers
+            .map((provider) => `<li>${e(provider.label)}</li>`)
+            .join('')}
+        </ul>
+      </div>
+    </div>
+    <div class="accounts-empty-action">
+      ${button({
+        label: lane.addLabel,
+        variant: 'primary',
+        size: 'sm',
+        action: 'accounts-open-add',
+      })}
+    </div>
+  </section>
+`;
+
 const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
+  const hasSuccess = state.connectionSuccess !== null;
+  const isEmpty = !hasSuccess
+    && !state.loading
+    && state.error === null
+    && state.rows.length === 0;
   let body: string;
   if (state.loading) {
-    body = '<p class="accounts-loading">Loading accounts…</p>';
+    body = hasSuccess ? '' : `
+      <div class="accounts-loading-state" role="status" aria-live="polite">
+        <span class="accounts-loading-dot" aria-hidden="true"></span>
+        <span>Loading ${e(lane.label.toLowerCase())}…</span>
+      </div>
+    `;
   } else if (state.error !== null) {
     body = inlineError(state.error);
+  } else if (isEmpty) {
+    body = renderEmptyState(lane);
   } else if (state.rows.length === 0) {
-    body = emptyHint({
-      message: `No ${lane.label.toLowerCase()} accounts yet.`,
-    });
+    body = '';
   } else {
     body = `<ul class="accounts-rows">${state.rows.map((r) => renderRow(lane, r)).join('')}</ul>`;
   }
   const canAdd = lane.providers.length > 0;
   const addRow = canAdd
+    && !state.loading
+    && state.error === null
+    && state.rows.length > 0
     ? `<div class="accounts-add-row">${button({
-        label: '+ Add account',
+        label: `+ ${lane.addLabel}`,
         variant: 'primary',
         size: 'sm',
         action: 'accounts-open-add',
@@ -918,7 +1270,8 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
     : '';
   const pending = lane.pending ? inlineHint(lane.pending) : '';
   return `
-    <p class="accounts-blurb">${e(lane.blurb)}</p>
+    ${renderConnectionSuccess(lane, state)}
+    ${isEmpty || state.rows.length === 0 ? '' : `<p class="accounts-blurb">${e(lane.blurb)}</p>`}
     ${body}
     ${addRow}
     ${pending}
@@ -943,20 +1296,23 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
   }
   const busyKey = (op: string): boolean => state.rowBusy.has(`${op}:${row.slug}`);
   const rowErr = state.rowError[row.slug];
+  const status = displayStatusFor(row);
+  const lastSyncedAt = row.lastSyncedAt;
+  const hasSynced = lastSyncedAt !== undefined && lastSyncedAt !== null;
   const synced =
-    row.lastSyncedAt === undefined || row.lastSyncedAt === null
-      ? 'never'
-      : new Date(row.lastSyncedAt).toLocaleString();
-  // resync / reauth exist on calendar + file lanes; mail has delete only.
+    !hasSynced
+      ? row.authState === 'healthy' ? 'Waiting for first sync' : 'No successful sync yet'
+      : new Date(lastSyncedAt).toLocaleString();
+  // Re-sync exists on calendar + file lanes; reauthorization is calendar-only.
   const lifecycle = lane.id !== 'mail';
   return `
     <div class="accounts-detail">
-      <h3 class="accounts-detail-title">${e(row.slug)}</h3>
+      <h2 class="accounts-detail-title">${e(row.slug)}</h2>
       <dl class="accounts-detail-grid">
         <dt>Provider</dt><dd>${e(providerLabelFor(lane, row.adapterType))}</dd>
-        <dt>Status</dt><dd><span class="accounts-status" data-state="${e(row.authState)}">${e(AUTH_STATE_LABEL[row.authState])}</span></dd>
+        <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
         ${row.sublabel ? `<dt>Account</dt><dd>${e(row.sublabel)}</dd>` : ''}
-        <dt>Last synced</dt><dd>${e(synced)}</dd>
+        <dt>${hasSynced ? 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>
       </dl>
       ${rowErr ? inlineError(rowErr) : ''}
       <div class="accounts-form-actions">
@@ -972,7 +1328,9 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
             : ''
         }
         ${
-          lifecycle && row.authState !== 'healthy'
+          lane.id === 'calendar'
+            && row.reauthAvailable === true
+            && row.authState !== 'healthy'
             ? button({
                 label: busyKey('reauth') ? 'Re-authorizing…' : 'Re-authorize',
                 size: 'sm',
@@ -1021,7 +1379,10 @@ const renderOAuthFinishing = (provider: AccountProvider | undefined): string => 
  *  `<details>` so it stays collapsed until the user needs it. Static text
  *  (no interpolation of untrusted input) — it references the exact redirect
  *  URI rendered above it rather than repeating the value. */
-const oauthAppGuide = (issuer: OAuthAppIssuer): string => {
+const oauthAppGuide = (
+  issuer: OAuthAppIssuer,
+  open = false,
+): string => {
   const steps =
     issuer === 'google'
       ? [
@@ -1029,20 +1390,26 @@ const oauthAppGuide = (issuer: OAuthAppIssuer): string => {
           'Under APIs &amp; Services → Library, enable the Gmail API (and the Google Calendar API if you will sync calendars).',
           'Configure the OAuth consent screen. If your account is Google Workspace, choose Internal — it needs no Google verification and issues long-lived refresh tokens. Otherwise choose External and add your own Google account under Test users (note: unverified External apps expire refresh tokens after 7 days, and gmail.readonly is a restricted scope that needs verification before going live).',
           'Go to Credentials → Create credentials → OAuth client ID → Web application.',
-          'Under Authorized redirect URIs, add the exact URI shown above.',
-          'Create it, then copy the Client ID and Client secret into the fields above.',
+          'Under Authorized redirect URIs, add the exact callback URL shown in step 2 below.',
+          'Create it, then copy the Client ID and Client secret into step 3 below.',
         ]
       : [
           'Open the Azure portal → Microsoft Entra ID → App registrations → New registration. Under "Supported account types" choose "Accounts in any organizational directory and personal Microsoft accounts" — Recued signs in via the /common endpoint, so a single-tenant or org-only app is rejected with "not enabled for consumers".',
-          'Under "Redirect URI" pick the Web platform (NOT "Single-page application" — Web allows the ?recued_relay query in the URI and uses the client-secret flow Recued needs), paste the exact URI shown above, then Register.',
+          'Under "Redirect URI" pick the Web platform (NOT "Single-page application" — Web uses the client-secret flow Recued needs), paste the exact callback URL shown in step 2 below, then Register.',
           'Open API permissions → Add a permission → Microsoft Graph → Delegated permissions, and add Mail.Read, offline_access, and User.Read (add Calendars.ReadWrite if you will sync calendars).',
           'Open Certificates &amp; secrets → New client secret, then copy its Value immediately (it is shown only once).',
-          'From the Overview page copy the Application (client) ID, and paste it plus the secret Value into the fields above.',
+          'From the Overview page copy the Application (client) ID, and paste it plus the secret Value into step 3 below.',
         ];
   const provider = OAUTH_ISSUER_LABEL[issuer];
+  const providerConsole = OAUTH_ISSUER_CONSOLE[issuer];
   return `
-    <details class="accounts-oauth-guide">
-      <summary>How to create a ${e(provider)} OAuth app</summary>
+    <details class="accounts-oauth-guide"${open ? ' open' : ''}>
+      <summary>${open ? '1. ' : ''}Create a ${e(provider)} OAuth app</summary>
+      <a class="accounts-oauth-console-link" href="${e(providerConsole.href)}"
+        target="_blank" rel="noopener noreferrer"
+        aria-label="${e(providerConsole.label)} (opens in a new tab)">
+        ${e(providerConsole.label)} <span aria-hidden="true">↗</span>
+      </a>
       <ol class="accounts-oauth-guide-steps">
         ${steps.map((s) => `<li>${s}</li>`).join('')}
       </ol>
@@ -1056,9 +1423,9 @@ export interface AccountsPanelProps {
 
 /** Pure renderer for ONE foundational-account lane — the active stage
  *  (list / provider-picker / form / detail). The unified
- *  `[Mail · Calendar · Files · Others]` tab bar lives in the webclient
- *  route (it spans this panel + the separate `connection.*` enroll
- *  panel), so this renderer draws lane content only. */
+ *  `[Mail · Calendar · Files · Apps & APIs]` tab bar lives in the
+ *  webclient route (it spans this panel + the separate `connection.*`
+ *  enroll panel), so this renderer draws lane content only. */
 export const renderAccountsPanel = (props: AccountsPanelProps): string => {
   const { state } = props;
   const lane = findAccountLane(state.lane) ?? ACCOUNT_LANES[0]!;
@@ -1098,7 +1465,122 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 
 export const ACCOUNTS_PANEL_STYLES = `
 .accounts-panel { display: grid; gap: 14px; }
+.accounts-stage { min-width: 0; }
 .accounts-blurb { margin: 0; color: var(--muted); font-size: 13px; }
+.accounts-empty {
+  position: relative; overflow: hidden;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 24px;
+  padding: 24px 24px 24px 27px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
+}
+.accounts-empty::before {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+  background: var(--accent);
+}
+.accounts-empty-copy { min-width: 0; }
+.accounts-empty-title {
+  margin: 0; color: var(--fg-strong, var(--fg));
+  font-size: 18px; line-height: 1.3; font-weight: 680;
+}
+.accounts-empty-desc {
+  max-width: 650px; margin: 6px 0 0;
+  color: var(--muted); font-size: 13px; line-height: 1.55;
+}
+.accounts-empty-providers { margin-top: 14px; }
+.accounts-empty-providers-label {
+  display: block; margin-bottom: 7px;
+  color: var(--muted); font-size: 11px; font-weight: 650;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.accounts-empty-provider-list {
+  list-style: none; display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0; padding: 0;
+}
+.accounts-empty-provider-list li {
+  padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-sunk); color: var(--fg); font-size: 11px;
+  font-weight: 600; line-height: 1.3;
+}
+.accounts-empty-action { flex: 0 0 auto; }
+.accounts-loading-state {
+  display: flex; align-items: center; gap: 9px;
+  min-height: 72px; padding: 0 2px;
+  color: var(--muted); font-size: 13px;
+}
+.accounts-loading-dot {
+  width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%;
+  background: var(--accent); animation: accounts-loading-pulse 1.2s ease-in-out infinite;
+}
+@keyframes accounts-loading-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.86); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.accounts-success {
+  position: relative; overflow: hidden;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px;
+  margin-bottom: 16px; padding: 19px 20px;
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  background:
+    linear-gradient(135deg, var(--accent-weak), transparent 58%),
+    var(--surface);
+  box-shadow: 0 4px 16px rgba(24, 24, 27, 0.06);
+}
+.accounts-success::before {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+  background: var(--accent);
+}
+.accounts-success:focus {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.accounts-success-icon {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: 50%; background: var(--accent); color: var(--on-accent);
+  font-size: 17px; font-weight: 800; line-height: 1;
+}
+.accounts-success-content, .accounts-success-live { min-width: 0; }
+.accounts-success-heading {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.accounts-success-eyebrow {
+  margin: 0; color: var(--muted); font-size: 10px; line-height: 1.3;
+  font-weight: 750; letter-spacing: 0.075em; text-transform: uppercase;
+}
+.accounts-success-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--fg); font-size: 10px;
+  line-height: 1.35; font-weight: 700;
+}
+.accounts-success-badge::before {
+  content: ''; width: 6px; height: 6px; flex: 0 0 auto;
+  border-radius: 50%; background: currentColor;
+}
+.accounts-success-badge[data-state='checking']::before,
+.accounts-success-badge[data-state='pending']::before { background: var(--accent); }
+.accounts-success-badge[data-state='ready'] { color: var(--ok, #2e7d32); }
+.accounts-success-badge[data-state='attention'] { color: var(--danger); }
+.accounts-success-badge[data-state='unknown'] { color: var(--warn); }
+.accounts-success-title {
+  margin: 4px 0 0; color: var(--fg-strong, var(--fg));
+  font-size: 17px; line-height: 1.35; font-weight: 700;
+}
+.accounts-success-identity {
+  margin: 3px 0 0; overflow-wrap: anywhere; color: var(--fg);
+  font-size: 12px; line-height: 1.45; font-weight: 620;
+}
+.accounts-success-desc {
+  margin: 9px 0 0; color: var(--fg); font-size: 13px; line-height: 1.5;
+}
+.accounts-success-detail {
+  margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.accounts-success-actions {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 14px;
+}
 .accounts-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .accounts-row { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .accounts-row-main {
@@ -1117,6 +1599,7 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-badge--send { color: var(--accent); }
 .accounts-status { font-size: 12px; font-weight: 600; color: var(--muted); }
 .accounts-status[data-state='healthy'] { color: var(--ok, #2e7d32); }
+.accounts-status[data-state='syncing'] { color: var(--accent); }
 .accounts-status[data-state='expired'],
 .accounts-status[data-state='unauthorized'] { color: var(--danger, #c62828); }
 .accounts-status[data-state='degraded'] { color: var(--warn, #ef6c00); }
@@ -1131,14 +1614,13 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-picker-card-desc { color: var(--muted); font-size: 12px; }
 .accounts-picker-title, .accounts-form-title { margin: 0 0 4px; font-size: 16px; font-weight: 650; }
 .accounts-form-desc { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.accounts-form--oauth { max-width: 780px; }
+.accounts-form-section-title {
+  margin: 18px 0 9px; color: var(--fg); font-size: 12px; font-weight: 700;
+  letter-spacing: 0.035em; text-transform: uppercase;
+}
 .accounts-form-fields { display: grid; gap: 12px; }
 .accounts-form-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-.accounts-oauth-redirect {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px; word-break: break-all;
-  padding: 1px 5px; border-radius: 4px;
-  background: var(--surface-sunk); border: 1px solid var(--border);
-}
 .accounts-finishing { display: grid; gap: 12px; justify-items: center; text-align: center; padding: 28px 0; }
 .accounts-finishing-spinner {
   width: 28px; height: 28px; border-radius: 50%;
@@ -1146,22 +1628,88 @@ export const ACCOUNTS_PANEL_STYLES = `
   animation: accounts-spin 0.8s linear infinite;
 }
 @keyframes accounts-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .accounts-finishing-spinner { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .accounts-finishing-spinner, .accounts-loading-dot { animation: none; }
+}
 .accounts-finishing-title { margin: 0; font-size: 16px; font-weight: 650; }
 .accounts-finishing-desc { margin: 0; color: var(--muted); font-size: 13px; }
 .accounts-oauth-app {
-  display: grid; gap: 10px; margin-top: 4px;
-  padding: 12px; border: 1px solid var(--border); border-radius: 10px;
-  background: var(--surface-subtle, var(--surface));
+  display: grid; gap: 14px; margin-top: 20px;
+  padding: 16px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface);
 }
-.accounts-oauth-app-title { margin: 0; font-size: 13px; font-weight: 650; color: var(--fg); }
+.accounts-oauth-app--ready {
+  border-color: var(--border-strong);
+  background: var(--accent-weak);
+}
+.accounts-oauth-app--setup { background: var(--surface-sunk); }
+.accounts-oauth-app-header {
+  display: flex; align-items: flex-start; gap: 11px; min-width: 0;
+}
+.accounts-oauth-app-title {
+  margin: 0; color: var(--fg-strong, var(--fg));
+  font-size: 14px; line-height: 1.35; font-weight: 680;
+}
+.accounts-oauth-app-desc {
+  margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.accounts-oauth-state-icon {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 800;
+}
+.accounts-oauth-setup-badge {
+  flex: 0 0 auto; padding: 4px 8px; border-radius: 999px;
+  background: var(--accent-weak); color: var(--accent);
+  font-size: 10px; line-height: 1.3; font-weight: 750;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.accounts-oauth-shared-note {
+  margin: -2px 0 0; padding: 9px 10px; border-radius: 8px;
+  background: var(--surface); color: var(--muted); font-size: 12px; line-height: 1.45;
+}
+.accounts-oauth-manage {
+  border-top: 1px solid var(--border); padding-top: 11px;
+}
+.accounts-oauth-manage > summary,
+.accounts-oauth-guide > summary {
+  cursor: pointer; color: var(--fg); font-size: 12px; font-weight: 650;
+}
+.accounts-oauth-manage-body {
+  display: grid; gap: 14px; margin-top: 13px;
+}
+.accounts-oauth-credentials,
+.accounts-oauth-callback { display: grid; gap: 7px; }
+.accounts-oauth-step-title {
+  margin: 0; color: var(--fg); font-size: 12px; line-height: 1.4; font-weight: 700;
+}
+.accounts-oauth-step-desc {
+  margin: -3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45;
+}
+.accounts-oauth-callback-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch; gap: 8px;
+}
+.accounts-oauth-redirect {
+  display: block; min-width: 0; overflow-wrap: anywhere;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--surface-sunk);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px; line-height: 1.4;
+}
 .accounts-oauth-app .accounts-form-fields { gap: 12px; }
 .accounts-oauth-guide {
   border: 1px solid var(--border); border-radius: 8px;
-  background: var(--surface-subtle, var(--surface)); padding: 8px 12px;
+  background: var(--surface); padding: 9px 11px;
 }
-.accounts-oauth-guide > summary {
-  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--fg);
+.accounts-oauth-console-link {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 10px;
+  color: var(--accent); font-size: 12px; line-height: 1.4; font-weight: 650;
+  text-decoration: none;
+}
+.accounts-oauth-console-link:hover { text-decoration: underline; }
+.accounts-oauth-console-link:focus-visible {
+  border-radius: 3px; outline: 2px solid var(--accent); outline-offset: 3px;
 }
 .accounts-oauth-guide-steps {
   margin: 10px 0 2px; padding-left: 20px; display: grid; gap: 8px;
@@ -1172,4 +1720,16 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-detail-grid dt { color: var(--muted); }
 .accounts-detail-grid dd { margin: 0; }
 .accounts-loading { color: var(--muted); font-size: 13px; }
+@media (max-width: 640px) {
+  .accounts-empty {
+    grid-template-columns: minmax(0, 1fr); gap: 18px;
+    padding: 21px 19px 21px 22px;
+  }
+  .accounts-empty-action .rx-btn { width: 100%; justify-content: center; }
+  .accounts-success { padding: 17px 16px 17px 18px; }
+  .accounts-success-actions .rx-btn-primary { flex: 1 1 100%; }
+  .accounts-oauth-app-header { flex-wrap: wrap; }
+  .accounts-oauth-callback-row { grid-template-columns: minmax(0, 1fr); }
+  .accounts-oauth-callback-row .rx-btn { width: 100%; }
+}
 `;

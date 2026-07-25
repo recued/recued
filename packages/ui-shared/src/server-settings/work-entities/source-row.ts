@@ -9,7 +9,7 @@
  *  `data-action="set-source-enabled"` /
  *  `data-action="set-source-mcp-exposed"` against the rpc dispatcher.
  *
- *  Spec: docs/d-145-spec.md § PA11. */
+ *  Spec: D-145 § PA11. */
 
 import type { SourceRegistration } from '@recued/contracts';
 import { e } from '../../template.js';

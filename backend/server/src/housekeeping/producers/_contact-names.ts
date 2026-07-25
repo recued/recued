@@ -1,4 +1,4 @@
-/** Bench harvest (`recued-enrichment-benchmark` P1 v6–v12) — the producers'
+/** Bench harvest (internal benchmarks P1 v6–v12) — the producers'
  *  view of a contact's DISPLAY NAME, for producer-time REF<contacts>
  *  denormalization.
  *

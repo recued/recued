@@ -22,7 +22,7 @@
  *  path is a carry-forward (same gap exists for HubSpot's parse-
  *  time-ledger handling).
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, Pass-5 R5.10. */
+ *  Spec: D-139 § A.3.8, Pass-5 R5.10. */
 
 import {
   SALESFORCE_ENGAGEMENT_PUSHTOPIC_NAMES,

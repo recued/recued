@@ -14,7 +14,7 @@
  *  structurally enforceable, not aspirational. The catalog ratchet
  *  test asserts every live ingredient passes all four gates.
  *
- *  Spec: `docs/d-145-spec.md` § C.1. */
+ *  Spec: D-145 § C.1. */
 
 import type { BridgeSurfaceKind } from '@recued/contracts';
 import {
@@ -125,7 +125,7 @@ export const validateBridgeSurfaceKind = (
       ok: false,
       error: 'surface_kind_missing',
       detail:
-        'Bridge ingredients (kind: \'dom\') must declare surface_kind. See docs/d-145-spec.md § C.1.1.',
+        'Bridge ingredients (kind: \'dom\') must declare surface_kind. See D-145 § C.1.1.',
     };
   }
 
@@ -133,7 +133,7 @@ export const validateBridgeSurfaceKind = (
     return {
       ok: false,
       error: 'surface_kind_messaging_rejected',
-      detail: `surface_kind '${sk}' is permanently rejected for Bridge ingredients per D-145 publishing-vs-messaging rule. Recued bridges cannot access messaging surfaces. See docs/d-145-spec.md § B.9.1.`,
+      detail: `surface_kind '${sk}' is permanently rejected for Bridge ingredients per D-145 publishing-vs-messaging rule. Recued bridges cannot access messaging surfaces. See D-145 § B.9.1.`,
     };
   }
 
@@ -251,7 +251,7 @@ export const validateUrlClassifier = (
       return {
         ok: false,
         error: 'surface_kind_messaging_rejected_by_url_classifier',
-        detail: `trigger pattern '${trigger}' intersects messaging-domain blocklist entry '${matched}' — bridge ingredients cannot access messaging surfaces. See docs/d-145-spec.md § C.1.4 gate 1.`,
+        detail: `trigger pattern '${trigger}' intersects messaging-domain blocklist entry '${matched}' — bridge ingredients cannot access messaging surfaces. See D-145 § C.1.4 gate 1.`,
         trigger,
       };
     }
@@ -277,7 +277,7 @@ export const validateSelectorClassifier = (
         return {
           ok: false,
           error: 'selector_pattern_messaging_rejected',
-          detail: `output selector '${selector}' matches messaging-selector blocklist entry '${block}'. Reading-surface ingredients should not need DM-conversation selectors. See docs/d-145-spec.md § C.1.4 gate 2.`,
+          detail: `output selector '${selector}' matches messaging-selector blocklist entry '${block}'. Reading-surface ingredients should not need DM-conversation selectors. See D-145 § C.1.4 gate 2.`,
           trigger: selector,
         };
       }

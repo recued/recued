@@ -41,7 +41,7 @@
  *      standard for content-addressing (see backend/server/src/
  *      upstream-merge-handler.ts `sha256Hex`).
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle / § 3 the deterministic gate (bundle path:
  *  recued.com hash-pinned, content-addressed, verifiable). */
 

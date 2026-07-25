@@ -1,6 +1,6 @@
 /** D-160 P1 -- capacity envelope primitive.
  *
- *  Spec: docs/d-160-spec.md sections N.4 / A.1 and Must Hold I-6.
+ *  Spec: D-160 sections N.4 / A.1 and Must Hold I-6.
  */
 
 import { describe, expect, it } from 'vitest';

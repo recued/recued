@@ -49,6 +49,12 @@ export interface PairingManager {
   refreshCode(): string;
   /** Legacy realm token returned by db-less /auth/pair compositions. */
   getRealmToken(): string;
+  /** Verify a code WITHOUT consuming it. The pre-gate for `/auth/pair`:
+   *  the recovery-key work that follows has durable side effects (realm
+   *  sentinel, vault bundle, database rekey), so the code must be proven
+   *  before any of it runs. Consumption stays with `pair()` at the act
+   *  site, so a mistyped recovery key rejects without burning the code. */
+  checkCode(code: string): boolean;
   /** Verify a code and consume it. Returns the legacy realm token on
    *  success, or null when the code is wrong, expired, or already
    *  consumed. */
@@ -121,6 +127,12 @@ export const createPairingManager = (config: PairingConfig = {}): PairingManager
 
     getRealmToken() {
       return realmToken;
+    },
+
+    checkCode(code) {
+      if (state.consumed) return false;
+      if (now() > state.expires_at) return false;
+      return codesMatch(code, state.code);
     },
 
     pair(code) {

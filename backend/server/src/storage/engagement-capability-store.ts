@@ -15,7 +15,7 @@
  *
  *  Server-internal table; no cross-cloud sync (D-097 / D-168).
  *
- *  Spec: `docs/d-139-spec.md` § A.2, § A.2.1, § A.6, § A.6.3. */
+ *  Spec: D-139 § A.2, § A.2.1, § A.6, § A.6.3. */
 
 import type Database from 'better-sqlite3';
 

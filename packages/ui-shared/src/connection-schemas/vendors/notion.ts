@@ -22,7 +22,7 @@
  *  a page-title subtree. Notion has no server-side path filter, so it's applied
  *  CLIENT-SIDE over the leaf's synthesized breadcrumb path (like Box).
  *
- *  Spec: `docs/d-192-file-source-family.md`; config shape matches
+ *  Spec: D-192; config shape matches
  *  `backend/server/src/file-source-adapters/notion.ts`. */
 
 import type { ConnectionField } from '../types.js';
@@ -65,7 +65,8 @@ const NOTION_FIELDS: readonly ConnectionField[] = [
       'A glob over the page-title breadcrumb (`Projects/**`, `**/*.pdf`) mirrors '
       + 'just matching files. Notion has no server-side path filter, so this is '
       + 'applied after listing. Leave blank to mirror every file on every shared '
-      + 'page. Metadata only — file contents are never fetched.',
+      + 'page. Sync mirrors metadata only; eligible contents are fetched lazily '
+      + 'only when you explicitly read a file.',
   },
   // Notion auth is always a single long-lived bearer integration token. Hidden +
   // seeded, mirroring the other vendors' locked `auth.type`.
@@ -100,7 +101,7 @@ export const notionSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'Notion',
   description:
-    'Knowledge base — mirror file/attachment metadata from the Notion pages shared with your integration into your warehouse (bytes never fetched). Long-lived integration-token auth.',
+    'Knowledge base — mirror file/attachment metadata from the Notion pages shared with your integration; eligible file bytes stay remote and are fetched only for an explicit read. Long-lived integration-token auth.',
   fields: NOTION_FIELDS,
   initialValues: NOTION_SCHEMA_INITIAL_VALUES,
 };

@@ -18,7 +18,7 @@
  *  is enrichment-only and explicitly NOT a virtual collection
  *  (spec §A.7 decision §5).
  *
- *  Spec: docs/d-129-spec.md §A.7 + §Phase 7. */
+ *  Spec: D-129 §A.7 + §Phase 7. */
 
 import {
   CONNECTION_VENDOR_ENTITIES,

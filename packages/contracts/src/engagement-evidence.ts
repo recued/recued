@@ -17,7 +17,7 @@
  *    - `DedupeAcceptance` (§ A.3.5) — per-producer collapse policy
  *    - `EngagementVendor` — OPEN vendor id (D-192; membership via the registry)
  *
- *  Spec: `docs/d-139-spec.md` § A.3.2 + § A.3.3 + § A.3.4 + § A.3.5 +
+ *  Spec: D-139 § A.3.2 + § A.3.3 + § A.3.4 + § A.3.5 +
  *  § A.3.6 + § A.3.7 + § A.3.8 + § A.4 + § A.9.3 + § A.9.5. */
 
 // ────────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ export const ENGAGEMENT_VENDOR_VALUES = ['hubspot', 'salesforce'] as const;
  *  declared CRM's engagement plane now works with no code edit. Shared logic
  *  reads the registry predicate `vendorHasEngagement(vendor, liveRegistry)`
  *  instead of narrowing to this type. The built-in set survives as
- *  `ENGAGEMENT_VENDOR_VALUES`. Design: `docs/d-192-engagement-facet.md`. */
+ *  `ENGAGEMENT_VENDOR_VALUES`. Design: D-192. */
 export type EngagementVendor = string;
 
 // ────────────────────────────────────────────────────────────────

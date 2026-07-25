@@ -18,12 +18,13 @@
  *   dist/binary/recued-<triple>[.exe]   — the host binary
  *   dist/binary/<binary>.sha256         — convenience checksum (S2 re-derives)
  *
- * ── KNOWN RESIDUAL (tracked in docs/d-178-spec.md S1) ───────────────────
- * The server bundle keeps native + heavy deps EXTERNAL (better-sqlite3 is a
+ * ── KNOWN RESIDUAL (tracked in D-178 S1) ───────────────────
+ * The server bundle keeps native + heavy deps EXTERNAL (the multiple-ciphers
+ * SQLite driver is a
  * native `.node`; ws/imapflow/mailparser/@iarna/toml are real npm). SEA
  * embeds a single JS blob and CANNOT embed a native `.node`. A fully static
  * single file therefore needs ONE of: (a) ship the externals in a sibling
- * `lib/` next to the binary (semi-static), or (b) swap better-sqlite3 for a
+ * `lib/` next to the binary (semi-static), or (b) swap the native driver for a
  * bundleable sqlite (node:sqlite / a WASM build) + inline the pure-JS
  * externals. This scaffold builds the SEA binary and STAGES the externals;
  * picking (a) vs (b) is the S1 build decision, not wired here.

@@ -15,9 +15,21 @@ import {
   kitchenNewRecipeSeed,
   kitchenPackDraftId,
   normalizeShellHash,
+  parseChatAnswerAddress,
+  parseChatPlanAddress,
+  parseDataEntityVerificationAddress,
+  parseLogsRunAddress,
   parseRouteFromHash,
   parseShellRoute,
+  parseSourceRecordAddress,
+  parseSourceRecordVerificationAddress,
+  serializeChatAnswerAddress,
+  serializeChatPlanAddress,
+  serializeDataEntityVerificationAddress,
+  serializeLogsRunAddress,
   serializeShellRoute,
+  serializeSourceRecordAddress,
+  serializeSourceRecordVerificationAddress,
   shellItem,
   shellSubtab,
   shellSubview,
@@ -221,6 +233,289 @@ describe('§D.shell — serializeShellRoute', () => {
   });
 });
 
+describe('§D.shell — Chat citation round-trip routes', () => {
+  it('round-trips an account-qualified Data record with its Chat answer', () => {
+    const href = serializeSourceRecordAddress({
+      tab: 'mail',
+      collectionSlug: 'gmail/work',
+      recordId: 'mail:abc 123',
+      returnToChat: {
+        sessionId: 'chat/1',
+        messageId: 'message 2',
+      },
+    });
+    expect(href).toBe(
+      '#data/mail/record/gmail%2Fwork/mail%3Aabc%20123/return/chat/'
+      + 'chat%2F1/message%202',
+    );
+    expect(parseSourceRecordAddress(parseShellRoute(href))).toEqual({
+      tab: 'mail',
+      collectionSlug: 'gmail/work',
+      recordId: 'mail:abc 123',
+      returnToChat: {
+        sessionId: 'chat/1',
+        messageId: 'message 2',
+      },
+    });
+  });
+
+  it('round-trips an account-qualified source record back to its exact run', () => {
+    const href = serializeSourceRecordAddress({
+      tab: 'calendar',
+      collectionSlug: 'work/calendar',
+      recordId: 'event 42',
+      returnToRun: {
+        runId: 'run/one',
+        returnToChat: {
+          sessionId: 'chat 1',
+          planId: 'plan/2',
+        },
+      },
+      verificationRelationship: 'derived',
+    });
+    expect(href).toBe(
+      '#data/calendar/record/work%2Fcalendar/event%2042/'
+      + 'relationship/derived/return/logs/run%2Fone/return/chat/'
+      + 'session/chat%201/plan/plan%2F2',
+    );
+    expect(parseSourceRecordAddress(parseShellRoute(href))).toEqual({
+      tab: 'calendar',
+      collectionSlug: 'work/calendar',
+      recordId: 'event 42',
+      returnToRun: {
+        runId: 'run/one',
+        returnToChat: {
+          sessionId: 'chat 1',
+          planId: 'plan/2',
+        },
+      },
+      verificationRelationship: 'derived',
+    });
+  });
+
+  it('round-trips a durable Chat answer and rejects incomplete route tails', () => {
+    const href = serializeChatAnswerAddress({
+      sessionId: 'chat/1',
+      messageId: 'message 2',
+    });
+    expect(href).toBe('#chat/session/chat%2F1/answer/message%202');
+    expect(parseChatAnswerAddress(parseShellRoute(href))).toEqual({
+      sessionId: 'chat/1',
+      messageId: 'message 2',
+    });
+    expect(parseChatAnswerAddress(
+      parseShellRoute('#chat/session/chat-1'),
+    )).toBeNull();
+    expect(parseSourceRecordAddress(
+      parseShellRoute('#data/mail/record/work'),
+    )).toBeNull();
+    expect(parseSourceRecordAddress(
+      parseShellRoute('#data/contact/record/work/c-1'),
+    )).toBeNull();
+  });
+
+  it('round-trips an exact Chat plan with an encoded answer fallback', () => {
+    const href = serializeChatPlanAddress({
+      sessionId: 'chat/1',
+      planId: 'plan 2',
+      messageId: 'answer #3',
+    });
+    expect(href).toBe(
+      '#chat/session/chat%2F1/plan/plan%202/answer/answer%20%233',
+    );
+    expect(parseChatPlanAddress(parseShellRoute(href))).toEqual({
+      sessionId: 'chat/1',
+      planId: 'plan 2',
+      messageId: 'answer #3',
+    });
+  });
+
+  it('supports a plan-only address and rejects ambiguous plan tails', () => {
+    expect(parseChatPlanAddress(parseShellRoute(
+      serializeChatPlanAddress({
+        sessionId: 'chat-1',
+        planId: 'plan-1',
+      }),
+    ))).toEqual({
+      sessionId: 'chat-1',
+      planId: 'plan-1',
+    });
+    expect(parseChatPlanAddress(
+      parseShellRoute('#chat/session/chat-1/plan/plan-1/message/msg-1'),
+    )).toBeNull();
+    expect(parseChatAnswerAddress(
+      parseShellRoute('#chat/session/chat-1/plan/plan-1'),
+    )).toBeNull();
+  });
+
+  it('round-trips a Data-review result to the exact Chat action without granting authority', () => {
+    const href = serializeChatPlanAddress({
+      sessionId: 'chat/1',
+      planId: 'plan 2',
+      messageId: 'answer #3',
+      dataVerification: {
+        result: 'needs_help',
+        runId: 'run/one',
+        relationship: 'involved',
+      },
+    });
+    expect(href).toBe(
+      '#chat/session/chat%2F1/plan/plan%202/answer/answer%20%233/'
+      + 'verification/needs_help/run/run%2Fone/relationship/involved',
+    );
+    expect(parseChatPlanAddress(parseShellRoute(href))).toEqual({
+      sessionId: 'chat/1',
+      planId: 'plan 2',
+      messageId: 'answer #3',
+      dataVerification: {
+        result: 'needs_help',
+        runId: 'run/one',
+        relationship: 'involved',
+      },
+    });
+    expect(parseChatPlanAddress(parseShellRoute(
+      '#chat/session/chat-1/plan/plan-1/verification/confirmed/run/run-1',
+    ))).toBeNull();
+    expect(parseChatPlanAddress(parseShellRoute(
+      '#chat/session/chat-1/plan/plan-1/verification/reviewed/run/run-1/'
+      + 'relationship/changed',
+    ))).toBeNull();
+  });
+});
+
+describe('§D.shell — run outcome → Data verification routes', () => {
+  const returnToRun = {
+    runId: 'run/one',
+    returnToChat: {
+      sessionId: 'chat 1',
+      planId: 'plan/2',
+      messageId: 'answer #3',
+    },
+  } as const;
+
+  it('round-trips an exact globally addressable Data item', () => {
+    const href = serializeDataEntityVerificationAddress({
+      tab: 'contact',
+      entityId: 'person@example.com',
+      returnToRun,
+      verificationRelationship: 'action',
+    });
+    expect(href).toBe(
+      '#data/contact/item/person%40example.com/relationship/action/'
+      + 'return/logs/run%2Fone/'
+      + 'return/chat/session/chat%201/plan/plan%2F2/answer/answer%20%233',
+    );
+    expect(parseDataEntityVerificationAddress(parseShellRoute(href))).toEqual({
+      tab: 'contact',
+      entityId: 'person@example.com',
+      returnToRun,
+      verificationRelationship: 'action',
+    });
+  });
+
+  it('round-trips an account-unqualified source record for safe resolution', () => {
+    const href = serializeSourceRecordVerificationAddress({
+      tab: 'mail',
+      recordId: 'message/42',
+      returnToRun,
+      verificationRelationship: 'derived',
+    });
+    expect(href).toBe(
+      '#data/mail/verify/message%2F42/relationship/derived/'
+      + 'return/logs/run%2Fone/'
+      + 'return/chat/session/chat%201/plan/plan%2F2/answer/answer%20%233',
+    );
+    expect(
+      parseSourceRecordVerificationAddress(parseShellRoute(href)),
+    ).toEqual({
+      tab: 'mail',
+      recordId: 'message/42',
+      returnToRun,
+      verificationRelationship: 'derived',
+    });
+  });
+
+  it('rejects malformed verification targets and incomplete return tails', () => {
+    expect(parseDataEntityVerificationAddress(
+      parseShellRoute('#data/mail/item/msg-1/return/logs/run-1'),
+    )).toBeNull();
+    expect(parseDataEntityVerificationAddress(
+      parseShellRoute('#data/contact/item/person%40x.com/return/logs'),
+    )).toBeNull();
+    expect(parseSourceRecordVerificationAddress(
+      parseShellRoute('#data/calendar/verify/event-1/return/logs'),
+    )).toBeNull();
+    expect(parseDataEntityVerificationAddress(
+      parseShellRoute(
+        '#data/contact/item/person%40x.com/relationship/changed/'
+        + 'return/logs/run-1',
+      ),
+    )).toBeNull();
+  });
+});
+
+describe('§D.shell — Logs run → Chat action round-trip routes', () => {
+  it('round-trips an exact run with its encoded Chat plan and answer fallback', () => {
+    const href = serializeLogsRunAddress({
+      runId: 'run/one',
+      returnToChat: {
+        sessionId: 'chat/1',
+        planId: 'plan 2',
+        messageId: 'answer #3',
+      },
+    });
+    expect(href).toBe(
+      '#logs/run%2Fone/return/chat/session/chat%2F1/plan/plan%202/'
+      + 'answer/answer%20%233',
+    );
+    expect(parseLogsRunAddress(parseShellRoute(href))).toEqual({
+      runId: 'run/one',
+      returnToChat: {
+        sessionId: 'chat/1',
+        planId: 'plan 2',
+        messageId: 'answer #3',
+      },
+    });
+  });
+
+  it('preserves legacy run-only links and supports a plan-only return', () => {
+    expect(parseLogsRunAddress(parseShellRoute('#logs/run-1'))).toEqual({
+      runId: 'run-1',
+    });
+    expect(parseLogsRunAddress(parseShellRoute(
+      serializeLogsRunAddress({
+        runId: 'run-2',
+        returnToChat: {
+          sessionId: 'chat-1',
+          planId: 'plan-1',
+        },
+      }),
+    ))).toEqual({
+      runId: 'run-2',
+      returnToChat: {
+        sessionId: 'chat-1',
+        planId: 'plan-1',
+      },
+    });
+  });
+
+  it('rejects Logs subviews and incomplete or ambiguous Chat return tails', () => {
+    expect(parseLogsRunAddress(parseShellRoute('#logs'))).toBeNull();
+    expect(parseLogsRunAddress(parseShellRoute('#logs/active'))).toBeNull();
+    expect(parseLogsRunAddress(
+      parseShellRoute('#logs/recipe/mail-send'),
+    )).toBeNull();
+    expect(parseLogsRunAddress(
+      parseShellRoute('#logs/run-1/return/chat/session/chat-1'),
+    )).toBeNull();
+    expect(parseLogsRunAddress(
+      parseShellRoute(
+        '#logs/run-1/return/chat/session/chat-1/plan/plan-1/message/msg-1',
+      ),
+    )).toBeNull();
+  });
+});
+
 describe('§D.shell — normalizeShellHash', () => {
   it('canonicalizes leading slash, query tail, and doubled slashes', () => {
     expect(normalizeShellHash('#/logs?run_id=x')).toBe('#logs');
@@ -237,6 +532,11 @@ describe('§D.shell — shouldRemountForSameRoute', () => {
     // R18 — Data is a deep-link surface (`#data/<tab>/<entity_id>`).
     expect(shouldRemountForSameRoute('data', '#data', '#data/mail')).toBe(true);
     expect(shouldRemountForSameRoute('data', '#data/mail', '#data/mail/m-1')).toBe(true);
+    // Chat setup can return to an addressable durable session; bare #chat
+    // must remount it back to a blank draft when New chat is selected.
+    expect(
+      shouldRemountForSameRoute('chat', '#chat/session/chat-1', '#chat'),
+    ).toBe(true);
     // Contracts list categories are addressable tabs on the same surface.
     expect(
       shouldRemountForSameRoute(
@@ -259,7 +559,9 @@ describe('§D.shell — shouldRemountForSameRoute', () => {
   });
 
   it('does NOT re-mount a non-deep-link surface even if the tail differs', () => {
-    expect(shouldRemountForSameRoute('chat', '#chat', '#chat/x')).toBe(false);
+    expect(
+      shouldRemountForSameRoute('approvals', '#approvals', '#approvals/x'),
+    ).toBe(false);
   });
 
   it('re-mounts the connections surface when the lane tab changes', () => {

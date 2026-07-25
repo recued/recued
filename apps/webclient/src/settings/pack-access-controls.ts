@@ -6,17 +6,16 @@
  *  LIST (not a 2D grid):
  *
  *      ▾ Self (you)                 3 of 5     ← first, expanded
- *          ☑ <op>  <risk badge> <asks>  <set/default>
+ *          ☑ <op>  <set/default>
  *      ▸ <door contract>            0 of 5     ← collapsed; N-of-M summary
  *
  *  Self IS a contract row (`user_self` — the REAL principal the webclient /
  *  messenger owner authorizes as, R22.6), loaded through the same
  *  `contract.grant.read` as every door; cli ops fail-closed (the owner
- *  enables per-tool), connection ops resolve the same owner-only-adjusted
- *  author default the gate runs. Risk is a LABEL, not a toggle; "granted" =
- *  may-request — a write-risk op still fires the per-action ask (R22.3: no
- *  read/write toggle columns; cli + connection render IDENTICALLY, only
- *  their DEFAULTS differ by kind).
+ *  enables per-tool), connection ops resolve the same author default the gate
+ *  runs. This panel owns only Access: risk and approval are global operation
+ *  defaults rendered separately on the pack detail. "Granted" = may-request;
+ *  the admission flow still applies after this reachability check.
  *
  *  ── The #4 (GAP-C) shape: client-side join, no new server reader ─────────
  *  Stored grants are pack-BLIND (an op entry_key is the bare qualified
@@ -71,8 +70,6 @@ import {
   cliRowKey,
   effectiveGrantState,
   hasExplicitGrant,
-  riskApprovalCopy,
-  riskLabel,
   type GrantUniverseEntry,
 } from '../contracts/grant-op-universe.js';
 import type {
@@ -144,9 +141,6 @@ const COPY = {
   heading: 'Contract Access Control',
   self_label: 'Self (you)',
   loading: 'Loading access…',
-  // ⛔ `asks_label` / `asks_title` RETIRED 2026-07-17 — the approval chip's words now
-  // come from `riskApprovalCopy` (grant-op-universe.ts), the one source both axes of
-  // this matrix read. Re-adding them here re-forks the claim.
   source_set: 'set',
   source_default: 'default',
   scope_label: 'Grant scope:',
@@ -634,28 +628,6 @@ export const createPackAccessController = (
     name.textContent = entry.label;
     row.appendChild(name);
 
-    if (entry.risk_tier !== undefined) {
-      const badge = doc.createElement('span');
-      badge.className = ['pa-risk', `pa-risk-${entry.risk_tier}`].join(' ');
-      badge.setAttribute('data-risk', entry.risk_tier);
-      badge.textContent = riskLabel(entry.risk_tier);
-      row.appendChild(badge);
-      // The SAME cell as the by-CONTRACT panel ⇒ the SAME claim, from the one
-      // source (`riskApprovalCopy`). This previously carried its own literal
-      // `COPY.asks_*` strings: the R3 extraction shared the PREDICATE but left the
-      // COPY duplicated, and duplicated copy is how two views of one cell start
-      // telling a user different things. Read now gets a chip here too.
-      const approval = riskApprovalCopy(entry.risk_tier);
-      if (approval !== undefined) {
-        const asks = doc.createElement('span');
-        asks.className = ['pa-asks', `pa-asks-${entry.risk_tier}`].join(' ');
-        asks.setAttribute('data-approval', entry.risk_tier);
-        asks.textContent = approval.chip;
-        asks.title = approval.title;
-        row.appendChild(asks);
-      }
-    }
-
     const source = doc.createElement('span');
     source.className = 'pa-source';
     source.setAttribute('data-source', explicit ? 'explicit' : 'default');
@@ -1117,27 +1089,6 @@ export const PACK_ACCESS_STYLES = `
 [${PACK_ACCESS_ATTR}] .pa-cell-name {
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
-}
-[${PACK_ACCESS_ATTR}] .pa-risk {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-}
-[${PACK_ACCESS_ATTR}] .pa-risk-write,
-[${PACK_ACCESS_ATTR}] .pa-risk-admin,
-[${PACK_ACCESS_ATTR}] .pa-risk-destructive {
-  color: var(--danger, #b3261e);
-  border-color: var(--danger, #b3261e);
-}
-[${PACK_ACCESS_ATTR}] .pa-asks {
-  font-size: 10px;
-  color: var(--fg-muted);
-  font-style: italic;
 }
 [${PACK_ACCESS_ATTR}] .pa-source {
   margin-left: auto;

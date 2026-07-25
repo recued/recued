@@ -81,7 +81,7 @@
  *  broadcast drives the list-view refresh; the wizard chrome itself
  *  carries no live server state to reduce.
  *
- *  Spec: docs/d-149-spec.md § A.20.1 (Reception Launch Wizard) + § DoD
+ *  Spec: D-149 § A.20.1 (Reception Launch Wizard) + § DoD
  *  (the under-10-minute, 3-endpoint onboarding goal the wizard
  *  satisfies). */
 

@@ -62,7 +62,7 @@
  *     `commitment-cancel` ingredients are the only path to lifecycle
  *     transitions.
  *
- *  Spec: `docs/d-145-spec.md` § Phase PA3 + § A.1.3 + § A.2.2. */
+ *  Spec: D-145 § Phase PA3 + § A.1.3 + § A.2.2. */
 
 import {
   COMMITMENT_CANCEL_FROM_STATES,

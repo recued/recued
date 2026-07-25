@@ -33,7 +33,7 @@
  *  N.14 is explicit that the local path needs NO new `contract.*` family and NO
  *  CAS-by-hash — this is a plain dedicated table.
  *
- *  Spec: `docs/d-170-spec.md` § N.14 (storage), N.16 (gateway resolution). */
+ *  Spec: D-170 § N.14 (storage), N.16 (gateway resolution). */
 
 import type Database from 'better-sqlite3';
 import type { EntitySchemaIngredientInput, IngredientManifest } from '@recued/contracts';

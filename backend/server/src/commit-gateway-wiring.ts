@@ -47,7 +47,7 @@
  *  go unlogged. Surfacing L2 replays as `cached` commits needs an
  *  engine seam and is a follow-on, not slice 3b.3.
  *
- *  Spec: docs/d-153-spec.md § Gateway / § Execution-request anchor.
+ *  Spec: D-153 § Gateway / § Execution-request anchor.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';

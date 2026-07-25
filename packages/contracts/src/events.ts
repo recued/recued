@@ -28,11 +28,13 @@ import type { NotificationSubtype } from './connection.js';
 import type { ExecutionLane } from './execution-lane.js';
 import type { HousekeepingYieldReason } from './housekeeping.js';
 import type {
+  ChatDataDiagnosisResolution,
   ChatDispatchReason,
   ChatModelHint,
   ChatModelRoutingLayer,
   ChatModelSourceId,
   ChatPlanProposal,
+  ChatRunHeld,
 } from './chat.js';
 import type { SessionLifecycleState } from './session-routing.js';
 import type { RecipeRunnabilityEntry } from './recipe-runnability.js';
@@ -540,6 +542,11 @@ export type ServerEvent =
       tool_name: string;
       tier: 1 | 2 | 3;
       args: unknown;
+      /** Present only when this dispatch consumed the exact reviewed
+       *  write-plan approval. Links the live tool lifecycle back to the
+       *  original approval card; absence means the call was not authorised
+       *  through the plan gate. */
+      plan_id?: string;
       cursor: number;
     }
   | ({
@@ -559,9 +566,24 @@ export type ServerEvent =
       turn_id: string;
       tool_name: string;
       tier: 1 | 2 | 3;
+      /** Same approval-consumption link as `chat.tool_call_started`.
+       *  A client must not infer execution from `chat.send` acceptance;
+       *  this field is the authoritative correlation for the receipt. */
+      plan_id?: string;
+      /** Exact durable run address on the host that executed this call.
+       * Present only when an audit anchor was confirmed written. Clients must
+       * not infer it from `result_ref`. */
+      run_id?: string;
       cursor: number;
     } & (
-      | { status: 'ok'; result_ref: string }
+      | {
+          status: 'ok';
+          result_ref: string;
+          /** An `ok` dispatch can still be paused behind a deeper
+           *  confirmation gate. When present, the approved action did not
+           *  complete and clients must render it as held rather than done. */
+          run_held?: ChatRunHeld['kind'];
+        }
       | { status: 'error'; reason: ChatDispatchReason; detail?: string }
     ))
   | {
@@ -576,9 +598,22 @@ export type ServerEvent =
       session_id: string;
       turn_id: string;
       plan_id: string;
+      /** Durable retry lineage. Its presence means this proposal came from
+       * an owner-sent verify-before-retry turn for the named consumed plan;
+       * it does not imply that verification found or did not find an effect. */
+      retry_of_plan_id?: string;
       tool: string;
       tier: 1 | 2 | 3;
       args: unknown;
+      /** Exact reviewed-payload hash. Optional for wire compatibility with
+       * older paired clients; current producers include it so the UI can say
+       * whether a fresh proposal matches the prior action without comparing
+       * presentation strings. */
+      args_hash?: string;
+      /** Server proposal time. Optional for compatibility with older paired
+       * clients; current producers include it so global approval queues keep
+       * stable ordering across reloads and devices. */
+      created_at?: number;
       cursor: number;
     }
   | {
@@ -607,6 +642,16 @@ export type ServerEvent =
       session_id: string;
       turn_id: string;
       final: unknown;
+      cursor: number;
+    }
+  | {
+      /** Owner-confirmed closure of a completed, read-only safe check. The
+       * named assistant message is patched in place across paired clients;
+       * this carries no approval, execution, or retry authority. */
+      kind: 'chat.data_diagnosis_resolved';
+      session_id: string;
+      message_id: string;
+      resolution: ChatDataDiagnosisResolution;
       cursor: number;
     }
   | {
@@ -1178,6 +1223,7 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'cert.rotation_notice',
   'cert.rotation_reverted',
   'chat.connection_mcp_annotation_changed',
+  'chat.data_diagnosis_resolved',
   'chat.default_model_pref_changed',
   'chat.disambiguation_proposed',
   'chat.inbound_token_changed',

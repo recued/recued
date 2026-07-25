@@ -1,6 +1,6 @@
 /** D-192 source-data-removal — the per-Source teardown purge orchestrator.
  *
- *  Spec: `docs/d-192-source-data-removal.md`. On connection removal today's
+ *  Spec: D-192. On connection removal today's
  *  teardown cleans the derived / runtime state but deliberately ORPHANS the
  *  mirror records (`unregisterSource` orphan-flip; `file-source-boot.ts:105`
  *  TODO). D2 makes hard-removal a user opt-in ("also remove the [N] records");

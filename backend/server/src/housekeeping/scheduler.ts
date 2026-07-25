@@ -14,7 +14,7 @@
  *  rpc surface in P5 reads/writes the config row + per-task
  *  status row, but the scheduler instance itself stays here.
  *
- *  Spec: `docs/d-123-spec.md` §2.2 + §2.3 + §2.4. */
+ *  Spec: D-123 §2.2 + §2.3 + §2.4. */
 
 import {
   HOUSEKEEPING_AGGRESSIVE_IDLE_THRESHOLD_MS,

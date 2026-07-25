@@ -7,7 +7,7 @@
  *  lookup. The Source primitive (PA2) layers schema-extension blobs on
  *  top per registered Source.
  *
- *  Spec: docs/d-145-spec.md § A.1, § A.7.5 (the 16-field
+ *  Spec: D-145 § A.1, § A.7.5 (the 16-field
  *  `EnrichmentDeclaration` lives elsewhere — these schemas describe
  *  user-visible fields, not enrichment producer declarations).
  *

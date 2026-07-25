@@ -39,7 +39,7 @@
  *  Suggestions never reach model-visible context (N.9.1): the learner writes
  *  rows + fans a key-hash-only bus event; rendering is the P6c owner panel.
  *
- *  Spec: `docs/d-177-spec.md` § N.13; landing order P6b. */
+ *  Spec: D-177 § N.13; landing order P6b. */
 
 import {
   DELEGATION_RULE_SUGGESTION_SCAN_TASK_ID,

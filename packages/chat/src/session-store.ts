@@ -13,7 +13,7 @@
  *  O-5 leaves open; the framework wiring (P1) settles it. P0 needs only
  *  the shared interface + a working in-memory backing.
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5 / O-5.
+ *  Spec: D-160 § N.5 / A.5 / O-5.
  */
 
 import type { SurfaceTag } from './channel.js';

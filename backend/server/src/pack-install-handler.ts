@@ -25,7 +25,7 @@
  *  its own rollback boundary. The D-138 ratchet test asserts the prefix
  *  stays reserved.
  *
- *  Spec: `docs/d-145-spec.md` § PA10 (pack-shipped Standing
+ *  Spec: D-145 § PA10 (pack-shipped Standing
  *  Instructions). */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -65,6 +65,7 @@ import {
   type MarketplaceRecipeResult,
 } from '@recued/marketplace';
 import { hashRecipe, validateRecipe } from '@recued/recipes';
+import { canonicalJSONStringify, sha256Hex } from '@recued/crypto';
 
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
 import {
@@ -76,7 +77,8 @@ import {
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
 import { installBulkPackOnServer } from './install-bulk-pack-handler.js';
 import type { ManifestRegistry } from './manifest-loader.js';
-import { buildPackOpResolution, recordPackInventory } from './pack-inventory.js';
+import { buildPackOpResolution, getInstalledPack, recordPackInventory } from './pack-inventory.js';
+import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import { validateRecipeInline } from './recipe-save-handler.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { RecipeRunnabilityBroadcaster } from './recipe-runnability-handler.js';
@@ -1276,12 +1278,30 @@ const defaultMarketplaceFetch: typeof globalThis.fetch = (input, init) =>
 type PacksInstallBySlugArgs = {
   slug: string;
   granted_permissions: ReadonlyArray<string>;
+  /** Exact manifest rendered by `packs.resolveBySlug`; mandatory when this
+   * call replaces an installed version. */
+  expected_manifest_hash?: string;
   install_scope?: InstallGrantSelection;
   /** D-194 2b — forwarded verbatim to `packs.install`. See `PacksInstallArgs`. */
   chosen_connection?: string;
   /** D-201 Slice 4 — forwarded verbatim to the by-value install validator. */
   webhook_bindings?: PacksInstallArgs['webhook_bindings'];
 };
+
+const marketplaceManifestReviewHash = (manifest: BulkPackManifest): string =>
+  sha256Hex(canonicalJSONStringify(manifest));
+
+const staleManifestReviewResult = (slug: string): BulkPackInstallResultLike => ({
+  ok: false,
+  installed: [],
+  rolled_back: [],
+  failure: {
+    code: 'review_stale',
+    message:
+      `packs.installBySlug: pack ${JSON.stringify(slug)} changed since it was reviewed; `
+      + 'refresh the pack detail and review the current manifest',
+  },
+});
 
 /** Add-a-pack (2026-07-01) — `packs.resolveBySlug` args (manifest-only preview). */
 type PacksResolveBySlugArgs = {
@@ -1354,6 +1374,15 @@ export const installPackBySlug = async (
       'packs.installBySlug: granted_permissions must be an array of strings',
     );
   }
+  if (
+    args.expected_manifest_hash !== undefined
+    && !/^[0-9a-f]{64}$/.test(args.expected_manifest_hash)
+  ) {
+    throw new RpcError(
+      'bad_request',
+      'packs.installBySlug: expected_manifest_hash must be a lowercase SHA-256 digest',
+    );
+  }
   if (args.install_scope !== undefined && !isInstallGrantSelection(args.install_scope)) {
     throw new RpcError(
       'bad_request',
@@ -1377,7 +1406,9 @@ export const installPackBySlug = async (
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
   try {
-    manifest = await fetchBulkPackBySlug(args.slug, fetchFn);
+    // Marked as an install — this is the post-consent path. Its twin in
+    // `resolvePackBySlug` fires on merely opening the detail and stays unmarked.
+    manifest = await fetchBulkPackBySlug(args.slug, fetchFn, { install: true });
   } catch (e) {
     return { result: bulkFetchErrorToResult(args.slug, e) };
   }
@@ -1395,6 +1426,20 @@ export const installPackBySlug = async (
     };
   }
 
+  const currentManifestHash = marketplaceManifestReviewHash(manifest);
+  const installed = deps.contractStore === undefined
+    ? null
+    : getInstalledPack(deps.contractStore, manifest.slug);
+  const isUpdate = installed !== null
+    && (installed.version === undefined || installed.version < manifest.version);
+  if (
+    (args.expected_manifest_hash !== undefined
+      && args.expected_manifest_hash !== currentManifestHash)
+    || (isUpdate && args.expected_manifest_hash === undefined)
+  ) {
+    return { result: staleManifestReviewResult(args.slug) };
+  }
+
   // Build the marketplace recipe resolver from the SAME fetch — present ONLY on
   // this by-slug call. It returns the full row because the constituent recipe's
   // marketplace `publisher_id` remains authoritative independently of the pack's
@@ -1404,7 +1449,11 @@ export const installPackBySlug = async (
   // result, so a transient blip never masquerades as `not_found` or a raw rpc
   // error.
   const resolveMarketplaceRecipe = async (slug: string): Promise<MarketplaceRecipeResult | null> => {
-    const row = await fetchRecipeBySlug(slug, fetchFn);
+    // Marked: a pack install DOES install each constituent recipe, so each ref
+    // is a real recipe install. One N-recipe pack install therefore contributes
+    // 1 to the pack and 1 to each of its N recipes — intended, not double
+    // counting. This closure exists only on the install-by-slug path.
+    const row = await fetchRecipeBySlug(slug, fetchFn, { install: true });
     if (row == null) return null;
     // Slug-confusion guard — the install txn keys on `recipe.recipe_id`, so a
     // marketplace row whose identity disagrees with the requested slug must NOT
@@ -1488,6 +1537,11 @@ export const resolvePackBySlug = async (
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
   try {
+    // DELIBERATELY UNMARKED. `ensureDetailResolved` calls this on every pack
+    // detail render — a Discover card click, a click-through from the public
+    // marketplace, a back/forward nav — all with zero install intent. Marking it
+    // would turn the install signal back into a view count, which is what the
+    // marker exists to separate.
     manifest = await fetchBulkPackBySlug(args.slug, fetchFn);
   } catch (e) {
     return resolveFetchErrorToResult(e);
@@ -1501,7 +1555,22 @@ export const resolvePackBySlug = async (
       },
     };
   }
-  return { manifest };
+  const installed = deps.contractStore === undefined
+    ? null
+    : getInstalledPack(deps.contractStore, manifest.slug);
+  const ownerOperationReview =
+    deps.contractStore !== undefined
+    && installed !== null
+    && (installed.version === undefined || installed.version < manifest.version)
+      ? reviewOwnerOperationsForPackUpdate(deps.contractStore, manifest)
+      : [];
+  return {
+    manifest,
+    manifest_review_hash: marketplaceManifestReviewHash(manifest),
+    ...(ownerOperationReview.length > 0
+      ? { owner_operation_review: ownerOperationReview }
+      : {}),
+  };
 };
 
 /** The `recipe.installBySlug` result body — mirrors the registry spec. */
@@ -1545,7 +1614,9 @@ export const installRecipeBySlug = async (
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let row: MarketplaceRecipeResult | null;
   try {
-    row = await fetchRecipeBySlug(args.slug, fetchFn);
+    // Marked — the standalone recipe install path. Note it can still refuse
+    // downstream with `bundle_pack_required`, so this counts installs STARTED.
+    row = await fetchRecipeBySlug(args.slug, fetchFn, { install: true });
   } catch (e) {
     return {
       result: {

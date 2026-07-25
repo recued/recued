@@ -150,7 +150,8 @@
     },
     "selected_by_approval": {
       "always": 36,
-      "never": 69
+      "ask": 57,
+      "never": 12
     },
     "paginated_operations": 24,
     "pagination_transport_gaps": 1,
@@ -571,7 +572,7 @@
       "op": "users.get_user_info",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -899,7 +900,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -1881,7 +1882,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -2591,7 +2592,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -3220,7 +3221,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -3573,7 +3574,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -4155,7 +4156,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -4438,7 +4439,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -4989,7 +4990,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -5122,7 +5123,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -5572,7 +5573,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -5816,7 +5817,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -6416,7 +6417,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -6549,7 +6550,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -6877,7 +6878,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -7208,7 +7209,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -7454,7 +7455,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -7643,7 +7644,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -7851,7 +7852,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -8477,7 +8478,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -8819,7 +8820,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -9225,7 +9226,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -9465,7 +9466,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -9803,7 +9804,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -10047,7 +10048,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -10425,7 +10426,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -10554,7 +10555,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -10727,7 +10728,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -10843,7 +10844,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -11054,7 +11055,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -11319,7 +11320,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -11610,7 +11611,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -11855,7 +11856,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12028,7 +12029,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12144,7 +12145,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12355,7 +12356,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12598,7 +12599,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12809,7 +12810,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -12938,7 +12939,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -13297,7 +13298,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -13530,7 +13531,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -13665,7 +13666,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -13781,7 +13782,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -13954,7 +13955,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -14165,7 +14166,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -15196,7 +15197,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -15560,7 +15561,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -15878,7 +15879,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -16001,7 +16002,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -16238,7 +16239,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -16456,7 +16457,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -16644,7 +16645,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -16920,7 +16921,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -18562,7 +18563,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -18765,7 +18766,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -19133,7 +19134,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -19648,7 +19649,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "tags": [
         "sensitive-read"
       ],
@@ -20036,7 +20037,7 @@
       "op": "users.get_user_info",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "project-portfolio-overview-autodesk-acc",
@@ -20068,7 +20069,7 @@
       "supplied_args": [
         "account_id"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "issues-overview-autodesk-acc",
@@ -20084,7 +20085,7 @@
       "supplied_args": [
         "project_id"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "folder-contents-overview-autodesk-aps",
@@ -20102,7 +20103,7 @@
         "project_id",
         "folder_id"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "item-version-history-autodesk-aps",
@@ -20120,7 +20121,7 @@
         "project_id",
         "item_id"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "model-views-overview-autodesk-aps",
@@ -20136,7 +20137,7 @@
       "supplied_args": [
         "urn"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "webhook-inventory-autodesk-aps",
@@ -20148,49 +20149,49 @@
       "op": "hooks.get_hooks",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     }
   ],
   "generated": [
     {
       "slug": "autodesk-aps-identity",
       "operations": 3,
-      "composition_bytes": 4717
+      "composition_bytes": 4773
     },
     {
       "slug": "autodesk-acc-project-admin",
       "operations": 10,
-      "composition_bytes": 40450
+      "composition_bytes": 40562
     },
     {
       "slug": "autodesk-acc-directory-admin",
       "operations": 18,
-      "composition_bytes": 49212
+      "composition_bytes": 49828
     },
     {
       "slug": "autodesk-acc-issues",
       "operations": 14,
-      "composition_bytes": 38916
+      "composition_bytes": 39420
     },
     {
       "slug": "autodesk-aps-data-navigation",
       "operations": 20,
-      "composition_bytes": 45434
+      "composition_bytes": 45938
     },
     {
       "slug": "autodesk-aps-data-content",
       "operations": 21,
-      "composition_bytes": 49497
+      "composition_bytes": 50281
     },
     {
       "slug": "autodesk-aps-model-derivative",
       "operations": 11,
-      "composition_bytes": 24929
+      "composition_bytes": 25321
     },
     {
       "slug": "autodesk-aps-webhooks",
       "operations": 8,
-      "composition_bytes": 18908
+      "composition_bytes": 19132
     }
   ]
 }

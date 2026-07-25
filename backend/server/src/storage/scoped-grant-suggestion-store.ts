@@ -23,7 +23,7 @@
  *  store backs the owner-surface rpc + the parse middleware only.
  *  Local-only; the contract store never syncs cloud (D-090/D-097/D-168).
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.c); slice C. */
+ *  Spec: D-177 § N.11 rule 5 (5.c); slice C. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import {

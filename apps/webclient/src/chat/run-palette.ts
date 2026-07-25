@@ -17,7 +17,12 @@
  *  inert against a string-rendered host and `selectRecipe` is the seam).
  */
 
-import { RefPicker, RunModal } from '@recued/ui-shared';
+import {
+  RefPicker,
+  RunModal,
+  wireFocusTrap,
+  type FocusTrapHandle,
+} from '@recued/ui-shared';
 import type {
   AutoRunStatusEntry,
   ServerRecipeListEntry,
@@ -115,6 +120,8 @@ export interface RunPaletteOptions {
    *  recipe — passed the recipe id so it can filter to that recipe's rules
    *  (recipes-route parity: `serializeShellRoute('automation', recipe_id)`). */
   automationHref?: (recipeId: string) => string;
+  /** First-run recovery when the installed inventory is empty. */
+  packsHref?: string;
   /** Fired when the palette closes (the host clears its reference). */
   onClose?: () => void;
 }
@@ -251,7 +258,13 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   let selectedId: string | null = null;
   let refPicker: RefPicker.RefPickerHandle | null = null;
   let childRunModal: RunModal.RunModalHandle | null = null;
+  let focusTrap: FocusTrapHandle | null = null;
+  let inventoryState: 'loading' | 'ready' | 'error' = 'loading';
   let closed = false;
+  const opener = (doc as Partial<Document>).activeElement as
+    | HTMLElement
+    | null
+    | undefined;
 
   const overlay = doc.createElement('div');
   overlay.setAttribute(RUN_PALETTE_OVERLAY_ATTR, '');
@@ -260,6 +273,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-modal', 'true');
   panel.setAttribute('aria-label', 'Run a recipe');
+  panel.setAttribute('tabindex', '-1');
 
   const header = doc.createElement('div');
   header.className = 'run-palette-header';
@@ -305,6 +319,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     Promise.resolve(RefPicker.filterRefOptions(recipeOptions(), query));
 
   const mountPicker = (): void => {
+    refPicker?.destroy();
     searchHost.innerHTML = RefPicker.renderRefPicker(
       RefPicker.initialRefPickerState(null),
       {
@@ -327,11 +342,28 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     });
   };
 
+  const armFocusTrap = (): void => {
+    if (closed || focusTrap !== null) return;
+    focusTrap = wireFocusTrap({
+      document: doc,
+      getContainer: () => panel,
+      // The caller portals the palette after `wireRunPalette` returns.
+      initialFocus: false,
+      // The palette temporarily hands focus to the nested Run modal. Restore
+      // the original opener once, when the palette itself closes.
+      restoreFocus: false,
+    });
+  };
+
   const openRunModalFor = (
     entry: ServerRecipeListEntry,
     tab: RunModal.RunModalTab,
   ): void => {
     if (childRunModal !== null) return;
+    // Two document-level traps must never compete. The Run modal restores
+    // focus to its palette action; its close callback then re-arms this trap.
+    focusTrap?.release();
+    focusTrap = null;
     childRunModal = RunModal.wireRunModal({
       recipe: entry,
       document: doc,
@@ -353,6 +385,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         // Closing the modal returns to the palette (still open behind it).
         childRunModal?.destroy();
         childRunModal = null;
+        armFocusTrap();
       },
     });
     const portal = (doc as { body?: HTMLElement }).body ?? overlay;
@@ -394,8 +427,34 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     if (selectedId === null) {
       const note = doc.createElement('div');
       note.className = 'run-palette-empty';
-      note.textContent = 'Find a recipe to run, schedule, or arm.';
+      note.setAttribute('role', 'status');
+      note.textContent = inventoryState === 'loading'
+        ? 'Loading recipes…'
+        : inventoryState === 'error'
+          ? 'Couldn’t load recipes.'
+          : recipes.length === 0
+            ? 'No recipes are installed yet.'
+            : 'Find a recipe to run, schedule, or arm.';
       actionArea.appendChild(note);
+      if (inventoryState === 'error') {
+        actionArea.appendChild(
+          actionButton('Try again', true, () => {
+            void load();
+          }),
+        );
+      }
+      if (
+        inventoryState === 'ready'
+        && recipes.length === 0
+        && opts.packsHref !== undefined
+      ) {
+        const packs = doc.createElement('a');
+        packs.setAttribute(RUN_PALETTE_ACTION_ATTR, 'browse-packs');
+        packs.setAttribute('href', opts.packsHref);
+        packs.textContent = 'Browse starter packs →';
+        packs.addEventListener('click', () => closeSelf());
+        actionArea.appendChild(packs);
+      }
       return;
     }
     const entry = recipes.find((r) => r.recipe_id === selectedId);
@@ -472,6 +531,13 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   };
 
   const load = async (): Promise<void> => {
+    inventoryState = 'loading';
+    selectedId = null;
+    recipes = [];
+    refPicker?.destroy();
+    refPicker = null;
+    searchHost.innerHTML = '';
+    renderActions();
     try {
       const [{ recipes: loaded }] = await Promise.all([
         opts.recipeList(),
@@ -479,11 +545,14 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       ]);
       if (closed) return;
       recipes = loaded;
+      inventoryState = 'ready';
     } catch {
-      // Soft — an empty palette (the ref-picker shows "No matching recipes").
+      inventoryState = 'error';
     }
     if (closed) return;
-    mountPicker();
+    // A search box with no inventory is a dead control. Keep the palette to a
+    // single recovery choice until recipes are actually available.
+    if (inventoryState === 'ready' && recipes.length > 0) mountPicker();
     renderActions();
   };
 
@@ -498,7 +567,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     doc.removeEventListener('keydown', onKey);
     refPicker?.destroy();
     childRunModal?.destroy();
+    childRunModal = null;
+    focusTrap?.release();
+    focusTrap = null;
     overlay.remove();
+    opener?.focus?.();
     opts.onClose?.();
   };
 
@@ -506,6 +579,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   // once the inventory resolves.
   renderActions();
   doc.addEventListener('keydown', onKey);
+  armFocusTrap();
+  // By the next microtask the caller has appended `element` to its portal.
+  void Promise.resolve().then(() => {
+    if (!closed) focusTrap?.focusInitial();
+  });
   void load();
 
   return {

@@ -6,6 +6,12 @@ export type BootCommandProfile =
   | 'llm'
   | 'archive'
   | 'update'
+  /** D-212 §7.11 — re-create an unopenable keyfile from the recovery key. Its
+   *  own profile because it must run when the server cannot boot. */
+  | 'recover-keyfile'
+  /** D-212 — re-seal the keyfile under a new passphrase. Separate from
+   *  recovery: it keeps the identity, and needs no recovery key. */
+  | 'rotate-passphrase'
   | 'mcp'
   | 'serve'
   | 'command';
@@ -76,6 +82,8 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'llm') return 'llm';
   if (input.subcommand === 'archive') return 'archive';
   if (input.subcommand === 'update') return 'update';
+  if (input.subcommand === 'recover-keyfile') return 'recover-keyfile';
+  if (input.subcommand === 'rotate-passphrase') return 'rotate-passphrase';
   return 'command';
 };
 

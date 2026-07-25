@@ -13,7 +13,7 @@
  *  corruption, because the model only ever sees the aliased form). The control
  *  fields (`tool_name` / `reason` / `status`) are not scanned.
  *
- *  Spec: docs/d-160-n10-part-pii-pending-design.md §N.10.
+ *  Spec: D-160 §N.10.
  */
 
 import {
@@ -292,7 +292,7 @@ describe('D-167 N.10 — runChatTurn is PII-unaware; the boundary aliases the re
     seedAlice(plan); // alice@acme.com ↔ m1@d1.invalid
     const { prompts, dispatched } = await runTurnWithModel(plan, [
       [{ tool: 'contact.read', args: { email: 'm1@d1.invalid' } }], // model emits the alias it saw
-    ]);
+    ], 'read alice@acme.com');
     // The tool loop restored the alias → real for dispatch (it never touches PII).
     expect((dispatched[0] as { email: string }).email).toBe('alice@acme.com');
     // The boundary aliased the model-facing reinvoke — no raw PII reaches the LLM.
@@ -320,7 +320,7 @@ describe('D-167 N.10 — runChatTurn is PII-unaware; the boundary aliases the re
     // alias KEY into a new tool call. Dispatch must receive the REAL key.
     const { prompts, dispatched } = await runTurnWithModel(plan, [
       [{ tool: 'crm.update', args: { 'm1@d1.invalid': 'done' } }],
-    ]);
+    ], 'update alice@acme.com');
     expect(Object.keys(dispatched[0] as Record<string, unknown>)).toEqual(['alice@acme.com']);
     // ...and the model-facing reinvoke re-aliases the key (no raw PII to the LLM).
     const prior = prompts[1]!.prior_tool_calls as Array<{ args: Record<string, unknown> }>;

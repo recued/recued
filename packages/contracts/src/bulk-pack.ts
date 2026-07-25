@@ -13,9 +13,10 @@
  *  `packages/engine/src/install.ts`. The dialog UI lives at
  *  `packages/ui-shared/src/install/bulk-pack-dialog.ts`.
  *
- *  Spec: `docs/d-122-spec.md` §"Bulk-install pack format".
+ *  Spec: D-122 §"Bulk-install pack format".
  */
 
+import { findUnstorableStrings, describeUnstorable, UNSTORABLE_FINDING_LIMIT } from './storable-encoding.js';
 import type {
   ApiExecutionBinding,
   ArgEditField,
@@ -79,6 +80,29 @@ export const BULK_PACK_INSTALL_PERMISSION = 'install_bulk_pack';
  *  the install dialog's cost-estimate computation. The Personal CRM
  *  Foundation pack ships at ten. */
 export const BULK_PACK_MAX_RECIPES = 50;
+
+/** Marks an install-manifest fetch (`/packs/<slug>.json`, `/recipes/<slug>.json`)
+ *  as originating from an INSTALL rather than a browse.
+ *
+ *  Both flow through the same apex route, so on the wire they are otherwise
+ *  identical: `packs.resolveBySlug` fires on merely opening a pack detail, while
+ *  `packs.installBySlug` / `recipe.installBySlug` fire on the real thing. Without
+ *  this marker an edge-side count is "detail views", not installs.
+ *
+ *  A HEADER, deliberately — not a query param. The D-180 CDN key is derived from
+ *  the URL (`cacheKeyFor`), so a param would split each listing's edge entry into
+ *  browse/install variants, halving the hit rate and doubling KV reads on the
+ *  route. A header leaves the cache key untouched; the worker reads it before the
+ *  cache early-return, so a cached response still counts.
+ *
+ *  Shared here because the SENDER (`packages/marketplace/src/client.ts`,
+ *  `bulk-pack-resolver.ts`) and the READER (`apps/marketplace/src/ssr/worker.ts`)
+ *  are separate deploys — a drifting literal would silently stop counting.
+ *
+ *  Advisory, never authorization: it is trivially spoofable or omittable (a
+ *  self-hosted server can strip it), so it may feed a soft popularity metric and
+ *  must never gate access or billing. */
+export const INSTALL_MANIFEST_MARKER_HEADER = 'x-recued-install';
 
 /** D-200 Slice 6 — closed role vocabulary for one non-authoritative paid-
  *  workflow discovery descriptor. Requiring every role to name a distinct
@@ -861,6 +885,7 @@ export interface BulkPackInstallResultLike {
     code:
       | 'permission_denied'
       | 'version_mismatch'
+      | 'review_stale'
       | 'validator_rejected'
       | 'unresolved'
       | 'unexpected';
@@ -906,22 +931,25 @@ export interface PackListEntry {
    *  badges these + suppresses the Install button (auto-installed
    *  at boot by `foundation-pack-pre-install.ts`). */
   pre_install: boolean;
-  /** True when every recipe in `manifest.recipes` has a stored recipe
-   *  row in the per-pair `RecipeStore`. Foundation packs that ran the
-   *  boot install land here as `true` on the first list call after
-   *  init. */
+  /** True when the pack's installed content satisfies this manifest: every
+   * recipe is owned at its pinned version and, when inventory exists, the
+   * installed pack version is this version or newer. Empty-recipe packs read
+   * that direction-aware version fact solely from inventory. */
   installed: boolean;
   /** D-182 — installed at ANY version (the pack genuinely owns its installed
-   *  content), as distinct from `installed` (owned AT the disk-manifest version).
-   *  Diverges when the installed version ≠ the server's bundle — typically the
-   *  MARKETPLACE version is higher than the bundle (the catalog is re-seeded from
-   *  `community/packs` while a server's bundle lags at its release). The Discover
-   *  join reads this to keep a marketplace-higher-installed pack showing
-   *  installed/update (via the inventory's real version) instead of "available".
+   *  content), as distinct from `installed` (the owned content satisfies this
+   *  incoming manifest). They diverge when the installed version is lower or
+   *  its recipe set no longer matches. The Discover join also reads the
+   *  inventory's real version so a marketplace install above the server bundle
+   *  remains current instead of "available" or a downgrade-shaped update.
    *  Ownership-scoped, so a stale vendor-twin row (recipes owned by another pack)
    *  stays `false`. Optional — an older handler omits it (join degrades to
    *  `installed`). */
   installed_any_version?: boolean;
+  /** D-211 Slice 5 — global owner rulings whose stamped operation differs from
+   * this incoming pack version. Present only for an update and only when at
+   * least one changed/removed overridden operation needs review. */
+  owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
   /** `manifest.requires[]` forwarded verbatim — the Settings → Packs
    *  install dialog renders each entry as a permission checkbox. Always
    *  contains `BULK_PACK_INSTALL_PERMISSION` by manifest invariant. */
@@ -977,6 +1005,13 @@ export interface PacksListResult {
  *  on any failure, with `failure` carrying targeted copy for the dialog. */
 export interface PacksResolveResult {
   manifest: BulkPackManifest | null;
+  /** SHA-256 of the exact marketplace manifest rendered for consent. The pack
+   * detail echoes it to `packs.installBySlug`; an update refuses if the latest
+   * artifact no longer matches this review anchor. */
+  manifest_review_hash?: string;
+  /** D-211 Slice 5 — same pre-update review projection as `PackListEntry`, for
+   * marketplace manifests resolved by slug before install acceptance. */
+  owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
   /** Present iff `manifest` is null.
    *   - `unresolved`  — no published pack at this slug (a clean 404)
    *   - `fetch_error` — could not reach / read the marketplace
@@ -1522,6 +1557,24 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
     add('error', 'pack_not_object', '', 'pack manifest must be an object');
     return { ok: false, issues };
   }
+
+  // Storable-encoding sweep over the WHOLE document, before any field checks.
+  // The two characters that have actually broken a publish sat at
+  // `.contents[0].composition.operations[N].description` and
+  // `…request_schema.properties.body.fileName.pattern` — neither is a field any
+  // per-field validator inspects, so a field-scoped check would have caught
+  // neither while appearing to cover them. Reaches the authoring gate for free:
+  // `validatePackStructure` maps these issues through `fromBulkPackIssue`.
+  const unstorable = findUnstorableStrings(input);
+  for (const f of unstorable) {
+    add('error', 'unstorable_encoding', f.path.replace(/^\./, ''), describeUnstorable(f));
+  }
+  // Never let a capped list read as "that is all of them".
+  if (unstorable.length >= UNSTORABLE_FINDING_LIMIT) {
+    add('error', 'unstorable_encoding_truncated', '',
+      `report capped at ${UNSTORABLE_FINDING_LIMIT} findings; there may be more`);
+  }
+
   const obj = input as Record<string, unknown>;
 
   // manifest_version — must be 1 (recipe-only) or 2 (app-pack w/ contents).

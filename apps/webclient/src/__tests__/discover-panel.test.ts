@@ -10,6 +10,8 @@ import {
 } from '../discover/discover-model.js';
 import {
   DISCOVER_PANEL_CARD_ATTR,
+  DISCOVER_PANEL_FACET_MORE_ATTR,
+  DISCOVER_PANEL_FACET_SEARCH_ATTR,
   DISCOVER_PANEL_SUMMARY_ATTR,
   mountDiscoverPanel,
   type MountDiscoverPanelOptions,
@@ -183,6 +185,43 @@ describe('mountDiscoverPanel', () => {
     expect(panel.getRenderedIdentities().sort()).toEqual(['installed-pack', 'sales-pack', 'wf-pack']);
     panel.toggleFilter('kind', 'entity'); // deselect
     expect(panel.getRenderedIdentities()).toEqual(['wf-pack']);
+  });
+
+  it('bounds large facet groups and keeps the remainder searchable', async () => {
+    const largeCorpus = Array.from({ length: 40 }, (_, idx) =>
+      pk({
+        slug: `pack-${idx}`,
+        name: `Pack ${idx}`,
+        kind: `kind-${String(idx).padStart(2, '0')}`,
+      }));
+    const { host, panel } = mount({
+      fetchCatalog: async () => ({ status: 'ok', rows: largeCorpus }),
+    });
+    await panel.whenLoaded();
+
+    const inline = walk(
+      host,
+      (el) => el.getAttribute('data-facet') === 'kind'
+        && el.getAttribute('data-value') !== null,
+    );
+    expect(inline).toHaveLength(12);
+    const more = walk(
+      host,
+      (el) => el.getAttribute(DISCOVER_PANEL_FACET_MORE_ATTR) === 'kind',
+    )[0];
+    expect(more?.textContent).toContain('28');
+
+    for (const listener of more?.listeners.get('click') ?? []) {
+      listener({ stopPropagation: () => {} });
+    }
+    const finder = walk(
+      host,
+      (el) => el.getAttribute(DISCOVER_PANEL_FACET_SEARCH_ATTR) !== null,
+    )[0];
+    expect(finder).toBeDefined();
+    finder.value = 'kind-39';
+    for (const listener of finder.listeners.get('input') ?? []) listener({ target: finder });
+    expect(walk(host, (el) => el.getAttribute('data-value') === 'kind-39')).toHaveLength(1);
   });
 
   it('sort reorders (default downloads desc → name asc)', async () => {

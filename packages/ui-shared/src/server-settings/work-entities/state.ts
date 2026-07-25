@@ -5,7 +5,7 @@
  *  toggle / default-change rpc returns the post-write Source row +
  *  the renderer patches it into `sources` without a follow-up read.
  *
- *  Spec: docs/d-145-spec.md § PA11 + § A.2. */
+ *  Spec: D-145 § PA11 + § A.2. */
 
 import type {
   SourceRegistration,

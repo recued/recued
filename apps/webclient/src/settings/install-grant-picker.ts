@@ -56,7 +56,7 @@
  *  `renderInstallGrantPicker` each render, reading the current selection and
  *  wiring `onAccess` back to its own state + re-render.
  *
- *  Spec: docs/d-182-spec.md §7.1; the rpc carries `InstallGrantSelection`
+ *  Spec: D-182 §7.1; the rpc carries `InstallGrantSelection`
  *  (`packages/contracts/src/bulk-pack.ts`); the install resolver that consumes
  *  it is `backend/server/src/ingredient-authoring/install-composition.ts`
  *  (`resolveInstallGrantWriteSet` / `ACCESS_TIER_PERMITS`). */

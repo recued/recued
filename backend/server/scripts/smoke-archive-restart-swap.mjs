@@ -100,7 +100,7 @@ async function main() {
     const code = pairingCode();
     log(`gen-1 up; pairing code=${code}`);
 
-    // Pair + enroll the recovery key → at-rest encryption on (server_vault_bundle).
+    // Pair + enroll the recovery key → at-rest encryption on (bundle sidecar).
     const pair = await (await fetch(`${base}/auth/pair`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

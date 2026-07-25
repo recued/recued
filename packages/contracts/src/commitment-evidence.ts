@@ -16,7 +16,7 @@
  *  precedent): pack-declared entries validate fail-closed but stay
  *  inert until the decomposer pass-through lands.
  *
- *  Spec: docs/d-192-spec.md § Commitment evidence (F1) ·
+ *  Spec: D-192 § Commitment evidence (F1) ·
  *  decisions-log D-192 (ratified 2026-07-02). */
 
 import type { CrmAlias } from './connection-vendors.js';

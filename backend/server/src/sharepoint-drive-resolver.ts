@@ -18,7 +18,7 @@
  *  the enroll dialog surfaces (bad URL / missing `Sites.Read.All` / site not
  *  found / malformed response).
  *
- *  Spec: `docs/d-192-file-source-family.md`; enrollment sibling of `onedrive.ts`. */
+ *  Spec: D-192; enrollment sibling of `onedrive.ts`. */
 
 import { MICROSOFT_GRAPH_API_BASE } from '@recued/contracts';
 

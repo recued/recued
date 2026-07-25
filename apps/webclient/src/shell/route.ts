@@ -20,6 +20,8 @@
  * §D.shell vocabulary for surfaces that prefer it.
  */
 
+import type { ChatDataDiagnosisRelationship } from '@recued/contracts';
+
 /** Closed-list of route ids the shell can mount. Adding a surface — a top
  *  route like `approvals` (D-169 P2) — is a single entry here + a single case
  *  in the bootstrap's `mountRoute`. */
@@ -162,6 +164,499 @@ export const serializeShellRoute = (
   return tail.length > 0 ? `#${surface}/${tail}` : `#${surface}`;
 };
 
+/** Exact collection-explorer tabs a Chat record reference can address. */
+export type SourceRecordDataTab = 'mail' | 'calendar' | 'files';
+
+export interface ChatAnswerAddress {
+  readonly sessionId: string;
+  readonly messageId: string;
+}
+
+/** The strongest relationship the persisted execution provenance can truthfully
+ * claim for an item. `involved` deliberately avoids claiming the exact record
+ * changed when a legacy `execution.write` edge may describe a read input. */
+export type DataVerificationRelationship = ChatDataDiagnosisRelationship;
+
+/** Explicit owner choice after inspecting the Data view. Neither value is an
+ * execution verdict: it only tells Chat whether the owner finished reviewing
+ * what Data showed or wants help interpreting it. */
+export type DataVerificationReviewResult =
+  | 'reviewed'
+  | 'needs_help';
+
+export interface ChatDataVerificationReturn {
+  readonly runId: string;
+  readonly result: DataVerificationReviewResult;
+  readonly relationship?: DataVerificationRelationship;
+}
+
+/** Durable address for one reviewed Chat action. `messageId` is only a
+ * presentation fallback when the exact plan card can no longer be recovered;
+ * it is never used as approval authority. */
+export interface ChatPlanAddress {
+  readonly sessionId: string;
+  readonly planId: string;
+  readonly messageId?: string;
+  /** Presentation-only context from a Data review. This cannot approve, send,
+   * or retry anything; Chat uses it only to explain the safe next step. */
+  readonly dataVerification?: ChatDataVerificationReturn;
+}
+
+/** Durable address for one exact execution run, optionally retaining the Chat
+ * action that opened it. The return address is presentation-only: it restores
+ * the reviewed plan card but grants no approval or execution authority. */
+export interface LogsRunAddress {
+  readonly runId: string;
+  readonly returnToChat?: ChatPlanAddress;
+}
+
+interface SourceRecordAddressBase {
+  readonly tab: SourceRecordDataTab;
+  readonly collectionSlug: string;
+  readonly recordId: string;
+}
+
+/** Exact source records can return either to the Chat answer that cited them or
+ * to the run outcome that asked the owner to verify them. Keeping the two
+ * origins disjoint prevents a serializer from silently choosing one breadcrumb
+ * when a malformed caller supplies both. */
+export type SourceRecordAddress = SourceRecordAddressBase & (
+  | {
+      readonly returnToChat?: ChatAnswerAddress;
+      readonly returnToRun?: never;
+    }
+  | {
+      readonly returnToChat?: never;
+      readonly returnToRun: LogsRunAddress;
+      readonly verificationRelationship?: DataVerificationRelationship;
+    }
+);
+
+/** Data tabs whose records are globally addressable without a connected-source
+ * slug. Source mirrors use `SourceRecordVerificationAddress` below because a
+ * record id can occur in more than one account. */
+export type DataEntityVerificationTab =
+  | 'contact'
+  | 'form_response'
+  | 'crm'
+  | 'task'
+  | 'note'
+  | 'commitment'
+  | 'project'
+  | 'booking'
+  | 'annotation'
+  | 'link'
+  | 'shared';
+
+export interface DataEntityVerificationAddress {
+  readonly tab: DataEntityVerificationTab;
+  readonly entityId: string;
+  readonly returnToRun: LogsRunAddress;
+  readonly verificationRelationship?: DataVerificationRelationship;
+}
+
+/** A run knows the source collection + record id, but legacy provenance rows do
+ * not retain the account slug. This address asks Data to resolve the id across
+ * connected instances and only auto-open it when the match is unambiguous. */
+export interface SourceRecordVerificationAddress {
+  readonly tab: SourceRecordDataTab;
+  readonly recordId: string;
+  readonly returnToRun: LogsRunAddress;
+  readonly verificationRelationship?: DataVerificationRelationship;
+}
+
+const SOURCE_RECORD_DATA_TABS: ReadonlySet<string> = new Set([
+  'mail',
+  'calendar',
+  'files',
+]);
+const DATA_ENTITY_VERIFICATION_TABS: ReadonlySet<string> = new Set([
+  'contact',
+  'form_response',
+  'crm',
+  'task',
+  'note',
+  'commitment',
+  'project',
+  'booking',
+  'annotation',
+  'link',
+  'shared',
+]);
+const DATA_VERIFICATION_RELATIONSHIPS: ReadonlySet<string> = new Set([
+  'action',
+  'involved',
+  'derived',
+]);
+const DATA_VERIFICATION_REVIEW_RESULTS: ReadonlySet<string> = new Set([
+  'reviewed',
+  'needs_help',
+]);
+
+/** Durable route to one assistant answer. The explicit `answer` marker keeps
+ * future session subviews unambiguous. */
+export const serializeChatAnswerAddress = (
+  address: ChatAnswerAddress,
+): string => serializeShellRoute(
+  'chat',
+  'session',
+  address.sessionId,
+  'answer',
+  address.messageId,
+);
+
+export const parseChatAnswerAddress = (
+  route: ShellRoute,
+): ChatAnswerAddress | null => {
+  if (
+    route.surface !== 'chat'
+    || route.segments.length !== 4
+    || route.segments[0] !== 'session'
+    || route.segments[2] !== 'answer'
+  ) return null;
+  const sessionId = route.segments[1] ?? '';
+  const messageId = route.segments[3] ?? '';
+  return sessionId.length > 0 && messageId.length > 0
+    ? { sessionId, messageId }
+    : null;
+};
+
+/** Exact Chat action route segments. The optional Data-verification tail is
+ * presentation context only: it can focus recovery guidance, but grants no
+ * authority and starts no action. */
+const chatPlanAddressSegments = (
+  address: ChatPlanAddress,
+): ReadonlyArray<string> => [
+  'session',
+  address.sessionId,
+  'plan',
+  address.planId,
+  ...(address.messageId !== undefined
+    ? ['answer', address.messageId]
+    : []),
+  ...(address.dataVerification !== undefined
+    ? [
+        'verification',
+        address.dataVerification.result,
+        'run',
+        address.dataVerification.runId,
+        ...(address.dataVerification.relationship === undefined
+          ? []
+          : ['relationship', address.dataVerification.relationship]),
+      ]
+    : []),
+];
+
+/** Exact Chat action route. Keeping the optional answer after the primary
+ * plan segment makes the fallback explicit without conflating an action
+ * handoff with the citation-return address above. */
+export const serializeChatPlanAddress = (
+  address: ChatPlanAddress,
+): string => serializeShellRoute('chat', ...chatPlanAddressSegments(address));
+
+export const parseChatPlanAddress = (
+  route: ShellRoute,
+): ChatPlanAddress | null => {
+  if (
+    route.surface !== 'chat'
+    || route.segments[0] !== 'session'
+    || route.segments[2] !== 'plan'
+  ) return null;
+  const sessionId = route.segments[1] ?? '';
+  const planId = route.segments[3] ?? '';
+  if (sessionId.length === 0 || planId.length === 0) return null;
+  let cursor = 4;
+  let messageId: string | undefined;
+  if (route.segments[cursor] === 'answer') {
+    messageId = route.segments[cursor + 1] ?? '';
+    if (messageId.length === 0) return null;
+    cursor += 2;
+  }
+  let dataVerification: ChatDataVerificationReturn | undefined;
+  if (cursor < route.segments.length) {
+    if (
+      route.segments[cursor] !== 'verification'
+      || route.segments[cursor + 2] !== 'run'
+    ) return null;
+    const result = route.segments[cursor + 1] ?? '';
+    const runId = route.segments[cursor + 3] ?? '';
+    if (
+      !DATA_VERIFICATION_REVIEW_RESULTS.has(result)
+      || runId.length === 0
+    ) return null;
+    cursor += 4;
+    let relationship: DataVerificationRelationship | undefined;
+    if (cursor < route.segments.length) {
+      if (route.segments[cursor] !== 'relationship') return null;
+      const candidate = route.segments[cursor + 1] ?? '';
+      if (!DATA_VERIFICATION_RELATIONSHIPS.has(candidate)) return null;
+      relationship = candidate as DataVerificationRelationship;
+      cursor += 2;
+    }
+    dataVerification = {
+      result: result as DataVerificationReviewResult,
+      runId,
+      ...(relationship !== undefined ? { relationship } : {}),
+    };
+  }
+  if (cursor !== route.segments.length) return null;
+  return {
+    sessionId,
+    planId,
+    ...(messageId !== undefined ? { messageId } : {}),
+    ...(dataVerification !== undefined ? { dataVerification } : {}),
+  };
+};
+
+/** Exact Logs run route. The run stays in segment 0 for compatibility with
+ * existing `#logs/<run_id>` bookmarks; an optional typed tail carries the
+ * originating Chat plan through reloads and reconnects. */
+const logsRunAddressSegments = (
+  address: LogsRunAddress,
+): ReadonlyArray<string> => [
+  address.runId,
+  ...(address.returnToChat === undefined
+    ? []
+    : [
+        'return',
+        'chat',
+        ...chatPlanAddressSegments(address.returnToChat),
+      ]),
+];
+
+export const serializeLogsRunAddress = (
+  address: LogsRunAddress,
+): string => serializeShellRoute('logs', ...logsRunAddressSegments(address));
+
+/** Parse only run-detail routes — `active` and `recipe` remain Logs subviews.
+ * A malformed return tail fails closed to `null`; the bootstrap can still
+ * retain its legacy run-only fallback without trusting a partial Chat target. */
+export const parseLogsRunAddress = (
+  route: ShellRoute,
+): LogsRunAddress | null => {
+  const runId = route.segments[0] ?? '';
+  if (
+    route.surface !== 'logs'
+    || runId.length === 0
+    || runId === 'active'
+    || runId === 'recipe'
+  ) return null;
+  if (route.segments.length === 1) return { runId };
+  if (
+    route.segments[1] !== 'return'
+    || route.segments[2] !== 'chat'
+  ) return null;
+  const returnToChat = parseChatPlanAddress({
+    surface: 'chat',
+    segments: route.segments.slice(3),
+  });
+  return returnToChat === null ? null : { runId, returnToChat };
+};
+
+/** Exact, account-qualified Data record route. The `record` marker preserves
+ * compatibility with legacy `#data/<tab>/<record_id>` links, while the
+ * optional return tail makes the Chat round-trip explicit and shareable inside
+ * the paired client. */
+export const serializeSourceRecordAddress = (
+  address: SourceRecordAddress,
+): string => serializeShellRoute(
+  'data',
+  address.tab,
+  'record',
+  address.collectionSlug,
+  address.recordId,
+  ...(address.returnToChat !== undefined
+    ? [
+        'return',
+        'chat',
+        address.returnToChat.sessionId,
+        address.returnToChat.messageId,
+      ]
+    : address.returnToRun !== undefined
+      ? [
+          ...(address.verificationRelationship === undefined
+            ? []
+            : ['relationship', address.verificationRelationship]),
+          'return',
+          'logs',
+          ...logsRunAddressSegments(address.returnToRun),
+        ]
+      : []),
+);
+
+export const parseSourceRecordAddress = (
+  route: ShellRoute,
+): SourceRecordAddress | null => {
+  if (
+    route.surface !== 'data'
+    || !SOURCE_RECORD_DATA_TABS.has(route.segments[0] ?? '')
+    || route.segments[1] !== 'record'
+    || route.segments.length < 4
+  ) return null;
+  const collectionSlug = route.segments[2] ?? '';
+  const recordId = route.segments[3] ?? '';
+  if (collectionSlug.length === 0 || recordId.length === 0) return null;
+  if (route.segments.length === 4) {
+    return {
+      tab: route.segments[0] as SourceRecordDataTab,
+      collectionSlug,
+      recordId,
+    };
+  }
+  let cursor = 4;
+  let verificationRelationship: DataVerificationRelationship | undefined;
+  if (route.segments[cursor] === 'relationship') {
+    const candidate = route.segments[cursor + 1] ?? '';
+    if (!DATA_VERIFICATION_RELATIONSHIPS.has(candidate)) return null;
+    verificationRelationship = candidate as DataVerificationRelationship;
+    cursor += 2;
+  }
+  if (route.segments[cursor] !== 'return') return null;
+  if (
+    verificationRelationship === undefined
+    && route.segments[cursor + 1] === 'chat'
+    && route.segments.length === cursor + 4
+  ) {
+    const sessionId = route.segments[cursor + 2] ?? '';
+    const messageId = route.segments[cursor + 3] ?? '';
+    if (sessionId.length === 0 || messageId.length === 0) return null;
+    return {
+      tab: route.segments[0] as SourceRecordDataTab,
+      collectionSlug,
+      recordId,
+      returnToChat: { sessionId, messageId },
+    };
+  }
+  if (route.segments[cursor + 1] !== 'logs') return null;
+  const returnToRun = parseLogsRunAddress({
+    surface: 'logs',
+    segments: route.segments.slice(cursor + 2),
+  });
+  return returnToRun === null
+    ? null
+    : {
+        tab: route.segments[0] as SourceRecordDataTab,
+        collectionSlug,
+        recordId,
+        returnToRun,
+        ...(verificationRelationship !== undefined
+          ? { verificationRelationship }
+          : {}),
+      };
+};
+
+/** Exact Data entity reached from a run outcome. The explicit `item` marker
+ * keeps it disjoint from legacy `#data/<tab>/<entity>` bookmarks, while the
+ * typed Logs tail makes the verification round-trip reload-safe. */
+export const serializeDataEntityVerificationAddress = (
+  address: DataEntityVerificationAddress,
+): string => serializeShellRoute(
+  'data',
+  address.tab,
+  'item',
+  address.entityId,
+  ...(address.verificationRelationship === undefined
+    ? []
+    : ['relationship', address.verificationRelationship]),
+  'return',
+  'logs',
+  ...logsRunAddressSegments(address.returnToRun),
+);
+
+export const parseDataEntityVerificationAddress = (
+  route: ShellRoute,
+): DataEntityVerificationAddress | null => {
+  if (
+    route.surface !== 'data'
+    || !DATA_ENTITY_VERIFICATION_TABS.has(route.segments[0] ?? '')
+    || route.segments[1] !== 'item'
+  ) return null;
+  const entityId = route.segments[2] ?? '';
+  if (entityId.length === 0) return null;
+  let cursor = 3;
+  let verificationRelationship: DataVerificationRelationship | undefined;
+  if (route.segments[cursor] === 'relationship') {
+    const candidate = route.segments[cursor + 1] ?? '';
+    if (!DATA_VERIFICATION_RELATIONSHIPS.has(candidate)) return null;
+    verificationRelationship = candidate as DataVerificationRelationship;
+    cursor += 2;
+  }
+  if (
+    route.segments[cursor] !== 'return'
+    || route.segments[cursor + 1] !== 'logs'
+  ) return null;
+  const returnToRun = parseLogsRunAddress({
+    surface: 'logs',
+    segments: route.segments.slice(cursor + 2),
+  });
+  return returnToRun === null
+    ? null
+    : {
+        tab: route.segments[0] as DataEntityVerificationTab,
+        entityId,
+        returnToRun,
+        ...(verificationRelationship !== undefined
+          ? { verificationRelationship }
+          : {}),
+      };
+};
+
+/** Account-unqualified source record reached from a run outcome. Data resolves
+ * the record across connected instances; ambiguous, unavailable, or missing
+ * matches remain visible as an explicit choose-source/fallback state. */
+export const serializeSourceRecordVerificationAddress = (
+  address: SourceRecordVerificationAddress,
+): string => serializeShellRoute(
+  'data',
+  address.tab,
+  'verify',
+  address.recordId,
+  ...(address.verificationRelationship === undefined
+    ? []
+    : ['relationship', address.verificationRelationship]),
+  'return',
+  'logs',
+  ...logsRunAddressSegments(address.returnToRun),
+);
+
+export const parseSourceRecordVerificationAddress = (
+  route: ShellRoute,
+): SourceRecordVerificationAddress | null => {
+  if (
+    route.surface !== 'data'
+    || !SOURCE_RECORD_DATA_TABS.has(route.segments[0] ?? '')
+    || route.segments[1] !== 'verify'
+  ) return null;
+  const recordId = route.segments[2] ?? '';
+  if (recordId.length === 0) return null;
+  let cursor = 3;
+  let verificationRelationship: DataVerificationRelationship | undefined;
+  if (route.segments[cursor] === 'relationship') {
+    const candidate = route.segments[cursor + 1] ?? '';
+    if (!DATA_VERIFICATION_RELATIONSHIPS.has(candidate)) return null;
+    verificationRelationship = candidate as DataVerificationRelationship;
+    cursor += 2;
+  }
+  if (
+    route.segments[cursor] !== 'return'
+    || route.segments[cursor + 1] !== 'logs'
+  ) return null;
+  const returnToRun = parseLogsRunAddress({
+    surface: 'logs',
+    segments: route.segments.slice(cursor + 2),
+  });
+  return returnToRun === null
+    ? null
+    : {
+        tab: route.segments[0] as SourceRecordDataTab,
+        recordId,
+        returnToRun,
+        ...(verificationRelationship !== undefined
+          ? { verificationRelationship }
+          : {}),
+      };
+};
+
 /** Canonical serialized form of a raw hash — drops a leading `/`, a stray
  *  `?tail`, and empty segments, then re-encodes. Two hashes that mean the
  *  same route normalize equal, so the same-route remount check below doesn't
@@ -187,6 +682,10 @@ export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
     // R18 — `#data/<tab>/<entity_id>` re-mounts on a tab / entity change so the
     // warehouse explorer's selection is a durable, shareable deep link.
     'data',
+    // Set up Chat can detour from a durable thread through Settings and return
+    // to `#chat/session/<id>`. Treat Chat as addressable so the shell's bare
+    // `#chat` / New chat navigation also tears that restored thread down.
+    'chat',
     // R19 — `#reception/<section>` (inbox · abuse · endpoints) re-mounts
     // on a section switch so the new `initialSection` takes; the deeper
     // endpoints segments (`#reception/endpoints/new|edit/<kind>`,

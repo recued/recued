@@ -17,7 +17,7 @@
  *  (`contact_platform_link`). Declaring it as a read-time email join would re-introduce
  *  the exact bug D-205 spent an entire arc fixing.
  *
- *  Spec: `docs/d-206-spec.md` §2 (IDENTITY vs RELATIONSHIP). */
+ *  Spec: D-206 §2 (IDENTITY vs RELATIONSHIP). */
 
 import { describe, expect, it } from 'vitest';
 

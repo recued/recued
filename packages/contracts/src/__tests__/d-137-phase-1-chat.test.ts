@@ -18,13 +18,19 @@
  *     ALL_BROADCAST_EVENT_KINDS + DEFAULT_SUBSCRIPTIONS (paired clients
  *     get chat events by default per D-148 § A.1 / D-121 Phase 6).
  *   - 4 closed `chat.session_changed` field discriminators.
- *   - 2 chat tables (chat_sessions, chat_messages); per-pair-only
+ *   - core chat tables (sessions, messages, durable reviewed actions);
+ *     per-pair-only
  *     invariant (chat substrate never broadcast cross-cloud — D-097).
  *   - Tier 1 descriptor table is exhaustive over Tier1ToolName.
  */
 
 import { describe, it, expect } from 'vitest';
-import { SERVER_RPC_METHODS, SERVER_RPC_METHOD_SET } from '../rpc/server-registry.js';
+import {
+  SERVER_RPC_METHODS,
+  SERVER_RPC_METHOD_SET,
+  type ServerRpcRegistry,
+} from '../rpc/server-registry.js';
+import type { RpcRequest, RpcResponse } from '../rpc/types.js';
 import type { ServerEvent } from '../events.js';
 import {
   ALL_BROADCAST_EVENT_KINDS,
@@ -330,7 +336,7 @@ describe('D-137 P1 — CHAT_MESSAGE_ROLES closed list (§ Contract Tightening)',
 });
 
 describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
-  it('lists exactly twenty-nine methods (P1: 10 + D-167 model-pref: 3 + W2.2: 2 + W2.3: 3 + P4: 2 + P5 follow-on inbound_token: 6 + D-171 2c tool_catalog: 1 + D-171 3 update_contract: 1 + D-167 egress transparency: 1)', () => {
+  it('lists every chat method, including D-214 feedback and diagnostics', () => {
     expect(CHAT_RPC_METHODS).toEqual([
       'chat.sessions.list',
       'chat.session.get',
@@ -340,8 +346,12 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-167 transparency — read back the aliased "what we sent" egress history.
       'chat.egress.get',
       'chat.send',
+      'chat.data_diagnosis.resolve',
+      'chat.plans.pending.list',
       'chat.plan.approve',
       'chat.plan.cancel',
+      'chat.execution.feedback',
+      'chat.execution.diagnostics',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       // D-167 chat provider-threading — per-session override lifecycle +
@@ -371,7 +381,7 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-171 slice 2c — the grant checklist's live self tool catalog.
       'chat.inbound_token.tool_catalog',
     ]);
-    expect(CHAT_RPC_METHOD_SET.size).toBe(29);
+    expect(CHAT_RPC_METHOD_SET.size).toBe(33);
   });
 
   it('isChatRpcMethod accepts every method + rejects unknown', () => {
@@ -393,6 +403,24 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       expect(SERVER_RPC_METHOD_SET.has(method)).toBe(true);
     }
   });
+
+  it('types verify-before-retry correlation on chat.send', () => {
+    const request: RpcRequest<ServerRpcRegistry, 'chat.send'> = {
+      session_id: 'session_1',
+      message: 'Verify the prior outcome before trying again.',
+      picker_state: { current: 'self' },
+      retry_of_plan_id: 'plan_uncertain',
+    };
+    expect(request.retry_of_plan_id).toBe('plan_uncertain');
+  });
+
+  it('types the all-session pending-plan recovery response', () => {
+    const response: RpcResponse<
+      ServerRpcRegistry,
+      'chat.plans.pending.list'
+    > = { plans: [] };
+    expect(response.plans).toEqual([]);
+  });
 });
 
 describe('D-137 P1 — CHAT_BROADCAST_EVENT_KINDS closed list (§ Wire A)', () => {
@@ -403,6 +431,7 @@ describe('D-137 P1 — CHAT_BROADCAST_EVENT_KINDS closed list (§ Wire A)', () =
     'chat.plan_proposed',
     'chat.transparency',
     'chat.message_complete',
+    'chat.data_diagnosis_resolved',
     'chat.session_changed',
     // D-137 W2.2 — per-kind catalog scope changed (Mary toggled in
     // Settings → Chat → Tool Catalog Scope).
@@ -431,9 +460,9 @@ describe('D-137 P1 — CHAT_BROADCAST_EVENT_KINDS closed list (§ Wire A)', () =
     'chat.inbound_token_changed',
   ];
 
-  it('lists exactly fourteen event kinds (P1: 7 + W2.2: 1 + D-167: 1 + W2.3: 1 + P3: 2 + P4: 1 + P5 follow-on: 1)', () => {
+  it('lists exactly fifteen event kinds, including safe-check closure', () => {
     expect(CHAT_BROADCAST_EVENT_KINDS).toEqual(expected);
-    expect(CHAT_BROADCAST_EVENT_KIND_SET.size).toBe(14);
+    expect(CHAT_BROADCAST_EVENT_KIND_SET.size).toBe(15);
   });
 
   it('isChatBroadcastEventKind accepts every kind + rejects unknown', () => {
@@ -468,11 +497,13 @@ describe('D-137 P1 — chat.tool_call_completed status-discriminated shape (§ W
       tier: 1,
       status: 'ok',
       result_ref: 'ref-abc',
+      run_id: 'run-abc',
       cursor: 5,
     };
     expect(ok.kind).toBe('chat.tool_call_completed');
     if (ok.kind === 'chat.tool_call_completed' && ok.status === 'ok') {
       expect(ok.result_ref).toBe('ref-abc');
+      expect(ok.run_id).toBe('run-abc');
     }
   });
 
@@ -514,6 +545,37 @@ describe('D-137 P1 — chat.tool_call_completed status-discriminated shape (§ W
       }
     }
   });
+
+  it('links a consumed approval across started/completed events and distinguishes a held run', () => {
+    const started: ServerEvent = {
+      kind: 'chat.tool_call_started',
+      session_id: 'sess-1',
+      turn_id: 'turn-2',
+      tool_name: 'mail.send',
+      tier: 1,
+      args: { to: 'mary@example.com' },
+      plan_id: 'plan-1',
+      cursor: 8,
+    };
+    const held: ServerEvent = {
+      kind: 'chat.tool_call_completed',
+      session_id: 'sess-1',
+      turn_id: 'turn-2',
+      tool_name: 'mail.send',
+      tier: 1,
+      status: 'ok',
+      result_ref: 'ref-held',
+      run_held: 'approval',
+      plan_id: 'plan-1',
+      cursor: 9,
+    };
+
+    expect(started.plan_id).toBe('plan-1');
+    if (held.kind === 'chat.tool_call_completed' && held.status === 'ok') {
+      expect(held.plan_id).toBe('plan-1');
+      expect(held.run_held).toBe('approval');
+    }
+  });
 });
 
 describe('D-137 P1 — CHAT_SESSION_CHANGED_FIELDS closed list (§ Wire A)', () => {
@@ -537,8 +599,12 @@ describe('D-137 P1 — CHAT_SESSION_CHANGED_FIELDS closed list (§ Wire A)', () 
 });
 
 describe('D-137 P1 — CHAT_TABLES inventory', () => {
-  it('lists exactly two tables (P1 core thread tables only; W2.2/W2.3 ship separate ensure-fns)', () => {
-    expect(CHAT_TABLES).toEqual(['chat_sessions', 'chat_messages']);
-    expect(CHAT_TABLE_SET.size).toBe(2);
+  it('lists the core thread tables plus durable reviewed-action recovery', () => {
+    expect(CHAT_TABLES).toEqual([
+      'chat_sessions',
+      'chat_messages',
+      'chat_plans',
+    ]);
+    expect(CHAT_TABLE_SET.size).toBe(3);
   });
 });

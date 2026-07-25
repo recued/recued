@@ -26,7 +26,7 @@
  *  interaction. The reconciler's `listUpdatedSince` consumes the
  *  yielded records and runs `hashOf` / `toMeta` against them.
  *
- *  Spec: `docs/d-130-spec.md` § A.3. */
+ *  Spec: D-130 § A.3. */
 
 import {
   SALESFORCE_API_VERSION,

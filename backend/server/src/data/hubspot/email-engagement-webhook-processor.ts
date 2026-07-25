@@ -26,7 +26,7 @@
  *  reads the secret from the connection record's
  *  `config.webhook_secret`.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6. */
 
 import {
   HUBSPOT_EMAIL_PROPERTIES,

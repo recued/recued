@@ -20,7 +20,7 @@
  *  pre-D-120 single-blob `audit.export` rpc — this pair is the whole
  *  `audit.*` rpc surface.)
  *
- *  Spec: docs/d-120-spec.md (Phase 7 — Memory rename + unified export).
+ *  Spec: D-120 (Phase 7 — Memory rename + unified export).
  */
 
 import type { RunAnchorStatus } from '../commits.js';

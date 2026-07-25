@@ -8,7 +8,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32, posix } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ArchiveManifest } from '@recued/contracts';
 import { createAuditLogStore, createInMemoryCollection } from '@recued/storage';
@@ -336,6 +336,48 @@ describe('archive rpc', () => {
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 
+  // ⛔ A relative path used to `join(dataPath,'exports',raw)` with no confinement
+  // check, so `../`-laden names escaped the exports dir — turning the relative
+  // branch into an arbitrary-path existence oracle (the pre-validation `stat`).
+  // The comment CLAIMED traversal safety it did not enforce.
+  it('import rejects a relative path that escapes the exports directory', async () => {
+    const { slice } = makeArchiveHandlers({ runtime: okRuntime(), auditLog, dataPath: dir });
+    for (const path of ['../../etc/passwd', '../secret', 'a/../../escape', '../exports-sibling']) {
+      await expect(
+        slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY }, {} as never),
+      ).rejects.toMatchObject({ code: 'bad_request' });
+    }
+  });
+
+  it('import still resolves a legitimate relative name under exports/', async () => {
+    // The confinement must not break the normal upload flow: a plain basename
+    // (and a nested one) resolve INSIDE exports/ and reach the existence check,
+    // which 404s here because the fixture file was never written — proving it
+    // got past resolution rather than being rejected as traversal.
+    const { slice } = makeArchiveHandlers({ runtime: okRuntime(), auditLog, dataPath: dir });
+    for (const path of ['snap.recued.archive', 'sub/snap.recued.archive']) {
+      await expect(
+        slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY }, {} as never),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    }
+  });
+
+  // ⛔ The absolute-path escape hatch is platform-aware (`isAbsolute`), not
+  // `startsWith('/')`. D-212 ships Windows keyfile support, so the server runs
+  // on Windows where an owner's absolute backup path is `C:\…` / UNC — which the
+  // old prefix test read as RELATIVE and confined. `startsWith('/')` and
+  // `isAbsolute` agree on every POSIX input, so the POSIX escape hatch + relative
+  // confinement above are unchanged; this pins the reason the swap was needed.
+  it('recognises Windows absolute paths the way `startsWith(\'/\')` could not', () => {
+    for (const p of ['C:\\backups\\x.recued.archive', 'C:/backups/x', '\\\\host\\share\\x']) {
+      expect(win32.isAbsolute(p)).toBe(true); // the predicate the handler now uses
+      expect(p.startsWith('/')).toBe(false);  // the predicate it replaced — the bug
+    }
+    // POSIX absolute stays absolute under both, so POSIX behaviour is untouched.
+    expect(win32.isAbsolute('/etc/x') || posix.isAbsolute('/etc/x')).toBe(true);
+    expect('/etc/x'.startsWith('/')).toBe(true);
+  });
+
   it('import dry_run reads manifest without restarting', async () => {
     const archivePath = join(dir, 'snap.recued.archive');
     await writeFile(archivePath, 'stub');
@@ -370,6 +412,56 @@ describe('archive rpc', () => {
       {} as never,
     )) as { realm: string };
     expect(res.realm).toBe('cross');
+  });
+
+  // ⛔ An AUTHORIZED cross-realm restore must still be refused ONLINE: staging
+  // overlays the archive's foreign-key blobs into the LIVE CAS before the drain,
+  // corrupting the running server's live blob reads mid-restore. It belongs on a
+  // STOPPED server via the offline CLI. Refused BEFORE `runImport` touches disk.
+  it('refuses an authorized CROSS-realm restore online (needs the offline CLI)', async () => {
+    const archivePath = join(dir, 'foreign-authorized.recued.archive');
+    await writeFile(archivePath, 'stub');
+    const runImport = vi.fn();
+    const { slice } = makeArchiveHandlers({
+      runtime: okRuntime({
+        verifyRestoreRealm: async () => ({ realm: 'cross', authorized: true }),
+        runImport,
+      }),
+      auditLog,
+      dataPath: dir,
+    });
+    await expect(
+      slice!.handlers['server.archive.import']!(
+        { path: archivePath, recoveryKey: KEY, currentRealmKey: KEY },
+        {} as never,
+      ),
+    ).rejects.toMatchObject({ code: 'archive_cross_realm_needs_offline' });
+    // The destructive path was never entered.
+    expect(runImport).not.toHaveBeenCalled();
+  });
+
+  it('an authorized SAME-realm restore still proceeds online', async () => {
+    // The neighbouring case the refusal must not catch: same-realm online
+    // restore is safe (same key ⇒ live reads keep working through staging).
+    const archivePath = join(dir, 'same-authorized.recued.archive');
+    await writeFile(archivePath, 'stub');
+    const runImport = vi.fn(async () => ({
+      manifest: { record_count: 42 } as unknown as ArchiveManifest,
+      restored_at: 1,
+    }));
+    const { slice } = makeArchiveHandlers({
+      runtime: okRuntime({
+        verifyRestoreRealm: async () => ({ realm: 'same', authorized: true }),
+        runImport,
+      }),
+      auditLog,
+      dataPath: dir,
+    });
+    await slice!.handlers['server.archive.import']!(
+      { path: archivePath, recoveryKey: KEY },
+      {} as never,
+    );
+    expect(runImport).toHaveBeenCalledTimes(1);
   });
 
   it('M5 S3.0 — dry_run reports schema_compat ok for a same/older-schema archive', async () => {
@@ -470,25 +562,11 @@ describe('archive rpc', () => {
     expect(runImport).not.toHaveBeenCalled();
   });
 
-  it('commit proceeds for an authorized cross-realm restore + echoes the realm', async () => {
-    const archivePath = join(dir, 'foreign.recued.archive');
-    await writeFile(archivePath, 'stub');
-    const runImport = vi.fn(async () => ({ manifest, restored_at: 1 }));
-    const { slice } = makeArchiveHandlers({
-      runtime: okRuntime({
-        verifyRestoreRealm: async () => ({ realm: 'cross', authorized: true }),
-        runImport,
-      }),
-      auditLog,
-      dataPath: dir,
-    });
-    const res = (await slice!.handlers['server.archive.import']!(
-      { path: archivePath, recoveryKey: KEY, currentRealmKey: KEY },
-      {} as never,
-    )) as { realm: string };
-    expect(res.realm).toBe('cross');
-    expect(runImport).toHaveBeenCalledTimes(1);
-  });
+  // NOTE: the former 'commit proceeds for an authorized cross-realm restore'
+  // test was REMOVED here — online cross-realm restore is now REFUSED (it
+  // corrupted the running server's live blob reads mid-restore; see the
+  // 'refuses an authorized CROSS-realm restore online' test above). Cross-realm
+  // restore is offline-only.
 
   it('M5 S2a — resolves the driving client, passes it to runImport, and returns its rebind', async () => {
     const archivePath = join(dir, 'snap.recued.archive');

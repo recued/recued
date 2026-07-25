@@ -22,8 +22,8 @@
  *          `capability` alone and never reads `owns_llm_egress`; the only
  *          reader is the future D-167 P1 middleware (out of scope here).
  *
- *  Spec: docs/d-167-spec.md § "Channel ownership signal" + P0/P1;
- *  docs/d-163-spec.md § A.1 / N.1 / N.2.
+ *  Spec: D-167 § "Channel ownership signal" + P0/P1;
+ *  D-163 § A.1 / N.1 / N.2.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -44,6 +44,7 @@ import type {
   TransportSendResult,
   TransportVendor,
 } from '@recued/transport';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 // ── Minimal adapter instantiations (mirror the canonical D-158 channel
 //    tests — the seam value is a static literal on each factory return). ──
@@ -174,7 +175,7 @@ describe('D-163 owns_llm_egress — pure seam, no block routing dependency (I-D)
       if (entry.name === '__tests__' || entry.name === 'dist') continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) yield* walkSource(full);
-      else if (entry.name.endsWith('.ts')) yield full;
+      else if (isTypeScriptSource(entry.name)) yield full;
     }
   };
 

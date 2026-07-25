@@ -609,6 +609,7 @@ describe('D-164 P4f gate not-short-circuit-eligible branch', () => {
       text: emailText,
       slots: [emailSlot],
       locale: 'en',
+      localeCandidates: ['en'],
     });
     expect(probeData).not.toHaveBeenCalled();
     expect(renderTemplate).not.toHaveBeenCalled();

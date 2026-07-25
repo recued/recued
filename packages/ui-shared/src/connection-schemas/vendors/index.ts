@@ -12,7 +12,7 @@
  *  `ConnectionVendorProvider` entry in
  *  `@recued/contracts/connection-vendor-providers`).
  *
- *  Spec: `docs/d-129-spec.md` § A.1. */
+ *  Spec: D-129 § A.1. */
 
 import {
   getVendorProvider,
@@ -30,6 +30,8 @@ import { sharepointSchema } from './sharepoint.js';
 import { s3Schema } from './s3.js';
 import { notionSchema } from './notion.js';
 import { airbyteSchema } from './airbyte.js';
+import { tavilySchema } from './tavily.js';
+import { tradingviewUdfSchema } from './tradingview-udf.js';
 import type { ConnectionFormValues } from '../types.js';
 
 export {
@@ -83,6 +85,16 @@ export {
   AIRBYTE_TOKEN_ENDPOINT,
   AIRBYTE_SCHEMA_INITIAL_VALUES,
 } from './airbyte.js';
+export {
+  tavilySchema,
+  TAVILY_API_BASE,
+  TAVILY_SCHEMA_INITIAL_VALUES,
+} from './tavily.js';
+export {
+  tradingviewUdfSchema,
+  TRADINGVIEW_UDF_DEMO_BASE,
+  TRADINGVIEW_UDF_SCHEMA_INITIAL_VALUES,
+} from './tradingview-udf.js';
 
 /** Closed list keyed on canonical vendor segment. Insertion order
  *  drives the picker rendering. */
@@ -99,6 +111,8 @@ export const VENDOR_CONNECTION_SCHEMAS = {
   s3: s3Schema,
   notion: notionSchema,
   airbyte: airbyteSchema,
+  tavily: tavilySchema,
+  tradingview_udf: tradingviewUdfSchema,
 } as const;
 
 export type KnownVendor = keyof typeof VENDOR_CONNECTION_SCHEMAS;

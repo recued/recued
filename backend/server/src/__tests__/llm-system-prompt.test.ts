@@ -56,7 +56,7 @@ describe('the split — block 1 is editable, blocks 2 and 3 are not reachable', 
   });
 
   it('composes byte-identically to the pre-split prompt when nothing is set', () => {
-    // Every bench tuning in docs/chat-prompt-optimization-log.md was measured
+    // Every bench tuning in internal design notes was measured
     // against these exact bytes. The split must be invisible at runtime.
     const resolved = resolveLlmSystemPrompt('chat', {});
     expect(resolved.prompt).toBe(CHAT_MAIN_TURN_SYSTEM_PROMPT);

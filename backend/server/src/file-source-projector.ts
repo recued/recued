@@ -27,9 +27,9 @@
  *  `filename` + `remote_id` are the required canonical fields; an absent /
  *  uncoercible value on either leaves the projection invalid and
  *  `buildFileMetaSnapshot`'s `validateFileMetaProjection` (the single
- *  fail-closed gate) rejects it. Bytes are NEVER fetched (North star) —
- *  everything here is metadata projection. Design:
- *  `docs/d-192-file-source-family.md`; taxonomy §0 / §3b. */
+ *  fail-closed gate) rejects it. This projector never fetches bytes;
+ *  explicit reads use the separate lazy remote-byte resolver. Design:
+ *  D-192; taxonomy §0 / §3b. */
 
 import type { FileMetaProjection, FileVendorDeclaration } from '@recued/contracts';
 

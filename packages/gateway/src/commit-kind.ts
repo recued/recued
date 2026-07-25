@@ -2,7 +2,7 @@
  *
  *  `deriveCommitKind` projects an ingredient's `IngredientCategory`
  *  onto the observable `CommitKind` the Gateway stamps on every commit
- *  (`docs/d-153-spec.md` § Commit substrate). The discriminator lets
+ *  (D-153 § Commit substrate). The discriminator lets
  *  audit consumers split the action / query streams without
  *  re-deriving from the ingredient slug.
  *
@@ -24,7 +24,7 @@
  *  composition / plan artifact — never when the recipe engine invokes
  *  a plain ingredient. The cognition dispatch path stamps it directly.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate (atomic).
+ *  Spec: D-153 § Commit substrate (atomic).
  */
 
 import type { CommitKind, IngredientCategory } from '@recued/contracts';

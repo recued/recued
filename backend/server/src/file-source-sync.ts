@@ -2,8 +2,9 @@
  *
  *  The file-family counterpart of `work-entity-source-sync.ts`, sharing its
  *  reconcile spine (list → hash-skip → upsert → complete-walk tombstone) but
- *  MUCH thinner: a file Source is a meta-only mirror (bytes never fetched —
- *  North star), read-only in v1 — so there is no P4b dirty-write guard, no P5
+ *  MUCH thinner: file Source sync mirrors metadata only and never fetches
+ *  bodies (explicit reads resolve remote bytes through a separate lazy path),
+ *  read-only in v1 — so there is no P4b dirty-write guard, no P5
  *  work-graph edges, and no native-tombstone field (the thin
  *  `FileVendorDeclaration` carries none). Removals are handled purely by the
  *  D-190 complete-walk delete diff, gated on the walk's POSITIVE completeness

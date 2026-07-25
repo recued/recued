@@ -4,7 +4,7 @@
  *  Panel: the universe join split across the two tabs (ops → `opsRoot`,
  *  collections + topics → `entitiesRoot`); the `effective` derivation + the
  *  owner-only sensitive-surface adjustment; the write-then-reconcile toggle; the
- *  risk badge / asks / source marker; the "N of M granted" summary; graceful
+ *  Access-only row / source marker; the "N of M granted" summary; graceful
  *  degrade; dispose. Route: the Ops/Entities tabs mounting the kept-alive panel;
  *  self = same tabs via `grant.read` with no Connect/door/Revoke; the header
  *  door toggle (`setDoorTypes`) + the 2-stage Revoke, both re-rendering the
@@ -14,8 +14,6 @@
  *  p2) panel tests. */
 
 import { describe, expect, it, vi } from 'vitest';
-
-import { riskApprovalCopy } from '../contracts/grant-op-universe.js';
 
 import {
   CONTRACT_GRANTS_ALSO_READS_ATTR,
@@ -603,59 +601,31 @@ describe('contract-grants panel — write / reconcile + chrome', () => {
     expect(panel.isExplicit(READ_OP)).toBe(true);
   });
 
-  it('renders the risk badge + a per-tier approval chip, and the explicit/default source marker', async () => {
+  it('renders Contract operations as Access-only rows', async () => {
     const { panel } = mountPanelWith({ seed: { [READ_OP]: false } });
     await panel.whenLoaded();
     const writeCell = cellFor(opsRootEl(panel), WRITE_OP)!;
-    expect(
-      collectByAttr(writeCell, CONTRACT_GRANTS_RISK_ATTR)[0]?.getAttribute('data-risk'),
-    ).toBe('write');
-    const writeChip = collectByAttr(writeCell, CONTRACT_GRANTS_ASKS_ATTR)[0];
-    expect(writeChip?.textContent).toBe('asks');
-    // ⛔ INVERTED 2026-07-17. This asserted `toHaveLength(0)` — "a read op never
-    // asks" — which is TRUE about asking and MISLEADING as a UI: a read is
-    // never-class (it admits at every ceiling), so the grant IS its whole
-    // authorization and NOTHING downstream will ever check it. Rendering nothing
-    // said "nothing to say here" about the only decision no one else makes. Read
-    // now carries the loudest claim on the panel.
+    expect(collectByAttr(writeCell, CONTRACT_GRANTS_RISK_ATTR)).toHaveLength(0);
+    expect(collectByAttr(writeCell, CONTRACT_GRANTS_ASKS_ATTR)).toHaveLength(0);
     const readCell = cellFor(opsRootEl(panel), READ_OP)!;
-    const readChip = collectByAttr(readCell, CONTRACT_GRANTS_ASKS_ATTR)[0];
-    expect(readChip?.textContent).toBe('silent');
-    expect(readChip?.title).toContain('IS the permission');
+    expect(collectByAttr(readCell, CONTRACT_GRANTS_RISK_ATTR)).toHaveLength(0);
+    expect(collectByAttr(readCell, CONTRACT_GRANTS_ASKS_ATTR)).toHaveLength(0);
     // the seeded read revoke renders as an explicit 'set' source.
     expect(
       collectByAttr(readCell, CONTRACT_GRANTS_SOURCE_ATTR)[0]?.getAttribute('data-source'),
     ).toBe('explicit');
   });
 
-  it('⛔ destructive promises un-silenceability; write/admin promise only "unless a session"', () => {
-    // The copy is a CLAIM about the gate. These pin the two sentences that must not
-    // drift, because each is load-bearing in the opposite direction:
-    //  - destructive's "no setting removes this" is a GUARANTEE, safe only because
-    //    `TrustCeiling` has no destructive member AND no seed's grantable_risk_tiers
-    //    includes it (three independent legs — see riskApprovalCopy).
-    //  - write/admin must NOT re-acquire the old "still asks every run" certainty: a
-    //    session grant genuinely silences them, and D-210 §9 shows the session-grant
-    //    axis is approval-BLIND, so even `approval:'always'` at write stays grantable.
-    expect(riskApprovalCopy('destructive')?.chip).toBe('always asks');
-    expect(riskApprovalCopy('destructive')?.title).toContain('No setting removes this');
-    for (const tier of ['write', 'admin'] as const) {
-      expect(riskApprovalCopy(tier)?.title).toContain('unless you approve it for a session');
-      expect(riskApprovalCopy(tier)?.title).not.toContain('No setting removes this');
-    }
-    // An unknown tier renders NO chip — absence of a claim, never a wrong one.
-    expect(riskApprovalCopy('not-a-tier')).toBeUndefined();
-  });
-
-  it('the ops list carries the two-axis note; the entities list does NOT', async () => {
+  it('the ops list explains Access-only scope; the entities list does NOT', async () => {
     const { panel } = mountPanelWith({});
     await panel.whenLoaded();
     const note = collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_AXIS_NOTE_ATTR)[0];
-    expect(note?.textContent).toContain('reach');
+    expect(note?.textContent).toContain('Access');
+    expect(note?.textContent).toContain('do not vary by contract');
     // ⛔ Never "visibility" — an ungranted op is a HARD DENY, so calling the toggle
     // visibility undersells it in the opposite direction from the error it corrects.
     expect(note?.textContent).not.toContain('visibility');
-    // The note is a claim about OP approval; entities are a different axis.
+    // The note is about operation reachability; entities are a separate axis.
     expect(
       collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_AXIS_NOTE_ATTR),
     ).toHaveLength(0);

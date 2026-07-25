@@ -119,7 +119,7 @@ describe('mergeRoleResults (per-role field ownership)', () => {
       approval_composition: composeForRole(ck, 'approval_composition', context, scan),
       risk_override: composeForRole(ck, 'risk_override', context, scan),
     });
-    // denied:true → allowed:false (deny-flag); approval:always owned by approval_composition.
+    // denied:true → allowed:false; legacy actor-scoped approval tightens too.
     expect(merged.policy).toEqual({ allowed: false, approval: 'always' });
   });
 });
@@ -131,6 +131,7 @@ describe('projectToResolution (tighten a base resolution)', () => {
     effective_risk_tier: 'read',
     operation_group: 'deals',
     approval: 'never',
+    authorization_provenance: { pre_lift_approval: 'never' },
     granted: true,
   };
 

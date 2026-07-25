@@ -30,10 +30,10 @@
  *
  *  The per-vendor "what can't generalize" half — translating the derived
  *  literal prefix into the vendor's own list-API scope param — lives in the
- *  adapter leaf (`backend/server/src/file-source-adapters/`). Bytes are NEVER
- *  fetched (North star); this only bounds which metadata rows are mirrored.
+ *  adapter leaf (`backend/server/src/file-source-adapters/`). Source sync does
+ *  not fetch bodies; this only bounds which metadata rows are mirrored.
  *
- *  Design: `docs/d-192-file-source-family.md` (Fork A); taxonomy §0. */
+ *  Design: D-192 (Fork A); taxonomy §0. */
 
 /** Cap on a raw `import_scope` glob — aligned with `FILE_META_PATH_MAX` (a
  *  full vendor-tree path can be deep). Over-cap fails closed (a malformed

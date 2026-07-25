@@ -48,7 +48,7 @@
  *  Idempotent; concurrent calls coalesce into one in-flight pass
  *  (mirrors `createAuditRetention`).
  *
- *  Spec: docs/d-157-spec.md § N.8 SHOULD/MAY + docs/d-158-spec.md
+ *  Spec: D-157 § N.8 SHOULD/MAY + D-158
  *  staleness guard (P3 / O-5). */
 
 import type { Checkpoint, RecipeError } from '@recued/contracts';
@@ -102,6 +102,9 @@ export interface CheckpointRetentionDeps {
   /** Live config view — read on every pass so a runtime reconfigure
    *  takes effect without restart. */
   config: () => CheckpointRetentionConfig;
+  /** Optional observer after a stale awaiting-approval run is durably retired.
+   * Used by additive learners that had deferred closure while the run was held. */
+  onExpired?: (terminalEntry: AuditEntry) => Promise<void> | void;
 }
 
 export interface CheckpointRetentionResult {
@@ -385,11 +388,21 @@ export const createCheckpointRetention = (
           result.deferred++;
           continue;
         }
-        await deps.auditLog.append(
-          buildExpiryEntry(anchor, checkpoint, cfg.staleAfterDays as number, start),
+        const terminalEntry = buildExpiryEntry(
+          anchor,
+          checkpoint,
+          cfg.staleAfterDays as number,
+          start,
         );
+        await deps.auditLog.append(terminalEntry);
         await deps.checkpointStore.delete(checkpoint.checkpoint_id);
         result.expired++;
+        try {
+          await deps.onExpired?.(terminalEntry);
+        } catch {
+          // The expiry is already durable. An advisory observer cannot turn it
+          // back into a failed prune or resurrect the checkpoint.
+        }
       } catch (e) {
         console.warn(
           `[checkpoint-retention] expiry failed for run ${checkpoint.run_id}: `

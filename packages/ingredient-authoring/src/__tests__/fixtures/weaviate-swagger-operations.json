@@ -81,7 +81,8 @@
     },
     "selected_by_approval": {
       "always": 59,
-      "never": 49
+      "ask": 45,
+      "never": 4
     },
     "raw_json_request_bodies": 48,
     "raw_json_object_bodies": 41,
@@ -345,7 +346,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -459,7 +460,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -652,7 +653,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -888,7 +889,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -930,7 +931,7 @@
       "op": "authz.get_roles",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1044,7 +1045,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1237,7 +1238,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1307,7 +1308,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1440,7 +1441,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1501,7 +1502,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1704,7 +1705,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1798,7 +1799,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -1875,7 +1876,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -2056,7 +2057,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -2278,7 +2279,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -2825,7 +2826,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -2867,7 +2868,7 @@
       "op": "cluster.cluster_get_statistics",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3016,7 +3017,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3146,7 +3147,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3199,7 +3200,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3357,7 +3358,7 @@
       "op": "meta.meta_get",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3399,7 +3400,7 @@
       "op": "namespaces.list_namespaces",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3460,7 +3461,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3723,7 +3724,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3816,7 +3817,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -3988,7 +3989,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": "The operation exposes both offset/limit and UUID after pagination; after cannot be combined with offset or sort. The operation preserves all three explicit selectors and does not force one automatic paginator over the other.",
       "static_headers": {
@@ -4111,7 +4112,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -4254,7 +4255,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -5108,7 +5109,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -5988,7 +5989,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6065,7 +6066,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6263,7 +6264,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6391,7 +6392,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6451,7 +6452,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6581,7 +6582,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -6774,7 +6775,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7132,7 +7133,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7210,7 +7211,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7375,7 +7376,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7682,7 +7683,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7840,7 +7841,7 @@
       "op": "distributed_tasks.distributed_tasks_get",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7892,7 +7893,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -7953,7 +7954,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -8030,7 +8031,7 @@
         }
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -8397,7 +8398,7 @@
       "op": "users.get_own_info",
       "emitted_args": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe",
       "pagination_transport_gap": null,
       "static_headers": {
@@ -8424,7 +8425,7 @@
       "supplied_args": [
         "query.class"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "graphql-query-weaviate",
@@ -8439,7 +8440,7 @@
       "supplied_args": [
         "body_raw"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "schema-overview-weaviate",
@@ -8450,7 +8451,7 @@
       "op": "schema.schema_dump",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "backup-inventory-weaviate",
@@ -8465,7 +8466,7 @@
       "supplied_args": [
         "backend"
       ],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "current-user-weaviate",
@@ -8476,7 +8477,7 @@
       "op": "users.get_own_info",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     },
     {
       "recipe_id": "node-status-weaviate",
@@ -8487,39 +8488,39 @@
       "op": "nodes.nodes_get",
       "required_args": [],
       "supplied_args": [],
-      "approval": "never"
+      "approval": "ask"
     }
   ],
   "generated": [
     {
       "slug": "weaviate-data",
       "operations": 20,
-      "composition_bytes": 37626
+      "composition_bytes": 37862
     },
     {
       "slug": "weaviate-query-classification",
       "operations": 5,
-      "composition_bytes": 8456
+      "composition_bytes": 8692
     },
     {
       "slug": "weaviate-schema",
       "operations": 23,
-      "composition_bytes": 34225
+      "composition_bytes": 34756
     },
     {
       "slug": "weaviate-backup-replication",
       "operations": 20,
-      "composition_bytes": 28497
+      "composition_bytes": 28969
     },
     {
       "slug": "weaviate-access-namespaces",
       "operations": 31,
-      "composition_bytes": 34128
+      "composition_bytes": 35013
     },
     {
       "slug": "weaviate-cluster-service",
       "operations": 9,
-      "composition_bytes": 7882
+      "composition_bytes": 8177
     }
   ]
 }

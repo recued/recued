@@ -12,7 +12,7 @@
  *    - upsert stamps ingredient_slug + producer_version_hash +
  *      input_fingerprint_hash
  *
- *  Spec: `docs/d-136-spec.md` §A.3. */
+ *  Spec: D-136 §A.3. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

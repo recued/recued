@@ -36,7 +36,7 @@
  *  distinguishes "producer code unchanged but external world
  *  changed" from "producer code changed."
  *
- *  Spec: `docs/d-136-spec.md` §A.14.1 (external context pulse). */
+ *  Spec: D-136 §A.14.1 (external context pulse). */
 
 import type Database from 'better-sqlite3';
 

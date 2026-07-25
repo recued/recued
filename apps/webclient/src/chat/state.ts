@@ -7,12 +7,15 @@
  *    - `chat.token_streamed`     → append delta to in-flight assistant
  *    - `chat.tool_call_started`  → push a tool_call row (status: started)
  *    - `chat.tool_call_completed`→ patch the matching row's status
+ *      and, when plan-linked, update the original approval receipt
  *    - `chat.plan_proposed`      → push a plan-approval card (P3 § A.11)
  *    - `chat.plan_resolved`      → flip the matching card to its
  *      approved / cancelled terminal state
  *    - `chat.transparency`       → push a transparency-stream entry
  *    - `chat.message_complete`   → replace the in-flight turn with the
  *      authoritative ChatMessage row from the server
+ *    - `chat.data_diagnosis_resolved` → patch an owner-confirmed safe-check
+ *      closure onto the exact durable assistant message
  *    - `chat.session_changed`    → patch picker / model_pref / title /
  *      archived on the in-memory session record
  *
@@ -21,21 +24,24 @@
  *  the WS broadcast subscriber + drives re-renders on every update.
  *
  *  Storage discipline per D-148 § A.4.1 — none of this state persists
- *  to IDB. Chat history lives on the server (encrypted per-pair via
- *  the `chat` sub-DEK). The webclient pulls history via
- *  `chat.session.get` rpc at session open + lets broadcast events keep
- *  it in sync until the user closes the tab.
+ *  to IDB. Chat history and reviewed action records live on the server
+ *  (encrypted per-pair via the `chat` sub-DEK). The webclient pulls both
+ *  via `chat.session.get` at session open / reconnect, then lets broadcast
+ *  events keep the view in sync until the user closes the tab.
  */
 
 import {
   classForTransparencyEventKind,
+  isChatDataDiagnosisResolutionStatus,
   isChatModelHint,
   isTransparencyEventKind,
   renderTransparencyTemplate,
   type ChatMessage,
   type ChatModelRoutingLayer,
   type ChatPickerTarget,
+  type ChatPlanExecutionReceipt,
   type ChatPlanProposal,
+  type ChatPlanRecord,
   type ChatPlanStatus,
   type ChatSession,
   type ChatSessionChangedField,
@@ -118,12 +124,14 @@ export interface TurnFailureNotice {
  *  the plan stays pending — the gated tool errors `awaiting_approval`,
  *  the assistant's "needs your approval" text lands, and the card must
  *  keep rendering (and stay clickable) against the persisted message.
- *  Ephemeral by design — hydration resets it (the server-side
- *  `PlanApprovalStore` is in-memory too; a reload fairly drops pending
- *  cards and Mary re-asks). */
+ *  Hydration reconstructs it from the server's durable action record; live
+ *  events then advance the same card without relying on tab memory. */
 export interface PlanApprovalCard {
   plan_id: string;
   turn_id: string;
+  /** The uncertain consumed action this fresh proposal follows. Correlation
+   * only: this card always needs its own approval. */
+  retry_of_plan_id?: string;
   /** Stamped when `chat.message_complete` lands for the turn — links
    *  the card to the persisted assistant message row for rendering. */
   message_id?: string;
@@ -135,8 +143,26 @@ export interface PlanApprovalCard {
    *  `args_hash` gate binds an approval to exactly the reviewed
    *  payload (§ A.11 edit flow is a later slice). */
   args: unknown;
+  /** Server-computed exact-payload hash, used only to compare a fresh retry
+   * proposal with its origin without making claims from display text. */
+  args_hash?: string;
   status: ChatPlanStatus;
+  /** Authoritative lifecycle of the ONE dispatch that consumed this
+   *  approval. It is driven only by plan-linked tool events from the
+   *  server; accepting a continuation message never writes this field. */
+  execution?: PlanExecutionReceipt;
+  /** True when reconstructed from `chat.session.get`, not a live event. Used
+   * to avoid announcing historical receipts as new activity. */
+  recovered?: boolean;
+  /** False only when encrypted reviewed args could not be recovered. Exact-
+   * payload actions are disabled in that state. */
+  payload_available?: boolean;
 }
+
+/** Execution receipt for a consumed one-time approval. `held` is distinct
+ *  from `completed`: the tool dispatch returned successfully but paused at
+ *  a deeper confirmation gate, so no final effect may be claimed. */
+export type PlanExecutionReceipt = ChatPlanExecutionReceipt;
 
 export interface ChatThreadState {
   session: ChatSession | null;
@@ -152,7 +178,7 @@ export interface ChatThreadState {
   turn_failures: ReadonlyArray<TurnFailureNotice>;
   /** § A.11 — plan-approval cards in proposal order. Keyed by
    *  `plan_id`; a turn can hold several (two write tools gated in one
-   *  turn). Session-tab-lifetime only; see `PlanApprovalCard`. */
+   *  turn). Recovered from durable server records on hydration. */
   plan_cards: ReadonlyArray<PlanApprovalCard>;
   /** Route-side scaffold handling — turn ids whose
    *  `chat.message_complete` already landed. In production the
@@ -179,18 +205,46 @@ export const initialChatThreadState = (): ChatThreadState => ({
   completed_turn_ids: [],
 });
 
+export type ChatThreadSnapshot =
+  ChatSession & {
+    messages: ChatMessage[];
+    plans?: ReadonlyArray<ChatPlanRecord>;
+  };
+
 /** Apply a `chat.session.get` rpc snapshot to the thread state. */
 export const hydrateThreadFromSnapshot = (
   state: ChatThreadState,
-  snapshot: ChatSession & { messages: ChatMessage[] },
-): ChatThreadState => ({
-  session: { ...snapshot },
-  messages: snapshot.messages.slice(),
-  inflight: null,
-  turn_failures: [],
-  plan_cards: [],
-  completed_turn_ids: [],
-});
+  snapshot: ChatThreadSnapshot,
+): ChatThreadState => {
+  const { messages, plans = [], ...session } = snapshot;
+  return {
+    session,
+    messages: messages.slice(),
+    inflight: null,
+    turn_failures: [],
+    plan_cards: plans.map((record) => ({
+      plan_id: record.plan.plan_id,
+      turn_id: record.plan.turn_id,
+      ...(record.plan.retry_of_plan_id !== undefined
+        ? { retry_of_plan_id: record.plan.retry_of_plan_id }
+        : {}),
+      ...(record.message_id !== undefined
+        ? { message_id: record.message_id }
+        : {}),
+      tool: record.plan.tool,
+      tier: record.plan.tier,
+      args: record.plan.args,
+      args_hash: record.plan.args_hash,
+      status: record.plan.status,
+      ...(record.execution !== undefined
+        ? { execution: record.execution }
+        : {}),
+      recovered: true,
+      payload_available: record.payload_available,
+    })),
+    completed_turn_ids: [],
+  };
+};
 
 /** Create the in-flight turn at the `chat.send` ack. Route-side
  *  scaffold handling makes this a CONFIRMATION, not the sole creation
@@ -239,6 +293,7 @@ type ChatThreadBroadcastEventKind =
   | 'chat.plan_resolved'
   | 'chat.transparency'
   | 'chat.message_complete'
+  | 'chat.data_diagnosis_resolved'
   | 'chat.session_changed'
   | 'chat.default_model_pref_changed';
 
@@ -250,6 +305,7 @@ const CHAT_THREAD_EVENT_KINDS: ReadonlySet<ChatThreadBroadcastEventKind> = new S
   'chat.plan_resolved',
   'chat.transparency',
   'chat.message_complete',
+  'chat.data_diagnosis_resolved',
   'chat.session_changed',
   'chat.default_model_pref_changed',
 ]);
@@ -258,6 +314,135 @@ export const isChatThreadEvent = (
   event: ServerEvent,
 ): event is Extract<ServerEvent, { kind: ChatThreadBroadcastEventKind }> =>
   CHAT_THREAD_EVENT_KINDS.has(event.kind as ChatThreadBroadcastEventKind);
+
+type PlanExecutionEvent =
+  | Extract<ServerEvent, { kind: 'chat.tool_call_started' }>
+  | Extract<ServerEvent, { kind: 'chat.tool_call_completed' }>;
+
+const samePlanExecutionReceipt = (
+  left: PlanExecutionReceipt | undefined,
+  right: PlanExecutionReceipt,
+): boolean => {
+  if (
+    left === undefined
+    || left.status !== right.status
+    || left.turn_id !== right.turn_id
+  ) return false;
+  if (left.status === 'running' && right.status === 'running') return true;
+  if (left.status === 'unknown' && right.status === 'unknown') return true;
+  if (left.status === 'completed' && right.status === 'completed') {
+    return (
+      left.result_ref === right.result_ref
+      && left.run_id === right.run_id
+    );
+  }
+  if (left.status === 'held' && right.status === 'held') {
+    return (
+      left.result_ref === right.result_ref
+      && left.hold_kind === right.hold_kind
+      && left.run_id === right.run_id
+    );
+  }
+  if (left.status === 'failed' && right.status === 'failed') {
+    return (
+      left.reason === right.reason
+      && left.detail === right.detail
+      && left.run_id === right.run_id
+    );
+  }
+  return false;
+};
+
+const planExecutionReceiptFromEvent = (
+  event: PlanExecutionEvent,
+): PlanExecutionReceipt => {
+  if (event.kind === 'chat.tool_call_started') {
+    return { status: 'running', turn_id: event.turn_id };
+  }
+  if (event.status === 'error') {
+    return {
+      status: 'failed',
+      turn_id: event.turn_id,
+      reason: event.reason,
+      ...(event.detail !== undefined ? { detail: event.detail } : {}),
+      ...(event.run_id !== undefined ? { run_id: event.run_id } : {}),
+    };
+  }
+  if (event.run_held !== undefined) {
+    return {
+      status: 'held',
+      turn_id: event.turn_id,
+      result_ref: event.result_ref,
+      hold_kind: event.run_held,
+      ...(event.run_id !== undefined ? { run_id: event.run_id } : {}),
+    };
+  }
+  return {
+    status: 'completed',
+    turn_id: event.turn_id,
+    result_ref: event.result_ref,
+    ...(event.run_id !== undefined ? { run_id: event.run_id } : {}),
+  };
+};
+
+/** Project a plan-linked tool event onto the original approval card. The
+ *  server adds `plan_id` only after consuming that exact approval. Terminal
+ *  receipts never regress to `running` on a late/replayed start event. */
+const applyPlanExecutionEvent = (
+  state: ChatThreadState,
+  event: PlanExecutionEvent,
+): ChatThreadState => {
+  if (event.plan_id === undefined) return state;
+  const index = state.plan_cards.findIndex((card) => card.plan_id === event.plan_id);
+  if (index === -1) return state;
+  const existing = state.plan_cards[index];
+  if (existing === undefined || existing.status === 'cancelled') return state;
+  if (
+    event.kind === 'chat.tool_call_started'
+    && existing.execution !== undefined
+    && existing.execution.status !== 'running'
+  ) return state;
+
+  let execution = planExecutionReceiptFromEvent(event);
+  // A terminal lifecycle replay from an older producer can legitimately omit
+  // the newer optional run address. Never let that erase a durable address
+  // already recovered from the plan snapshot for the same one-time dispatch.
+  const existingRunId =
+    existing.execution?.status === 'completed'
+    || existing.execution?.status === 'held'
+    || existing.execution?.status === 'failed'
+      ? existing.execution.run_id
+      : undefined;
+  if (
+    existingRunId !== undefined
+    && existing.execution?.status === execution.status
+    && existing.execution.turn_id === execution.turn_id
+    && (
+      execution.status === 'completed'
+      || execution.status === 'held'
+      || execution.status === 'failed'
+    )
+    && execution.run_id === undefined
+  ) {
+    execution = { ...execution, run_id: existingRunId };
+  }
+  if (
+    existing.status === 'approved'
+    && samePlanExecutionReceipt(existing.execution, execution)
+  ) return state;
+
+  const copy = state.plan_cards.slice();
+  copy[index] = {
+    ...existing,
+    // A plan-linked lifecycle event proves the approval was consumed. This
+    // repairs a client that saw the proposal but missed the resolution event.
+    status: 'approved',
+    execution,
+    recovered: false,
+    payload_available: existing.payload_available ?? true,
+  };
+  return { ...state, plan_cards: copy };
+};
 
 /** Pure reducer over the chat-thread broadcast event kinds. Returns
  *  the unchanged state when the event belongs to a different session
@@ -283,9 +468,34 @@ export const reduceChatThreadEvent = (
     return applyDefaultModelPrefChanged(state, event);
   }
 
-  // All other kinds carry a turn_id + session_id. Drop events for
-  // other sessions; drop events for a stale in-flight turn id.
+  // All other kinds carry a session_id. Drop events for other sessions.
   if (!state.session || event.session_id !== state.session.id) return state;
+
+  if (event.kind === 'chat.data_diagnosis_resolved') {
+    const index = state.messages.findIndex(
+      (message) => message.id === event.message_id,
+    );
+    if (index === -1) return state;
+    const current = state.messages[index];
+    if (
+      current.role !== 'assistant'
+      || current.data_diagnosis?.intent !== 'safe_check'
+      || !isChatDataDiagnosisResolutionStatus(event.resolution?.status)
+      || typeof event.resolution.resolved_at !== 'number'
+      || !Number.isFinite(event.resolution.resolved_at)
+    ) return state;
+    if (
+      current.data_diagnosis_resolution !== undefined
+      && current.data_diagnosis_resolution.resolved_at
+        >= event.resolution.resolved_at
+    ) return state;
+    const messages = state.messages.slice();
+    messages[index] = {
+      ...current,
+      data_diagnosis_resolution: event.resolution,
+    };
+    return { ...state, messages };
+  }
 
   if (event.kind === 'chat.message_complete') {
     return applyMessageComplete(state, event);
@@ -313,10 +523,18 @@ export const reduceChatThreadEvent = (
         {
           plan_id: event.plan_id,
           turn_id: event.turn_id,
+          ...(event.retry_of_plan_id !== undefined
+            ? { retry_of_plan_id: event.retry_of_plan_id }
+            : {}),
           tool: event.tool,
           tier: event.tier,
           args: event.args,
+          ...(event.args_hash !== undefined
+            ? { args_hash: event.args_hash }
+            : {}),
           status: 'proposed',
+          recovered: false,
+          payload_available: true,
         },
       ],
     };
@@ -324,6 +542,12 @@ export const reduceChatThreadEvent = (
   if (event.kind === 'chat.plan_resolved') {
     return applyPlanResolution(state, event.plan);
   }
+
+  const baseState =
+    event.kind === 'chat.tool_call_started'
+    || event.kind === 'chat.tool_call_completed'
+      ? applyPlanExecutionEvent(state, event)
+      : state;
 
   // PB7 — failure-class transparency projects into `turn_failures`
   // BEFORE scaffold resolution, keyed by the event's own turn_id, so a
@@ -355,12 +579,12 @@ export const reduceChatThreadEvent = (
 
   // The remaining 3 kinds ride the resolved (possibly just-adopted)
   // scaffold; `inflightForTurnEvent` returns null for the drop cases.
-  const inflight = inflightForTurnEvent(state, event.turn_id);
-  if (inflight === null) return state;
+  const inflight = inflightForTurnEvent(baseState, event.turn_id);
+  if (inflight === null) return baseState;
 
   if (event.kind === 'chat.token_streamed') {
     return {
-      ...state,
+      ...baseState,
       inflight: {
         ...inflight,
         assistant_content: inflight.assistant_content + event.delta,
@@ -369,7 +593,7 @@ export const reduceChatThreadEvent = (
   }
   if (event.kind === 'chat.tool_call_started') {
     return {
-      ...state,
+      ...baseState,
       inflight: {
         ...inflight,
         tool_calls: [
@@ -411,11 +635,11 @@ export const reduceChatThreadEvent = (
       };
     });
     return {
-      ...state,
+      ...baseState,
       inflight: { ...inflight, tool_calls: updated },
     };
   }
-  return state;
+  return baseState;
 };
 
 /** Route-side scaffold handling — resolve which in-flight scaffold a
@@ -505,9 +729,13 @@ export const applyPlanResolution = (
         {
           plan_id: plan.plan_id,
           turn_id: plan.turn_id,
+          ...(plan.retry_of_plan_id !== undefined
+            ? { retry_of_plan_id: plan.retry_of_plan_id }
+            : {}),
           tool: plan.tool,
           tier: plan.tier,
           args: plan.args,
+          args_hash: plan.args_hash,
           status: plan.status,
         },
       ],

@@ -25,6 +25,7 @@
  */
 
 import { createReadStream } from 'node:fs';
+import { serverBundleFromJSON } from '@recued/crypto';
 import {
   AEAD_TAG_LEN,
   ARCHIVE_FORMAT_VERSION,
@@ -54,6 +55,8 @@ export interface ImportedRecords {
   db: Buffer;
   config?: Buffer;
   vault?: Buffer;
+  /** D-212 dual-wrapped Master-DEK sidecar. */
+  serverVault?: Buffer;
   /** Decrypted `passport.json` (a signed `migration_full` projection,
    *  serialized JSON) when the export embedded one. The M5 cross-machine
    *  migration commits provenance from this; M1 surfaces only its presence. */
@@ -84,9 +87,10 @@ export interface RecordWriter {
 }
 
 /** Which CAS root a blob record restores into (blob-encryption fix Phase 3).
- *  Derived from the record-name prefix: `blobs/` (keyless shared+annotation),
- *  `cache-blobs/` (encrypted cache+collection), `memory-blobs/` (encrypted
- *  memory). The consumer routes to the matching target store + re-encrypts. */
+ *  Derived from the record-name prefix: `blobs/` (shared+annotation),
+ *  `cache-blobs/` (cache+collection), `memory-blobs/` (memory). `keyless` is a
+ *  historical wire-level label for `blobs/`; D-212 slice 4 routes all three to
+ *  encrypted production stores. */
 export type BlobNamespace = 'keyless' | 'cache' | 'memory';
 
 /** Consumer driven by `streamImportArchive`. Records arrive in archive
@@ -101,8 +105,8 @@ export interface ImportConsumer {
   /** A blob record. `namespace` (from the record-name prefix) selects the
    *  target CAS root; the plaintext bytes are the same either way. */
   onBlob(hash: string, namespace: BlobNamespace): RecordWriter | Promise<RecordWriter>;
-  /** A small named record: `config.toml` / `vault-bundle.json` /
-   *  `passport.json`. Buffered whole (KB-scale). */
+  /** A small named record: config / legacy vault / server-vault sidecar /
+   *  passport. Buffered whole (KB-scale). */
   onSmallRecord?(name: string, bytes: Buffer): void | Promise<void>;
 }
 
@@ -132,11 +136,12 @@ export const DISCARD_RECORD_WRITER: RecordWriter = {
  *  implicitly by the on-disk size; streaming has no such bound up front.)
  *  Both are vastly larger than any real value — the manifest is a few
  *  hundred bytes of JSON; record names are `db.sqlite` / `config.toml` /
- *  `vault-bundle.json` / `passport.json` / `blobs/<64-hex>`. */
+ *  `vault-bundle.json` / `server-vault-bundle.json` / `passport.json` /
+ *  `blobs/<64-hex>`. */
 const MAX_MANIFEST_LEN = 4 * 1024 * 1024;
 const MAX_RECORD_NAME_LEN = 4096;
 
-/** A `small` record (config / vault / passport) is buffered whole, so it's
+/** A `small` record (config / vault / server-vault sidecar / passport) is buffered whole, so it's
  *  the one streamed-record class that could OOM a memory-flat pass on a
  *  crafted (HMAC-valid) archive. Real values are KB-scale; this generous
  *  ceiling bounds the buffer while never rejecting a legitimate record. The
@@ -325,6 +330,7 @@ export const streamImportArchive = async (
   let sawDb = false;
   let dbBytes = 0;
   let blobCount = 0;
+  let sawServerVault = false;
   const smallRecordBytes: Record<string, number> = {};
 
   /** Pull exactly `need` bytes for a header field, draining `fieldBuf`
@@ -362,6 +368,11 @@ export const streamImportArchive = async (
     if (name === FILE_NAMES.db) {
       kind = 'db';
     } else if (blob) {
+      if (manifest?.includes_server_vault_bundle === true && !sawServerVault) {
+        throw new Error(
+          'ARCHIVE_INVALID: blob record precedes required server-vault-bundle.json',
+        );
+      }
       // Blob-encryption fix Phase 3 — route by posture prefix (blobs/ keyless,
       // cache-blobs/ + memory-blobs/ encrypted). Reject anything that isn't a
       // bare sha256 hex hash BEFORE the bytes reach the CAS (a `.../../x` name
@@ -375,6 +386,7 @@ export const streamImportArchive = async (
     } else if (
       name === FILE_NAMES.config ||
       name === FILE_NAMES.vault ||
+      name === FILE_NAMES.serverVault ||
       name === FILE_NAMES.passport
     ) {
       kind = 'small';
@@ -390,7 +402,7 @@ export const streamImportArchive = async (
     // Bound the one buffered-whole record class (config/vault/passport).
     if (body.kind === 'small' && body.plainLen > MAX_SMALL_RECORD_LEN) {
       throw new Error(
-        `ARCHIVE_INVALID: record '${body.name}' exceeds the ${MAX_SMALL_RECORD_LEN}-byte limit for a config/vault/passport record`,
+        `ARCHIVE_INVALID: record '${body.name}' exceeds the ${MAX_SMALL_RECORD_LEN}-byte limit for a config/vault/server-vault/passport record`,
       );
     }
     if (body.writer) await body.writer.write(pt);
@@ -425,6 +437,12 @@ export const streamImportArchive = async (
         await consumer.onSmallRecord!(body.name, bytes);
       } else {
         smallRecordBytes[body.name] = body.plainLen;
+      }
+      if (body.name === FILE_NAMES.serverVault) {
+        if (sawServerVault) {
+          throw new Error('ARCHIVE_INVALID: duplicate server-vault-bundle.json record');
+        }
+        sawServerVault = true;
       }
     }
     // discard: nothing to flush
@@ -591,18 +609,30 @@ export const streamImportArchive = async (
       `ARCHIVE_INVALID: manifest says ${manifest.blob_count} blobs, found ${blobCount}`,
     );
   }
+  if ((manifest.includes_server_vault_bundle === true) !== sawServerVault) {
+    throw new Error(
+      `ARCHIVE_INVALID: manifest includes_server_vault_bundle=${String(manifest.includes_server_vault_bundle === true)} `
+        + `but record present=${String(sawServerVault)}`,
+    );
+  }
 
   return { manifest, dbBytes, blobCount, smallRecordBytes };
 };
 
-/** Verify an archive end to end WITHOUT keeping any record — decrypts the
- *  db + blobs only to authenticate their tags + the HMAC, dropping the
- *  plaintext, and returns the manifest + decrypted sizes. Memory-flat, for
- *  previews (e.g. the CLI `--dry-run`). */
+/** Verify an archive end to end WITHOUT retaining any completed record —
+ *  decrypts the db + blobs only to authenticate their tags + the HMAC,
+ *  validates the D-212 server bundle while it is transiently buffered, and
+ *  returns the manifest + decrypted sizes. Memory-flat for bulk records,
+ *  for previews (e.g. the CLI `--dry-run`). */
 export const summarizeArchive = async (opts: ImportOptions): Promise<ImportSummary> =>
   streamImportArchive(opts, {
     onDb: () => DISCARD_RECORD_WRITER,
     onBlob: () => DISCARD_RECORD_WRITER,
+    onSmallRecord(name, bytes) {
+      if (name === FILE_NAMES.serverVault) {
+        serverBundleFromJSON(bytes.toString('utf8'));
+      }
+    },
   });
 
 /** Buffered convenience adapter over `streamImportArchive`: collect every
@@ -638,6 +668,7 @@ export const importArchive = async (opts: ImportOptions): Promise<ImportedRecord
     db,
     config: small[FILE_NAMES.config],
     vault: small[FILE_NAMES.vault],
+    serverVault: small[FILE_NAMES.serverVault],
     passport: small[FILE_NAMES.passport],
     blobs,
   };

@@ -23,7 +23,7 @@
  *  all-or-nothing. Local-only by construction — the contract store never syncs cloud
  *  (D-090/D-097/D-168).
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block §4 (Build-design refinements); handover
+ *  Spec: D-187 AMENDMENT block §4 (Build-design refinements); handover
  *  `handover_grant_slice3_session1_3b_admission_actor.md` (step 6). */
 
 import {

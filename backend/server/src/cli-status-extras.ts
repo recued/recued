@@ -14,9 +14,9 @@
  *  recipe identity, not transient runtime ids.
  */
 
-import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import type { RecipeDefinition } from '@recued/contracts';
+import { openDatabase } from './open-database.js';
 
 export interface AutoDisabledRow {
   recipe_id: string;
@@ -44,9 +44,9 @@ const extractName = (recipe_json: string | null): string | null => {
 
 /** Read every auto-disabled circuit row + project it into a UI row.
  *  Tolerates a missing DB / missing tables (returns []). */
-export const readAutoDisabledFromDb = (dbPath: string): AutoDisabledRow[] => {
+export const readAutoDisabledFromDb = async (dbPath: string): Promise<AutoDisabledRow[]> => {
   if (!existsSync(dbPath)) return [];
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const db = await openDatabase(dbPath, { readonly: true, fileMustExist: true });
   try {
     const tableExists = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auto_run_circuit'")

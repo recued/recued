@@ -1,4 +1,3 @@
-import Database from 'better-sqlite3';
 import {
   createAuditLogStore,
   type ActivityEntry,
@@ -9,6 +8,7 @@ import type { BootTrace } from '../cli/boot-trace.js';
 import { cmdAudit } from '../commands/audit.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import { openDatabase } from '../open-database.js';
 
 export interface AuditProfileOptions {
   args: string[];
@@ -23,7 +23,7 @@ export async function runAuditProfile(options: AuditProfileOptions): Promise<voi
   const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

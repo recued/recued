@@ -16,7 +16,7 @@
  *    6. Hash drift on cached value → lazy delete + LLM call.
  *    7. Different bodies don't collide (no false hits).
  *
- *  Spec: docs/d-145-spec.md § A.7.10 + § A.7.10 acceptance criterion 6
+ *  Spec: D-145 § A.7.10 + § A.7.10 acceptance criterion 6
  *  (body-only follow-on once embedding telemetry validates the pattern). */
 
 import { mkdtempSync, rmSync } from 'node:fs';

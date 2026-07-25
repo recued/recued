@@ -13,13 +13,14 @@
  *  recipe-install preflight + future MCP UI surfaces can consume the
  *  state shape without dragging in a DOM dependency.
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (UI: icon entry points + Source
+ *  Spec: D-145 § Phase PA6 (UI: icon entry points + Source
  *  dropdown + list/search/create) + § A.2 (Source primitive) + § A.3
  *  (form renderer substrate).
  */
 
 import type { SourceKind } from '../source-primitive.js';
 import type {
+  BookingLifecycleState,
   CommitmentLifecycleState,
   ProjectState,
   WorkEntity,
@@ -219,6 +220,8 @@ export interface WorkEntityListViewProps {
   empty_state_copy?: string;
   /** Search query for echo + clear button. */
   search_query: string;
+  /** Booking-only server-side lifecycle filter. */
+  booking_lifecycle_filter?: BookingLifecycleState | 'all';
 }
 
 /** Re-export commonly composed types so consumers grab the full

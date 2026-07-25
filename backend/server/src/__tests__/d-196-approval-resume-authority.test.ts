@@ -173,7 +173,7 @@ describe('createApprovalResumeAuthorityResolver', () => {
     if (!result.admitted) return;
     expect(result.contract_snapshot).toMatchObject({
       contract_id: CONTRACT_ID,
-      contract_version: '1',
+      contract_version: expect.stringMatching(/^authority-sha256-v1:[0-9a-f]{64}$/),
       allowed_tools: ['mail-send'],
       approval_required: [],
       scope_restrictions: ['data.calendar.*'],

@@ -9,7 +9,7 @@
  *  Plus the dedicated-credential-surface gate order (404 without deps, IP block,
  *  rate-limit, access-log outcomes) mirrored from the seller-claim surface.
  *
- *  Spec: docs/d-210-spec.md Appendix B. Harness modelled on
+ *  Spec: D-210 Appendix B. Harness modelled on
  *  `d-196-seller-claim-handler.test.ts` + `d-149-phase-5-scheduling-link-handler.test.ts`. */
 
 import { EventEmitter } from 'node:events';
@@ -275,6 +275,90 @@ describe('D-210 Appendix B — /reception/manage dispatch', () => {
       new_end_at: end,
     });
     expect(env.accessLogs.at(-1)).toMatchObject({ action_taken: 'submit', outcome: 'ok' });
+  });
+
+  it('binds each form nonce to the credential that rendered it', async () => {
+    env = buildEnv();
+    const secretA = issue();
+    const secretB = issue();
+    const getA = fakeResponse();
+    await env.handler(
+      fakeRequest({ method: 'GET', url: `${RECEPTION_MANAGE_PATH}/${secretA}` }),
+      getA.response,
+    );
+    const nonceA = getA.body.match(NONCE_RE)![1]!;
+    const slotA = getA.body.match(SLOT_RE)![1]!;
+
+    const crossed = fakeResponse();
+    await env.handler(
+      fakeRequest({
+        method: 'POST',
+        url: `${RECEPTION_MANAGE_PATH}/${secretB}`,
+        body: `form_nonce=${encodeURIComponent(nonceA)}&slot=${encodeURIComponent(slotA)}`,
+        origin: ORIGIN,
+        contentType: 'application/x-www-form-urlencoded',
+      }),
+      crossed.response,
+    );
+    expect(crossed.statusCode).toBe(403);
+    expect(env.runCalls).toHaveLength(0);
+    expect(env.credStore.peek(secretA, NOW).status).toBe('ok');
+    expect(env.credStore.peek(secretB, NOW).status).toBe('ok');
+
+    // The nonce still authorizes only the credential that minted it.
+    const correct = fakeResponse();
+    await env.handler(
+      fakeRequest({
+        method: 'POST',
+        url: `${RECEPTION_MANAGE_PATH}/${secretA}`,
+        body: `form_nonce=${encodeURIComponent(nonceA)}&slot=${encodeURIComponent(slotA)}`,
+        origin: ORIGIN,
+        contentType: 'application/x-www-form-urlencoded',
+      }),
+      correct.response,
+    );
+    expect(correct.statusCode).toBe(200);
+    expect(env.runCalls).toHaveLength(1);
+  });
+
+  it('a bad form nonce does not burn the manage credential', async () => {
+    env = buildEnv();
+    const secret = issue();
+    const get = fakeResponse();
+    await env.handler(
+      fakeRequest({ method: 'GET', url: `${RECEPTION_MANAGE_PATH}/${secret}` }),
+      get.response,
+    );
+    const nonce = get.body.match(NONCE_RE)![1]!;
+    const slot = get.body.match(SLOT_RE)![1]!;
+
+    const bad = fakeResponse();
+    await env.handler(
+      fakeRequest({
+        method: 'POST',
+        url: `${RECEPTION_MANAGE_PATH}/${secret}`,
+        body: `form_nonce=never-issued&slot=${encodeURIComponent(slot)}`,
+        origin: ORIGIN,
+        contentType: 'application/x-www-form-urlencoded',
+      }),
+      bad.response,
+    );
+    expect(bad.statusCode).toBe(403);
+    expect(env.credStore.peek(secret, NOW).status).toBe('ok');
+
+    const retry = fakeResponse();
+    await env.handler(
+      fakeRequest({
+        method: 'POST',
+        url: `${RECEPTION_MANAGE_PATH}/${secret}`,
+        body: `form_nonce=${encodeURIComponent(nonce)}&slot=${encodeURIComponent(slot)}`,
+        origin: ORIGIN,
+        contentType: 'application/x-www-form-urlencoded',
+      }),
+      retry.response,
+    );
+    expect(retry.statusCode).toBe(200);
+    expect(env.runCalls).toHaveLength(1);
   });
 
   it('the credential is single-use: a second POST is rejected even with a fresh nonce', async () => {

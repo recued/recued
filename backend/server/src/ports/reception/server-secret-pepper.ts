@@ -38,7 +38,7 @@
  *  DEK slot derived from a different master. Compromising one does not
  *  leak the other.
  *
- *  Spec: `docs/d-149-spec.md` § A.16.2 + § A.18.2 + § Open question (2). */
+ *  Spec: D-149 § A.16.2 + § A.18.2 + § Open question (2). */
 
 import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { deriveSubDEK } from '@recued/crypto';

@@ -32,7 +32,7 @@
  *  store-observer hook itself is sync — failures here log + swallow
  *  rather than block the rpc that triggered the upsert.
  *
- *  Spec: `docs/d-130-spec.md` § A.5 + § Phase 5. */
+ *  Spec: D-130 § A.5 + § Phase 5. */
 
 import type {
   ConnectionAuth,

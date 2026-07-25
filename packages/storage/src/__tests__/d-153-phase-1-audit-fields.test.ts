@@ -5,7 +5,7 @@
  *  that populates them at runtime is D-145 (later); this test pins the
  *  storage contract so the engine slice has a target to compose with.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate. */
+ *  Spec: D-153 § Commit substrate. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -55,7 +55,7 @@
  *  reception row (contact-resolution-gated per D-138); only its
  *  provenance id reverse-links the commitment to the sealed intent row.
  *
- *  Spec: docs/d-149-spec.md § A.5.5 + § Must Hold I-11 + I-12. */
+ *  Spec: D-149 § A.5.5 + § Must Hold I-11 + I-12. */
 
 import {
   type ApprovalLinkConfig,

@@ -143,8 +143,64 @@ describe('D-210 A.8 3d-2c — approver authority', () => {
     );
     const row = h.activities.find((a) => a.target === 'cp-1');
     expect(row?.detail).toContain('ask-landing capability');
-    expect(row?.detail).toContain(ASK_ID);
     expect(row?.detail).not.toContain('paired admin');
+
+    // ⚠ AMENDED 2026-07-20 (D-210 audit finding 16). This used to assert
+    // `toContain(ASK_ID)` — i.e. it PINNED the bearer credential being written
+    // verbatim into a durable, reserve-class row that outlives the ask and
+    // travels with `server.archive.export`. The sibling public door states the
+    // opposite rule for itself ("redact the path explicitly, else the live
+    // single-use link would sit in the access log in plaintext").
+    //
+    // 3d-2c's actual requirement was ATTRIBUTION — "which authority approved" —
+    // and that is what is asserted now. A truncated prefix keeps two different
+    // asks distinguishable in the record; 8 hex characters do not recover a
+    // 122-bit capability.
+    expect(row?.detail).not.toContain(ASK_ID);
+    expect(row?.detail).toContain('(redacted)');
+    expect(row?.detail).toContain(ASK_ID.slice(0, 8));
+  });
+
+  it('still DISTINGUISHES two different ask capabilities in the record', async () => {
+    // The property the redaction must not cost: if every row read the same, the
+    // audit would say an ask-landing approval happened but not which one — and
+    // "an audit that finally says who" is the whole point of 3d-2c.
+    const a = makeHarness();
+    await seed(a);
+    await handleReceptionInboxApprove(
+      a.deps,
+      { hold_id: 'cp-1', edits: { title: 'One' } },
+      { ask_landing: { ask_id: ASK_ID } },
+    );
+    const first = a.activities.find((x) => x.target === 'cp-1')?.detail;
+
+    expect(first).toContain(ASK_ID.slice(0, 8));
+    expect(first).not.toContain(ASK_ID);
+  });
+
+  it('⛔ REFUSES an ask capability raised for a DIFFERENT hold', async () => {
+    // D-210 audit finding 10. `resolveApprover` runs before the hold is resolved,
+    // so it can only check the `ask_id` is non-empty — and `hold_id` is
+    // caller-supplied, with `findHeldOp` resolving ANY open reception hold. Nothing
+    // compared the two, so a capability raised for ask A could release hold B and
+    // the audit would attribute B's release to A.
+    //
+    // Not reachable through the one caller that exists today (the landing port
+    // derives `hold_id` from the ask's own `handler_payload.checkpoint_id`), but
+    // `handleReceptionInboxApprove` is a public export and the invariant lived in
+    // its caller rather than in the handler that enforces authority.
+    // ⇒ [[a_capability_derives_its_target]]
+    const h = makeHarness();
+    await seed(h);
+    await expect(
+      handleReceptionInboxApprove(
+        h.deps,
+        { hold_id: 'cp-1', edits: { title: 'Table for six' } },
+        { ask_landing: { ask_id: 'ask-someone-elses' } },
+      ),
+    ).rejects.toThrow(/not raised for this held operation/);
+    // …and nothing was released or answered on the way to the refusal.
+    expect(h.submitAnswer).not.toHaveBeenCalled();
   });
 
   it('names the paired admin on the rpc path, distinctly', async () => {

@@ -27,7 +27,7 @@
  *  the lifecycle. The handler asks `deps.runOnce` for run_now — so
  *  tests can drive the rpc without standing up a full bin.ts.
  *
- *  Spec: `docs/d-123-spec.md` §5.1 + `docs/d-132-spec.md` §A.7-A.9. */
+ *  Spec: D-123 §5.1 + D-132 §A.7-A.9. */
 
 import {
   ALL_ENRICHMENT_POOL_POLICIES,

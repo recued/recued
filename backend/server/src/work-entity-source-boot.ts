@@ -36,7 +36,7 @@
  *     PA3 probe's `write_capable` upgrade is never regressed by a
  *     boot/enroll refresh.
  *
- *  Spec: `docs/d-145-spec.md` § A.2 + Phase PA2; `docs/d-192-spec.md`
+ *  Spec: D-145 § A.2 + Phase PA2; D-192
  *  § Phasing P2. */
 
 import {

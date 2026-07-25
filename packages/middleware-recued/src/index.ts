@@ -8,7 +8,7 @@
  *  middlewares (a third-party bundle would be
  *  `packages/middleware-<publisher>/`).
  *
- *  D-164 P6d retired the PB16 cognition layer: recued-bench Path B
+ *  D-164 P6d retired the PB16 cognition layer: internal benchmarks Path B
  *  (sealed 2026-05-19) falsified the working-memory state-tracking
  *  layer, and chat-surface consumers were dismantled in D-164
  *  P6a-1 / P6a-2. The substrate is gone; the contracts in
@@ -27,7 +27,7 @@
  *  `@recued/middleware` and `@recued/engine`; it MUST NOT be imported
  *  by `@recued/middleware` (the framework never imports a bundle).
  *
- *  Spec: docs/d-159-spec.md.
+ *  Spec: D-159.
  */
 
 // D-137 P3 — confidence-shape dispatch + compound-ambiguity cascade +
@@ -54,10 +54,10 @@ export {
 // middleware identity + its lifecycle footprint onto the framework's
 // 3-hook interface (`config` / `prompt` / `update`). This is where the
 // first-party adapters register against a D-160 middleware
-// registry (docs/d-160-spec.md § N.3 / P2).
+// registry (D-160 § N.3 / P2).
 //
 // D-164 P6d retired the cognition slot entirely — the `cognition/`
-// substrate + its registration are gone (recued-bench Path B sealed
+// substrate + its registration are gone (internal benchmarks Path B sealed
 // 2026-05-19 falsified the working-memory layer). D-164 P6.5 retired
 // the two-stage slot — chat consolidated onto
 // `@recued/middleware-prompt-cache`, which registers itself directly
@@ -129,7 +129,7 @@ export const FIRST_PARTY_MIDDLEWARES = [
 
 /** Register every first-party stream middleware against a D-160
  *  middleware registry (D-160 P2). All four register enabled — D-164
- *  P6d retired the cognition slot (recued-bench Path B falsified the
+ *  P6d retired the cognition slot (internal benchmarks Path B falsified the
  *  working-memory layer) and D-164 P6.5 retired the two-stage slot
  *  (chat surface consolidated onto `@recued/middleware-prompt-cache`).
  *

@@ -19,7 +19,7 @@
  *      a vanilla ingest; the substrate doesn't carve out a separate
  *      "reclassification" code path).
  *
- *  Spec: docs/d-139-spec.md § A.10 + § P3 acceptance. */
+ *  Spec: D-139 § A.10 + § P3 acceptance. */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';

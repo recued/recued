@@ -26,7 +26,7 @@
  *  (Box scopes by folder id, not path); blank walks the whole account from the
  *  root folder (`0`). Mirrors OneDrive's `drive_id`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; mirrors `onedrive.ts`. */
+ *  Spec: D-192; mirrors `onedrive.ts`. */
 
 import {
   BOX_API_BASE,
@@ -80,7 +80,8 @@ const BOX_FIELDS: readonly ConnectionField[] = [
     help:
       'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror everything. '
-      + 'Metadata only — file contents are never fetched.',
+      + 'Sync mirrors metadata only; contents are fetched lazily only when you '
+      + 'explicitly read a file.',
   },
   // Optional — bound the full walk to one folder subtree by its Box folder id.
   // The leaf reads `config.folder_id`; blank walks the whole account from root.
@@ -160,7 +161,7 @@ export const boxSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'Box',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse via the Box events + folders API (bytes never fetched). OAuth 2.0 via your own Box app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse via the Box events + folders API; file bytes stay remote and are fetched only for an explicit read. OAuth 2.0 via your own Box app.',
   fields: BOX_FIELDS,
   initialValues: BOX_SCHEMA_INITIAL_VALUES,
 };

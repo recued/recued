@@ -1,7 +1,7 @@
 /** D-192 messenger flagship (M1) — the `MessengerVendorDeclaration` registry.
  *
  *  The canonical-vocabulary half of the kinds-taxonomy §0 governing rule
- *  (`docs/d-192-kinds-taxonomy.md`): "for any multi-vendor family, split the
+ *  (D-192): "for any multi-vendor family, split the
  *  design into (1) a canonical vocabulary + a declaration the shared logic is
  *  written against ONCE and (2) a thin per-vendor adapter for only what can't
  *  generalize — the transport handshake, the auth flow, the API leaf." A new
@@ -40,7 +40,7 @@
  *  separately-built mail family / a D-158 notification channel, never a chat
  *  transport, so it is NOT declared here.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` § 3a (M-1); decisions-log § D-192
+ *  Spec: D-192 § 3a (M-1); decisions-log § D-192
  *  ("KINDS TAXONOMY RATIFIED" — M-1). */
 
 // TYPE-ONLY, and it must stay that way: `connection.ts` imports

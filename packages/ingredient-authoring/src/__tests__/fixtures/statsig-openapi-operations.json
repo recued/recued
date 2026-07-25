@@ -4,11 +4,11 @@
       "openapi": {
         "kind": "official_versioned_openapi_hash_locked",
         "url": "https://api.statsig.com/openapi/20240601.json",
-        "bytes": 3100703,
-        "sha256": "1e647a25afda211933d645d0775fac177e6ad17c40cd553ead63079b9b5dcb1b",
-        "retrieved_on": "2026-07-16",
+        "bytes": 3109423,
+        "sha256": "21dd0e248e0abdd7f22b75b921deaafa0ca0abe98bc51ba97018efb735362f9d",
+        "retrieved_on": "2026-07-20",
         "evidence": [
-          "312 explicitly Console-key-secured method/path operations across 200 paths",
+          "313 explicitly Console-key-secured method/path operations across 201 paths",
           "exact path and query parameters, required JSON bodies, success response schemas, and pagination metadata",
           "declared Statsig Console API server https://statsigapi.net"
         ],
@@ -16,7 +16,7 @@
         "openapi": "3.0.0",
         "title": "Console API",
         "api_version": "20240601.0.0",
-        "official_path_count": 200,
+        "official_path_count": 201,
         "declared_server": [
           {
             "url": "https://statsigapi.net"
@@ -33,9 +33,9 @@
       "console_intro_section": {
         "kind": "official_console_intro_section_hash_locked",
         "url": "https://docs.statsig.com/console-api/introduction",
-        "bytes": 1296,
-        "sha256": "9aa82349cde4d8b0d44cfdcc93e810849a2030f20e45d7918065efcdd5efb66d",
-        "retrieved_on": "2026-07-16",
+        "bytes": 1300,
+        "sha256": "c3c62485d74b332f9a8a316e3f84b4ef93a3f90be94f905e7fc3e42996775a06",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "Console CRUD base URL https://statsigapi.net",
           "STATSIG-API-KEY must contain a Console API Key",
@@ -50,9 +50,9 @@
       "api_key_guide_section": {
         "kind": "official_api_key_guide_section_hash_locked",
         "url": "https://docs.statsig.com/access-management/api-keys",
-        "bytes": 4560,
-        "sha256": "525d4ea68baaad07a055dbefd1da4535674bceb44207e75656df030f0ba33059",
-        "retrieved_on": "2026-07-16",
+        "bytes": 4696,
+        "sha256": "ce859aa6a839afdd18a00898e59af28da5c3d920c07389d51ededf3967cedf25",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "Console API Keys are the most powerful Statsig key type",
           "Console API Keys provide full project CRUD capability",
@@ -64,14 +64,14 @@
         "extraction_end_marker": "\n\n================================================================================\n"
       }
     },
-    "official_operation_count": 312,
-    "admitted_operation_count": 312,
+    "official_operation_count": 313,
+    "admitted_operation_count": 313,
     "exclusion_count": 0,
     "official_method_counts": {
       "DELETE": 37,
       "GET": 123,
       "PATCH": 31,
-      "POST": 74,
+      "POST": 75,
       "PUT": 47
     },
     "pack_operation_counts": {
@@ -81,7 +81,7 @@
       "statsig-experiment-analytics": 29,
       "statsig-metrics-autotunes-holdouts": 48,
       "statsig-audiences-prompts-metadata": 41,
-      "statsig-observability-ingestion-release": 48,
+      "statsig-observability-ingestion-release": 49,
       "statsig-project-access-admin": 37
     },
     "composition_bytes": {
@@ -91,40 +91,41 @@
       "statsig-experiment-analytics": 70892,
       "statsig-metrics-autotunes-holdouts": 136325,
       "statsig-audiences-prompts-metadata": 95486,
-      "statsig-observability-ingestion-release": 124744,
+      "statsig-observability-ingestion-release": 127936,
       "statsig-project-access-admin": 75446
     },
     "body_mode_counts": {
       "none": 186,
-      "raw_json": 126
+      "raw_json": 127
     },
     "body_root_type_counts": {
       "array": 1,
-      "object": 125
+      "object": 126
     },
     "body_schema_shape_counts": {
       "array": 1,
-      "object": 119,
+      "object": 120,
       "oneOf": 6
     },
-    "required_body_count": 126,
+    "required_body_count": 127,
     "risk_counts": {
-      "admin": 56,
+      "admin": 57,
       "destructive": 133,
       "read": 123
     },
     "approval_counts": {
-      "always": 312
+      "always": 190,
+      "never": 123
     },
     "idempotency_counts": {
       "idempotent": 94,
-      "non_idempotent": 95,
+      "non_idempotent": 96,
       "safe": 123
     },
     "response_mode_counts": {
       "empty": 3,
       "file_ref": 1,
-      "json": 308
+      "json": 309
     },
     "pagination": {
       "automatic_operation_count": 48,
@@ -209,7 +210,7 @@
         }
       },
       "origin_matching": "fixed statsigapi.net host; per_org vendor-tag matching is deliberately disabled",
-      "explicitly_secured_operation_count": 312,
+      "explicitly_secured_operation_count": 313,
       "credential_fields_in_pack_args": 0,
       "static_version_header": {
         "STATSIG-API-VERSION": "20240601"
@@ -220,7 +221,7 @@
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_http_method_and_official_summary>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
-      "exact_json_content_type_operation_count": 126,
+      "exact_json_content_type_operation_count": 127,
       "pagination_owned_parameters": [
         "GET /console/v1/alerts/{id}/events:limit",
         "GET /console/v1/alerts/{id}/events:page",
@@ -411,7 +412,7 @@
       {
         "severity": "high",
         "finding": "Console API Keys are Statsig's most powerful key type and can perform full CRUD across the project.",
-        "resolution": "Uses one encrypted header-auth connection, exposes no credential argument, pins the version header, requires approval on every operation, and keeps all outputs private by default."
+        "resolution": "Uses one encrypted header-auth connection, exposes no credential argument, pins the version header, requires approval on every mutation, and keeps all outputs private by default."
       },
       {
         "severity": "high",
@@ -421,7 +422,7 @@
       {
         "severity": "high",
         "finding": "Key list, create, read, update, delete, deactivate, and rotate responses can contain plaintext client, server, Console, SCIM, or organization API keys; five item routes also carry the key identifier in the path.",
-        "resolution": "Retains the complete approval-gated key-management capability but labels all seven responses and all five path-bearing requests sensitive, warns against reusable configuration or URL disclosure, and excludes both key GETs from bundled rendering workflows."
+        "resolution": "Retains the complete key-management capability with every key mutation approval-gated, but labels all seven responses and all five path-bearing requests sensitive, warns against reusable configuration or URL disclosure, and excludes both key GETs from bundled rendering workflows."
       },
       {
         "severity": "high",
@@ -435,7 +436,7 @@
       },
       {
         "severity": "medium",
-        "finding": "The official OpenAPI defines no operationId for any of its 312 operations.",
+        "finding": "The official OpenAPI defines no operationId for any of its 313 operations.",
         "resolution": "Derives deterministic names from the primary official tag, HTTP method, and official summary, proves uniqueness across the complete pinned inventory, and records the formula and IDs in the fixture."
       },
       {
@@ -450,7 +451,7 @@
       },
       {
         "severity": "medium",
-        "finding": "All 126 request bodies are required JSON: 119 object schemas, six object-union schemas, and one array schema.",
+        "finding": "All 127 request bodies are required JSON: 120 object schemas, six object-union schemas, and one array schema.",
         "resolution": "Every body uses required bounded body_raw with an authority-derived object or array wire-root pattern, preserving union branches, nested fields, nulls, and exact integer lexemes."
       },
       {
@@ -980,7 +981,7 @@
         }
       }
     ],
-    "operation_ids_sha256": "cdea33be194ca7862222a2d7c508f3a964a1d38f67c3f3f53101d385b170915d"
+    "operation_ids_sha256": "c14be0e711226737c6be32c01f6bb824ef3ff6e04518298687d0a8e212771239"
   },
   "official_operations": [
     {
@@ -1221,6 +1222,43 @@
       "exclusion_reason": null,
       "pack": "statsig-observability-ingestion-release",
       "op": "alerts.get_read_topline_alert_event"
+    },
+    {
+      "key": "POST /console/v1/alerts/{id}/mute",
+      "method": "POST",
+      "path": "/console/v1/alerts/{id}/mute",
+      "primary_tag": "Alerts",
+      "tags": [
+        "Alerts"
+      ],
+      "summary": "Mute Topline Alert",
+      "official_operation_id": null,
+      "generated_operation_id": "alerts.post_mute_topline_alert",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-observability-ingestion-release",
+      "op": "alerts.post_mute_topline_alert"
     },
     {
       "key": "GET /console/v1/audit_logs",
@@ -14399,7 +14437,7 @@
       ],
       "summary": "List Topline Alerts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14494,7 +14532,7 @@
       ],
       "summary": "Read Topline Alert",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14552,7 +14590,7 @@
       ],
       "summary": "List Topline Alert Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14663,7 +14701,7 @@
       ],
       "summary": "Read Topline Alert Event",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14737,7 +14775,7 @@
       ],
       "summary": "List Audit Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15012,7 +15050,7 @@
       ],
       "summary": "List Autotune",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15107,7 +15145,7 @@
       ],
       "summary": "Read Autotune",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15165,7 +15203,7 @@
       ],
       "summary": "List Autotune Reviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15276,7 +15314,7 @@
       ],
       "summary": "Get Autotune Review",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15350,7 +15388,7 @@
       ],
       "summary": "Get Company Info",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -15391,7 +15429,7 @@
       ],
       "summary": "List Dashboards",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15502,7 +15540,7 @@
       ],
       "summary": "Read Dashboard",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15560,7 +15598,7 @@
       ],
       "summary": "Read Dashboard Widget Results",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15650,7 +15688,7 @@
       ],
       "summary": "List Dynamic Configs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15874,7 +15912,7 @@
       ],
       "summary": "Get Dynamic Config",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15932,7 +15970,7 @@
       ],
       "summary": "Get Eligible Reviewers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -15990,7 +16028,7 @@
       ],
       "summary": "List Dynamic Config Reviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16082,7 +16120,7 @@
       ],
       "summary": "Get Dynamic Config Review",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16154,7 +16192,7 @@
       ],
       "summary": "Get Specific Dynamic Config Rule",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16228,7 +16266,7 @@
       ],
       "summary": "Get Dynamic Config Rules",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16286,7 +16324,7 @@
       ],
       "summary": "List Dynamic Config Versions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16397,7 +16435,7 @@
       ],
       "summary": "Get Environments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -16438,7 +16476,7 @@
       ],
       "summary": "List Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16533,7 +16571,7 @@
       ],
       "summary": "Get specific events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16644,7 +16682,7 @@
       ],
       "summary": "Get metrics using event name",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -16755,7 +16793,7 @@
       ],
       "summary": "List Experiments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17077,7 +17115,7 @@
       ],
       "summary": "Get Experiment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17151,7 +17189,7 @@
       ],
       "summary": "Get Experiment Guardrail Alert Statuses",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17209,7 +17247,7 @@
       ],
       "summary": "Get Experiment Context",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17267,7 +17305,7 @@
       ],
       "summary": "Retrieve cumulative exposures",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17325,7 +17363,7 @@
       ],
       "summary": "Retrieve Experiment Checks Diagnostics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17431,7 +17469,7 @@
       ],
       "summary": "Retrieve Exposures By Dimension",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17522,7 +17560,7 @@
       ],
       "summary": "Get Eligible Reviewers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17580,7 +17618,7 @@
       ],
       "summary": "Get Experiment Overrides",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17639,7 +17677,7 @@
       ],
       "summary": "Pulse Load History (Warehouse Native)",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17751,7 +17789,7 @@
       ],
       "summary": "Get Pulse Load History Details (Warehouse Native)",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -17825,7 +17863,7 @@
       ],
       "summary": "Retrieve Pulse Metric Result",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18075,7 +18113,7 @@
       ],
       "summary": "Retrieve Pulse Results (Beta)",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18325,7 +18363,7 @@
       ],
       "summary": "List Experiment Reviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18436,7 +18474,7 @@
       ],
       "summary": "Get Experiment Review",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18510,7 +18548,7 @@
       ],
       "summary": "Retrieve Experiment Summary Charts (Beta)",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18600,7 +18638,7 @@
       ],
       "summary": "List Experiment Versions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18712,7 +18750,7 @@
       ],
       "summary": "List Assignment Sources",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18808,7 +18846,7 @@
       ],
       "summary": "List Entity Property Sources",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18904,7 +18942,7 @@
       ],
       "summary": "Get Entity Property Source",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18962,7 +19000,7 @@
       ],
       "summary": "List qualifying event",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19057,7 +19095,7 @@
       ],
       "summary": "Read Qualifying Event",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19115,7 +19153,7 @@
       ],
       "summary": "Read Exposure Event Count",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19208,7 +19246,7 @@
       ],
       "summary": "List Gates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19531,7 +19569,7 @@
       ],
       "summary": "Read Gate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19605,7 +19643,7 @@
       ],
       "summary": "Read Gate Checks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19663,7 +19701,7 @@
       ],
       "summary": "List Dynamic Config References",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19773,7 +19811,7 @@
       ],
       "summary": "Get Eligible Reviewers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19831,7 +19869,7 @@
       ],
       "summary": "List Experiment References",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19941,7 +19979,7 @@
       ],
       "summary": "List Gate References",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20051,7 +20089,7 @@
       ],
       "summary": "Get Gate Override",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20109,7 +20147,7 @@
       ],
       "summary": "List Gate Reviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20220,7 +20258,7 @@
       ],
       "summary": "Get Gate Review",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20294,7 +20332,7 @@
       ],
       "summary": "Read Gate Rules",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20352,7 +20390,7 @@
       ],
       "summary": "Pulse Load History (Warehouse Native)",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20479,7 +20517,7 @@
       ],
       "summary": "Retrieve Pulse Results",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20585,7 +20623,7 @@
       ],
       "summary": "List Gate Versions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20696,7 +20734,7 @@
       ],
       "summary": "List Holdouts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20840,7 +20878,7 @@
       ],
       "summary": "Get holdout by id",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20898,7 +20936,7 @@
       ],
       "summary": "Read Holdout Overrides",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20956,7 +20994,7 @@
       ],
       "summary": "Retrieve Pulse Results",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21046,7 +21084,7 @@
       ],
       "summary": "Read Ingestion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21136,7 +21174,7 @@
       ],
       "summary": "Get Ingestion Event Count",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21242,7 +21280,7 @@
       ],
       "summary": "Get Ingestion Event Delta Ledger",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21348,7 +21386,7 @@
       ],
       "summary": "List Ingestion Runs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21419,7 +21457,7 @@
       ],
       "summary": "Read Ingestion Run",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21477,7 +21515,7 @@
       ],
       "summary": "Read Ingestion Schedule",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21535,7 +21573,7 @@
       ],
       "summary": "List Ingestions Status",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21673,7 +21711,7 @@
       ],
       "summary": "List Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21800,7 +21838,7 @@
       ],
       "summary": "Read Key",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21858,7 +21896,7 @@
       ],
       "summary": "Get Layers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21953,7 +21991,7 @@
       ],
       "summary": "Get one layer",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22011,7 +22049,7 @@
       ],
       "summary": "Lineage: List Experiment related to Layer",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22122,7 +22160,7 @@
       ],
       "summary": "Get Layer Overrides",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22180,7 +22218,7 @@
       ],
       "summary": "List recent events for the Logs Explorer",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22351,7 +22389,7 @@
       ],
       "summary": "Read Single Metric Value",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22425,7 +22463,7 @@
       ],
       "summary": "Read Metric Definition",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22483,7 +22521,7 @@
       ],
       "summary": "Lineage: List experiments related to Metric",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22821,7 +22859,7 @@
       ],
       "summary": "Get SQL for a metric",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22879,7 +22917,7 @@
       ],
       "summary": "Read Metric Definition by Name",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22953,7 +22991,7 @@
       ],
       "summary": "List all Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23098,7 +23136,7 @@
       ],
       "summary": "Read Metric Source",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23157,7 +23195,7 @@
       ],
       "summary": "Read Metric Source Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23269,7 +23307,7 @@
       ],
       "summary": "List metric source",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23364,7 +23402,7 @@
       ],
       "summary": "List All Metric Values",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23507,7 +23545,7 @@
       ],
       "summary": "Audit Overrides",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23581,7 +23619,7 @@
       ],
       "summary": "List Param Stores",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23676,7 +23714,7 @@
       ],
       "summary": "Get Param Store",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23734,7 +23772,7 @@
       ],
       "summary": "Get Project Info",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -23775,7 +23813,7 @@
       ],
       "summary": "Get Report in CSV format",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23856,7 +23894,7 @@
       ],
       "summary": "List Prompts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23951,7 +23989,7 @@
       ],
       "summary": "Get Prompt",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24009,7 +24047,7 @@
       ],
       "summary": "List Pipeline Triggers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24201,7 +24239,7 @@
       ],
       "summary": "Get Pipeline Trigger",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24259,7 +24297,7 @@
       ],
       "summary": "List Pipelines",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24354,7 +24392,7 @@
       ],
       "summary": "Get Pipeline",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24412,7 +24450,7 @@
       ],
       "summary": "Get Reports",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24486,7 +24524,7 @@
       ],
       "summary": "List Roles",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24581,7 +24619,7 @@
       ],
       "summary": "Get Role",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24639,7 +24677,7 @@
       ],
       "summary": "List Segments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24734,7 +24772,7 @@
       ],
       "summary": "Get Segment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24792,7 +24830,7 @@
       ],
       "summary": "Get IDs in a Segment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24903,7 +24941,7 @@
       ],
       "summary": "Get ID List Metadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24961,7 +24999,7 @@
       ],
       "summary": "Get Project Settings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -25002,7 +25040,7 @@
       ],
       "summary": "Get Reviews Settings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -25043,7 +25081,7 @@
       ],
       "summary": "Get Roles Settings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -25084,7 +25122,7 @@
       ],
       "summary": "Get Teams Settings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_media": [],
@@ -25125,7 +25163,7 @@
       ],
       "summary": "List Tags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25220,7 +25258,7 @@
       ],
       "summary": "Read Tag",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25278,7 +25316,7 @@
       ],
       "summary": "List Target Apps",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25373,7 +25411,7 @@
       ],
       "summary": "Read Target App",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25431,7 +25469,7 @@
       ],
       "summary": "List Unit ID Types",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25526,7 +25564,7 @@
       ],
       "summary": "Get Unit ID Type",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25584,7 +25622,7 @@
       ],
       "summary": "List Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25695,7 +25733,7 @@
       ],
       "summary": "Get user by email",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25753,7 +25791,7 @@
       ],
       "summary": "Get user by ID",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25811,7 +25849,7 @@
       ],
       "summary": "List Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25906,7 +25944,7 @@
       ],
       "summary": "Get Team",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27922,6 +27960,68 @@
       "request_body_mode": "raw_json",
       "success_statuses": [
         "201"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "2b3d83e3c496cd92a1b2ade18daae6d73196628458b7fb27e912d633cfd22477"
+    },
+    "POST /console/v1/alerts/{id}/mute": {
+      "key": "POST /console/v1/alerts/{id}/mute",
+      "generated_operation_id": "alerts.post_mute_topline_alert",
+      "pack": "statsig-observability-ingestion-release",
+      "op": "alerts.post_mute_topline_alert",
+      "method": "POST",
+      "path": "/console/v1/alerts/{id}/mute",
+      "primary_tag": "Alerts",
+      "tags": [
+        "Alerts"
+      ],
+      "summary": "Mute Topline Alert",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
       ],
       "response_media": [
         "application/json"

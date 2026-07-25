@@ -33,7 +33,7 @@
  *  entity is reaped by `cascadeDelete` on the parent record's
  *  delete (D-119 Phase 13 contract).
  *
- *  Spec: `docs/d-123-spec.md` §3.3. */
+ *  Spec: D-123 §3.3. */
 
 import type {
   HousekeepingCursor,

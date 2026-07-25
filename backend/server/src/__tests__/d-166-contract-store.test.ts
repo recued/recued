@@ -180,6 +180,7 @@ describe('createContractStore — seedSchema', () => {
       ['composite_keys', 'installed_ingredient'],
       ['composite_keys', 'installed_pack'],
       ['composite_keys', 'override'],
+      ['composite_keys', 'owner_operation'],
       ['composite_keys', 'policy_resolution'],
       // D-202 — quality VERDICT signal rows (Slice 1) + suggestion rows (Task 5);
       // 'signal' < 'suggestion' by seg_key sort.
@@ -194,13 +195,14 @@ describe('createContractStore — seedSchema', () => {
     store.seedSchema(D165_CONTRACT_SCHEMA);
     store.seedSchema(D165_CONTRACT_SCHEMA);
 
-    // 13 composite keys: 11 after the D-187 policy-matrix retirement, + D-202's
+    // 14 composite keys: 11 after the D-187 policy-matrix retirement, + D-202's
     // `quality_delegation_suggestion` (Task 5) + `quality_delegation_signal`
-    // (Slice 1).
-    expect(store.scan('schema', ['composite_keys'])).toHaveLength(13);
-    // 21 value shapes: 17 after D-187, + D-202's `quality_delegation_snapshot` /
+    // (Slice 1), + D-211's global owner operation defaults.
+    expect(store.scan('schema', ['composite_keys'])).toHaveLength(14);
+    // 22 value shapes: 17 after D-187, + D-202's `quality_delegation_snapshot` /
     // `_evidence` / `_suggestion` (Task 5) + `quality_delegation_signal` (Slice 1).
-    expect(store.scan('schema', ['value_shapes'])).toHaveLength(21);
+    // + D-211's `owner_operation_policy`.
+    expect(store.scan('schema', ['value_shapes'])).toHaveLength(22);
   });
 
   it('throws ContractSchemaSeedError for a malformed registry', () => {
@@ -312,24 +314,24 @@ describe('createContractStore — tightening_only write enforcement', () => {
     throw new Error('expected ContractWriteLoosensError');
   };
 
-  it('rejects an operation-specific override looser than its match-all', () => {
+  it('rejects an operation-specific actor override looser than its match-all', () => {
     store.put('override', [ACTOR, ING], { approval: 'always' });
-    const err = expectLoosens(() => store.put('override', [ACTOR, ING, OP], { approval: 'ask' }));
+    const err = expectLoosens(() =>
+      store.put('override', [ACTOR, ING, OP], { approval: 'ask' }),
+    );
 
     expect(err.loosenedFields).toEqual(['approval']);
-    expect(store.get('override', [ACTOR, ING, OP])).toBeNull(); // rejected, not persisted
+    expect(store.get('override', [ACTOR, ING, OP])).toBeNull();
   });
 
-  it('admits an operation-specific override stricter than its match-all', () => {
+  it('admits an operation-specific approval stricter than its match-all (most-specific-wins at resolve)', () => {
     store.put('override', [ACTOR, ING], { approval: 'ask' });
     store.put('override', [ACTOR, ING, OP], { approval: 'always' });
 
     expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ approval: 'always' });
   });
 
-  it('admits a fresh match-all even when a stricter operation-specific exists (broader baseline only)', () => {
-    // The match-all has no broader same-scope baseline; the narrower (stricter)
-    // specific does NOT block it — Reading B, the chosen aggregate semantics.
+  it('admits a fresh match-all even when a stricter operation-specific exists', () => {
     store.put('override', [ACTOR, ING, OP], { approval: 'always' });
     store.put('override', [ACTOR, ING], { approval: 'ask' });
 
@@ -345,12 +347,28 @@ describe('createContractStore — tightening_only write enforcement', () => {
     expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ approval: 'ask' });
   });
 
-  it('rejects a same-path upsert that loosens an explicit value (codex P1)', () => {
+  it('rejects a same-path actor override upsert that loosens an explicit value', () => {
     store.put('override', [ACTOR, ING, OP], { approval: 'always' });
-    const err = expectLoosens(() => store.put('override', [ACTOR, ING, OP], { approval: 'never' }));
+    const err = expectLoosens(() =>
+      store.put('override', [ACTOR, ING, OP], { approval: 'never' }),
+    );
 
     expect(err.loosenedFields).toEqual(['approval']);
-    expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ approval: 'always' }); // unchanged
+    expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ approval: 'always' });
+  });
+
+  it('still rejects a same-path loosening of a TIGHTEN-ONLY field (max_risk_without_approval)', () => {
+    // D-211 §2 keeps the tighten-only family lattice-gated: the ceiling can
+    // only go DOWN (stricter LOW) at the store, exactly as before.
+    store.put('override', [ACTOR, ING, OP], { max_risk_without_approval: 'read' });
+    const err = expectLoosens(() =>
+      store.put('override', [ACTOR, ING, OP], { max_risk_without_approval: 'admin' }),
+    );
+
+    expect(err.loosenedFields).toEqual(['max_risk_without_approval']);
+    expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({
+      max_risk_without_approval: 'read',
+    }); // unchanged
   });
 
   it('admits a same-path upsert that tightens, and an idempotent rewrite', () => {
@@ -360,6 +378,20 @@ describe('createContractStore — tightening_only write enforcement', () => {
 
     store.put('override', [ACTOR, ING, OP], { approval: 'always' }); // idempotent
     expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ approval: 'always' });
+  });
+
+  it('stores D-211 global owner defaults in the actorless owner_operation scope', () => {
+    store.put('owner_operation', [ING, OP], {
+      risk: 'write',
+      approval: 'ask',
+      op_hash: 'abc123',
+    });
+
+    expect(store.get('owner_operation', [ING, OP])?.value).toEqual({
+      risk: 'write',
+      approval: 'ask',
+      op_hash: 'abc123',
+    });
   });
 
   it('deny-flag denied:true tightens (admitted); denied:false clears (admitted)', () => {
@@ -372,7 +404,7 @@ describe('createContractStore — tightening_only write enforcement', () => {
     expect(store.get('override', [ACTOR, ING, OP])?.value).toEqual({ denied: false });
   });
 
-  it('reports every loosening field', () => {
+  it('reports every loosening actor-override field', () => {
     store.put('override', [ACTOR, ING], {
       approval: 'always',
       max_risk_without_approval: 'read',

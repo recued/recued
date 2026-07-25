@@ -26,8 +26,8 @@
  *  INVENTORY scope scans the longest leading run of present segments (empty ⇒
  *  whole scope).
  *
- *  Spec: `docs/d-166-spec.md` §"Composition algorithm (final form)" (386–423) +
- *  `docs/d-165-spec.md` §"Dispatch composition" (1372–1400). */
+ *  Spec: D-166 §"Composition algorithm (final form)" (386–423) +
+ *  D-165 §"Dispatch composition" (1372–1400). */
 
 import { composeRows, FIELD_LATTICES, type ComposeResult, type ContractMergeRow, type MergeConflict } from './contract-merge.js';
 import { POLICY_PROJECTIONS, projectToPolicyFields } from './contract-project.js';
@@ -386,7 +386,12 @@ export const projectToResolution = (
   }
 
   if (approval === base.approval) return base; // no tightening — base is already correct
-  return { ...base, approval, verdict: approval === 'never' ? 'admit' : 'ask' };
+  return {
+    ...base,
+    approval,
+    authorization_provenance: { pre_lift_approval: approval },
+    verdict: approval === 'never' ? 'admit' : 'ask',
+  };
 };
 
 // ════════════════════════════════════════════════════════════════

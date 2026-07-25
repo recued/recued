@@ -61,8 +61,8 @@
  *  parseInboundReply, but threading the same handle keeps composition
  *  reasoning simple.
  *
- *  Spec: docs/d-163-spec.md § N.5 / A.1 + docs/d-158-spec.md § A.4 /
- *  I-9 + docs/d-148-spec.md § A.13. */
+ *  Spec: D-163 § N.5 / A.1 + D-158 § A.4 /
+ *  I-9 + D-148 § A.13. */
 
 import { createHash } from 'node:crypto';
 import {

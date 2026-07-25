@@ -2,9 +2,9 @@
  *
  *  Covers: the Dropbox provider is registered + shaped like the other plain
  *  OAuth vendors (Google is the template), carries the `token_access_type=
- *  offline` authorize param (the refresh-token mint), requests metadata-only
- *  scopes, and — the deliberate asymmetry — S3 has NO provider (it is
- *  basic-auth, not OAuth), so `getVendorProvider('s3')` is null. */
+ *  offline` authorize param (the refresh-token mint), requests the metadata +
+ *  lazy-content-read scopes, and — the deliberate asymmetry — S3 has NO
+ *  provider (it is basic-auth, not OAuth), so `getVendorProvider('s3')` is null. */
 
 import { describe, expect, it } from 'vitest';
 
@@ -39,11 +39,13 @@ describe('D-192 — Dropbox vendor provider', () => {
     expect(DROPBOX_OAUTH_TOKEN_URL).toBe('https://api.dropboxapi.com/oauth2/token');
   });
 
-  it('requests metadata-only scopes (bytes are never fetched)', () => {
+  it('requests metadata sync plus lazy byte-read scopes', () => {
     expect(dropbox!.oauth.scopes).toEqual(DROPBOX_OAUTH_SCOPES);
-    expect([...DROPBOX_OAUTH_SCOPES]).toEqual(['account_info.read', 'files.metadata.read']);
-    // No content scope — the file SOURCE family mirrors metadata only.
-    expect([...DROPBOX_OAUTH_SCOPES].some((s) => s.includes('content'))).toBe(false);
+    expect([...DROPBOX_OAUTH_SCOPES]).toEqual([
+      'account_info.read',
+      'files.metadata.read',
+      'files.content.read',
+    ]);
   });
 
   it('carries token_access_type=offline so Dropbox mints a refresh token', () => {

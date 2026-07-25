@@ -35,7 +35,7 @@
  *  canonical CLI bearer) resolves to `undefined`: no grant gate, the snapshot's
  *  `allowed_tools` stays the sole authority for that path (unchanged).
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block; handover
+ *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_slice3_session1_3b_admission_actor.md` (steps 5 / 8). */
 
 import {

@@ -21,7 +21,7 @@
  *  topic_private graceful-degradation path, and the per-scope
  *  suggested_raw_adapter mapping.
  *
- *  Spec: docs/d-136-spec.md §A.14.4 + §A.14.5.
+ *  Spec: D-136 §A.14.4 + §A.14.5.
  *  Read-cost-zero invariant (§A.13.6): preserved — neither handler's
  *  deps shape carries an LLM hook. */
 

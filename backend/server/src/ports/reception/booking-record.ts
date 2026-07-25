@@ -33,7 +33,7 @@
  *  spelling is the storage/AAD binding and stays behind this boundary — a recipe reads
  *  `{{context.reception_submission.phone}}`, the same word the owner sets to `omit`.
  *
- *  Spec: `docs/d-210-spec.md` §3 / §2.6; `docs/d-149-spec.md` § A.5.2 + § N.6. */
+ *  Spec: D-210 §3 / §2.6; D-149 § A.5.2 + § N.6. */
 
 import {
   SCHEDULING_LINK_VISITOR_FIELD_NAMES,

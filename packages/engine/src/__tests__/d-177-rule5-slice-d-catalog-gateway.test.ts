@@ -228,6 +228,7 @@ describe('runCatalogOperation D-177 rule-5 slice-D scoped destinations', () => {
       operation_id: OPERATION_ID,
       connection_name: CONNECTION,
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: expectedHashes.arg_shape_hash,
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       destination_emails: ['ada@example.com', 'grace@example.com'],

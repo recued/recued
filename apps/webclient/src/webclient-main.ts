@@ -62,7 +62,7 @@
  *  the consume path surfaces it, the Reception page's "current profile"
  *  affordance shows "(none)" — which is the safe view anyway.
  *
- *  Spec: docs/d-148-spec.md § A.4 (Thin Webclient). */
+ *  Spec: D-148 § A.4 (Thin Webclient). */
 
 import {
   WEBCLIENT_INDEXED_DB_NAME,

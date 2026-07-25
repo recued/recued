@@ -271,7 +271,7 @@ export const outcomesForRecordKind = (
 // binds its own TCP port; it mounts at `/reception/*` on the consolidated
 // path-routing dispatcher per D-148 § A.6 + § A.7. The pre-amendment
 // constant (8446) survives only inside the legacy spec narrative
-// (`docs/d-149-spec.md` § A.2.legacy). Consumers that previously read the
+// (D-149 § A.2.legacy). Consumers that previously read the
 // port for Server Passport / Settings UX / Reachability Doctor populate
 // from the per-listener bind ports instead (LAN listener port 80 / public
 // listener port 443; the per-path resolution table is the source of truth).

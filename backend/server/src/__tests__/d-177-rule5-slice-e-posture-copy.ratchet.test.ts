@@ -7,7 +7,7 @@
  *  card / the per-action approval card). The copy lives in two agent-facing
  *  strings; this ratchet pins the load-bearing tokens so a future prompt
  *  edit can't silently drop the posture. Per
- *  `docs/chat-prompt-optimization-log.md` (entry 2026-06-12) any change here
+ *  internal design notes (entry 2026-06-12) any change here
  *  must append a fresh log entry.
  *
  *  ⚠ SCOPE — WIDENED 2026-07-14 (owner-authored prompts, the three-block split).
@@ -25,7 +25,7 @@
  *  owner could delete this copy outright. The split retired that design, and
  *  with it the reason for the restraint.)
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.g). */
+ *  Spec: D-177 § N.11 rule 5 (5.g). */
 
 import { describe, expect, it } from 'vitest';
 

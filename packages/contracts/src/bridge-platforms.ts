@@ -17,7 +17,7 @@
  *  four gates per spec § C.1.5) lives in
  *  `packages/marketplace/src/validators/bridge-surface-kind.ts`.
  *
- *  Spec: `docs/d-145-spec.md` § B.9.1 + § C.1. */
+ *  Spec: D-145 § B.9.1 + § C.1. */
 
 // ── PC1.1 — Forbidden surface kinds (self-declaration gate) ─────────
 

@@ -1,0 +1,158 @@
+{
+  "recipe_id": "today",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Today (D-145 PA10)",
+    "description": "Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action. Auto-refreshes weekday mornings (window configurable via start_hour / end_hour); invoke any time for a fresh snapshot.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["morning", "dashboard", "calendar", "commitments", "tasks", "ai_surface", "reactive", "pack:personal-organizer"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "calendar_slug": {
+      "label": "Primary calendar slug to read today's events from",
+      "type": "string",
+      "default": "primary"
+    },
+    "start_hour": {
+      "label": "Window start hour (local TZ)",
+      "type": "number",
+      "default": 8
+    },
+    "end_hour": {
+      "label": "Window end hour (local TZ)",
+      "type": "number",
+      "default": 9
+    },
+    "weekdays": {
+      "label": "Active weekdays (1=Mon..7=Sun)",
+      "type": "array",
+      "default": [1, 2, 3, 4, 5]
+    },
+    "open_loop_limit": {
+      "label": "Max open-loop entries to surface",
+      "type": "number",
+      "default": 5
+    }
+  },
+  "requires": [],
+  "auto_run": {
+    "interval_ms": 600000
+  },
+  "trigger_steps": [
+    {
+      "id": "morning",
+      "op": "core.watch.time",
+      "args": {
+        "weekdays": "{{config.weekdays}}",
+        "start_hour": "{{config.start_hour}}",
+        "end_hour": "{{config.end_hour}}"
+      }
+    }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "open_loops",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "open_loop_pressure",
+        "limit": "{{config.open_loop_limit}}"
+      }
+    },
+    {
+      "id": "project_gaps",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "project_next_action_gap",
+        "scope": "project",
+        "limit": "{{config.open_loop_limit}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "today_window",
+      "transform": "date_period",
+      "period": "today"
+    },
+    {
+      "id": "today_start_ms",
+      "transform": "date_parse",
+      "input": "{{step.today_window.start}}"
+    },
+    {
+      "id": "today_end_ms",
+      "transform": "date_parse",
+      "input": "{{step.today_window.end}}"
+    },
+    {
+      "id": "calendar_events",
+      "op": "core.data.calendar.list",
+      "args": {
+        "slug": "{{config.calendar_slug}}",
+        "since": "{{step.today_start_ms}}",
+        "until": "{{step.today_end_ms}}",
+        "status": "confirmed"
+      }
+    },
+    {
+      "id": "calendar_count",
+      "transform": "count",
+      "input": "{{step.calendar_events.records}}"
+    },
+    {
+      "id": "open_loop_count",
+      "transform": "count",
+      "input": "{{step.open_loops.entries}}"
+    },
+    {
+      "id": "gap_count",
+      "transform": "count",
+      "input": "{{step.project_gaps.entries}}"
+    },
+    {
+      "id": "open_loop_targets",
+      "transform": "pluck",
+      "array": "{{step.open_loops.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "open_loop_targets_text",
+      "transform": "join",
+      "array": "{{step.open_loop_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "gap_targets",
+      "transform": "pluck",
+      "array": "{{step.project_gaps.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "gap_targets_text",
+      "transform": "join",
+      "array": "{{step.gap_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Today calendar events", "value": "{{step.calendar_count:number}}" },
+        { "label": "Open-loop contacts/projects", "value": "{{step.open_loop_count:number}}" },
+        { "label": "Top open-loop targets", "value": "{{step.open_loop_targets_text}}" },
+        { "label": "Active projects without next action", "value": "{{step.gap_count:number}}" },
+        { "label": "Top project gaps", "value": "{{step.gap_targets_text}}" },
+        { "label": "Window", "value": "{{step.today_window.start}} → {{step.today_window.end}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

@@ -4,14 +4,14 @@
       "kind": "openapi",
       "reference_url": "https://developers.pandadoc.com/reference",
       "repository_url": "https://github.com/PandaDoc/pandadoc-openapi-specification",
-      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/eaddbca0a2b1f32292400895a1bce1c4455ec969/openapi.json",
+      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/81beb8c87a80528882ff6dfa0b57fdf6b17f1c08/openapi.json",
       "current_url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/main/openapi.json",
-      "commit": "eaddbca0a2b1f32292400895a1bce1c4455ec969",
-      "sha256": "cd675cd04e2e596e9195457a200df403b35fcad8eca2304bf73b5dc339d823a6",
-      "bytes": 867271,
-      "retrieved_on": "2026-07-15",
+      "commit": "81beb8c87a80528882ff6dfa0b57fdf6b17f1c08",
+      "sha256": "462ae8088037e70e9c34f6953bb4c0ab811017d4422a77b6841dd08295c11aac",
+      "bytes": 872764,
+      "retrieved_on": "2026-07-20",
       "openapi": "3.0.3",
-      "info_version": "8.7.1",
+      "info_version": "8.8.0",
       "server": "https://api.pandadoc.com",
       "mutability": "The composition pins an immutable official repository commit. Generation also verifies that current main is byte-identical, so a new vendor revision fails closed until consciously upgraded."
     },
@@ -24,18 +24,18 @@
       "path_count": 1,
       "operation_count": 1,
       "operation_id": "listDocuments",
-      "reconciliation": "PandaDoc publishes per-operation reference fragments at v8.8.0, not one complete hashable v8.8.0 catalog. The official full repository document is v8.7.1; its overlapping listDocuments route matches this newer fragment and is the pinned suite authority."
+      "reconciliation": "PandaDoc publishes per-operation reference fragments at v8.8.0, not one complete hashable v8.8.0 catalog. The official full repository document is also v8.8.0 as of the reviewed commit; its overlapping listDocuments route matches this fragment and is the pinned suite authority."
     },
-    "official_path_count": 95,
-    "official_operation_count": 126,
-    "admitted_operation_count": 115,
-    "declared_operation_count": 122,
+    "official_path_count": 96,
+    "official_operation_count": 127,
+    "admitted_operation_count": 116,
+    "declared_operation_count": 123,
     "excluded_operation_count": 11,
-    "unique_admitted_operation_id_count": 115,
-    "unique_admitted_method_path_count": 115,
-    "unique_declared_qualified_operation_count": 122,
+    "unique_admitted_operation_id_count": 116,
+    "unique_admitted_method_path_count": 116,
+    "unique_declared_qualified_operation_count": 123,
     "official_method_counts": {
-      "POST": 39,
+      "POST": 40,
       "GET": 56,
       "DELETE": 12,
       "PATCH": 16,
@@ -43,14 +43,14 @@
     },
     "admitted_method_counts": {
       "GET": 54,
-      "POST": 32,
+      "POST": 33,
       "DELETE": 11,
       "PATCH": 15,
       "PUT": 3
     },
     "declared_method_counts": {
       "GET": 59,
-      "POST": 34,
+      "POST": 35,
       "DELETE": 11,
       "PATCH": 15,
       "PUT": 3
@@ -78,7 +78,7 @@
       "Product catalog": 5,
       "Quotes": 1,
       "Template Settings": 2,
-      "Templates": 8,
+      "Templates": 9,
       "User and Workspace management": 10,
       "Webhook events": 2,
       "Webhook subscriptions": 6
@@ -86,31 +86,31 @@
     "pack_operation_counts": {
       "pandadoc": 12,
       "pandadoc-document-workflows": 53,
-      "pandadoc-content-platform": 57
+      "pandadoc-content-platform": 58
     },
     "composition_bytes": {
       "pandadoc": 24908,
-      "pandadoc-document-workflows": 77113,
-      "pandadoc-content-platform": 77182
+      "pandadoc-document-workflows": 76550,
+      "pandadoc-content-platform": 77748
     },
     "risk_counts": {
       "read": 60,
-      "write": 35,
+      "write": 36,
       "destructive": 19,
       "admin": 8
     },
     "approval_counts": {
-      "never": 10,
+      "never": 60,
       "ask": 2,
-      "always": 110
+      "always": 61
     },
     "idempotency_counts": {
       "safe": 60,
-      "non_idempotent": 37,
+      "non_idempotent": 38,
       "idempotent": 25
     },
     "pagination_counts": {
-      "none": 107,
+      "none": 108,
       "offset": 15
     },
     "paginated_operations": [
@@ -491,7 +491,7 @@
       "downloadDocumentAttachment",
       "downloadProtectedDocument"
     ],
-    "json_request_operation_count": 48,
+    "json_request_operation_count": 49,
     "requiredness_overrides": {
       "createDocumentAttachment": [
         "source"
@@ -593,7 +593,7 @@
     },
     "omitted_binary_request_fields": {},
     "omitted_credential_request_fields": {},
-    "lossless_integer_operation_count": 100,
+    "lossless_integer_operation_count": 101,
     "compatibility_operation_ids": [
       "contact.read",
       "contact.search",
@@ -624,7 +624,7 @@
         "apiKey",
         "oauth2"
       ],
-      "authenticated_operations": 125,
+      "authenticated_operations": 126,
       "unauthenticated_bootstrap_operation_ids": [
         "accessToken"
       ],
@@ -1168,6 +1168,12 @@
         "deprecated": false
       }
     },
+    "/public/v1/templates/{id}/duplicate": {
+      "post": {
+        "operationId": "duplicateTemplate",
+        "deprecated": false
+      }
+    },
     "/public/v1/templates/{id}/details": {
       "get": {
         "operationId": "detailsTemplate",
@@ -1604,7 +1610,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1711,7 +1717,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1917,7 +1923,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2036,7 +2042,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2512,7 +2518,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2612,7 +2618,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2671,7 +2677,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2743,7 +2749,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -2962,7 +2968,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -3034,7 +3040,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3114,7 +3120,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3150,7 +3156,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3393,7 +3399,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3489,7 +3495,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3578,7 +3584,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3629,7 +3635,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3743,7 +3749,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -3860,6 +3866,75 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "pandadoc-content-platform.template.duplicate": {
+      "pack": "pandadoc-content-platform",
+      "op": "template.duplicate",
+      "operation_id": "duplicateTemplate",
+      "tag": "Templates",
+      "method": "POST",
+      "path": "/public/v1/templates/{id}/duplicate",
+      "wire_path": "/public/v1/templates/{{template_id}}/duplicate",
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": false,
+        "profile": null,
+        "required_properties": [],
+        "writable_properties": [
+          "name"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "date_created": {
+            "type": "string"
+          },
+          "date_modified": {
+            "type": "string"
+          },
+          "meta": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
       "compatibility": false,
       "supplemental": false
     },
@@ -4005,7 +4080,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -4172,7 +4247,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4288,7 +4363,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4476,7 +4551,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4551,7 +4626,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4628,7 +4703,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4727,7 +4802,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4912,7 +4987,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4948,7 +5023,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -5529,7 +5604,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -5584,7 +5659,7 @@
       "accept": "application/json",
       "content_type": "application/json",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -5659,7 +5734,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -5715,7 +5790,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -5913,7 +5988,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -6076,7 +6151,7 @@
       "accept": "application/*",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6136,7 +6211,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6176,7 +6251,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6251,7 +6326,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6307,7 +6382,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6426,7 +6501,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6542,7 +6617,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6791,7 +6866,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -6972,7 +7047,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -7126,7 +7201,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -7205,7 +7280,7 @@
       "accept": "application/pdf",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -7410,7 +7485,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -7557,7 +7632,7 @@
       "accept": "application/pdf",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8231,7 +8306,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8275,7 +8350,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8344,7 +8419,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8397,7 +8472,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8698,7 +8773,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -8824,7 +8899,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false

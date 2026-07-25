@@ -74,6 +74,7 @@ const baseCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   open_pinned_projection_hash: 'projection-hash',

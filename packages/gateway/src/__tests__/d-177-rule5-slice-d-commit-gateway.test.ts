@@ -65,6 +65,7 @@ const askDecision = (
   verdict: 'ask',
   risk_tier: 'write',
   detail: 'approval required',
+  authorization_provenance: { pre_lift_approval: 'ask' },
   ...overrides,
 });
 
@@ -153,6 +154,7 @@ describe('wrapWithCommitGateway D-177 rule-5 slice-D scoped destinations', () =>
       operation_id: 'send',
       connection_name: 'gmail-primary',
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: expectedHashes.arg_shape_hash,
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       destination_emails: ['ada@example.com', 'grace@example.com'],

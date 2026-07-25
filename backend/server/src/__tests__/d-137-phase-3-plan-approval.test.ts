@@ -164,6 +164,23 @@ describe('D-137 P3 § A.11 — handlePlanCancel', () => {
     );
     expect(resolved).toBeDefined();
   });
+
+  it('can cancel a durable proposal whose reviewed payload is unavailable', async () => {
+    const deps = setupHandlerDeps();
+    seedProposal(deps.planApprovalStore);
+    vi.spyOn(deps.planApprovalStore, 'get').mockReturnValue(undefined);
+
+    const result = await handlePlanCancel(deps, { plan_id: 'plan-1' });
+
+    expect(result.plan.status).toBe('cancelled');
+    expect(
+      (await deps.planApprovalStore.listForSession?.('s1'))?.[0]?.plan
+        .status,
+    ).toBe('cancelled');
+    expect(
+      deps.broadcasted.find((event) => event.kind === 'chat.plan_resolved'),
+    ).toBeDefined();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -257,10 +274,129 @@ describe('D-137 P3 § A.11 — orchestrator dispatchTool plan-approval gate', ()
     }
     expect(h.dispatchFn).not.toHaveBeenCalled();
     const proposed = h.broadcasted.find((e) => e.kind === 'chat.plan_proposed');
-    expect(proposed).toBeDefined();
+    expect(proposed).toMatchObject({ created_at: 5_000 });
     const pending = h.planApprovalStore.listPending(h.session_id);
     expect(pending).toHaveLength(1);
     expect(pending[0]?.tool).toBe('mail.send');
+  });
+
+  it('stamps a fresh proposal with validated verify-before-retry lineage', async () => {
+    const h = buildOrchestratorHarness({ 'mail.send': writeEntry });
+    const args = { to: 'a@b.com' };
+    const origin = seedProposal(h.planApprovalStore, {
+      plan_id: 'plan-uncertain',
+      session_id: h.session_id,
+      turn_id: 'turn-origin',
+      args,
+    });
+    h.planApprovalStore.resolve(origin.plan_id, 'approved', 2_000);
+    h.planApprovalStore.markConsumed(
+      origin.plan_id,
+      3_000,
+      'turn-origin-execution',
+    );
+    h.planApprovalStore.recordExecution!(origin.plan_id, {
+      status: 'unknown',
+      turn_id: 'turn-origin-execution',
+    });
+    const olderPermission = seedProposal(h.planApprovalStore, {
+      plan_id: 'plan-other-approved',
+      session_id: h.session_id,
+      turn_id: 'turn-other-proposal',
+      args,
+      created_at: 3_500,
+    });
+    h.planApprovalStore.resolve(olderPermission.plan_id, 'approved', 4_000);
+
+    const result = await h.orchestrator.dispatch.dispatchTool({
+      session_id: h.session_id,
+      turn_id: 'turn-verify',
+      retry_of_plan_id: origin.plan_id,
+      tool_name: 'mail.send',
+      arg_values: args,
+      picker_target: 'self',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'awaiting_approval',
+    });
+    const proposed = h.broadcasted.find(
+      (event) =>
+        event.kind === 'chat.plan_proposed'
+        && event.turn_id === 'turn-verify',
+    );
+    expect(proposed).toMatchObject({
+      kind: 'chat.plan_proposed',
+      retry_of_plan_id: origin.plan_id,
+      args_hash: planApproval.computePlanArgsHash(args),
+    });
+    expect(h.planApprovalStore.listPending(h.session_id)).toEqual([
+      expect.objectContaining({
+        retry_of_plan_id: origin.plan_id,
+        turn_id: 'turn-verify',
+      }),
+    ]);
+    expect(h.planApprovalStore.get(olderPermission.plan_id)?.consumed_at)
+      .toBeUndefined();
+    expect(h.dispatchFn).not.toHaveBeenCalled();
+  });
+
+  it('still requires a fresh proposal if the original tool classification drifted to read', async () => {
+    const h = buildOrchestratorHarness({
+      'mail.send': { ...writeEntry, classification: 'read' },
+    });
+    const args = { to: 'a@b.com' };
+    const origin = seedProposal(h.planApprovalStore, {
+      plan_id: 'plan-before-classification-drift',
+      session_id: h.session_id,
+      turn_id: 'turn-origin',
+      args,
+    });
+    h.planApprovalStore.resolve(origin.plan_id, 'approved', 2_000);
+    h.planApprovalStore.markConsumed(
+      origin.plan_id,
+      3_000,
+      'turn-origin-execution',
+    );
+    h.planApprovalStore.recordExecution!(origin.plan_id, {
+      status: 'unknown',
+      turn_id: 'turn-origin-execution',
+    });
+
+    const result = await h.orchestrator.dispatch.dispatchTool({
+      session_id: h.session_id,
+      turn_id: 'turn-verify-after-drift',
+      retry_of_plan_id: origin.plan_id,
+      tool_name: 'mail.send',
+      arg_values: args,
+      picker_target: 'self',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'awaiting_approval',
+    });
+    expect(h.planApprovalStore.listPending(h.session_id)).toEqual([
+      expect.objectContaining({
+        retry_of_plan_id: origin.plan_id,
+        classification: 'write',
+      }),
+    ]);
+    expect(h.dispatchFn).not.toHaveBeenCalled();
+
+    const fresh = h.planApprovalStore.listPending(h.session_id)[0]!;
+    h.planApprovalStore.resolve(fresh.plan_id, 'approved', 4_000);
+    const continued = await h.orchestrator.dispatch.dispatchTool({
+      session_id: h.session_id,
+      turn_id: 'turn-after-fresh-approval',
+      tool_name: 'mail.send',
+      arg_values: args,
+      picker_target: 'self',
+    });
+    expect(continued.ok).toBe(true);
+    expect(h.planApprovalStore.get(fresh.plan_id)?.consumed_at).toBe(5_000);
+    expect(h.dispatchFn).toHaveBeenCalledTimes(1);
   });
 
   it('approved plan lets dispatch proceed', async () => {

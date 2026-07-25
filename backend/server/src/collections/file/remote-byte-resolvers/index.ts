@@ -7,7 +7,7 @@
  *  spine, SharePoint reuses the OneDrive Graph resolver (a document library IS a
  *  Graph drive), and Notion re-resolves a fresh signed url per read (prong-1
  *  block files only; prong-2 property files stay `remote_unresolvable`).
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import type { RemoteFileByteResolverRegistry } from '../remote-file-byte-resolver.js';
 import { defaultFileFetch, type FileFetch } from '../../../file-source-adapters/index.js';

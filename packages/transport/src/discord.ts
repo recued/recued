@@ -29,6 +29,7 @@
  */
 
 import { decodeChoice, encodeChoice } from './callback.js';
+import { fitText } from './fit-text.js';
 import {
   DEFAULT_TIMEOUT_MS,
   classifyHttpError,
@@ -56,6 +57,33 @@ export const DISCORD_BUTTONS_PER_ROW = 5;
 export const DISCORD_MAX_ACTION_ROWS = 5;
 export const DISCORD_MAX_BUTTONS = DISCORD_BUTTONS_PER_ROW * DISCORD_MAX_ACTION_ROWS;
 export const DISCORD_CUSTOM_ID_MAX = 100;
+
+/** Discord's message-content cap. Over it the API rejects the whole send with
+ *  a 400, the remote channel throws, and `fanOutAsk` CATCHES it — so the
+ *  message is lost silently (see `fit-text.ts`).
+ *
+ *  ⛔ Discord is a NOTIFY **+ APPROVE** channel, so the thing lost that way is
+ *  an approval: the owner never learns a decision is waiting and the run sits
+ *  paused on an answer nobody was asked for. Its siblings got `fitText` and
+ *  this file did not — the option-count, button-label and custom-id caps below
+ *  were all enforced while the BODY, the only part that grows with the held
+ *  op's args, was not.
+ *
+ *  ⚠ TIGHTER THAN SLACK'S 3000 and less than half Telegram's 4096, so Discord
+ *  is now the first channel a long approval would have disappeared from: a
+ *  D-177 batch ask with a wide `args_preview` reaches ~4KB and clears this by
+ *  a factor of two. */
+const DISCORD_CONTENT_LIMIT = 2000;
+
+/** What we actually trim to. The margin covers markup Discord counts that we
+ *  did not author, the same accounting allowance Slack's budget makes. */
+const DISCORD_TEXT_BUDGET = DISCORD_CONTENT_LIMIT - 60;
+
+/** Fit any outbound Discord text to the content budget. Applied at EVERY send
+ *  site, not just the composed ones — the close/edit path re-sends a body under
+ *  the same cap. */
+const fitDiscord = (text: string): string =>
+  fitText(text, DISCORD_TEXT_BUDGET, 'Discord');
 export const DISCORD_BUTTON_LABEL_MAX = 80;
 
 /** Component type ids (`ACTION_ROW` / `BUTTON`) and the button style we render.
@@ -178,7 +206,7 @@ export const createDiscordTransport = (
       `${API_BASE}/channels/${encodeURIComponent(message.recipient)}/messages`,
       {
         headers: headers(message.token),
-        body: JSON.stringify({ content: composeDiscordText(message) }),
+        body: JSON.stringify({ content: fitDiscord(composeDiscordText(message)) }),
         timeoutMs,
         fetchImpl,
       },
@@ -255,7 +283,7 @@ export const createDiscordTransport = (
       {
         headers: headers(prompt.token),
         body: JSON.stringify({
-          content: composeDiscordText(prompt),
+          content: fitDiscord(composeDiscordText(prompt)),
           components,
         }),
         timeoutMs,
@@ -275,7 +303,7 @@ export const createDiscordTransport = (
       + `/messages/${encodeURIComponent(ref.vendor_message_id)}`,
       {
         headers: headers(ref.token),
-        body: JSON.stringify({ content: ref.text, components: [] }),
+        body: JSON.stringify({ content: fitDiscord(ref.text), components: [] }),
         timeoutMs,
         fetchImpl,
       },

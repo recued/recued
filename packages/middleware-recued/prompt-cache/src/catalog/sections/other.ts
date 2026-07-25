@@ -13,7 +13,7 @@
  *  Section description is an extrapolation — bench has no `other` arm.
  *  TODO(P4-bench): tune once vendor APIs are exercised.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type {
   CatalogAssemblyInput,

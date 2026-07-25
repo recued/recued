@@ -179,7 +179,7 @@ export type SmtpTransportFactory = (config: {
 export const defaultSmtpTransportFactory: SmtpTransportFactory = (config) => {
   // Bench/dev seam — when `RECUED_BENCH_SMTP_OUTBOX` is set, route the send to
   // a no-network outbox-recording transport instead of nodemailer, so the
-  // recued-substrate-bench can execute an APPROVED `mail-send` step offline
+  // internal benchmarks can execute an APPROVED `mail-send` step offline
   // (the D-157 gate → approve → execute → audit round-trip). Lazy require so
   // production (env unset) never loads the dev module — a no-op there.
   if (process.env.RECUED_BENCH_SMTP_OUTBOX) {

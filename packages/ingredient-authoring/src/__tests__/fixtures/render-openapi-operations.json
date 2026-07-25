@@ -2590,7 +2590,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_bandwidth": {
@@ -2660,7 +2660,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_bandwidth_sources": {
@@ -2734,7 +2734,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu": {
@@ -2834,7 +2834,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu_limit": {
@@ -2924,7 +2924,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu_target": {
@@ -3014,7 +3014,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_disk_capacity": {
@@ -3094,7 +3094,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_disk_usage": {
@@ -3174,7 +3174,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_http_latency": {
@@ -3284,7 +3284,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_http_requests": {
@@ -3394,7 +3394,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_instance_count": {
@@ -3474,7 +3474,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory": {
@@ -3564,7 +3564,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory_limit": {
@@ -3654,7 +3654,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory_target": {
@@ -3744,7 +3744,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_owner_log_stream": {
@@ -3794,7 +3794,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_owner_metrics_stream": {
@@ -3844,7 +3844,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_replication_lag": {
@@ -3914,7 +3914,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_resource_log_stream": {
@@ -3964,7 +3964,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_task_runs_completed": {
@@ -4054,7 +4054,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.get_task_runs_queued": {
@@ -4124,7 +4124,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_application_filter_values": {
@@ -4204,7 +4204,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_http_filter_values": {
@@ -4304,7 +4304,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_maintenance": {
@@ -4472,7 +4472,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_processes": {
@@ -4516,7 +4516,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_sizes": {
@@ -4560,7 +4560,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_table_scans": {
@@ -4604,7 +4604,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_top_queries": {
@@ -4648,7 +4648,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_users": {
@@ -4688,7 +4688,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_redis": {
@@ -4946,7 +4946,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.list_resource_log_streams": {
@@ -5036,7 +5036,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.recover_postgres": {
@@ -5427,7 +5427,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.retrieve_redis": {
@@ -5561,7 +5561,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-data-observability.suspend_key_value": {
@@ -7038,7 +7038,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.get_task_run": {
@@ -7115,7 +7115,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.get_user": {
@@ -7151,7 +7151,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.get_workflow": {
@@ -7225,7 +7225,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.get_workflow_version": {
@@ -7281,7 +7281,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_blueprint_syncs": {
@@ -7341,7 +7341,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_blueprints": {
@@ -7401,7 +7401,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_env_groups": {
@@ -7589,7 +7589,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_organization_audit_logs": {
@@ -7679,7 +7679,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_task_runs": {
@@ -7779,7 +7779,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_tasks": {
@@ -7869,7 +7869,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_webhook_events": {
@@ -7949,7 +7949,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_workflow_versions": {
@@ -8029,7 +8029,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.list_workflows": {
@@ -8119,7 +8119,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.patch_owner_notification_settings": {
@@ -8414,7 +8414,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner": {
@@ -8473,7 +8473,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner_members": {
@@ -8513,7 +8513,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner_notification_settings": {
@@ -8569,7 +8569,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_service_notification_overrides": {
@@ -8619,7 +8619,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-platform-automation.unlink_service_from_env_group": {
@@ -10063,7 +10063,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-services-delivery.list_disks": {
@@ -10281,7 +10281,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-services-delivery.list_instances": {
@@ -10409,7 +10409,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-services-delivery.list_snapshots": {
@@ -10929,7 +10929,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-services-delivery.retrieve_disk": {
@@ -11045,7 +11045,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render-services-delivery.run_cron_job": {
@@ -12412,7 +12412,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.job.search": {
@@ -12542,7 +12542,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.key_value.read": {
@@ -12951,7 +12951,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.log.value.search": {
@@ -13151,7 +13151,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.postgres.read": {
@@ -13711,7 +13711,7 @@
         "unsafe_integers": "string"
       },
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.service.read": {
@@ -14106,7 +14106,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "render.workspace.search": {
@@ -14176,7 +14176,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     }
   }

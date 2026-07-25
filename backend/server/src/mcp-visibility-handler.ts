@@ -16,7 +16,7 @@
  *  reject) resolve the same `enrichment.<topic>` grant per (bound contract, topic), so a
  *  write here takes effect on the next read without restart.
  *
- *  Spec: docs/d-187-spec.md AMENDMENT block §6. */
+ *  Spec: D-187 AMENDMENT block §6. */
 
 import {
   ALL_MCP_EXPOSURE_POLICIES,

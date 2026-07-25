@@ -69,7 +69,7 @@
  *      function as the bundle uses for content-addressing
  *      consistency across both sources.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/audit-grow / § 3 Invariant 2 / O-6. */
 
 import {

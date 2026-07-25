@@ -50,7 +50,7 @@
  *  is the argument `contact-sources.ts`'s header makes at length, using this exact
  *  API as its worked example.
  *
- *  Spec: `docs/d-205-contact-surface.md` §2 + working-order #4. */
+ *  Spec: D-205 §2 + working-order #4. */
 
 import {
   canonicalizeEmail,

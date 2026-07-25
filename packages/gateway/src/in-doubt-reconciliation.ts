@@ -35,7 +35,7 @@
  *  sweep + the real implementations into `recued-server` is the
  *  deferred D-157 server-wiring slice.
  *
- *  Spec: docs/d-157-spec.md § N.2 / A.1 / I-1..I-3 / I-9.
+ *  Spec: D-157 § N.2 / A.1 / I-1..I-3 / I-9.
  */
 
 import type { Commit } from '@recued/contracts';

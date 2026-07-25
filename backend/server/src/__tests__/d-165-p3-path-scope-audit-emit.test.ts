@@ -1,7 +1,7 @@
 /** D-165 P3.path-picker (Slice 3b) — the gateway audit EMITTER must persist
  *  the `path_scope` forensic detail into the durable `connection_gateway`
  *  activity row, not just carry it on the in-memory `GatewayCallAudit`. The
- *  spec (`docs/d-165-spec.md:933`) requires the row to hold the connection's
+ *  spec (D-165:933`) requires the row to hold the connection's
  *  canonical path + the call's canonical target + the template that produced
  *  it; an emitter that dropped `path_scope` would leave scoped-denial
  *  investigations opaque. */

@@ -13,11 +13,12 @@
  *  __tests__/ is exempt -- a cross-package test import is normal; the
  *  ratchet targets shipped framework source.
  *
- *  Spec: docs/d-159-spec.md section N.7 + I-2 + A.3. */
+ *  Spec: D-159 section N.7 + I-2 + A.3. */
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 const SRC = resolve(__dirname, '..'); // packages/middleware/src
 const PKGS = resolve(SRC, '..', '..'); // packages/
@@ -53,7 +54,7 @@ const collect = (dir: string): string[] => {
     if (name === '__tests__') continue;
     const path = join(dir, name);
     if (statSync(path).isDirectory()) out.push(...collect(path));
-    else if (name.endsWith('.ts')) out.push(path);
+    else if (isTypeScriptSource(name)) out.push(path);
   }
   return out;
 };

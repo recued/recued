@@ -18,6 +18,7 @@ import {
   collectWebclientImports,
   scanForForbiddenImports,
 } from '../role-boundary/lint.js';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 const SRC_ROOT = join(__dirname, '..');
 
@@ -33,7 +34,7 @@ const walk = (dir: string): string[] => {
     const st = statSync(full);
     if (st.isDirectory()) {
       out.push(...walk(full));
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.d.ts')) {
+    } else if (isTypeScriptSource(entry)) {
       out.push(full);
     }
   }

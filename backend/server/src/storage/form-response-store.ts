@@ -19,11 +19,32 @@
  * even for spam. Editing a row here does not rewrite history, because the
  * history is not here — that separation is what makes mutability safe.
  *
- * Values are ordinary JSON text because the enclosing per-pair SQLite database
- * is already encrypted. Access control and public packet redaction remain
- * responsibilities of their respective read surfaces.
+ * ✅ D-212 SLICE 3 NOW ENCRYPTS THESE VALUES AT REST AS PART OF THE WHOLE DB.
+ * The sole production `openDatabase()` chokepoint uses the multiple-ciphers
+ * driver and applies a domain-separated database sub-DEK before the first schema
+ * read. First recovery-key enrollment rekeys the bootstrap database before the
+ * server accepts user operations. A pre-enrollment bootstrap file is plaintext,
+ * but the server's not-enrolled gates prevent it from acquiring user data.
+ *
+ * What remains true, stated so the next reader can rely on it:
+ *
+ *   - Full-file encryption is the WAREHOUSE-WIDE posture, not a special case for
+ *     `form_response`. `data.contact.email` remains a normal indexable TEXT
+ *     PRIMARY KEY inside SQLite while its pages are ciphertext on disk.
+ *   - The SEALED twin is `reception_form_submission` (AEAD via `form-pii.ts`,
+ *     HKDF sub-DEK + AAD). That seal protects the STAGE-2 evidence record — the
+ *     visitor's original, which is never edited and never browsed. It was never
+ *     a claim about stage-3 destinations.
+ *   - Do not add a second per-column seal here merely to duplicate the disk
+ *     threat control. The evidence twin's AEAD remains intentional because it
+ *     also protects against readers that legitimately hold the database open;
+ *     full-file encryption protects disk capture.
+ *
+ * Access control and public packet redaction remain responsibilities of their
+ * respective read surfaces.
  */
 
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {
   AcceptFormResponseInput,
@@ -49,6 +70,7 @@ interface FormResponseRow {
   definition_snapshot_blob: string;
   values_blob: string;
   visitor_blob: string;
+  source_content_hash: string;
   submitted_at: number;
   accepted_at: number;
   origin_actor: 'anonymous';
@@ -56,6 +78,7 @@ interface FormResponseRow {
   metadata_blob: string;
   lifecycle_state: FormResponseLifecycleState;
   state_changed_at: number;
+  updated_at: number;
 }
 
 /** The columns `listSummaries` reads — deliberately without the two large
@@ -68,6 +91,9 @@ interface FormResponseSummaryRow {
   submitted_at: number;
   accepted_at: number;
   metadata_blob: string;
+  lifecycle_state: FormResponseLifecycleState;
+  state_changed_at: number;
+  updated_at: number;
 }
 
 /** Small per-row projection for the owner Data browser. Full answer values and
@@ -82,6 +108,9 @@ export interface FormResponseListSummary {
   readonly visitor: FormResponseVisitor;
   readonly submitted_at: number;
   readonly accepted_at: number;
+  readonly updated_at: number;
+  readonly lifecycle_state: FormResponseLifecycleState;
+  readonly state_changed_at: number;
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
@@ -115,31 +144,46 @@ export interface FormResponseStore {
    * closed.
    */
   accept(input: AcceptFormResponseInput): AcceptFormResponseResult;
+  /** Atomically create the canonical row and apply approve-time working-copy
+   * edits. An existing row is returned unchanged so a resume retry can never
+   * overwrite a later owner edit. */
+  acceptWithWorkingContent(
+    input: AcceptFormResponseInput,
+    working: { values: Readonly<Record<string, unknown>>; visitor: FormResponseVisitor },
+    now: number,
+  ): AcceptFormResponseResult;
   findById(submission_id: string): FormResponse | null;
   list(query?: FormResponseListQuery): readonly FormResponse[];
   /** Like {@link list} but returns the small Data-browser projection without
    *  decoding the frozen definition or full answer values of every row. */
   listSummaries(query?: FormResponseListQuery): readonly FormResponseListSummary[];
-  /**
-   * D-210 A.8 slice 2 — advance the owner-authored lifecycle.
-   *
-   * ⛔ Deliberately NARROW: this is the only mutation, and it touches only
-   * `lifecycle_state`. The visitor-authored columns (`values_blob`,
-   * `definition_snapshot_blob`, `visitor_blob`, `submitted_at`) are NOT
-   * writable here. A.4 does say the destination is editable, but answer-editing
-   * is a separate capability with its own provenance question ("whose words are
-   * these now?"), and shipping it silently inside a lifecycle setter would
-   * answer that question by accident.
-   *
-   * Returns `null` when the row does not exist — the caller decides whether a
-   * missing row is an error, because the rpc and the recipe path disagree.
-   */
+  /** Edit only the working answer/visitor content; immutable evidence lives in
+   * reception_form_submission and is never touched by this method. */
+  updateContent(
+    submission_id: string,
+    input: { values: Readonly<Record<string, unknown>>; visitor: FormResponseVisitor },
+    now: number,
+  ): FormResponse | null;
+  /** Advance only the owner-authored lifecycle and its transition timestamp.
+   * Returns `null` when the row does not exist. */
   setLifecycleState(
     submission_id: string,
     lifecycle_state: FormResponseLifecycleState,
     now: number,
   ): FormResponse | null;
 }
+
+const sourceContentHash = (valuesBlob: string, visitorBlob: string): string => {
+  const hash = createHash('sha256');
+  for (const part of [valuesBlob, visitorBlob]) {
+    const bytes = Buffer.from(part, 'utf8');
+    const length = Buffer.allocUnsafe(4);
+    length.writeUInt32BE(bytes.length, 0);
+    hash.update(length);
+    hash.update(bytes);
+  }
+  return hash.digest('base64url');
+};
 
 export const ensureFormResponseSchema = (db: Database.Database): void => {
   db.exec(`
@@ -150,6 +194,7 @@ export const ensureFormResponseSchema = (db: Database.Database): void => {
       definition_snapshot_blob   TEXT NOT NULL,
       values_blob                TEXT NOT NULL,
       visitor_blob               TEXT NOT NULL,
+      source_content_hash        TEXT NOT NULL,
       submitted_at               INTEGER NOT NULL,
       accepted_at                INTEGER NOT NULL,
       origin_actor               TEXT NOT NULL DEFAULT 'anonymous'
@@ -162,7 +207,8 @@ export const ensureFormResponseSchema = (db: Database.Database): void => {
       -- (always the visitor), and it stays 'anonymous' no matter how many
       -- times the owner advances the state.
       lifecycle_state            TEXT NOT NULL DEFAULT '${FORM_RESPONSE_DEFAULT_LIFECYCLE_STATE}',
-      state_changed_at           INTEGER NOT NULL DEFAULT 0
+      state_changed_at           INTEGER NOT NULL DEFAULT 0,
+      updated_at                 INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_form_response_accepted
       ON ${TABLE} (accepted_at DESC, submission_id DESC);
@@ -195,6 +241,31 @@ export const ensureFormResponseSchema = (db: Database.Database): void => {
     // the day we deployed.
     db.exec(`ALTER TABLE ${TABLE} ADD COLUMN state_changed_at INTEGER NOT NULL DEFAULT 0`);
   }
+  if (!columns.has('updated_at')) {
+    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!columns.has('source_content_hash')) {
+    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN source_content_hash TEXT NOT NULL DEFAULT ''`);
+  }
+  // Existing rows were last changed when accepted. This is a provenance-safe
+  // backfill, unlike stamping the migration wall clock.
+  db.exec(`UPDATE ${TABLE} SET updated_at = accepted_at WHERE updated_at = 0`);
+  const sourceHashRows = db.prepare(`
+    SELECT submission_id, values_blob, visitor_blob
+      FROM ${TABLE}
+     WHERE source_content_hash = ''
+  `).all() as Array<Pick<FormResponseRow, 'submission_id' | 'values_blob' | 'visitor_blob'>>;
+  const backfillSourceHash = db.prepare(`
+    UPDATE ${TABLE} SET source_content_hash = ? WHERE submission_id = ?
+  `);
+  db.transaction(() => {
+    for (const row of sourceHashRows) {
+      backfillSourceHash.run(
+        sourceContentHash(row.values_blob, row.visitor_blob),
+        row.submission_id,
+      );
+    }
+  })();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_form_response_lifecycle
       ON ${TABLE} (endpoint_id, lifecycle_state, accepted_at DESC);
@@ -283,6 +354,7 @@ const rowToResponse = (row: FormResponseRow): FormResponse => ({
   origin_surface: row.origin_surface,
   lifecycle_state: row.lifecycle_state,
   state_changed_at: row.state_changed_at,
+  updated_at: row.updated_at,
   metadata: decodeObject(row.metadata_blob),
 });
 
@@ -293,6 +365,9 @@ const rowToSummary = (row: FormResponseSummaryRow): FormResponseListSummary => (
   visitor: decodeObject(row.visitor_blob),
   submitted_at: row.submitted_at,
   accepted_at: row.accepted_at,
+  updated_at: row.updated_at,
+  lifecycle_state: row.lifecycle_state,
+  state_changed_at: row.state_changed_at,
   metadata: decodeObject(row.metadata_blob),
 });
 
@@ -336,6 +411,29 @@ const buildListWhere = (
       + 'AND submission_id < @before_submission_id))',
     );
   }
+  if (query.lifecycle_states !== undefined) {
+    if (!Array.isArray(query.lifecycle_states) || query.lifecycle_states.length === 0) {
+      throw new FormResponseValidationError(
+        'lifecycle_states must be a non-empty array when supplied',
+        'lifecycle_states',
+      );
+    }
+    const states = [...new Set(query.lifecycle_states)];
+    for (const state of states) {
+      if (!FORM_RESPONSE_LIFECYCLE_STATE_SET.has(state)) {
+        throw new FormResponseValidationError(
+          `unknown lifecycle state '${String(state)}'`,
+          'lifecycle_states',
+        );
+      }
+    }
+    params.lifecycle_states = states;
+    clauses.push(`lifecycle_state IN (${states.map((_, index) => `@lifecycle_state_${index}`).join(', ')})`);
+    states.forEach((state, index) => {
+      params[`lifecycle_state_${index}`] = state;
+    });
+    delete params.lifecycle_states;
+  }
   return {
     whereClause: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
     params,
@@ -368,6 +466,8 @@ const normalizeInput = (input: AcceptFormResponseInput): FormResponseInsert => {
       'accepted_at',
     );
   }
+  const values_blob = encodeObject(input.values, 'values');
+  const visitor_blob = encodeVisitor(input.visitor);
   return {
     submission_id: requireId(input.submission_id, 'submission_id'),
     endpoint_id: requireId(input.endpoint_id, 'endpoint_id'),
@@ -376,13 +476,15 @@ const normalizeInput = (input: AcceptFormResponseInput): FormResponseInsert => {
       input.definition_snapshot,
       'definition_snapshot',
     ),
-    values_blob: encodeObject(input.values, 'values'),
-    visitor_blob: encodeVisitor(input.visitor),
+    values_blob,
+    visitor_blob,
+    source_content_hash: sourceContentHash(values_blob, visitor_blob),
     submitted_at,
     accepted_at,
     origin_actor: 'anonymous',
     origin_surface: 'system',
     metadata_blob: encodeObject(input.metadata ?? {}, 'metadata'),
+    updated_at: accepted_at,
   };
 };
 
@@ -391,8 +493,7 @@ const immutableRowsMatch = (left: FormResponseInsert, right: FormResponseInsert)
   && left.endpoint_id === right.endpoint_id
   && left.form_definition_id === right.form_definition_id
   && left.definition_snapshot_blob === right.definition_snapshot_blob
-  && left.values_blob === right.values_blob
-  && left.visitor_blob === right.visitor_blob
+  && left.source_content_hash === right.source_content_hash
   && left.submitted_at === right.submitted_at
   && left.origin_actor === right.origin_actor
   && left.origin_surface === right.origin_surface
@@ -407,11 +508,15 @@ export const createFormResponseStore = (
     INSERT INTO ${TABLE} (
       submission_id, endpoint_id, form_definition_id,
       definition_snapshot_blob, values_blob, visitor_blob,
-      submitted_at, accepted_at, origin_actor, origin_surface, metadata_blob
+      source_content_hash,
+      submitted_at, accepted_at, origin_actor, origin_surface, metadata_blob,
+      updated_at
     ) VALUES (
       @submission_id, @endpoint_id, @form_definition_id,
       @definition_snapshot_blob, @values_blob, @visitor_blob,
-      @submitted_at, @accepted_at, @origin_actor, @origin_surface, @metadata_blob
+      @source_content_hash,
+      @submitted_at, @accepted_at, @origin_actor, @origin_surface, @metadata_blob,
+      @updated_at
     )
     ON CONFLICT(submission_id) DO NOTHING
   `);
@@ -426,27 +531,72 @@ export const createFormResponseStore = (
                                    ELSE @now END
      WHERE submission_id = @submission_id
   `);
+  const updateContentStmt = db.prepare(`
+    UPDATE ${TABLE}
+       SET values_blob = @values_blob,
+           visitor_blob = @visitor_blob,
+           updated_at = CASE
+             WHEN values_blob = @values_blob AND visitor_blob = @visitor_blob
+             THEN updated_at ELSE @now END
+     WHERE submission_id = @submission_id
+  `);
 
   const findRow = (submission_id: string): FormResponseRow | null =>
     (findStmt.get(submission_id) as FormResponseRow | undefined) ?? null;
 
-  return {
-    accept(input) {
-      const normalized = normalizeInput(input);
-      const result = insertStmt.run(normalized);
-      const stored = findRow(normalized.submission_id);
+  const persistAcceptance = (
+    input: AcceptFormResponseInput,
+    working?: {
+      content: { values: Readonly<Record<string, unknown>>; visitor: FormResponseVisitor };
+      now: number;
+    },
+  ): AcceptFormResponseResult => {
+    const normalized = normalizeInput(input);
+    const result = insertStmt.run(normalized);
+    let stored = findRow(normalized.submission_id);
+    if (stored === null) {
+      throw new Error(
+        `FormResponseStore.accept: row '${normalized.submission_id}' missing after insert`,
+      );
+    }
+    if (result.changes === 0 && !immutableRowsMatch(stored, normalized)) {
+      throw new FormResponseConflictError(normalized.submission_id);
+    }
+    if (result.changes > 0 && working !== undefined) {
+      requireTimestamp(working.now, 'now');
+      updateContentStmt.run({
+        submission_id: normalized.submission_id,
+        values_blob: encodeObject(working.content.values, 'values'),
+        visitor_blob: encodeVisitor(working.content.visitor),
+        now: working.now,
+      });
+      stored = findRow(normalized.submission_id);
       if (stored === null) {
         throw new Error(
-          `FormResponseStore.accept: row '${normalized.submission_id}' missing after insert`,
+          `FormResponseStore.accept: row '${normalized.submission_id}' missing after working edit`,
         );
       }
-      if (result.changes === 0 && !immutableRowsMatch(stored, normalized)) {
-        throw new FormResponseConflictError(normalized.submission_id);
-      }
-      return {
-        status: result.changes > 0 ? 'created' : 'existing',
-        response: rowToResponse(stored),
-      };
+    }
+    return {
+      status: result.changes > 0 ? 'created' : 'existing',
+      response: rowToResponse(stored),
+    };
+  };
+  const acceptWithWorkingContent = db.transaction(
+    (
+      input: AcceptFormResponseInput,
+      working: { values: Readonly<Record<string, unknown>>; visitor: FormResponseVisitor },
+      now: number,
+    ) => persistAcceptance(input, { content: working, now }),
+  );
+
+  return {
+    accept(input) {
+      return persistAcceptance(input);
+    },
+
+    acceptWithWorkingContent(input, working, now) {
+      return acceptWithWorkingContent(input, working, now);
     },
 
     findById(submission_id) {
@@ -475,13 +625,24 @@ export const createFormResponseStore = (
       // `definition_snapshot_blob` for every row just to render a summary list.
       const rows = db.prepare(`
         SELECT submission_id, endpoint_id, form_definition_id,
-               visitor_blob, submitted_at, accepted_at, metadata_blob
+               visitor_blob, submitted_at, accepted_at, updated_at,
+               lifecycle_state, state_changed_at, metadata_blob
         FROM ${TABLE}
         ${whereClause}
         ORDER BY accepted_at DESC, submission_id DESC
         LIMIT @limit
       `).all(params) as FormResponseSummaryRow[];
       return rows.map(rowToSummary);
+    },
+
+    updateContent(submission_id, input, now) {
+      requireId(submission_id, 'submission_id');
+      requireTimestamp(now, 'now');
+      const values_blob = encodeObject(input.values, 'values');
+      const visitor_blob = encodeVisitor(input.visitor);
+      updateContentStmt.run({ submission_id, values_blob, visitor_blob, now });
+      const row = findRow(submission_id);
+      return row === null ? null : rowToResponse(row);
     },
 
     setLifecycleState(submission_id, lifecycle_state, now) {

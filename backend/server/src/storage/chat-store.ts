@@ -1,6 +1,6 @@
 /** D-137 P1 — AI Chat substrate storage scaffold.
  *
- *  P1 lands the two chat tables (`chat_sessions`, `chat_messages`) as
+ *  The core chat tables (`chat_sessions`, `chat_messages`, `chat_plans`) are
  *  fully-shaped `CREATE TABLE IF NOT EXISTS` schemas — chat storage IS
  *  the substrate that ships first (in contrast to D-149 P1's
  *  placeholder pattern; here the rpc handler slice can drop straight
@@ -9,10 +9,9 @@
  *  server-internal — no cross-cloud sync (D-097 / D-168 retired the
  *  legacy SYNC_OBJECTS substrate).
  *
- *  Per § Contract Tightening — chat content is encrypted at rest via a
- *  new `chat` sub-DEK domain (lands with the rpc handler slice; P1
- *  schema reserves the `_encrypted` columns + plaintext metadata
- *  columns to keep summary lists cheap without decrypting every row).
+ *  Per § Contract Tightening — chat content, reviewed action arguments, and
+ *  terminal receipt detail are encrypted at rest via the `chat` sub-DEK;
+ *  plaintext correlation metadata keeps summary/recovery reads cheap.
  *
  *  Per § A.2 — chat is the **internal channel**; the chat orchestrator
  *  writes rows directly through the engine's audit + transparency
@@ -28,6 +27,11 @@ import type Database from 'better-sqlite3';
 import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_TABLES,
+  isChatDataDiagnosisIntent,
+  isChatDataDiagnosisRelationship,
+  isChatDataDiagnosisResolutionStatus,
+  type ChatDataDiagnosisContext,
+  type ChatDataDiagnosisResolution,
   type ChatMessage,
   type ChatEgressPacket,
   type ChatMessageAttachment,
@@ -42,11 +46,16 @@ import {
   type ChatSessionSummary,
   type ChatTableName,
   type ChatToolCall,
+  type EntityFieldPrivacy,
+  type ExecutionSource,
   type RecuedServerSignature,
   contributorForChatRole,
+  executionSourceHasContract,
   isChatMessageRole,
   isChatModelHint,
   isChatModelSourceId,
+  isEntityFieldPrivacy,
+  isExecutionSource,
 } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
@@ -68,8 +77,8 @@ export type { ChatTableName };
  *  `ensureCorrectionEventsStore` etc.
  *
  *  Sets `PRAGMA foreign_keys = ON` on the connection so the
- *  `chat_messages.session_id → chat_sessions.session_id` `ON DELETE
- *  CASCADE` actually fires. SQLite's FK enforcement is opt-in
+ *  chat-message/action foreign keys actually fire. SQLite's FK enforcement is
+ *  opt-in
  *  per-connection (not per-table); setting it inside the ensure
  *  function follows the established pattern in
  *  `ensureEnrichmentSchema` and removes the "callers must enable FK
@@ -77,7 +86,7 @@ export type { ChatTableName };
  *  cheap. */
 export const ensureChatSchema = (db: Database.Database): void => {
   // SQLite needs `PRAGMA foreign_keys = ON` per-connection so the
-  // `chat_messages` ON DELETE CASCADE fires on session deletes.
+  // chat-message/action cascades fire on session deletes.
   // Idempotent and cheap; same pattern as `ensureEnrichmentSchema`.
   db.exec('PRAGMA foreign_keys = ON');
   // § Contract Tightening — one row per chat conversation. Per-pair
@@ -108,6 +117,7 @@ export const ensureChatSchema = (db: Database.Database): void => {
       model_routing_model_id     TEXT,
       model_routing_overridden   INTEGER NOT NULL DEFAULT 0,
       archived                   INTEGER NOT NULL DEFAULT 0,
+      content_revision           INTEGER NOT NULL DEFAULT 0,
       metadata_blob              TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_last_active
@@ -147,6 +157,11 @@ export const ensureChatSchema = (db: Database.Database): void => {
       'ALTER TABLE chat_sessions ADD COLUMN model_routing_source_id TEXT',
     );
   }
+  if (!sessionCols.has('content_revision')) {
+    db.exec(
+      'ALTER TABLE chat_sessions ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0',
+    );
+  }
 
   // D-167 / D-174 R28 Slice A — per-pair global chat-model default (a single
   // `default_model_routing_source_id` row + its `updated_at`). NOT per-session;
@@ -173,10 +188,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
   // picker conversations resolves correctly per § A.8.
   //
   // `tool_calls_blob` carries the per-turn `ChatToolCall[]` array
-  // (provenance + tier + classification + status); always plaintext
-  // because each entry's bulky result body lives off-row under a
-  // `result_ref` lookup keyed against the chat-side ephemeral
-  // storage tier (lands with the rpc handler slice).
+  // (provenance + tier + classification + status). It is encrypted under a
+  // field-specific chat sub-DEK binding because `args` and free-form `detail`
+  // are content-bearing even when a bulky result lives off-row.
   //
   // `model_used_provider` + `model_used_model_id` are plaintext so
   // the renderer's per-message "model:badge" affordance reads
@@ -194,10 +208,13 @@ export const ensureChatSchema = (db: Database.Database): void => {
       model_used_model_id        TEXT NOT NULL,
       content_encrypted          BLOB NOT NULL,
       tool_calls_blob            TEXT,
+      candidates_encrypted       BLOB,
+      source_lifecycle           TEXT NOT NULL DEFAULT 'failed',
       provenance_blob            TEXT,
       attachments_blob           TEXT,
       metadata_blob              TEXT,
       contributor                TEXT,
+      recall_eligibility         TEXT NOT NULL DEFAULT 'ineligible',
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_ts
@@ -236,6 +253,77 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!messageCols.has('contributor')) {
     db.exec('ALTER TABLE chat_messages ADD COLUMN contributor TEXT');
   }
+  // D-213 A0 — guarded additive column for existing chat databases. The index
+  // is created only after the column exists; placing it in the CREATE TABLE
+  // batch above would fail boot on every pre-D-213 database.
+  if (!messageCols.has('recall_eligibility')) {
+    db.exec(
+      "ALTER TABLE chat_messages ADD COLUMN recall_eligibility TEXT NOT NULL DEFAULT 'ineligible'",
+    );
+  }
+  if (!messageCols.has('candidates_encrypted')) {
+    db.exec('ALTER TABLE chat_messages ADD COLUMN candidates_encrypted BLOB');
+  }
+  if (!messageCols.has('source_lifecycle')) {
+    db.exec(
+      "ALTER TABLE chat_messages ADD COLUMN source_lifecycle TEXT NOT NULL DEFAULT 'failed'",
+    );
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_recall_eligibility
+      ON chat_messages (recall_eligibility, ts DESC, message_id DESC);
+  `);
+
+  // Durable reviewed-action history. The args and terminal execution payload
+  // use the chat sub-DEK in `chat-plan-store.ts`; only correlation/status
+  // metadata remains plaintext so restart recovery can fail a stale `running`
+  // row to `unknown` without decrypting owner content at boot.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_plans (
+      plan_id                    TEXT PRIMARY KEY,
+      session_id                 TEXT NOT NULL,
+      turn_id                    TEXT NOT NULL,
+      retry_of_plan_id           TEXT,
+      message_id                 TEXT,
+      tool                       TEXT NOT NULL,
+      tier                       INTEGER NOT NULL,
+      classification             TEXT NOT NULL,
+      args_encrypted             TEXT NOT NULL,
+      args_hash                  TEXT NOT NULL,
+      target_instance            TEXT,
+      status                     TEXT NOT NULL,
+      created_at                 INTEGER NOT NULL,
+      resolved_at                INTEGER,
+      consumed_at                INTEGER,
+      execution_status           TEXT,
+      execution_turn_id          TEXT,
+      execution_blob_encrypted   TEXT,
+      execution_updated_at       INTEGER,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_session_created
+      ON chat_plans (session_id, created_at, plan_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_dispatch_match
+      ON chat_plans (session_id, tool, args_hash, status, consumed_at);
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_turn
+      ON chat_plans (session_id, turn_id, tool, args_hash, created_at);
+  `);
+
+  // `retry_of_plan_id` landed after the durable action table. Keep the
+  // migration additive so existing encrypted rows retain their byte-identical
+  // AAD (the field is included only when a new row actually carries lineage).
+  const planCols = new Set(
+    (db.prepare('PRAGMA table_info(chat_plans)').all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  if (!planCols.has('retry_of_plan_id')) {
+    db.exec('ALTER TABLE chat_plans ADD COLUMN retry_of_plan_id TEXT');
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_retry_origin
+      ON chat_plans (session_id, retry_of_plan_id, created_at);
+  `);
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -250,6 +338,137 @@ export const ensureChatSchema = (db: Database.Database): void => {
  *  encoding for dbless harnesses + the pre-KeyManager boot window. */
 export type ChatKeyProvider = () => Uint8Array | null;
 
+export type RecallSourceLifecycle = 'pending' | 'finalized' | 'failed';
+
+/** Flat schema-attested source projection retained for local D-167 reharvest. */
+export interface RetainedAliasCandidate {
+  readonly value: string;
+  readonly kind: Exclude<EntityFieldPrivacy, 'content'>;
+}
+
+interface StoredPromptPartsV1 {
+  readonly format: 'prompt_parts_v1';
+  readonly primary: {
+    readonly source: 'framework';
+    readonly role: 'content';
+    readonly content_kind: 'user_message' | 'chat_tail';
+    readonly text: string;
+    readonly speaker: 'user' | 'assistant';
+  };
+}
+
+const encodeStoredPromptParts = (
+  role: ChatMessageRole,
+  content: string,
+): string => JSON.stringify({
+  format: 'prompt_parts_v1',
+  primary: {
+    source: 'framework',
+    role: 'content',
+    content_kind: role === 'user' ? 'user_message' : 'chat_tail',
+    text: content,
+    speaker: role === 'user' ? 'user' : 'assistant',
+  },
+} satisfies StoredPromptPartsV1);
+
+const decodeStoredPromptParts = (
+  raw: string,
+  expectedRole: ChatMessageRole,
+): StoredPromptPartsV1 => {
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('chat-store: invalid prompt_parts_v1 envelope');
+  }
+  const envelope = parsed as Record<string, unknown>;
+  const primary = envelope.primary;
+  if (
+    envelope.format !== 'prompt_parts_v1'
+    || Object.keys(envelope).some(
+      (key) => key !== 'format' && key !== 'primary',
+    )
+    || primary === null
+    || typeof primary !== 'object'
+    || Array.isArray(primary)
+  ) {
+    throw new Error('chat-store: invalid prompt_parts_v1 envelope');
+  }
+  const part = primary as Record<string, unknown>;
+  if (
+    Object.keys(part).some(
+      (key) =>
+        key !== 'source'
+        && key !== 'role'
+        && key !== 'content_kind'
+        && key !== 'text'
+        && key !== 'speaker',
+    )
+    ||
+    part.source !== 'framework'
+    || part.role !== 'content'
+    || (part.content_kind !== 'user_message' && part.content_kind !== 'chat_tail')
+    || typeof part.text !== 'string'
+    || (part.speaker !== 'user' && part.speaker !== 'assistant')
+  ) {
+    throw new Error('chat-store: invalid prompt_parts_v1 primary part');
+  }
+  const expectedSpeaker = expectedRole === 'user' ? 'user' : 'assistant';
+  const expectedContentKind =
+    expectedRole === 'user' ? 'user_message' : 'chat_tail';
+  if (
+    part.speaker !== expectedSpeaker
+    || part.content_kind !== expectedContentKind
+  ) {
+    throw new Error('chat-store: prompt part role binding mismatch');
+  }
+  return parsed as StoredPromptPartsV1;
+};
+
+const normalizeRetainedAliasCandidates = (
+  candidates: readonly RetainedAliasCandidate[] | undefined,
+): readonly RetainedAliasCandidate[] => {
+  if (candidates === undefined) return [];
+  if (!Array.isArray(candidates) || candidates.length > 1_024) {
+    throw new Error('chat-store: invalid retained candidate list');
+  }
+  const out: RetainedAliasCandidate[] = [];
+  const seen = new Set<string>();
+  let candidateBytes = 0;
+  for (const candidate of candidates) {
+    if (
+      candidate === null
+      || typeof candidate !== 'object'
+      || typeof candidate.value !== 'string'
+      || candidate.value.length === 0
+      || !isEntityFieldPrivacy(candidate.kind)
+      || candidate.kind === 'content'
+      || Object.keys(candidate).some((key) => key !== 'value' && key !== 'kind')
+    ) {
+      throw new Error('chat-store: invalid retained alias candidate');
+    }
+    const key = `${candidate.kind}\u0000${candidate.value}`;
+    if (seen.has(key)) continue;
+    candidateBytes += new TextEncoder().encode(candidate.value).byteLength;
+    if (candidateBytes > 1_048_576) {
+      throw new Error('chat-store: retained candidate byte limit exceeded');
+    }
+    seen.add(key);
+    out.push({ value: candidate.value, kind: candidate.kind });
+  }
+  return out;
+};
+
+const decodeRetainedAliasCandidates = (
+  raw: string,
+): readonly RetainedAliasCandidate[] => {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error('chat-store: invalid retained candidate storage');
+  }
+  return normalizeRetainedAliasCandidates(
+    parsed as readonly RetainedAliasCandidate[],
+  );
+};
+
 /** AAD binding for chat message content. Binds each ciphertext to its
  *  `(session_id, message_id)` pair so an attacker who reorders rows in
  *  the SQLite file cannot move a `content_encrypted` between rows. The
@@ -258,6 +477,15 @@ export type ChatKeyProvider = () => Uint8Array | null;
 const aadForMessage = (session_id: string, message_id: string): Uint8Array =>
   new TextEncoder().encode(
     `recued/v1/chat/message/${session_id}/${message_id}`,
+  );
+
+const aadForMessageField = (
+  field: 'candidates' | 'tool_calls',
+  session_id: string,
+  message_id: string,
+): Uint8Array =>
+  new TextEncoder().encode(
+    `recued/v1/chat/message-${field}/${session_id}/${message_id}`,
   );
 
 /** Sentinel error class thrown when the chat sub-DEK is unavailable
@@ -329,6 +557,58 @@ export const decodeChatContentFromStorage = async (
   return new TextDecoder().decode(plaintext);
 };
 
+const encodeChatMessageFieldForStorage = async (
+  plaintextValue: string,
+  field: 'candidates' | 'tool_calls',
+  identity: { session_id: string; message_id: string },
+  getKey?: ChatKeyProvider,
+): Promise<string> => {
+  const plaintext = new TextEncoder().encode(plaintextValue);
+  if (!getKey) return bytesToBase64(plaintext);
+  const key = requireChatKey(getKey, `encrypt chat ${field}`);
+  const ct = await encrypt(
+    key,
+    plaintext,
+    aadForMessageField(field, identity.session_id, identity.message_id),
+  );
+  return encodeCiphertext(ct);
+};
+
+const decodeChatMessageFieldFromStorage = async (
+  blob: string,
+  field: 'candidates' | 'tool_calls',
+  identity: { session_id: string; message_id: string },
+  getKey?: ChatKeyProvider,
+): Promise<string> => {
+  if (!getKey) return new TextDecoder().decode(base64ToBytes(blob));
+  const key = requireChatKey(getKey, `decrypt chat ${field}`);
+  const plaintext = await decrypt(
+    key,
+    decodeCiphertext(blob),
+    aadForMessageField(field, identity.session_id, identity.message_id),
+  );
+  return new TextDecoder().decode(plaintext);
+};
+
+/** Exact plaintext-size bound available before AEAD decryption. The encrypted
+ * wire adds one 12-byte IV plus one 16-byte GCM tag; the no-key test/boot
+ * encoding is raw plaintext base64. Invalid base64 is handled by the caller's
+ * normal corrupt-row path. */
+const chatStoredPlaintextBytes = (
+  blob: string,
+  encrypted: boolean,
+): number => {
+  if (
+    blob.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(blob)
+  ) {
+    throw new Error('chat-store: invalid base64 source field');
+  }
+  const padding = blob.endsWith('==') ? 2 : blob.endsWith('=') ? 1 : 0;
+  const storedBytes = (blob.length / 4) * 3 - padding;
+  return encrypted ? Math.max(0, storedBytes - 28) : storedBytes;
+};
+
 // ────────────────────────────────────────────────────────────────
 // D-137 P1.2 — ChatStore CRUD
 // ────────────────────────────────────────────────────────────────
@@ -346,6 +626,7 @@ interface SessionRow {
   model_routing_model_id: string | null;
   model_routing_overridden: number;
   archived: number;
+  content_revision: number;
 }
 
 interface MessageRow {
@@ -359,11 +640,21 @@ interface MessageRow {
   model_used_model_id: string;
   content_encrypted: string;
   tool_calls_blob: string | null;
+  candidates_encrypted: string | null;
+  source_lifecycle: string;
   provenance_blob: string | null;
   attachments_blob: string | null;
   metadata_blob: string | null;
   contributor: string | null;
 }
+
+/** D-213 A2 — the only columns the recall read path may materialize. Keeping
+ * this narrower than MessageRow prevents tool/provenance/attachment metadata
+ * from becoming an accidental second input to interaction recall. */
+type RecallMessageRow = Pick<
+  MessageRow,
+  'message_id' | 'session_id' | 'role' | 'ts' | 'content_encrypted'
+>;
 
 /** D-177 5.f — closed contributor vocabulary for the read-side column
  *  guard. A NULL (pre-stamp row) or off-vocabulary value derives from
@@ -537,6 +828,94 @@ const parseAttachments = (
   }
 };
 
+const parseDataDiagnosis = (
+  blob: string | null,
+): ChatDataDiagnosisContext | undefined => {
+  if (!blob) return undefined;
+  try {
+    const parsed = JSON.parse(blob) as unknown;
+    if (parsed === null || typeof parsed !== 'object') return undefined;
+    const value = (parsed as { data_diagnosis?: unknown }).data_diagnosis;
+    if (value === null || typeof value !== 'object') return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (
+      candidate.kind !== 'data_verification'
+      || typeof candidate.plan_id !== 'string'
+      || candidate.plan_id.length === 0
+      || typeof candidate.run_id !== 'string'
+      || candidate.run_id.length === 0
+      || (
+        candidate.intent !== undefined
+        && !isChatDataDiagnosisIntent(candidate.intent)
+      )
+      || (
+        candidate.run_correlation !== 'matched'
+        && candidate.run_correlation !== 'unverified'
+      )
+      || (
+        candidate.relationship !== undefined
+        && !isChatDataDiagnosisRelationship(candidate.relationship)
+      )
+    ) return undefined;
+    return {
+      kind: 'data_verification',
+      plan_id: candidate.plan_id,
+      run_id: candidate.run_id,
+      // Rows written before explicit intent existed were explanation turns.
+      // Preserve that durable meaning rather than dropping their grounding.
+      intent: isChatDataDiagnosisIntent(candidate.intent)
+        ? candidate.intent
+        : 'explanation',
+      run_correlation: candidate.run_correlation,
+      ...(isChatDataDiagnosisRelationship(candidate.relationship)
+        ? { relationship: candidate.relationship }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+const parseDataDiagnosisResolution = (
+  blob: string | null,
+): ChatDataDiagnosisResolution | undefined => {
+  if (!blob) return undefined;
+  try {
+    const parsed = JSON.parse(blob) as unknown;
+    if (parsed === null || typeof parsed !== 'object') return undefined;
+    const value = (
+      parsed as { data_diagnosis_resolution?: unknown }
+    ).data_diagnosis_resolution;
+    if (value === null || typeof value !== 'object') return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (
+      !isChatDataDiagnosisResolutionStatus(candidate.status)
+      || typeof candidate.resolved_at !== 'number'
+      || !Number.isFinite(candidate.resolved_at)
+    ) return undefined;
+    return {
+      status: candidate.status,
+      resolved_at: candidate.resolved_at,
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+const parseMessageMetadataObject = (
+  blob: string | null,
+): Record<string, unknown> => {
+  if (!blob) return {};
+  try {
+    const parsed = JSON.parse(blob) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+};
+
 const parsePickerAtSend = (
   blob: string,
 ): ChatMessage['picker_at_send'] | null => {
@@ -572,13 +951,17 @@ const messageFromRow = async (
   row: MessageRow,
   getKey?: ChatKeyProvider,
 ): Promise<ChatMessage> => {
+  const role: ChatMessageRole = isChatMessageRole(row.role)
+    ? row.role
+    : 'system';
   let content = '';
   try {
-    content = await decodeChatContentFromStorage(
+    const stored = await decodeChatContentFromStorage(
       row.content_encrypted,
       { session_id: row.session_id, message_id: row.message_id },
       getKey,
     );
+    content = decodeStoredPromptParts(stored, role).primary.text;
   } catch (err) {
     if (err instanceof ChatVaultLockedError) {
       // Operational failure — vault is locked; the caller must see
@@ -591,9 +974,6 @@ const messageFromRow = async (
     // diagnostic placeholder; the audit log captures the read failure.
     content = '';
   }
-  const role: ChatMessageRole = isChatMessageRole(row.role)
-    ? row.role
-    : 'system';
   const picker = parsePickerAtSend(row.picker_at_send_blob) ?? {
     display_name: 'unknown',
     signature: {
@@ -602,9 +982,26 @@ const messageFromRow = async (
       instance_id: 'unknown',
     },
   };
-  const tool_calls = parseToolCalls(row.tool_calls_blob);
+  let tool_calls: ChatToolCall[] | undefined;
+  if (row.tool_calls_blob !== null) {
+    try {
+      const storedToolCalls = await decodeChatMessageFieldFromStorage(
+        row.tool_calls_blob,
+        'tool_calls',
+        { session_id: row.session_id, message_id: row.message_id },
+        getKey,
+      );
+      tool_calls = parseToolCalls(storedToolCalls);
+    } catch (err) {
+      if (err instanceof ChatVaultLockedError) throw err;
+      tool_calls = undefined;
+    }
+  }
   const provenance = parseProvenance(row.provenance_blob);
   const attachments = parseAttachments(row.attachments_blob);
+  const data_diagnosis = parseDataDiagnosis(row.metadata_blob);
+  const data_diagnosis_resolution =
+    parseDataDiagnosisResolution(row.metadata_blob);
   return {
     id: row.message_id,
     session_id: row.session_id,
@@ -619,6 +1016,10 @@ const messageFromRow = async (
     ...(tool_calls ? { tool_calls } : {}),
     ...(provenance ? { provenance } : {}),
     ...(attachments ? { attachments } : {}),
+    ...(data_diagnosis ? { data_diagnosis } : {}),
+    ...(data_diagnosis_resolution
+      ? { data_diagnosis_resolution }
+      : {}),
     contributor: CHAT_CONTRIBUTOR_SET.has(
       row.contributor as ChatSessionContributor,
     )
@@ -651,11 +1052,112 @@ export interface AppendMessageInput {
   target_server: ChatPickerTarget;
   picker_at_send: { display_name: string; signature: RecuedServerSignature };
   model_used: { provider: string; model_id: string };
+  /** D-213 A0 — the live, channel-minted source for this durable row.
+   *  Optional only so an absent/unknown producer can be stamped ineligible
+   *  rather than widening recall by default. */
+  execution_source?: ExecutionSource;
   /** Defaults to `Date.now()`. */
   ts?: number;
   tool_calls?: ChatToolCall[];
+  /** D-213 Track B — flat schema-attested values retained beside the primary
+   * content under separate AEAD. */
+  retained_alias_candidates?: readonly RetainedAliasCandidate[];
+  /** User rows on owner chat default to pending; all other rows default to
+   * finalized. Explicit use is reserved for the framework source finalizer. */
+  source_lifecycle?: RecallSourceLifecycle;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  /** Server-normalized, evidence-only diagnosis grounding. Stored in the
+   * existing message metadata column so both turn rows survive hydration. */
+  data_diagnosis?: ChatDataDiagnosisContext;
+}
+
+export interface ChatPiiSourceRow {
+  readonly message_id: string;
+  readonly content: string;
+  readonly candidates: readonly RetainedAliasCandidate[];
+  readonly source_lifecycle: Exclude<RecallSourceLifecycle, 'pending'>;
+}
+
+export interface ChatPiiSourceHarvest {
+  readonly session_id: string;
+  readonly content_revision: number;
+  readonly rows: readonly ChatPiiSourceRow[];
+  /** A pending, unreadable, row/byte/candidate cutoff weakens enhancement
+   * coverage but never makes returned raw bytes eligible for egress. */
+  readonly partial: boolean;
+  readonly decrypted_rows: number;
+  readonly decrypted_bytes: number;
+  /** Private keyset frontier for a later bounded pass. This is scan progress,
+   * not a completeness assertion and never leaves the local coordinator. */
+  readonly next_cursor?: ChatRecallSourceCursor;
+}
+
+/** D-213 A0 — plaintext metadata used to exclude non-owner rows before
+ * decrypting chat content. The value deliberately carries both the originating
+ * channel and owner-authentication outcome for the two durable chat surfaces.
+ * Every other source, including an absent or malformed one, fails closed. */
+export const CHAT_MESSAGE_RECALL_ELIGIBILITY = {
+  OWNER_AUTHENTICATED_CHAT: 'chat:owner_authenticated',
+  UNAUTHENTICATED_CHAT: 'chat:not_owner_authenticated',
+  UNAUTHENTICATED_MESSENGER: 'messenger:not_owner_authenticated',
+  INELIGIBLE: 'ineligible',
+} as const;
+
+export type ChatMessageRecallEligibility =
+  (typeof CHAT_MESSAGE_RECALL_ELIGIBILITY)[keyof typeof CHAT_MESSAGE_RECALL_ELIGIBILITY];
+
+export const deriveChatMessageRecallEligibility = (
+  source: unknown,
+): ChatMessageRecallEligibility => {
+  if (!isExecutionSource(source)) {
+    return CHAT_MESSAGE_RECALL_ELIGIBILITY.INELIGIBLE;
+  }
+  if (source.channel === 'messenger') {
+    // Messenger authenticates the bound conversation, not its sender.
+    return CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_MESSENGER;
+  }
+  if (source.channel !== 'chat') {
+    return CHAT_MESSAGE_RECALL_ELIGIBILITY.INELIGIBLE;
+  }
+  return source.actor === 'user_self' && !executionSourceHasContract(source)
+    ? CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+    : CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_CHAT;
+};
+
+/** D-213 A2 — private storage cursor. It is authenticated and sealed before
+ * becoming a public continuation and is never accepted directly from model
+ * input. */
+export interface ChatRecallSourceCursor {
+  readonly ts: number;
+  readonly message_id: string;
+}
+
+/** One authoritative encrypted message after a bounded local read. A corrupt
+ * or locked row keeps only its private locator so coverage can degrade without
+ * accidentally treating empty plaintext as a valid source. */
+export type ChatRecallSourceRow =
+  | {
+      readonly readable: true;
+      readonly item_id: string;
+      readonly session_id: string;
+      readonly kind: 'user' | 'assistant';
+      readonly timestamp: number;
+      readonly content: string;
+    }
+  | {
+      readonly readable: false;
+      readonly item_id: string;
+      readonly session_id: string;
+      readonly kind: 'user' | 'assistant';
+      readonly timestamp: number;
+    };
+
+export interface ChatRecallSourcePage {
+  readonly rows: readonly ChatRecallSourceRow[];
+  /** Private position after the final row in `rows`; present iff more eligible
+   * rows remain. */
+  readonly next_cursor?: ChatRecallSourceCursor;
 }
 
 export interface ChatStore {
@@ -704,6 +1206,69 @@ export interface ChatStore {
   deleteSession(session_id: string): boolean;
   appendMessage(input: AppendMessageInput): Promise<ChatMessage>;
   listMessages(session_id: string): Promise<ChatMessage[]>;
+  /** Complete the crash-visible pending user source and atomically advance the
+   * store-owned session content revision. */
+  finalizeMessageSource?(
+    input: {
+      readonly session_id: string;
+      readonly message_id: string;
+      readonly candidates: readonly RetainedAliasCandidate[];
+    },
+  ): Promise<boolean>;
+  /** Close a pending source honestly when candidate finalization failed. */
+  failMessageSource?(
+    session_id: string,
+    message_id: string,
+  ): boolean;
+  /** Exact-session source read used only by the X1-authorized PII coordinator. */
+  harvestPiiSources?(
+    input: {
+      readonly session_id: string;
+      /** Private store-issued frontier used only to advance a monotonic
+       * historical-session refresh. The current session starts fresh. */
+      readonly after?: ChatRecallSourceCursor;
+      /** D-213 §3.8 — inclusive upper bound for a JOIN prefix read. A recalled
+       * piece needs the values attested in its session UP TO its own row: a row
+       * may mention someone first attested several rows earlier, and oldest-first
+       * is what makes that prefix stable. Rows after the matched one are not the
+       * recalled piece and must not cross. */
+      readonly until?: ChatRecallSourceCursor;
+      readonly max_rows: number;
+      readonly max_bytes: number;
+      readonly max_candidates: number;
+      /** Remaining coordinator wall-clock budget. The store checks it between
+       * rows and split-column decryptions; the caller also owns a hard timeout. */
+      readonly max_ms?: number;
+    },
+  ): Promise<ChatPiiSourceHarvest>;
+  /** D-213 A2 — newest-first authoritative interaction-source page. Optional
+   * only for rolling compatibility with fake/older adapters; production
+   * `createChatStore` always implements it. */
+  scanRecallMessagesPage?(
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly after?: ChatRecallSourceCursor;
+      readonly limit: number;
+    },
+  ): Promise<ChatRecallSourcePage>;
+  /** D-213 A2 — exact source lookup under the same positive row scope. */
+  getRecallMessage?(
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly item_id: string;
+    },
+  ): Promise<ChatRecallSourceRow | null>;
+  /** Patch an assistant safe-check row with the owner's latest explicit
+   * closure choice while preserving all other message metadata. Optional for
+   * rolling compatibility with older store adapters. Returns null when the
+   * row is absent or is not itself a durable assistant safe-check answer. */
+  setDataDiagnosisResolution?(
+    session_id: string,
+    message_id: string,
+    resolution: ChatDataDiagnosisResolution,
+  ): Promise<ChatMessage | null>;
   /** Persist the aliased model-bound prompt(s) sent for an assistant turn —
    *  the "what we sent" egress history, one packet per AI call. Encrypted at
    *  rest; cascades on message delete. */
@@ -814,18 +1379,107 @@ export const createChatStore = (
     INSERT INTO chat_messages (
       message_id, session_id, role, ts, target_server,
       picker_at_send_blob, model_used_provider, model_used_model_id,
-      content_encrypted, tool_calls_blob, provenance_blob, attachments_blob,
-      contributor
+      content_encrypted, tool_calls_blob, candidates_encrypted,
+      source_lifecycle, provenance_blob, attachments_blob,
+      metadata_blob, contributor, recall_eligibility
     ) VALUES (
       @message_id, @session_id, @role, @ts, @target_server,
       @picker_at_send_blob, @model_used_provider, @model_used_model_id,
-      @content_encrypted, @tool_calls_blob, @provenance_blob, @attachments_blob,
-      @contributor
+      @content_encrypted, @tool_calls_blob, @candidates_encrypted,
+      @source_lifecycle, @provenance_blob, @attachments_blob,
+      @metadata_blob, @contributor, @recall_eligibility
     )
+  `);
+  const bumpContentRevisionStmt = db.prepare(`
+    UPDATE chat_sessions
+       SET content_revision = content_revision + 1
+     WHERE session_id = @session_id
+  `);
+  const getContentRevisionStmt = db.prepare(`
+    SELECT content_revision
+      FROM chat_sessions
+     WHERE session_id = @session_id
+  `);
+  const finalizeMessageSourceStmt = db.prepare(`
+    UPDATE chat_messages
+       SET candidates_encrypted = @candidates_encrypted,
+           source_lifecycle = 'finalized'
+     WHERE session_id = @session_id
+       AND message_id = @message_id
+       AND source_lifecycle = 'pending'
+  `);
+  const failMessageSourceStmt = db.prepare(`
+    UPDATE chat_messages
+       SET candidates_encrypted = NULL,
+           source_lifecycle = 'failed'
+     WHERE session_id = @session_id
+       AND message_id = @message_id
+       AND source_lifecycle = 'pending'
+  `);
+  const listPendingSourceRowsStmt = db.prepare(`
+    SELECT session_id, message_id
+      FROM chat_messages
+     WHERE source_lifecycle = 'pending'
+       AND (@session_id IS NULL OR session_id = @session_id)
+  `);
+  const harvestPiiSourceRowsStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted,
+           candidates_encrypted, source_lifecycle
+      FROM chat_messages
+     WHERE session_id = @session_id
+       AND recall_eligibility = @row_eligibility
+       AND role IN ('user', 'assistant')
+       AND (
+         @after_ts IS NULL
+         OR ts > @after_ts
+         OR (ts = @after_ts AND message_id > @after_message_id)
+       )
+       AND (
+         @until_ts IS NULL
+         OR ts < @until_ts
+         OR (ts = @until_ts AND message_id <= @until_message_id)
+       )
+     ORDER BY ts ASC, message_id ASC
+     LIMIT @limit
   `);
   const listMessagesStmt = db.prepare<{ session_id: string }>(
     `SELECT * FROM chat_messages WHERE session_id = @session_id ORDER BY ts ASC, message_id ASC`,
   );
+  const scanRecallMessagesStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND role IN ('user', 'assistant')
+       AND (
+         @after_ts IS NULL
+         OR ts < @after_ts
+         OR (ts = @after_ts AND message_id < @after_message_id)
+       )
+     ORDER BY ts DESC, message_id DESC
+     LIMIT @limit
+  `);
+  const getRecallMessageStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND role IN ('user', 'assistant')
+       AND message_id = @item_id
+  `);
+  const getMessageStmt = db.prepare<{
+    session_id: string;
+    message_id: string;
+  }>(`
+    SELECT *
+      FROM chat_messages
+     WHERE session_id = @session_id
+       AND message_id = @message_id
+  `);
+  const setMessageMetadataStmt = db.prepare(`
+    UPDATE chat_messages
+       SET metadata_blob = @metadata_blob
+     WHERE session_id = @session_id
+       AND message_id = @message_id
+  `);
   const insertEgressStmt = db.prepare(`
     INSERT INTO chat_egress (message_id, call_index, prompt_encrypted, model_id, ts)
     VALUES (@message_id, @call_index, @prompt_encrypted, @model_id, @ts)
@@ -833,6 +1487,29 @@ export const createChatStore = (
   const listEgressStmt = db.prepare<{ message_id: string }>(
     `SELECT * FROM chat_egress WHERE message_id = @message_id ORDER BY call_index ASC`,
   );
+
+  // Pending ownership is process-local. Rows present when this store instance
+  // starts have no surviving finalizer and are reconciled to the honest
+  // deterministic-extraction-only `failed` state.
+  const ownedPendingMessageIds = new Set<string>();
+  const reconcileAbandonedPending = (session_id?: string): void => {
+    const rows = listPendingSourceRowsStmt.all({
+      session_id: session_id ?? null,
+    }) as Array<{ session_id: string; message_id: string }>;
+    const abandoned = rows.filter(
+      (row) => !ownedPendingMessageIds.has(row.message_id),
+    );
+    if (abandoned.length === 0) return;
+    db.transaction(() => {
+      for (const row of abandoned) {
+        const info = failMessageSourceStmt.run(row);
+        if (info.changes > 0) bumpContentRevisionStmt.run({
+          session_id: row.session_id,
+        });
+      }
+    })();
+  };
+  reconcileAbandonedPending();
 
   // D-174 R28 Slice A — per-pair global chat-model default reads. A corrupt /
   // absent stored source_id reads back as `null` (no default chosen); the
@@ -1043,7 +1720,13 @@ export const createChatStore = (
   };
 
   const deleteSession = (session_id: string): boolean => {
+    const pending = listPendingSourceRowsStmt.all({
+      session_id,
+    }) as Array<{ message_id: string }>;
     const info = deleteSessionStmt.run({ session_id });
+    if (info.changes > 0) {
+      for (const row of pending) ownedPendingMessageIds.delete(row.message_id);
+    }
     return info.changes > 0;
   };
 
@@ -1053,12 +1736,83 @@ export const createChatStore = (
     // persistence point, never caller-supplied: role fully determines the
     // contributor for every row shape the store accepts today.
     const contributor = contributorForChatRole(input.role);
+    const recall_eligibility = deriveChatMessageRecallEligibility(
+      input.execution_source,
+    );
+    const source_lifecycle: RecallSourceLifecycle =
+      input.source_lifecycle
+      ?? (
+        input.role === 'user'
+        && recall_eligibility
+          === CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+          ? 'pending'
+          : 'finalized'
+      );
+    if (
+      source_lifecycle !== 'pending'
+      && source_lifecycle !== 'finalized'
+      && source_lifecycle !== 'failed'
+    ) {
+      throw new Error('chat-store: invalid source lifecycle');
+    }
+    if (
+      source_lifecycle === 'pending'
+      && (
+        input.role !== 'user'
+        || recall_eligibility
+          !== CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+      )
+    ) {
+      throw new Error(
+        'chat-store: pending source requires an owner-authenticated user row',
+      );
+    }
+    const candidates = normalizeRetainedAliasCandidates(
+      input.retained_alias_candidates,
+    );
+    if (
+      recall_eligibility
+        !== CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+      && candidates.length > 0
+    ) {
+      throw new Error(
+        'chat-store: recall-ineligible source cannot carry candidates',
+      );
+    }
+    if (source_lifecycle !== 'finalized' && candidates.length > 0) {
+      throw new Error(
+        'chat-store: non-finalized source cannot carry finalized candidates',
+      );
+    }
+    const identity = {
+      session_id: input.session_id,
+      message_id: input.id,
+    };
     const content_encrypted = await encodeChatContentForStorage(
-      input.content,
-      { session_id: input.session_id, message_id: input.id },
+      encodeStoredPromptParts(input.role, input.content),
+      identity,
       getKey,
     );
-    insertMessageStmt.run({
+    const tool_calls_blob = input.tool_calls
+      ? await encodeChatMessageFieldForStorage(
+          JSON.stringify(input.tool_calls),
+          'tool_calls',
+          identity,
+          getKey,
+        )
+      : null;
+    const candidates_encrypted =
+      source_lifecycle === 'finalized'
+      && recall_eligibility
+        === CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+      ? await encodeChatMessageFieldForStorage(
+          JSON.stringify(candidates),
+          'candidates',
+          identity,
+          getKey,
+        )
+      : null;
+    const row = {
       message_id: input.id,
       session_id: input.session_id,
       role: input.role,
@@ -1068,18 +1822,31 @@ export const createChatStore = (
       model_used_provider: input.model_used.provider,
       model_used_model_id: input.model_used.model_id,
       content_encrypted,
-      tool_calls_blob: input.tool_calls
-        ? JSON.stringify(input.tool_calls)
-        : null,
+      tool_calls_blob,
+      candidates_encrypted,
+      source_lifecycle,
       provenance_blob: input.provenance
         ? JSON.stringify(input.provenance)
         : null,
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
+      metadata_blob: input.data_diagnosis
+        ? JSON.stringify({ data_diagnosis: input.data_diagnosis })
+        : null,
       contributor,
-    });
-    bumpSessionLastActiveAt(input.session_id, ts);
+      recall_eligibility,
+    };
+    db.transaction(() => {
+      insertMessageStmt.run(row);
+      if (source_lifecycle !== 'pending') {
+        bumpContentRevisionStmt.run({ session_id: input.session_id });
+      }
+      touchStmt.run({ session_id: input.session_id, now: ts });
+    })();
+    if (source_lifecycle === 'pending') {
+      ownedPendingMessageIds.add(input.id);
+    }
     return {
       id: input.id,
       session_id: input.session_id,
@@ -1093,6 +1860,9 @@ export const createChatStore = (
       ...(input.attachments && input.attachments.length > 0
         ? { attachments: input.attachments }
         : {}),
+      ...(input.data_diagnosis
+        ? { data_diagnosis: input.data_diagnosis }
+        : {}),
       contributor,
       ts,
     };
@@ -1101,6 +1871,413 @@ export const createChatStore = (
   const listMessages = async (session_id: string): Promise<ChatMessage[]> => {
     const rows = listMessagesStmt.all({ session_id }) as MessageRow[];
     return Promise.all(rows.map((row) => messageFromRow(row, getKey)));
+  };
+
+  const finalizeMessageSource = async (
+    input: {
+      readonly session_id: string;
+      readonly message_id: string;
+      readonly candidates: readonly RetainedAliasCandidate[];
+    },
+  ): Promise<boolean> => {
+    let changed = false;
+    try {
+      const candidates = normalizeRetainedAliasCandidates(input.candidates);
+      const candidates_encrypted = await encodeChatMessageFieldForStorage(
+        JSON.stringify(candidates),
+        'candidates',
+        { session_id: input.session_id, message_id: input.message_id },
+        getKey,
+      );
+      db.transaction(() => {
+        const info = finalizeMessageSourceStmt.run({
+          session_id: input.session_id,
+          message_id: input.message_id,
+          candidates_encrypted,
+        });
+        changed = info.changes > 0;
+        if (changed) {
+          bumpContentRevisionStmt.run({ session_id: input.session_id });
+        }
+      })();
+      return changed;
+    } finally {
+      // A finalizer invocation is terminal for this process even when
+      // validation, encryption, or the atomic update fails. Relinquishing the
+      // claim lets the next harvest reconcile a still-pending durable row.
+      ownedPendingMessageIds.delete(input.message_id);
+    }
+  };
+
+  const failMessageSource = (
+    session_id: string,
+    message_id: string,
+  ): boolean => {
+    let changed = false;
+    try {
+      db.transaction(() => {
+        const info = failMessageSourceStmt.run({ session_id, message_id });
+        changed = info.changes > 0;
+        if (changed) bumpContentRevisionStmt.run({ session_id });
+      })();
+      return changed;
+    } finally {
+      ownedPendingMessageIds.delete(message_id);
+    }
+  };
+
+  const contentRevision = (session_id: string): number => {
+    const row = getContentRevisionStmt.get({ session_id }) as
+      | { content_revision: number }
+      | undefined;
+    return row?.content_revision ?? 0;
+  };
+
+  const harvestPiiSources = async (
+    input: {
+      readonly session_id: string;
+      readonly after?: ChatRecallSourceCursor;
+      /** D-213 §3.8 — inclusive upper bound for a JOIN prefix read. */
+      readonly until?: ChatRecallSourceCursor;
+      readonly max_rows: number;
+      readonly max_bytes: number;
+      readonly max_candidates: number;
+      readonly max_ms?: number;
+    },
+  ): Promise<ChatPiiSourceHarvest> => {
+    const startedAt = Date.now();
+    const boundedPositiveInteger = (
+      value: number,
+      ceiling: number,
+    ): number => Number.isFinite(value)
+      ? Math.max(1, Math.min(Math.floor(value), ceiling))
+      : 1;
+    const maxMs = Math.max(
+      1,
+      boundedPositiveInteger(input.max_ms ?? 250, 250),
+    );
+    reconcileAbandonedPending(input.session_id);
+    const maxRows = boundedPositiveInteger(input.max_rows, 256);
+    const maxBytes = boundedPositiveInteger(input.max_bytes, 1_048_576);
+    const maxCandidates = boundedPositiveInteger(input.max_candidates, 1_024);
+    const revisionBefore = contentRevision(input.session_id);
+    const after =
+      input.after !== undefined
+      && Number.isFinite(input.after.ts)
+      && typeof input.after.message_id === 'string'
+      && input.after.message_id.length > 0
+        ? input.after
+        : undefined;
+    const until =
+      input.until !== undefined
+      && Number.isFinite(input.until.ts)
+      && typeof input.until.message_id === 'string'
+      && input.until.message_id.length > 0
+        ? input.until
+        : undefined;
+    const rawRows = harvestPiiSourceRowsStmt.all({
+      session_id: input.session_id,
+      row_eligibility:
+        CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      after_ts: after?.ts ?? null,
+      after_message_id: after?.message_id ?? null,
+      until_ts: until?.ts ?? null,
+      until_message_id: until?.message_id ?? null,
+      limit: maxRows + 1,
+    }) as Array<Pick<
+      MessageRow,
+      | 'message_id'
+      | 'session_id'
+      | 'role'
+      | 'ts'
+      | 'content_encrypted'
+      | 'candidates_encrypted'
+      | 'source_lifecycle'
+    >>;
+    let partial = rawRows.length > maxRows;
+    let decryptedRows = 0;
+    let decryptedBytes = 0;
+    let candidateCount = 0;
+    const rows: ChatPiiSourceRow[] = [];
+    let lastAdvanced:
+      | Pick<MessageRow, 'message_id' | 'ts'>
+      | undefined;
+    let stoppedBeforeRow = false;
+
+    for (const row of rawRows.slice(0, maxRows)) {
+      const rowByteStart = decryptedBytes;
+      if (Date.now() - startedAt >= maxMs) {
+        partial = true;
+        stoppedBeforeRow = true;
+        break;
+      }
+      if (row.source_lifecycle === 'pending') {
+        partial = true;
+        lastAdvanced = row;
+        continue;
+      }
+      if (
+        row.source_lifecycle !== 'finalized'
+        && row.source_lifecycle !== 'failed'
+      ) {
+        partial = true;
+        lastAdvanced = row;
+        continue;
+      }
+      try {
+        const contentStoredBytes = chatStoredPlaintextBytes(
+          row.content_encrypted,
+          getKey !== undefined,
+        );
+        if (decryptedBytes + contentStoredBytes > maxBytes) {
+          partial = true;
+          // A row that cannot fit even into an otherwise-empty pass can never
+          // become readable under this ceiling; advance past it so it cannot
+          // starve every later source forever. A row that merely does not fit
+          // the remaining budget is retried at the start of the next page.
+          if (contentStoredBytes > maxBytes) {
+            lastAdvanced = row;
+            continue;
+          }
+          stoppedBeforeRow = true;
+          break;
+        }
+        const storedContent = await decodeChatContentFromStorage(
+          row.content_encrypted,
+          { session_id: row.session_id, message_id: row.message_id },
+          getKey,
+        );
+        decryptedRows += 1;
+        const contentBytes = new TextEncoder().encode(storedContent).byteLength;
+        if (decryptedBytes + contentBytes > maxBytes) {
+          partial = true;
+          if (contentBytes > maxBytes) {
+            lastAdvanced = row;
+            continue;
+          }
+          stoppedBeforeRow = true;
+          break;
+        }
+        decryptedBytes += contentBytes;
+        if (row.role !== 'user' && row.role !== 'assistant') {
+          throw new Error('chat-store: invalid harvest source role');
+        }
+        const content =
+          decodeStoredPromptParts(storedContent, row.role).primary.text;
+        let candidates: readonly RetainedAliasCandidate[] = [];
+        if (row.source_lifecycle === 'finalized') {
+          if (Date.now() - startedAt >= maxMs) {
+            partial = true;
+            break;
+          }
+          if (row.candidates_encrypted === null) {
+            partial = true;
+          } else {
+            const candidateStoredBytes = chatStoredPlaintextBytes(
+              row.candidates_encrypted,
+              getKey !== undefined,
+            );
+            if (decryptedBytes + candidateStoredBytes > maxBytes) {
+              partial = true;
+              // Treat the whole split-column row as the unit of progress. Two
+              // individually valid fields can still exceed the per-pass cap in
+              // combination; retrying that row at an empty frontier would then
+              // stop forever and starve every later row.
+              const contentBytesForRow = decryptedBytes - rowByteStart;
+              if (contentBytesForRow + candidateStoredBytes > maxBytes) {
+                lastAdvanced = row;
+                continue;
+              }
+              stoppedBeforeRow = true;
+              break;
+            }
+            const storedCandidates = await decodeChatMessageFieldFromStorage(
+              row.candidates_encrypted,
+              'candidates',
+              { session_id: row.session_id, message_id: row.message_id },
+              getKey,
+            );
+            const candidateBytes =
+              new TextEncoder().encode(storedCandidates).byteLength;
+            if (decryptedBytes + candidateBytes > maxBytes) {
+              partial = true;
+              const contentBytesForRow = decryptedBytes - rowByteStart;
+              if (contentBytesForRow + candidateBytes > maxBytes) {
+                lastAdvanced = row;
+                continue;
+              }
+              stoppedBeforeRow = true;
+              break;
+            }
+            decryptedBytes += candidateBytes;
+            const decoded = decodeRetainedAliasCandidates(storedCandidates);
+            const available = maxCandidates - candidateCount;
+            if (decoded.length > available) partial = true;
+            candidates = decoded.slice(0, Math.max(0, available));
+            candidateCount += candidates.length;
+          }
+        }
+        rows.push({
+          message_id: row.message_id,
+          content,
+          candidates,
+          source_lifecycle: row.source_lifecycle,
+        });
+        lastAdvanced = row;
+      } catch (err) {
+        if (err instanceof ChatVaultLockedError) throw err;
+        partial = true;
+        lastAdvanced = row;
+      }
+    }
+    if (Date.now() - startedAt > maxMs) partial = true;
+    const revisionAfter = contentRevision(input.session_id);
+    if (revisionAfter !== revisionBefore) partial = true;
+    const pageRows = rawRows.slice(0, maxRows);
+    const lastPageRow = pageRows.at(-1);
+    const hasMore =
+      rawRows.length > maxRows
+      || stoppedBeforeRow
+      || (
+        lastAdvanced !== undefined
+        && lastPageRow !== undefined
+        && (
+          lastAdvanced.ts !== lastPageRow.ts
+          || lastAdvanced.message_id !== lastPageRow.message_id
+        )
+      );
+    return {
+      session_id: input.session_id,
+      content_revision: revisionAfter,
+      rows,
+      partial,
+      decrypted_rows: decryptedRows,
+      decrypted_bytes: decryptedBytes,
+      ...(hasMore && lastAdvanced !== undefined
+        ? {
+            next_cursor: {
+              ts: lastAdvanced.ts,
+              message_id: lastAdvanced.message_id,
+            },
+          }
+        : {}),
+    };
+  };
+
+  const decodeRecallSourceRow = async (
+    row: RecallMessageRow,
+  ): Promise<ChatRecallSourceRow> => {
+    const kind = row.role === 'assistant' ? 'assistant' : 'user';
+    try {
+      if (row.role !== 'user' && row.role !== 'assistant') {
+        throw new Error('chat-store: invalid recall source role');
+      }
+      const stored = await decodeChatContentFromStorage(
+        row.content_encrypted,
+        { session_id: row.session_id, message_id: row.message_id },
+        getKey,
+      );
+      const content = decodeStoredPromptParts(stored, row.role).primary.text;
+      return {
+        readable: true,
+        item_id: row.message_id,
+        session_id: row.session_id,
+        kind,
+        timestamp: row.ts,
+        content,
+      };
+    } catch {
+      return {
+        readable: false,
+        item_id: row.message_id,
+        session_id: row.session_id,
+        kind,
+        timestamp: row.ts,
+      };
+    }
+  };
+
+  const scanRecallMessagesPage = async (
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly after?: ChatRecallSourceCursor;
+      readonly limit: number;
+    },
+  ): Promise<ChatRecallSourcePage> => {
+    const limit = Math.max(1, Math.min(Math.floor(input.limit), 256));
+    const raw = scanRecallMessagesStmt.all({
+      row_eligibility: input.row_eligibility,
+      after_ts: input.after?.ts ?? null,
+      after_message_id: input.after?.message_id ?? null,
+      limit: limit + 1,
+    }) as RecallMessageRow[];
+    const hasMore = raw.length > limit;
+    const pageRows = hasMore ? raw.slice(0, limit) : raw;
+    const rows = await Promise.all(pageRows.map(decodeRecallSourceRow));
+    const last = pageRows.at(-1);
+    return {
+      rows,
+      ...(hasMore && last
+        ? {
+            next_cursor: {
+              ts: last.ts,
+              message_id: last.message_id,
+            },
+          }
+        : {}),
+    };
+  };
+
+  const getRecallMessage = async (
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly item_id: string;
+    },
+  ): Promise<ChatRecallSourceRow | null> => {
+    const row = getRecallMessageStmt.get(input) as RecallMessageRow | undefined;
+    return row ? decodeRecallSourceRow(row) : null;
+  };
+
+  const setDataDiagnosisResolution = async (
+    session_id: string,
+    message_id: string,
+    resolution: ChatDataDiagnosisResolution,
+  ): Promise<ChatMessage | null> => {
+    const row = getMessageStmt.get({ session_id, message_id }) as
+      | MessageRow
+      | undefined;
+    if (row === undefined) return null;
+    const diagnosis = parseDataDiagnosis(row.metadata_blob);
+    if (
+      row.role !== 'assistant'
+      || diagnosis?.intent !== 'safe_check'
+    ) return null;
+    const metadata = parseMessageMetadataObject(row.metadata_blob);
+    const current = parseDataDiagnosisResolution(row.metadata_blob);
+    const persistedResolution: ChatDataDiagnosisResolution =
+      current?.status === resolution.status
+        ? current
+        : {
+            status: resolution.status,
+            // This is the final serialization point. Close the
+            // same-millisecond race between two handlers that both read the
+            // previous closure before either write reaches the store.
+            resolved_at: Math.max(
+              resolution.resolved_at,
+              (current?.resolved_at ?? -1) + 1,
+            ),
+          };
+    metadata.data_diagnosis_resolution = persistedResolution;
+    const metadata_blob = JSON.stringify(metadata);
+    const info = setMessageMetadataStmt.run({
+      session_id,
+      message_id,
+      metadata_blob,
+    });
+    if (info.changes === 0) return null;
+    return messageFromRow({ ...row, metadata_blob }, getKey);
   };
 
   const appendEgress = async (
@@ -1157,6 +2334,12 @@ export const createChatStore = (
     deleteSession,
     appendMessage,
     listMessages,
+    finalizeMessageSource,
+    failMessageSource,
+    harvestPiiSources,
+    scanRecallMessagesPage,
+    getRecallMessage,
+    setDataDiagnosisResolution,
     appendEgress,
     getEgress,
   };

@@ -21,7 +21,7 @@
  *      from form fields / buttons inside the dialog dismisses the
  *      dialog (Codex P1 fold).
  *
- *  Spec: docs/d-145-spec.md § Phase PA6 (Create-new flow uses form
+ *  Spec: D-145 § Phase PA6 (Create-new flow uses form
  *  renderer / Per-item edit flow).
  */
 

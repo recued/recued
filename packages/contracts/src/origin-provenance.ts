@@ -26,7 +26,7 @@
  *  content's authorship (an email's human `From:` sender) — that is
  *  D-139's separate `authorship` classifier.
  *
- *  Spec: docs/d-161-spec.md § N.7 / A.4 / A.5 / I-5 / I-6.
+ *  Spec: D-161 § N.7 / A.4 / A.5 / I-5 / I-6.
  */
 
 import type { Actor, ExecutionSource } from './commits.js';

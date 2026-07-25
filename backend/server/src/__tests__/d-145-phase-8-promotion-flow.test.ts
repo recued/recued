@@ -11,7 +11,7 @@
  *  externally. These tests assemble the harness explicitly to verify
  *  the flow end-to-end.
  *
- *  Spec: docs/d-145-spec.md § A.4.6. */
+ *  Spec: D-145 § A.4.6. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

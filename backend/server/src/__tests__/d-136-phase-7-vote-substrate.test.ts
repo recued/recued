@@ -20,7 +20,7 @@
  *    - `vote: 'corrected'` with `source: 'user_dismissal' | 'user_action'`
  *      hard-rejects (write-tier required).
  *
- *  Spec: `docs/d-136-spec.md` §A.11 + §A.13.7. */
+ *  Spec: D-136 §A.11 + §A.13.7. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

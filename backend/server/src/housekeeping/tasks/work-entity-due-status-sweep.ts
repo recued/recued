@@ -13,7 +13,7 @@
  *  about a source-record write changes whether a deadline crossed
  *  in real time.
  *
- *  Spec: `docs/d-145-spec.md` § Phase PA4 + § A.1.3. */
+ *  Spec: D-145 § Phase PA4 + § A.1.3. */
 
 import type {
   HousekeepingCursor,

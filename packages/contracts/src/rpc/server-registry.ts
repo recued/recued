@@ -57,6 +57,10 @@ import type {
   FormResponseGetRpcResponse,
   FormResponseListQuery,
   FormResponseListRpcResponse,
+  FormResponseUpdateRpcRequest,
+  FormResponseUpdateRpcResponse,
+  FormResponseExportRpcRequest,
+  FormResponseExportRpcResponse,
 } from '../form-response.js';
 import type {
   CollectionAuthState,
@@ -189,6 +193,11 @@ import type {
   OverrideView,
 } from '../contract-override.js';
 import type {
+  OwnerOperationIngredientView,
+  OwnerOperationPolicyInput,
+  OwnerOperationView,
+} from '../owner-operation-override.js';
+import type {
   ContractDefinitionView,
   ContractListRequest,
   ContractListResponse,
@@ -213,6 +222,7 @@ import type {
   ChatCatalogDeliveryMode,
   ChatModelRoutingLayer,
   ChatModelSourceId,
+  ChatPlanRecord,
   ChatPlanProposal,
   IssuedMcpInboundToken,
   McpInboundConcurrencyTier,
@@ -544,6 +554,20 @@ export interface ServerSystemStatus {
   pending_asks: number | null;
   schedule_queue_depth: number | null;
   recent_error_count: number | null;
+  /** D-212 §7.10 — how the server keyfile is protected at rest.
+   *
+   *  `'machine'` a platform secret store · `'passphrase'` the operator's
+   *  `RECUED_IDENTITY_PASSPHRASE` · `'none'` **UNSEALED** — the key that opens
+   *  the warehouse sits readable in the warehouse's own directory, so a copy of
+   *  that directory yields everything.
+   *
+   *  ⛔ `'none'` is NOT `null` and must never render the same way. `null` is the
+   *  usual not-wired case this shape uses for counters; `'none'` is a KNOWN and
+   *  materially worse posture. §7.10 lets an operator choose unsealed, and the
+   *  floor it enforces instead of a refusal is that the choice stays visible —
+   *  so a client rendering `'none'` as "—" would remove the only control that
+   *  replaced the retracted §7.9 gate. */
+  keyfile_sealing: 'machine' | 'passphrase' | 'none' | null;
   snapshot_at: number;
 }
 
@@ -2126,6 +2150,10 @@ export type ServerRpcRegistry = {
       mailing_address?: MailingAddress;
       /** Workplace name. Tags `company_source = 'manual'`. */
       company?: string;
+      /** Current job title from manual entry/import. */
+      title?: string;
+      /** Birthday calendar date, including ISO yearless `--MM-DD`. */
+      birthday?: string;
       /** Closed-list multi-value annotation. Empty array clears. */
       network_domain?: NetworkDomain[];
     },
@@ -2492,11 +2520,10 @@ export type ServerRpcRegistry = {
 
   /** Create or replace a connection. ON CONFLICT (kind, name) the row
    *  is replaced in place — `enroll` is idempotent at the rpc layer.
-   *  `probe?` is populated when the call ran a probe (default on);
-   *  failures don't block enrollment so the user can register a token
-   *  they'll activate later (`health.status: 'unknown'` is the
-   *  baseline). Real per-kind probe wiring lands in P4.x; P2.1 ships
-   *  the placeholder shape only. */
+   *  `probe?` carries the honest pre-probe baseline (`unknown`) written
+   *  with the row. A host promising "Save and probe" follows a successful
+   *  enroll with `collection.connection.probe`; that separation keeps a
+   *  failed reachability/auth check from rolling back enrollment. */
   'collection.connection.enroll': RpcMethodSpec<
     {
       name: string;
@@ -2720,28 +2747,32 @@ export type ServerRpcRegistry = {
     WebhookDeliveryRetentionPruneResponse
   >;
 
-  /** D-166 override-write path — author (upsert) a user `contract.override`
-   *  row for `(actor, ingredient_id, operation_id?)`. The override TIGHTENS the
-   *  connection-keyed grant floor the Slice 4d.4 catalog gateway resolves —
-   *  force-deny, escalate approval, lower the no-approval risk ceiling; it can
-   *  never LOOSEN (the store rejects a net-looser write with the
-   *  `contract_write_loosens` error carrying the offending fields). `actor` must
-   *  be a known Actor KIND; `ingredient_id` a catalog-form ingredient slug;
+  /** D-166 override-write path — author an actor-scoped tightening row at
+   *  `(actor, ingredient_id, operation_id?)`. Every field (`denied`,
+   *  `approval`, `max_risk_without_approval`, `timeout_ms`, `cache_ttl_ms`)
+   *  composes through the existing tightening-only lattice; a net-looser write
+   *  is rejected with `contract_write_loosens`.
+   *
+   *  D-211's owner replacement of pack `{risk, approval}` is deliberately NOT
+   *  stored here; the actorless exact-operation `collection.operation.*`
+   *  family below owns it. `actor` must be a known Actor kind;
+   *  `ingredient_id` a catalog-form ingredient slug;
    *  `operation_id` (when present) a declared operation's fully-qualified id
-   *  (`<slug>.<op>`) — omit it for an ingredient-wide override. The `policy` must
-   *  set at least one field (use `deleteOverride` to clear). Settings-only
-   *  (`collection.contract.*` is reserved out of the MCP catalog). Returns the
-   *  written row. Reserved `not_configured` when no contract store / catalog is
-   *  wired (db-less harness). */
+   *  (`<slug>.<op>`) — omit it for an ingredient-wide override. The `policy`
+   *  must set at least one stored field (use `deleteOverride` to clear).
+   *  Settings-only (`collection.contract.*`
+   *  is reserved out of the MCP catalog). Returns the written row. Reserved
+   *  `not_configured` when no contract store / catalog is wired (db-less
+   *  harness). */
   'collection.contract.upsertOverride': RpcMethodSpec<
     { actor: Actor; ingredient_id: string; operation_id?: string; policy: OverridePolicyInput },
     OverrideView
   >;
 
-  /** D-166 override-write path — delete a user override row, reverting that
-   *  `(actor, ingredient_id, operation_id?)` key to the connection-keyed grant
-   *  floor. Deleting an absent override is a no-op (`deleted:false`). Does NOT
-   *  re-validate the ingredient/operation against the catalog (an override for a
+  /** D-166 override-write path — delete an actor-scoped tightening row,
+   *  reverting that key to the connection-keyed grant floor. Deleting an absent
+   *  override is a no-op (`deleted:false`). Does NOT re-validate
+   *  the ingredient/operation against the catalog (an override for a
    *  since-uninstalled ingredient must still be removable). Settings-only. */
   'collection.contract.deleteOverride': RpcMethodSpec<
     { actor: Actor; ingredient_id: string; operation_id?: string },
@@ -2768,6 +2799,36 @@ export type ServerRpcRegistry = {
   'collection.contract.listCatalogOperations': RpcMethodSpec<
     void,
     { ingredients: CatalogIngredientView[] }
+  >;
+
+  /** D-211 — list every loaded pack operation, including the one slug-keyed
+   * operation of simple-form ingredients, for the global owner-default editor. */
+  'collection.operation.listOperations': RpcMethodSpec<
+    void,
+    { ingredients: OwnerOperationIngredientView[] }
+  >;
+
+  /** D-211 — replace the pack-authored risk and/or approval for one operation
+   * globally. This owner action has no actor or contract-id dimension. */
+  'collection.operation.upsertOwnerOverride': RpcMethodSpec<
+    {
+      ingredient_id: string;
+      operation_id: string;
+      policy: OwnerOperationPolicyInput;
+    },
+    OwnerOperationView
+  >;
+
+  /** D-211 — remove the global owner replacement and return to pack defaults. */
+  'collection.operation.deleteOwnerOverride': RpcMethodSpec<
+    { ingredient_id: string; operation_id: string },
+    { deleted: boolean }
+  >;
+
+  /** D-211 — list global owner operation replacements, optionally by ingredient. */
+  'collection.operation.listOwnerOverrides': RpcMethodSpec<
+    { ingredient_id?: string } | void,
+    { overrides: OwnerOperationView[] }
   >;
 
   /** D-166 contract_id lifecycle — mint a `contract.contract_definition.<id>`
@@ -3063,12 +3124,12 @@ export type ServerRpcRegistry = {
     HostnameOwnershipProofResult
   >;
 
-  /** Probe an existing connection. Per-kind handlers ship in P4.x; in
-   *  P2.1 the rpc returns the placeholder `{ status: 'unknown',
-   *  last_probed_at: <now> }` and stamps the row's `health` so the
-   *  Settings → Connections UI can render a "not yet probed" pill.
-   *  Failures during the actual probe in P4.x will flip to
-   *  `'auth_failed'` / `'unreachable'` without throwing. */
+  /** Probe an existing connection and persist its fresh health snapshot.
+   *  API connections run an authenticated HTTP reachability check; MCP
+   *  connections initialize + enumerate tools over SSE, WebSocket, or stdio;
+   *  notification connections run their vendor/config readiness check.
+   *  Expected auth/reachability failures return `auth_failed` / `unreachable`
+   *  as data rather than throwing. */
   'collection.connection.probe': RpcMethodSpec<
     { name: string; kind: ConnectionKind },
     { health: ConnectionHealth }
@@ -3931,6 +3992,9 @@ export type ServerRpcRegistry = {
         binding: string;
         ingress_id: string;
       }>;
+      /** D-211 audit — hash returned by `packs.resolveBySlug` for the exact
+       * marketplace manifest the owner reviewed. Required for an update. */
+      expected_manifest_hash?: string;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -3946,7 +4010,8 @@ export type ServerRpcRegistry = {
    *  `installBySlug`) preserves the marketplace-authoritative trust model — the
    *  webclient never fetches or trusts the manifest itself. Same `packs.`
    *  reserved-prefix gate as the other pack rpcs. `manifest` is null on any
-   *  failure (see `PacksResolveResult.failure`). */
+   *  failure (see `PacksResolveResult.failure`). A successful preview also
+   *  returns `manifest_review_hash`, which the update path must echo. */
   'packs.resolveBySlug': RpcMethodSpec<
     { slug: string },
     import('../bulk-pack.js').PacksResolveResult
@@ -4226,6 +4291,14 @@ export type ServerRpcRegistry = {
   'form_response.set_state': RpcMethodSpec<
     FormResponseSetStateRpcRequest,
     FormResponseSetStateRpcResponse
+  >;
+  'form_response.update': RpcMethodSpec<
+    FormResponseUpdateRpcRequest,
+    FormResponseUpdateRpcResponse
+  >;
+  'form_response.export': RpcMethodSpec<
+    FormResponseExportRpcRequest,
+    FormResponseExportRpcResponse
   >;
 
   // ── data.timeline read pair-RPC (D-174 #22 — mirror-it drill-down) ─
@@ -4726,18 +4799,11 @@ export type ServerRpcRegistry = {
     { slug: string },
     { ok: true }
   >;
-  /** Force a re-probe on an existing instance. Updates cached caps
-   *  and auth_state in one shot. */
+  /** Force a re-probe on an existing instance, then restart its live adapter
+   *  for one bounded rescan. Updates cached caps and auth_state in one shot. */
   'collection.file.resync': RpcMethodSpec<
     { slug: string },
     { ok: true; probe_result: FileCollectionCaps; auth_state: CollectionAuthState }
-  >;
-  /** Re-auth OAuth adapters (Dropbox / Google Drive when they land).
-   *  Returns the oauth_url the UI opens, or `{ ok: true }` for
-   *  adapter types that don't use OAuth. */
-  'collection.file.reauth': RpcMethodSpec<
-    { slug: string },
-    { oauth_url: string } | { ok: true }
   >;
   /** Cross-type enumeration of every instance on this server. Returns
    *  the caps + auth_state every caller needs for parseRecipe gating
@@ -5102,8 +5168,46 @@ export type ServerRpcRegistry = {
        *  current-time anchor so the model resolves "remind me at 3pm" in
        *  the user's zone, not the server's. Absent ⇒ server-local. */
       time_zone?: string;
+      /** Correlation for an explicit verify-before-retry turn. The server
+       * validates that this names a same-session consumed action with an
+       * uncertain outcome; it is never approval authority. */
+      retry_of_plan_id?: string;
+      /** Explicit conversational lineage to a prior same-session turn. The
+       * server resolves the durable root; this id grants no authority. */
+      continuation_of_turn_id?: string;
+      /** Evidence-only grounding for a guided Data diagnosis. The server
+       * validates the same-session consumed action and derives run
+       * correlation before stamping it on the durable Chat turn. */
+      data_diagnosis?: import('../chat.js').ChatDataDiagnosisRequest;
     },
-    { turn_id: string }
+    {
+      turn_id: string;
+      /** Echo of the server-normalized durable grounding when this was a
+       * guided diagnosis turn. Lets the accepting client paint the same
+       * correlation state before the completed message arrives. */
+      data_diagnosis?: import('../chat.js').ChatDataDiagnosisContext;
+    }
+  >;
+  /** Persist the owner's explicit closure of a completed safe-check answer.
+   * The server validates the exact same-session assistant message and stamps
+   * the timestamp; this mutation cannot approve or dispatch a tool. */
+  'chat.data_diagnosis.resolve': RpcMethodSpec<
+    {
+      session_id: string;
+      message_id: string;
+      status: import('../chat.js').ChatDataDiagnosisResolutionStatus;
+    },
+    {
+      resolution: import('../chat.js').ChatDataDiagnosisResolution;
+    }
+  >;
+  /** Durable, owner-only snapshot for the bell and unified Approvals queue.
+   * Pending shells whose exact encrypted payload cannot be recovered remain
+   * present with `payload_available: false` so clients can disable approval
+   * while retaining safe cancellation. */
+  'chat.plans.pending.list': RpcMethodSpec<
+    void,
+    { plans: ReadonlyArray<ChatPlanRecord> }
   >;
   // D-137 P3 § A.11 — plan-approval rpc: approve / cancel a pending
   // write proposal. Returns the resolved `ChatPlanProposal` (status
@@ -5122,6 +5226,21 @@ export type ServerRpcRegistry = {
     { plan_id: string },
     { plan: ChatPlanProposal }
   >;
+  /** Explicit owner feedback on a completed execution span. The turn is a
+   * correlation handle only; the server derives the root and every case key. */
+  'chat.execution.feedback': RpcMethodSpec<
+    {
+      session_id: string;
+      turn_id: string;
+      kind: import('../execution-case.js').ExecutionCaseFeedbackKind;
+      source_plan_id?: string;
+    },
+    { recorded: boolean }
+  >;
+  /** Owner-only D-214 compiler/experiment aggregates. Kept `unknown` at the
+   * transport boundary because the report is versioned independently and is
+   * not a model-facing contract. */
+  'chat.execution.diagnostics': RpcMethodSpec<void, unknown>;
   'chat.session.set_picker': RpcMethodSpec<
     { session_id: string; picker_state: { current: string } },
     { ok: true }
@@ -5833,7 +5952,7 @@ export type ServerRpcRegistry = {
     import('../reception-record.js').ReceptionRecordListInput | void,
     import('../reception-record.js').ReceptionRecordListResult
   >;
-  // D-210 Appendix B — mint an on-the-go reschedule link for one booking event.
+  // D-210 Appendix B — mint an on-the-go reschedule link for one booking.
   'reception.manage.mint': RpcMethodSpec<
     import('../reception-manage.js').ReceptionManageMintInput,
     import('../reception-manage.js').ReceptionManageMintResult
@@ -6337,6 +6456,11 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.deleteOverride',
   'collection.contract.listOverrides',
   'collection.contract.listCatalogOperations',
+  // D-211 global owner operation-default replacements (local owner only).
+  'collection.operation.listOperations',
+  'collection.operation.upsertOwnerOverride',
+  'collection.operation.deleteOwnerOverride',
+  'collection.operation.listOwnerOverrides',
   // D-166 contract_id lifecycle — mint / revoke / list contract_definition rows
   // (Settings → Privacy → Contracts; same reserved prefix). D-187 §6 step 7 —
   // setDoorTypes edits the level-1 door types in place (same reserved prefix).
@@ -6515,6 +6639,8 @@ export const SERVER_RPC_METHODS = [
   'form_response.list',
   'form_response.get',
   'form_response.set_state',
+  'form_response.update',
+  'form_response.export',
   'data.timeline',
   'data.file.read',
   'data.mirror.search',
@@ -6584,7 +6710,6 @@ export const SERVER_RPC_METHODS = [
   'collection.file.update',
   'collection.file.delete',
   'collection.file.resync',
-  'collection.file.reauth',
   'collection.listInstances',
   // D-117 Phase 7 — calendar enroll family.
   'collection.calendar.enrollOAuth',
@@ -6639,8 +6764,12 @@ export const SERVER_RPC_METHODS = [
   'chat.session.export',
   'chat.egress.get',
   'chat.send',
+  'chat.data_diagnosis.resolve',
+  'chat.plans.pending.list',
   'chat.plan.approve',
   'chat.plan.cancel',
+  'chat.execution.feedback',
+  'chat.execution.diagnostics',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   // D-167 chat provider-threading — override lifecycle + global default.

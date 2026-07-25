@@ -21,7 +21,7 @@
  *  schemas) — an MCP-channel agent must never author / install / uninstall its
  *  own capability surface. Settings / Kitchen UI is the sole writer.
  *
- *  Spec: `docs/d-170-spec.md` § N.14 (storage, install & uninstall), N.15
+ *  Spec: D-170 § N.14 (storage, install & uninstall), N.15
  *  (server-side rpc surface), N.16 (gateway resolves decomposed local
  *  manifests). */
 

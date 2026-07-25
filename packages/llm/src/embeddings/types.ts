@@ -105,7 +105,7 @@ export interface EmbeddingsOutput {
 /** True iff a manifest is an embeddings ingredient.
  *
  *  Discriminator: `kind === 'ai'` AND `output.vector` is declared.
- *  Spec rule from `docs/launch-sequence-2026-04-30.md` A.2: "Manifest
+ *  Spec rule from internal design notes A.2: "Manifest
  *  validator extension — `kind: 'ai'` ingredients with `output: { vector }`
  *  field flag as embeddings (vs chat)."
  *

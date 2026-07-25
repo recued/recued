@@ -1,21 +1,11 @@
-/** D-164 P4d — Spanish language stub.
- *
- *  Placeholder rule bundle. Locale is registered so the substrate can
- *  route Spanish prompts here, but no locale-specific patterns are
- *  defined yet — the language-agnostic patterns in `../extract.ts`
- *  (email / ISO date / 24-hour time) carry the load until Spanish
- *  name / locale-date / locale-time rules land.
- *
- *  Returning an empty array is the stub contract: "this locale has
- *  nothing to add beyond the universal patterns." See the English
- *  module (`en.ts`) for the substantive reference shape.
- *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
- *  § 1 ner/languages. */
+/** Spanish NER rules: Unicode Latin names, including particles, compound
+ * atoms, and Spanish diacritics. Universal email/date/time rules live in the
+ * shared extractor. */
 
 import type { LanguageRules } from '../extract.js';
+import { extractLatinNames } from './latin.js';
 
 export const ES_RULES: LanguageRules = {
   locale: 'es',
-  extract: () => [],
+  extract: extractLatinNames,
 };

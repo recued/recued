@@ -25,7 +25,7 @@
  *  the page shell. No additional fields beyond the packet payload +
  *  the closed-list visitor inputs ever reach the HTML.
  *
- *  Spec: docs/d-149-spec.md § A.5.5 + § A.11 TR-10. */
+ *  Spec: D-149 § A.5.5 + § A.11 TR-10. */
 
 import {
   APPROVAL_LINK_VISITOR_ANSWER_MAX,

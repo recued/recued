@@ -60,8 +60,6 @@ export interface ComposeIngressRpcContextOptions {
     | 'schedulingFormNonceStoreRef'
     | 'intakeRecipePairStoreRef'
     | 'intakeFormSubmissionStoreRef'
-    // D-210 WS2 — the canonical form_response log the intake POST writes at submit.
-    | 'formResponseStoreRef'
     | 'intakeFormNonceStoreRef'
     | 'dropBlobStoreRef'
     | 'dropLinkNonceStoreRef'
@@ -291,10 +289,6 @@ export const composeIngressRpcContext = async (
     ipBlockStore: storage.ipBlockStoreRef,
     schedulingFormNonceStore: storage.schedulingFormNonceStoreRef,
     intakeFormSubmissionStore: storage.intakeFormSubmissionStoreRef,
-    // D-210 WS2 — the SAME store instance the approve-time promotion writes
-    // through (`compose-execution-context.ts`), so the submit-time log and the
-    // D-200 paid-deliverable log land in one table with one idempotency key.
-    formResponseStore: storage.formResponseStoreRef,
     intakeRecipePairStore: storage.intakeRecipePairStoreRef,
     recipeStore: storage.recipeStore,
     // D-207 slice 1c — the door. `contractDefinitionStore` / `grantEntryStore` are the SAME

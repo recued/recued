@@ -5,7 +5,7 @@
  *  hour-pair window. Bounds are advisory — the rpc enforces them
  *  server-side and surfaces failures inline.
  *
- *  Spec: `docs/d-123-spec.md` §5.2. */
+ *  Spec: D-123 §5.2. */
 
 import {
   HOUSEKEEPING_CYCLE_BUDGET_MAX_MS,

@@ -4,7 +4,7 @@
  *  are scoped under `form-renderer-*` so they don't collide with
  *  variable-widgets, connection-schemas, or any pre-PA5 form CSS.
  *
- *  Spec: docs/d-145-spec.md § A.3.
+ *  Spec: D-145 § A.3.
  */
 
 export const FORM_RENDERER_STYLES = `

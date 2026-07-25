@@ -14,7 +14,7 @@
  *      `ctx.llmWithMeta`; assert dedup probe + cross-pool model_id
  *      invalidation + body-text safety in persisted value.
  *
- *  Spec: docs/d-139-spec.md § A.9.2 + § A.9.5 + § P5 acceptance. */
+ *  Spec: D-139 § A.9.2 + § A.9.5 + § P5 acceptance. */
 
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';

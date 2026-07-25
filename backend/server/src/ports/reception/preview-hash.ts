@@ -23,7 +23,7 @@
  *  same hash; any non-key-order edit (a single character change in
  *  `packet_declaration.fields_visible_override`) flips the hash.
  *
- *  Spec: docs/d-149-spec.md § A.3 line 380 + Pass-3 note. */
+ *  Spec: D-149 § A.3 line 380 + Pass-3 note. */
 
 import { createHash } from 'node:crypto';
 import { canonicalJSONStringify } from '@recued/crypto';

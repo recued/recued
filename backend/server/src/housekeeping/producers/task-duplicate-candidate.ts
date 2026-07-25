@@ -52,7 +52,7 @@
  *  `invalidation_triggers`. The `aggregates_from = ['task']` registry
  *  entry keeps cascade on the canonical scope.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.2 + A.7.3 + A.7.5 + A.7.6 #5 +
+ *  Spec: D-145 §§ A.7.2 + A.7.3 + A.7.5 + A.7.6 #5 +
  *        `ENRICHMENT_REGISTRY.task_duplicate_candidate` +
  *        `packages/contracts/src/enrichment-declarations/task-duplicate-candidate.ts`. */
 

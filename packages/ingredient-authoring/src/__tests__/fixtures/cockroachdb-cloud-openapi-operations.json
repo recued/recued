@@ -3,15 +3,15 @@
     "sources": {
       "openapi": {
         "kind": "official_openapi",
-        "url": "https://cockroachlabs.cloud/assets/docs/api/latest/openapi.json",
-        "bytes": 650317,
-        "sha256": "b19b27d184ff2020458706594cdf6eda3a83a3ff11446006a8a7988424e370fe",
+        "url": "https://raw.githubusercontent.com/cockroachdb/cockroach-cloud-sdk-go/d1d13eb0bd622703e0cd758ef2a9967492c5785e/internal/spec/openapi.json",
+        "bytes": 650654,
+        "sha256": "d1c7d94d0030c2f7d6e0d85cdaa92c7f3be9997ec6b0a7774b5f21f1ab8e3359",
         "openapi": "3.0.0",
         "title": "CockroachDB Cloud API",
         "api_version": "2024-09-16",
         "official_path_count": 74,
-        "retrieved_on": "2026-07-15",
-        "mutability": "The vendor-owned latest URL is mutable. Generation fails closed unless bytes and SHA-256 match this reviewed contract.",
+        "retrieved_on": "2026-07-20",
+        "mutability": "The pinned URL is a commit-immutable GitHub mirror (cockroach-cloud-sdk-go@d1d13eb0) adopted 2026-07-20 after the vendor-owned spec asset vanished in a docs replatform. Generation fails closed unless bytes and SHA-256 match this reviewed contract; the immutable pin no longer self-detects upstream drift, so advancing is a deliberate reviewed re-pin.",
         "servers": [
           {
             "url": "https://cockroachlabs.cloud"
@@ -32,9 +32,9 @@
       "cloud_api_guide": {
         "kind": "official_markdown",
         "url": "https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.md",
-        "bytes": 35795,
-        "sha256": "63b0882bfcda361333dacaa37e29bdc439212364088e03edf0f4d40298cd76bf",
-        "retrieved_on": "2026-07-15",
+        "bytes": 35789,
+        "sha256": "a413038a2585329ec6bdc16144bc07a83562f7f75c9e56172e11a120ebe1d7d1",
+        "retrieved_on": "2026-07-20",
         "proves": [
           "v1_api_version_2024_09_16",
           "cc_version_header_recommended",
@@ -44,7 +44,7 @@
           "audit_log_next_starting_from",
           "sql_user_next_page"
         ],
-        "verified_bytes": 35795
+        "verified_bytes": 35789
       }
     },
     "official_operation_count": 144,
@@ -133,10 +133,10 @@
       "cockroachdb-cloud-networking-observability": 43
     },
     "composition_bytes": {
-      "cockroachdb-cloud-scim": 48092,
-      "cockroachdb-cloud-access-organization": 65761,
-      "cockroachdb-cloud-clusters-data": 97857,
-      "cockroachdb-cloud-networking-observability": 91583
+      "cockroachdb-cloud-scim": 47576,
+      "cockroachdb-cloud-access-organization": 64315,
+      "cockroachdb-cloud-clusters-data": 96803,
+      "cockroachdb-cloud-networking-observability": 90818
     },
     "body_mode_counts": {
       "none": 85,
@@ -151,7 +151,8 @@
       "read": 64
     },
     "approval_counts": {
-      "always": 139
+      "always": 75,
+      "never": 64
     },
     "idempotency_counts": {
       "idempotent": 31,
@@ -222,9 +223,7 @@
       "cc_version_static_header_operation_count": 118,
       "scim_without_cc_version_operation_count": 21,
       "required_json_body_operation_count": 54,
-      "repeated_query_array_parameters": [
-        "GET /api/v1/service-accounts:role_filter"
-      ],
+      "repeated_query_array_parameters": [],
       "array_parameter_safety_max_items": 256,
       "derived_int32_bound_parameters": [
         "DELETE /api/v1/clusters/{cluster_id}/networking/allowlist/{cidr_ip}/{cidr_mask}:cidr_mask",
@@ -311,7 +310,7 @@
       {
         "severity": "high",
         "finding": "Credential-shaped response fields have different security semantics: API-key creation returns a full unrecoverable secret, while formatted connection strings contain no password and Datadog returns only the final four key digits.",
-        "resolution": "Schema-verified that boundary during generation, marked only API-key creation as secret-bearing, retained both safe reads as approval-gated uncached workflows, and generated no mutation workflow that could render the newly created secret."
+        "resolution": "Schema-verified that boundary during generation, marked only API-key creation as secret-bearing, retained both safe reads as uncached workflows, and generated no mutation workflow that could render the newly created secret."
       },
       {
         "severity": "medium",
@@ -336,7 +335,7 @@
       {
         "severity": "medium",
         "finding": "Automatic inventory walks can encounter the documented 10 request/second/user limit.",
-        "resolution": "Uses sequential gateway pagination, keeps reads uncached and approval-gated, documents Retry-After handling on every capability, and relies on gateway page and record ceilings."
+        "resolution": "Uses sequential gateway pagination, keeps reads uncached, documents Retry-After handling on every capability, and relies on gateway page and record ceilings."
       }
     ],
     "workflows": [
@@ -7667,7 +7666,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -7786,7 +7785,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -7862,7 +7861,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -7923,7 +7922,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -7999,7 +7998,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8060,7 +8059,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8136,7 +8135,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_body_mode": "none",
@@ -8166,7 +8165,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8285,7 +8284,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8361,7 +8360,7 @@
       "tag": "API Keys",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8474,7 +8473,7 @@
       "tag": "API Keys",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8520,7 +8519,7 @@
       "tag": "Audit Logs",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8603,7 +8602,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8701,7 +8700,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8829,7 +8828,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -8875,7 +8874,7 @@
       "tag": "Backup/Restore",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9018,7 +9017,7 @@
       "tag": "Backup/Restore",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9064,7 +9063,7 @@
       "tag": "Blackout Windows",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9177,7 +9176,7 @@
       "tag": "Blackout Windows",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9238,7 +9237,7 @@
       "tag": "Client CA Certificates",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9284,7 +9283,7 @@
       "tag": "Customer-managed Encryption Keys",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9330,7 +9329,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9421,7 +9420,7 @@
       "tag": "Databases",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9534,7 +9533,7 @@
       "tag": "Cluster Disruption",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9580,7 +9579,7 @@
       "tag": "Log Export",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9626,7 +9625,7 @@
       "tag": "Maintenance Windows",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9672,7 +9671,7 @@
       "tag": "Metric Export",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9718,7 +9717,7 @@
       "tag": "Metric Export",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9764,7 +9763,7 @@
       "tag": "Metric Export",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9810,7 +9809,7 @@
       "tag": "IP Allowlists",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9923,7 +9922,7 @@
       "tag": "Private Endpoint Services",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9969,7 +9968,7 @@
       "tag": "Egress Private Endpoints",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10082,7 +10081,7 @@
       "tag": "Egress Private Endpoints",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10143,7 +10142,7 @@
       "tag": "Egress Rules",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10256,7 +10255,7 @@
       "tag": "Egress Rules",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10317,7 +10316,7 @@
       "tag": "Private Endpoint Services",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10363,7 +10362,7 @@
       "tag": "Private Endpoint Services",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10409,7 +10408,7 @@
       "tag": "Private Endpoint Services",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10455,7 +10454,7 @@
       "tag": "Private Endpoint Services",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10516,7 +10515,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10644,7 +10643,7 @@
       "tag": "Backup/Restore",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10787,7 +10786,7 @@
       "tag": "Backup/Restore",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10848,7 +10847,7 @@
       "tag": "SQL Users",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10961,7 +10960,7 @@
       "tag": "Version Deferral",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11007,7 +11006,7 @@
       "tag": "Clusters",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11135,7 +11134,7 @@
       "tag": "Folders",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11248,7 +11247,7 @@
       "tag": "Folders",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11294,7 +11293,7 @@
       "tag": "Folders",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11407,7 +11406,7 @@
       "tag": "Billing",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11483,7 +11482,7 @@
       "tag": "Billing",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11529,7 +11528,7 @@
       "tag": "JWT Issuers",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11627,7 +11626,7 @@
       "tag": "JWT Issuers",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11673,7 +11672,7 @@
       "tag": "Organizations",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_body_mode": "none",
@@ -11703,7 +11702,7 @@
       "tag": "Physical Cluster Replication",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11861,7 +11860,7 @@
       "tag": "Physical Cluster Replication",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11907,7 +11906,7 @@
       "tag": "Role Management",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12008,7 +12007,7 @@
       "tag": "Role Management",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12054,7 +12053,7 @@
       "tag": "Service Accounts",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12116,36 +12115,6 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "derived_int32_bounds": false
-        },
-        {
-          "in": "query",
-          "wire_name": "name_filter",
-          "required": false,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "query.name_filter",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false,
-          "derived_int32_bounds": false
-        },
-        {
-          "in": "query",
-          "wire_name": "role_filter",
-          "required": false,
-          "official_types": [
-            "array"
-          ],
-          "admitted_key": "query.role_filter",
-          "admitted_type": "array",
-          "serialization": "repeated_query_items",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false,
-          "derived_int32_bounds": false
         }
       ],
       "request_body_mode": "none",
@@ -12182,7 +12151,7 @@
       "tag": "Service Accounts",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12228,7 +12197,7 @@
       "tag": "Role Management",
       "versioned": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13237,7 +13206,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_body_mode": "raw_json",
@@ -13275,7 +13244,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13351,7 +13320,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "request_body_mode": "raw_json",
@@ -13389,7 +13358,7 @@
       "tag": "SCIM",
       "versioned": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {

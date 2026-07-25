@@ -55,7 +55,7 @@
  *  `MM/DD` slash dates here would conflict with the same shape in other
  *  locales (`DD/MM`).
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 ner/languages / § 3 Invariant 4 (slot grammar) / § 3
  *  Invariant 5 (binary certainty) / § 3 Invariant 7 (safe small
  *  gains). */
@@ -119,6 +119,10 @@ const APOSTROPHE: ReadonlySet<string> = new Set(["'", '’']);
  *
  *  - **Leading** `-` / `'` / `’` immediately before the run → fragment;
  *    we captured the tail of a longer atom. Drop.
+ *  - **Leading initial** (`J. Robert Oppenheimer`) immediately before the run
+ *    → fragment; without a contextual known-name candidate we understand only
+ *    the suffix and must not resolve it as a different contact named `Robert
+ *    Oppenheimer`.
  *  - **Trailing** `-` or a mid-atom apostrophe → fragment. Drop.
  *  - **Trailing possessive clitic** (`'`/`’` followed by `s` / `S` /
  *    whitespace / end) → NOT a fragment. `Ben Carter's renewal` is a
@@ -132,6 +136,7 @@ const isNameAtomFragment = (
 ): boolean => {
   const before = matchStart > 0 ? text[matchStart - 1] : undefined;
   if (before !== undefined && NAME_ATOM_PUNCT.has(before)) return true;
+  if (/(?:^|[^\p{L}\p{M}])[A-Za-z]\.\s+$/u.test(text.slice(0, matchStart))) return true;
 
   const after = matchEnd < text.length ? text[matchEnd] : undefined;
   if (after === undefined || !NAME_ATOM_PUNCT.has(after)) return false;

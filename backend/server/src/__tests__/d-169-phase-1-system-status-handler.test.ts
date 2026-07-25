@@ -76,6 +76,9 @@ describe('D-169 P1 system.status handler', () => {
         pending_asks: 2,
         schedule_queue_depth: 5,
         recent_error_count: 1,
+        // D-212 §7.10 — not wired in this deps fixture ⇒ `null`, which is
+        // deliberately NOT the same as `'none'` (known-unsealed).
+        keyfile_sealing: null,
         snapshot_at: 1_800_000_000_000,
       },
     });

@@ -6,7 +6,7 @@
  *  the schema-install path, and the collision + validation error
  *  classes.
  *
- *  Spec: `docs/d-145-spec.md` § B.14.2 + § B.14.4. */
+ *  Spec: D-145 § B.14.2 + § B.14.4. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

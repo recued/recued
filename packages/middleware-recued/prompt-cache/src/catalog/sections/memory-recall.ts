@@ -10,7 +10,7 @@
  *  arm yet. TODO(P4-bench): validate framing against a memory-recall
  *  bench arm; tune copy if intent / adoption regresses.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type {
   CatalogAssemblyInput,

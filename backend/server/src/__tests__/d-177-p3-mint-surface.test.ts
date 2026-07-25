@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import {
   STDIO_MCP_TOKEN_ID,
   D165_CONTRACT_SCHEMA,
+  executionSourceContractId,
   matchesSessionGrant,
   resolveSessionGrantOffer,
   type Checkpoint,
@@ -137,14 +138,26 @@ const receptionSource: ExecutionSource = {
   contract_id: 'ct_door_a',
 };
 
-const contractSnapshot = (): ContractSnapshot => ({
-  contract_id: 'contract-1',
+const contractSnapshot = (contract_id = 'contract-1'): ContractSnapshot => ({
+  contract_id,
   contract_version: 'v1',
   allowed_tools: [TOOL_SLUG],
   approval_required: ['write', 'admin'],
   scope_restrictions: ['data.*'],
   resolved_at: NOW,
 });
+
+/** Mirror the producer invariant: every contract-bearing source reaches
+ * `handleExecute` with a snapshot for that exact contract, irrespective of actor.
+ * Reception doors are anonymous but still contract-bearing. */
+const snapshotRequestFor = (
+  source: ExecutionSource,
+): { contract_snapshot?: ContractSnapshot } => {
+  const contractId = executionSourceContractId(source);
+  return contractId === undefined
+    ? {}
+    : { contract_snapshot: contractSnapshot(contractId) };
+};
 
 const mintCtx = (
   overrides: Partial<SessionGrantMintContext> = {},
@@ -158,6 +171,7 @@ const mintCtx = (
   recipe_id: 'recipe-1',
   recipe_hash: 'recipe-hash-1',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ttl_ms: 3_600_000,
@@ -249,6 +263,7 @@ const pausedResult = (
     tool_slug: TOOL_SLUG,
     risk_tier: 'write',
     reason: 'write tier requires approval',
+    authorization_provenance: { pre_lift_approval: 'ask' },
     ...awaitingOverrides,
   },
 });
@@ -403,6 +418,7 @@ describe('resolveSessionGrantOffer', () => {
         channel,
         actor,
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
       }), `${channel}/${actor}`).toEqual({
         ttl_ms: 3_600_000,
         max_uses: 5,
@@ -412,6 +428,7 @@ describe('resolveSessionGrantOffer', () => {
         channel,
         actor,
         risk_tier: 'admin',
+        pre_lift_approval: 'ask',
       }), `${channel}/${actor}`).toEqual({
         ttl_ms: 3_600_000,
         max_uses: 5,
@@ -419,13 +436,26 @@ describe('resolveSessionGrantOffer', () => {
       });
     }
 
-    for (const risk_tier of ['read', 'destructive', undefined, 'bogus']) {
+    expect(resolveSessionGrantOffer({
+      channel: 'chat',
+      actor: 'user_self',
+      risk_tier: 'read',
+      pre_lift_approval: 'ask',
+    })).toEqual({ ttl_ms: 3_600_000, max_uses: 5, risk_tier: 'read' });
+    for (const risk_tier of ['destructive', undefined, 'bogus']) {
       expect(resolveSessionGrantOffer({
         channel: 'chat',
         actor: 'user_self',
         risk_tier,
+        pre_lift_approval: 'ask',
       }), String(risk_tier)).toBeUndefined();
     }
+    expect(resolveSessionGrantOffer({
+      channel: 'chat',
+      actor: 'user_self',
+      risk_tier: 'write',
+      pre_lift_approval: 'always',
+    })).toBeUndefined();
     for (const [channel, actor] of [
       ['mcp', 'user_self'],
       ['messenger', 'contracted_user'],
@@ -437,6 +467,7 @@ describe('resolveSessionGrantOffer', () => {
         channel,
         actor,
         risk_tier: 'write',
+        pre_lift_approval: 'ask',
       }), `${channel}/${actor}`).toBeUndefined();
     }
   });
@@ -497,7 +528,7 @@ describe('createSessionGrantResolver.mint', () => {
     });
   });
 
-  it('refuses non-grantable tiers without throwing, auditing, or broadcasting', () => {
+  it('refuses destructive tier without throwing, auditing, or broadcasting', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const log = auditLogStub();
     const broadcast = vi.fn();
@@ -508,12 +539,31 @@ describe('createSessionGrantResolver.mint', () => {
       broadcast,
     });
 
-    expect(() => resolver.mint(mintCtx({ risk_tier: 'read' as SessionGrantMintContext['risk_tier'] })))
+    expect(() => resolver.mint(mintCtx({ risk_tier: 'destructive' })))
       .not.toThrow();
 
     expect(defStore.listSessionGrants('chat-1')).toEqual([]);
     expect(log.logActivity).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('D-211 mints a read+ask row but refuses any pre-lift always', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const resolver = createSessionGrantResolver({
+      definitionStore: defStore,
+      now: () => NOW,
+    });
+
+    resolver.mint(mintCtx({ risk_tier: 'read' }));
+    expect(defStore.listSessionGrants('chat-1')).toHaveLength(1);
+    expect(defStore.listSessionGrants('chat-1')[0]?.risk_tier).toBe('read');
+
+    resolver.mint(mintCtx({
+      approved_action_ref: 'run-always',
+      pre_lift_approval: 'always',
+    }));
+    expect(defStore.listSessionGrants('chat-1')).toHaveLength(1);
     expect(warnSpy).toHaveBeenCalled();
   });
 
@@ -649,9 +699,7 @@ describe('handleExecute D-177 P3 preflight offer site', () => {
         recipe_id: recipe.recipe_id,
         trigger_source: 'manual',
         execution_source,
-        ...(execution_source.actor === 'contracted_user'
-          ? { contract_snapshot: contractSnapshot() }
-          : {}),
+        ...snapshotRequestFor(execution_source),
       },
     );
 
@@ -675,6 +723,27 @@ describe('handleExecute D-177 P3 preflight offer site', () => {
         risk_tier: 'write',
       },
     });
+  });
+
+  it('D-211 offers allow_session for read+ask but not for pre-lift always', async () => {
+    const [, readOptions, readHandler] = await runHeld(chatSource, {
+      risk_tier: 'read',
+      authorization_provenance: { pre_lift_approval: 'ask' },
+    });
+    expect(readOptions.map((option: { id: string }) => option.id)).toEqual([
+      'approve',
+      'allow_session',
+      'deny',
+    ]);
+    expect(readHandler.payload).toMatchObject({
+      session_grant: { risk_tier: 'read' },
+    });
+
+    const [, alwaysOptions, alwaysHandler] = await runHeld(chatSource, {
+      authorization_provenance: { pre_lift_approval: 'always' },
+    });
+    expect(alwaysOptions).toBe(PREFLIGHT_ASK_OPTIONS);
+    expect(alwaysHandler.payload).not.toHaveProperty('session_grant');
   });
 
   it('offers allow_session for mcp contracted held writes (P5 seed)', async () => {
@@ -997,9 +1066,7 @@ describe('N.14.6 — the host closures thread the door binding into the resolver
         recipe_id: recipe.recipe_id,
         trigger_source: 'manual',
         execution_source,
-        ...(execution_source.actor === 'contracted_user'
-          ? { contract_snapshot: contractSnapshot() }
-          : {}),
+        ...snapshotRequestFor(execution_source),
       },
     );
     const options = executeRecipeMock.mock.calls[0]?.[0] as {
@@ -1015,6 +1082,7 @@ describe('N.14.6 — the host closures thread the door binding into the resolver
     ingredient_slug: TOOL_SLUG,
     operation_id: 'deal.read',
     risk_tier: 'write',
+    pre_lift_approval: 'ask',
     arg_shape_hash: 'arg-shape-hash',
     canonical_payload_hash: 'payload-hash',
   } as const;

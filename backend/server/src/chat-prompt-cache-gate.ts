@@ -2,7 +2,7 @@
  *
  *  Builds the real `GateDeps` the shipped binary registers in place of the
  *  no-op defaults, so a chat turn whose answer is already in the warehouse
- *  resolves with ZERO LLM calls. Four short-circuit FAMILIES are composed
+ *  resolves with ZERO LLM calls. Five short-circuit FAMILIES are composed
  *  (the gate tries each matcher in order; the probe routes by template):
  *    - **contact has-email** (FIRST) — "do I have `<Name>`'s email?" /
  *      "is there an email for `<Name>`?" → the affirmative "Yes, …" when the
@@ -11,8 +11,14 @@
  *      proves no CRM contact source could contradict it (otherwise the "no"
  *      defers to the LLM, which can check CRM).
  *    - **contact-attribute** — "what is `<Name>`'s email / phone /
- *      company?" (company also as "where does `<Name>` work?") → the
- *      per-pair contact warehouse (`ContactStore.list({ name_contains })`).
+ *      company / job title / birthday?" (company also as "where does
+ *      `<Name>` work?") → the
+ *      per-pair contact warehouse (index-backed candidate retrieval followed
+ *      by canonical exact-name + uniqueness filtering; bounded substring
+ *      fallback for legacy/un-tokenisable rows).
+ *    - **contact-attribute-list** — a fully anchored 2..5-contact request for
+ *      one of those attributes → an all-or-none list over distinct identities;
+ *      one missing/ambiguous row or field defers the entire answer.
  *    - **calendar next-meeting** — "when's my next meeting with `<Name>`?"
  *      → resolve the contact (same store), then scan the calendar
  *      collections for the soonest FUTURE event that lists ANY address
@@ -51,37 +57,49 @@
  */
 
 import {
-  CALENDAR_NEXT_MEETING_TEMPLATE,
-  CONTACT_ATTRIBUTE_TEMPLATES,
-  CONTACT_HAS_EMAIL_TEMPLATE,
-  CONTACT_HAS_NO_EMAIL_TEMPLATE,
-  MAIL_FROM_COUNT_TEMPLATE,
+  CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE,
+  CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATE_DESCRIPTORS,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATES_BY_LOCALE,
+  CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE,
+  CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE,
+  MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE,
   composeShortCircuitFamilies,
   createCalendarNextMeetingProbe,
   createContactAttributePresenceProbe,
+  createContactAttributeListPresenceProbe,
   createContactHasEmailProbe,
   createMailFromCountProbe,
   createTemplateRenderer,
+  decomposeToTokens,
   matchCalendarNextMeetingTemplate,
   matchContactAttributeTemplate,
+  matchContactAttributeListTemplate,
   matchContactHasEmailTemplate,
   matchMailFromCountTemplate,
+  resolveContactHasNoEmailTemplate,
   type CalendarNextMeeting,
   type CalendarNextMeetingLookup,
   type ContactAttributeLookup,
+  type ContactAttributeReference,
   type ContactAttributeRow,
   type GateDeps,
   type HasCrmContactSource,
+  type KnownEntityNameCandidate,
+  type KnownEntityNameLookup,
   type MailFromCountLookup,
   type ShortCircuitFamily,
 } from '@recued/middleware-prompt-cache';
 import {
+  CONTACT_ALIAS_PLATFORMS,
   CONNECTION_VENDOR_ENTITIES,
   admitByOpRisk,
   executionSourceHasContract,
   isDeclaredMessengerVendor,
+  readOwnerOperationOverride,
   resolveTrustCeiling,
   type CanonicalEvent,
+  type ContactAliasPlatform,
   type ExecutionSource,
   type ScanFn,
   type ToolUnderEvaluation,
@@ -96,7 +114,12 @@ import {
   resolveConnectionVendor,
   type ConnectionStoreSqlite,
 } from './storage/connection-store.js';
-import { isMentionOnlyEmail, type ContactStore } from './storage/contact-store.js';
+import { buildQueryContext } from './chat-prefetch-score.js';
+import {
+  isMentionOnlyEmail,
+  PREFETCH_FTS_LIMIT,
+  type ContactStore,
+} from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 
 /** How many `name_contains` candidates to fetch before the probe's
@@ -111,6 +134,79 @@ import type { EnrichmentStore } from './storage/enrichment-store.js';
  *  D-138 merges true duplicates), so the fail-closed only bites adversarial
  *  input, never a real lookup. */
 const CONTACT_NAME_LOOKUP_LIMIT = 50;
+
+/** Bounds for the optional local-index name recovery pass. A normal chat prompt
+ *  is far smaller than either ceiling. Crossing one disables recovery entirely
+ *  (safe cache miss) rather than sampling a prefix that could hide a second
+ *  request/name and make a partial answer look complete. */
+const CONTEXTUAL_NAME_TEXT_LIMIT = 1_024;
+const CONTEXTUAL_NAME_TOKEN_LIMIT = 32;
+
+/** `decomposeToTokens` treats adjacent scripts as one Unicode word, so
+ *  `请问Alice` / `Bond的邮箱` do not expose the Latin name token the FTS index
+ *  needs. Add Latin runs explicitly; `buildQueryContext` then applies the same
+ *  case/diacritic normalization and ≥2-code-point floor as prompt prefetch. */
+const LATIN_NAME_TOKEN_RE = /[\p{Script_Extensions=Latin}\p{M}\p{N}]+/gu;
+const contextualNameTokens = (text: string): readonly string[] => {
+  const tokens = [
+    ...decomposeToTokens(text),
+    ...(text.match(LATIN_NAME_TOKEN_RE) ?? []),
+  ];
+  return [...buildQueryContext({ tokens }).queryTokens];
+};
+
+/** Exact contact-reference shapes admitted ahead of display-name typography.
+ * They are proposal-only: the matcher still proves a read intent and the probe
+ * re-reads the opaque contact id before anything renders. */
+const CONTACT_EMAIL_REFERENCE_RE =
+  /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,24}(?![A-Za-z0-9._%+-])/gu;
+const CONTACT_E164_REFERENCE_RE = /(?<![+\d])\+[1-9]\d{6,14}(?!\d)/gu;
+const CONTACT_ALIAS_TOKEN_RE =
+  /[\p{Script_Extensions=Latin}\p{M}\p{N}](?:[\p{Script_Extensions=Latin}\p{M}\p{N}._'’\-]*[\p{Script_Extensions=Latin}\p{M}\p{N}])?/gu;
+const CONTACT_ALIAS_MAX_TOKENS = 4;
+const CONTACT_ALIAS_SURFACE_MAX_LENGTH = 96;
+const PLATFORM_REFERENCE_RE = new RegExp(
+  `(?<![\\p{L}\\p{N}_])(${CONTACT_ALIAS_PLATFORMS.join('|')})(?:\\s*:\\s*@?|\\s+@)([A-Za-z0-9](?:[A-Za-z0-9._-]{0,63}))(?![A-Za-z0-9._-])`,
+  'giu',
+);
+
+const exactReferenceProposal = (
+  surface: string,
+  contact: ReturnType<ContactStore['get']>,
+  evidence: KnownEntityNameCandidate['evidence'],
+): KnownEntityNameCandidate | null => {
+  if (
+    contact === null
+    || contact.merged_into !== undefined
+    || typeof contact.contact_id !== 'string'
+    || contact.contact_id.length === 0
+    || typeof contact.name !== 'string'
+    || contact.name.trim().length === 0
+  ) return null;
+  return {
+    surface,
+    canonicalValue: contact.name,
+    referenceKey: contact.contact_id,
+    evidence,
+  };
+};
+
+interface AliasTokenSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+const aliasTokenSpans = (text: string): readonly AliasTokenSpan[] =>
+  [...text.matchAll(CONTACT_ALIAS_TOKEN_RE)].map((match) => {
+    // The tokenizer admits internal apostrophes for real aliases such as
+    // O'Connor, but a terminal `'s` is the query grammar's possessive clitic,
+    // not part of the alias (`mom's`, `the closer's`).
+    const cliticWidth = /['’]s$/iu.test(match[0]) ? 2 : 0;
+    return {
+      start: match.index,
+      end: match.index + match[0].length - cliticWidth,
+    };
+  });
 
 /** Sanity ceiling on a contact's ADDRESS SET enumeration
  *  (`ContactStore.addressSet` — D-205 #3.5b). Merges are user-confirmed one at
@@ -189,7 +285,17 @@ const normaliseEmail = (raw: string): string => raw.trim().toLowerCase();
  *  than no answer, so the gate passes through to the LLM instead (design
  *  § 3 Invariant 7 — safe small gains). A blank timezone falls back to UTC
  *  (a valid zone) rather than the non-deterministic host-local zone. */
-const formatEventWhen = (event: CanonicalEvent): string | null => {
+const EVENT_FORMAT_LOCALES: Readonly<Record<string, string>> = {
+  en: 'en-US',
+  de: 'de-DE',
+  es: 'es-ES',
+  fr: 'fr-FR',
+  ja: 'ja-JP',
+  pt: 'pt-PT',
+  zh: 'zh-CN',
+};
+
+const formatEventWhen = (event: CanonicalEvent, locale = 'en'): string | null => {
   const tz =
     typeof event.timezone === 'string' && event.timezone.trim().length > 0
       ? event.timezone
@@ -207,7 +313,9 @@ const formatEventWhen = (event: CanonicalEvent): string | null => {
           timeZoneName: 'short',
           timeZone: tz,
         };
-    const out = new Intl.DateTimeFormat('en-US', opts).format(new Date(event.start_at));
+    const primary = locale.trim().toLowerCase().split(/[-_]/, 1)[0] ?? 'en';
+    const formatLocale = EVENT_FORMAT_LOCALES[primary] ?? EVENT_FORMAT_LOCALES.en!;
+    const out = new Intl.DateTimeFormat(formatLocale, opts).format(new Date(event.start_at));
     return out.trim().length > 0 ? out : null;
   } catch {
     return null;
@@ -246,7 +354,7 @@ const formatEventWhen = (event: CanonicalEvent): string | null => {
 const createCalendarNextMeetingLookup = (
   getCollectionRegistry: () => CollectionRegistry | undefined,
   now: () => number = () => Date.now(),
-): CalendarNextMeetingLookup => (emails): CalendarNextMeeting | null => {
+): CalendarNextMeetingLookup => (emails, locale): CalendarNextMeeting | null => {
   const registry = getCollectionRegistry();
   if (registry === undefined) return null;
   const wanted = new Set(emails.map(normaliseEmail).filter((e) => e.length > 0));
@@ -317,7 +425,7 @@ const createCalendarNextMeetingLookup = (
 
   const summary = typeof best.summary === 'string' ? best.summary.trim() : '';
   if (summary.length === 0) return null;
-  const when = formatEventWhen(best);
+  const when = formatEventWhen(best, locale);
   if (when === null) return null;
   return { summary, when };
 };
@@ -427,7 +535,221 @@ const createHasCrmContactSource = (
  *  (`resolveUniqueExactContact`), so "same name as its survivor" here means
  *  exactly "the survivor row satisfies the same exact-name match". */
 const normaliseName = (raw: string): string =>
-  raw.trim().replace(/\s+/g, ' ').toLowerCase();
+  raw.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase();
+
+/** Resolve a display-name query through the trigger-maintained FTS index, then
+ *  load the full rows needed by the contact probes. `null` means the index seam
+ *  is unavailable (legacy test doubles / an un-tokenisable one-code-point name),
+ *  so the caller may use the old bounded substring lookup. `[]` means a
+ *  conclusive miss OR an unsafe/capped read and must stay a miss.
+ *
+ *  The `>= PREFETCH_FTS_LIMIT` refusal is conservative: one per-token leg may
+ *  have truncated, so global exact-name uniqueness is not provable. Under the
+ *  cap, every normalised exact-name row necessarily matches at least one of the
+ *  name's own FTS tokens and is present in the union. */
+const indexedExactNameRows = (
+  store: ContactStore,
+  name: string,
+): ReturnType<ContactStore['list']> | null => {
+  if (
+    typeof store.prefetchCandidates !== 'function'
+    || typeof store.get !== 'function'
+  ) return null;
+  const tokens = contextualNameTokens(name);
+  if (tokens.length === 0 || tokens.length > CONTEXTUAL_NAME_TOKEN_LIMIT) return null;
+  try {
+    const candidates = store.prefetchCandidates({ tokens, forms: [], emails: [] });
+    if (candidates.length >= PREFETCH_FTS_LIMIT) return [];
+    const wanted = normaliseName(name);
+    const rows: ReturnType<ContactStore['list']> = [];
+    for (const candidate of candidates) {
+      if (typeof candidate.name !== 'string' || normaliseName(candidate.name) !== wanted) {
+        continue;
+      }
+      const row = store.get(candidate.email);
+      if (row === null) return []; // stale/corrupt index: uniqueness is unprovable
+      rows.push(row);
+    }
+    return rows;
+  } catch {
+    // A broken optional index should not regress the pre-index exact lookup.
+    return null;
+  }
+};
+
+/** Build the gate's typed contact-reference proposal ladder:
+ *
+ *    exact stored email → exact projected E.164 phone → platform-qualified id
+ *    → confidence-1 chat alias → exact display-name candidate from local FTS.
+ *
+ * Structured identifier/alias proposals carry the exact contact_id as an
+ * opaque key; the data probe re-reads and verifies it. Display-name strings
+ * deliberately do NOT carry a key, preserving the existing global exact-name
+ * uniqueness rule. Every lookup is non-mutating: alias discovery uses
+ * `peekByAlias`, never the resolver that stamps `last_resolved_at`. */
+const createKnownEntityNameLookup = (
+  getContactStore: () => ContactStore | undefined,
+): KnownEntityNameLookup => (text) => {
+  if (text.length === 0 || text.length > CONTEXTUAL_NAME_TEXT_LIMIT) return [];
+  const store = getContactStore();
+  if (store === undefined) return [];
+  const tokens = contextualNameTokens(text);
+  if (tokens.length > CONTEXTUAL_NAME_TOKEN_LIMIT) return [];
+  try {
+    const proposals: Array<string | KnownEntityNameCandidate> = [];
+    const seen = new Set<string>();
+    const addReference = (proposal: KnownEntityNameCandidate | null): void => {
+      if (proposal === null) return;
+      const key = `${proposal.evidence}\0${proposal.surface.normalize('NFC').toLowerCase()}\0${proposal.referenceKey}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      proposals.push(proposal);
+    };
+
+    // 1. Exact known email, including a retired/attached email alias resolved
+    // through the store's canonical chain.
+    if (typeof store.resolveCanonicalEmail === 'function' && typeof store.get === 'function') {
+      for (const match of text.matchAll(CONTACT_EMAIL_REFERENCE_RE)) {
+        let contact: ReturnType<ContactStore['get']> = null;
+        try {
+          const canonical = store.resolveCanonicalEmail(match[0]).canonical_email;
+          contact = store.get(canonical);
+        } catch {
+          contact = null;
+        }
+        addReference(exactReferenceProposal(match[0], contact, 'email'));
+      }
+    }
+
+    // 2. Strict E.164 only. Human-formatted/national numbers stay on the model
+    // path because locale/country inference would no longer be exact.
+    if (typeof store.findByPhone === 'function') {
+      for (const match of text.matchAll(CONTACT_E164_REFERENCE_RE)) {
+        const resolved = store.findByPhone(match[0]);
+        if (
+          resolved.confidence === 1
+          && resolved.contact !== null
+          && resolved.alternatives.length === 0
+        ) {
+          addReference(exactReferenceProposal(match[0], resolved.contact, 'e164-phone'));
+        }
+      }
+    }
+
+    // 3. Explicit platform-qualified identifiers. A bare @handle is omitted:
+    // the same string legitimately exists on several platforms.
+    if (typeof store.peekByAlias === 'function') {
+      for (const match of text.matchAll(PLATFORM_REFERENCE_RE)) {
+        const platform = match[1]!.toLowerCase() as ContactAliasPlatform;
+        const resolved = store.peekByAlias({
+          platform,
+          alias_pattern: match[2]!,
+        });
+        if (
+          resolved.confidence === 1
+          && resolved.contact !== null
+          && resolved.alternatives.length === 0
+        ) {
+          addReference(exactReferenceProposal(match[0], resolved.contact, 'platform-id'));
+        }
+      }
+
+      // 4. Exact confidence-1 chat aliases. Enumerate only bounded Latin token
+      // n-grams; the middleware's suffix/atom boundaries and intent matcher are
+      // independent backstops. Lower-confidence inferred aliases are inert.
+      const spans = aliasTokenSpans(text);
+      for (let start = 0; start < spans.length; start += 1) {
+        const last = Math.min(spans.length, start + CONTACT_ALIAS_MAX_TOKENS);
+        for (let end = start; end < last; end += 1) {
+          const surface = text.slice(spans[start]!.start, spans[end]!.end);
+          if (surface.length > CONTACT_ALIAS_SURFACE_MAX_LENGTH) break;
+          const resolved = store.peekByAlias({ alias_pattern: surface });
+          if (
+            resolved.confidence === 1
+            && resolved.contact !== null
+            && resolved.alternatives.length === 0
+          ) {
+            addReference(exactReferenceProposal(surface, resolved.contact, 'chat-alias'));
+          }
+        }
+      }
+    }
+
+    // 5. Typography/contextual display names. A capped FTS leg invalidates the
+    // WHOLE proposal set: sampling could hide another named request and render
+    // only a partial answer. Exact identifiers therefore share the same refusal.
+    if (tokens.length === 0 || typeof store.prefetchCandidates !== 'function') {
+      return proposals;
+    }
+    const rows = store.prefetchCandidates({ tokens, forms: [], emails: [] });
+    if (rows.length >= PREFETCH_FTS_LIMIT) return [];
+    const names = new Set<string>();
+    for (const row of rows) {
+      if (typeof row.name !== 'string') continue;
+      const name = row.name.trim();
+      if (name.length > 0) names.add(name);
+    }
+    for (const name of names) proposals.push(name);
+    return proposals;
+  } catch {
+    return [];
+  }
+};
+
+/** Re-resolve the original typed surface immediately before the warehouse row
+ * is projected. This closes the proposal→probe race: retaining the old contact
+ * id is insufficient if a phone or alias was reassigned between those steps. */
+const resolveReferenceContactId = (
+  store: ContactStore,
+  reference: ContactAttributeReference,
+): string | null => {
+  const fullMatch = (pattern: RegExp): RegExpMatchArray | null => {
+    const matches = [...reference.surface.matchAll(pattern)];
+    if (
+      matches.length !== 1
+      || matches[0]!.index !== 0
+      || matches[0]![0].length !== reference.surface.length
+    ) return null;
+    return matches[0]!;
+  };
+  try {
+    if (reference.evidence === 'email') {
+      if (fullMatch(CONTACT_EMAIL_REFERENCE_RE) === null) return null;
+      const canonical = store.resolveCanonicalEmail(reference.surface).canonical_email;
+      return store.get(canonical)?.contact_id ?? null;
+    }
+    if (reference.evidence === 'e164-phone') {
+      if (fullMatch(CONTACT_E164_REFERENCE_RE) === null) return null;
+      const resolved = store.findByPhone(reference.surface);
+      return resolved.confidence === 1
+        && resolved.contact !== null
+        && resolved.alternatives.length === 0
+        ? resolved.contact.contact_id ?? null
+        : null;
+    }
+    if (reference.evidence === 'platform-id') {
+      const match = fullMatch(PLATFORM_REFERENCE_RE);
+      if (match === null) return null;
+      const resolved = store.peekByAlias({
+        platform: match[1]!.toLowerCase() as ContactAliasPlatform,
+        alias_pattern: match[2]!,
+      });
+      return resolved.confidence === 1
+        && resolved.contact !== null
+        && resolved.alternatives.length === 0
+        ? resolved.contact.contact_id ?? null
+        : null;
+    }
+    const resolved = store.peekByAlias({ alias_pattern: reference.surface });
+    return resolved.confidence === 1
+      && resolved.contact !== null
+      && resolved.alternatives.length === 0
+      ? resolved.contact.contact_id ?? null
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 // ── Read-permission seam (D-164 P10) ───────────────────────────────
 
@@ -566,13 +888,19 @@ export const createShortCircuitReadAuthorization = (
       // stage-trust), not the matrix. `source` is always an UNRESTRICTED `user_self`
       // here (the structural refusals above guarantee it), so the ceiling is the
       // contract-less owner `admin` and a `read` op resolves `admit` regardless —
-      // an unrestricted owner always reads their own warehouse. (`getContractScan` no
-      // longer feeds this seam; it stays threaded until slice 6 retires the matrix.)
+      // an unrestricted owner reads their own warehouse unless their standing
+      // per-op ruling deliberately asks or refuses that short-circuit.
+      const ownerOverride = readOwnerOperationOverride({
+        scan: getContractScan?.(),
+        ingredient_id: SHORT_CIRCUIT_READ_PROBE.slug,
+        operation_id: SHORT_CIRCUIT_READ_PROBE.slug,
+      });
       const decision = admitByOpRisk({
         slug: SHORT_CIRCUIT_READ_PROBE.slug,
         risk_tier: SHORT_CIRCUIT_READ_PROBE.risk_tier,
         ceiling: resolveTrustCeiling(source),
         source,
+        ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
       });
       return decision.verdict === 'admit';
     } catch {
@@ -604,23 +932,46 @@ export const createPromptCacheGateDeps = (
   getEnrichmentStore?: () => EnrichmentStore | undefined,
   getContractScan?: () => ScanFn | undefined,
 ): GateDeps => {
-  const contactLookup: ContactAttributeLookup = (name) => {
+  const contactLookup: ContactAttributeLookup = (name, reference) => {
     const store = getContactStore();
     if (store === undefined) return [];
-    let rows;
-    try {
-      rows = store.list({ name_contains: name, limit: CONTACT_NAME_LOOKUP_LIMIT });
-    } catch {
-      // A warehouse read failure is a pass-through, never a turn failure.
-      return [];
+    let rows: ReturnType<ContactStore['list']> | null;
+    if (reference !== undefined) {
+      // Exact identifier proposals carry a contact_id minted by THIS store.
+      // Re-resolve the original identifier AND re-read that id here. A
+      // reassignment, merge, or rename between proposal and probe safely defers.
+      if (
+        reference.key.length === 0
+        || resolveReferenceContactId(store, reference) !== reference.key
+        || typeof store.getByContactIdResolved !== 'function'
+      ) {
+        return [];
+      }
+      try {
+        const exact = store.getByContactIdResolved(reference.key);
+        if (exact === null || exact.contact_id !== reference.key) return [];
+        rows = [exact];
+      } catch {
+        return [];
+      }
+    } else {
+      rows = indexedExactNameRows(store, name);
     }
-    // Fail closed on a FULL page. The probe infers global exact-name uniqueness
-    // from these rows; a full page may be TRUNCATED (a second exact-name
-    // duplicate could sit just past the recency-ordered cap), so we can't
-    // guarantee uniqueness and must not risk answering from the wrong contact.
-    // Returning [] → the probe finds nothing → the gate passes through to the
-    // LLM. Realistically unreachable for a personal warehouse (see the cap).
-    if (rows.length >= CONTACT_NAME_LOOKUP_LIMIT) return [];
+    if (rows === null) {
+      try {
+        rows = store.list({ name_contains: name, limit: CONTACT_NAME_LOOKUP_LIMIT });
+      } catch {
+        // A warehouse read failure is a pass-through, never a turn failure.
+        return [];
+      }
+      // Fail closed on a FULL page. The probe infers global exact-name uniqueness
+      // from these rows; a full page may be TRUNCATED (a second exact-name
+      // duplicate could sit just past the recency-ordered cap), so we can't
+      // guarantee uniqueness and must not risk answering from the wrong contact.
+      // Returning [] → the probe finds nothing → the gate passes through to the
+      // LLM. Realistically unreachable for a personal warehouse (see the cap).
+      if (rows.length >= CONTACT_NAME_LOOKUP_LIMIT) return [];
+    }
     try {
       const out: ContactAttributeRow[] = [];
       for (const r of rows) {
@@ -719,11 +1070,14 @@ export const createPromptCacheGateDeps = (
           }
         }
         out.push({
+          ...(r.contact_id !== undefined ? { identityKey: r.contact_id } : {}),
           ...(mentionOnly ? {} : { email: r.email }),
           ...(emails !== undefined ? { emails } : {}),
           ...(r.name !== undefined ? { name: r.name } : {}),
           ...(r.phone !== undefined ? { phone: r.phone } : {}),
           ...(r.company !== undefined ? { company: r.company } : {}),
+          ...(r.title !== undefined ? { title: r.title } : {}),
+          ...(r.birthday !== undefined ? { birthday: r.birthday } : {}),
         });
       }
       return out;
@@ -757,35 +1111,55 @@ export const createPromptCacheGateDeps = (
     probe: createContactHasEmailProbe(
       contactLookup,
       createHasCrmContactSource(getConnectionStore, getEnrichmentStore),
-      CONTACT_HAS_NO_EMAIL_TEMPLATE,
+      resolveContactHasNoEmailTemplate,
     ),
-    templateHashes: new Set([CONTACT_HAS_EMAIL_TEMPLATE.template_hash]),
+    templateHashes: new Set(
+      Object.values(CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE).map((t) => t.template_hash),
+    ),
     // The probe-selectable sibling body, authorized by CANONICAL OBJECT —
     // the composer renders this declared template for the declared hash and
     // rejects any other override fail-closed.
-    overrideTemplates: [CONTACT_HAS_NO_EMAIL_TEMPLATE],
+    overrideTemplates: Object.values(CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE),
   };
   const contactAttributeFamily: ShortCircuitFamily = {
     match: matchContactAttributeTemplate,
     probe: createContactAttributePresenceProbe(contactLookup),
     templateHashes: new Set(
-      Object.values(CONTACT_ATTRIBUTE_TEMPLATES).map((t) => t.template_hash),
+      Object.values(CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE)
+        .flatMap((templates) => Object.values(templates).map((t) => t.template_hash)),
+    ),
+  };
+  const contactAttributeListFamily: ShortCircuitFamily = {
+    match: matchContactAttributeListTemplate,
+    probe: createContactAttributeListPresenceProbe(
+      contactLookup,
+      CONTACT_ATTRIBUTE_LIST_TEMPLATE_DESCRIPTORS,
+    ),
+    templateHashes: new Set(
+      Object.values(CONTACT_ATTRIBUTE_LIST_TEMPLATES_BY_LOCALE)
+        .flatMap((templates) => Object.values(templates))
+        .flatMap((byCount) => Object.values(byCount).map((t) => t.template_hash)),
     ),
   };
   const calendarNextMeetingFamily: ShortCircuitFamily = {
     match: matchCalendarNextMeetingTemplate,
     probe: createCalendarNextMeetingProbe(contactLookup, nextMeetingLookup),
-    templateHashes: new Set([CALENDAR_NEXT_MEETING_TEMPLATE.template_hash]),
+    templateHashes: new Set(
+      Object.values(CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE).map((t) => t.template_hash),
+    ),
   };
   const mailFromCountFamily: ShortCircuitFamily = {
     match: matchMailFromCountTemplate,
     probe: createMailFromCountProbe(contactLookup, mailFromCountLookup),
-    templateHashes: new Set([MAIL_FROM_COUNT_TEMPLATE.template_hash]),
+    templateHashes: new Set(
+      Object.values(MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE).map((t) => t.template_hash),
+    ),
   };
 
   const { matchTemplate, probeData } = composeShortCircuitFamilies([
     contactHasEmailFamily,
     contactAttributeFamily,
+    contactAttributeListFamily,
     calendarNextMeetingFamily,
     mailFromCountFamily,
   ]);
@@ -794,6 +1168,7 @@ export const createPromptCacheGateDeps = (
     matchTemplate,
     probeData,
     renderTemplate: createTemplateRenderer(),
+    lookupKnownEntityNames: createKnownEntityNameLookup(getContactStore),
     authorizeShortCircuitRead: createShortCircuitReadAuthorization(getContractScan),
   };
 };

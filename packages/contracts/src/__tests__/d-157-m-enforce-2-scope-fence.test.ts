@@ -127,10 +127,12 @@ describe('M-ENFORCE-2 deriveDispatchScope', () => {
     ).toBe('data.file');
   });
 
-  it('special-cases form-response-get to the canonical data.form_response collection', () => {
-    expect(
-      deriveDispatchScope({ kind: 'storage', slug: 'form-response-get' }, {}),
-    ).toBe('data.form_response');
+  it('special-cases every form-response recipe read to data.form_response', () => {
+    for (const slug of ['form-response-list', 'form-response-get']) {
+      expect(
+        deriveDispatchScope({ kind: 'storage', slug }, {}),
+      ).toBe('data.form_response');
+    }
     // The special case is exact: similarly prefixed storage slugs continue to
     // use the generic leading segment instead of inheriting response access.
     expect(

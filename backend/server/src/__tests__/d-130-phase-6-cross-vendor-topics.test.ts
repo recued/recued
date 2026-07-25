@@ -19,7 +19,7 @@
  *      policy default.
  *    - `confidence_drift_signal` registry walks the new AI-surface topic.
  *
- *  Spec: `docs/d-130-spec.md` § Phase 6 + § A.6. */
+ *  Spec: D-130 § Phase 6 + § A.6. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

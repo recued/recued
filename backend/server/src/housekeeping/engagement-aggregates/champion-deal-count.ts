@@ -35,7 +35,7 @@
  *    3. win_rate = won / (won + lost) — `0` when no closed sample.
  *    4. Bucket: champion / mixed / blocker / unknown per thresholds.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.2b + § P4 acceptance line 1506. */
+ *  Spec: D-139 § A.9.2b + § P4 acceptance line 1506. */
 
 import {
   type ChampionDealBucket,

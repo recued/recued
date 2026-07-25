@@ -34,7 +34,7 @@
  *  driven through the REAL handler — a test that re-implemented the re-point itself would
  *  be a tautology and would prove nothing.
  *
- *  Spec: `docs/d-206-spec.md` §2.3. */
+ *  Spec: D-206 §2.3. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

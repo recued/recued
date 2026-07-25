@@ -1,4 +1,4 @@
-export { createBlobStore, type BlobStore } from './blob-store.js';
+export { createEncryptedBlobStore, type BlobStore } from './blob-store.js';
 export {
   createSQLiteCacheStore,
   listReferencedBlobHashes,
@@ -105,8 +105,8 @@ export {
   type SellerUsageRecordInput,
   type SellerCustomerListQuery,
 } from './seller-store.js';
-// D-137 P1 — AI Chat substrate schemas (two tables — chat_sessions +
-// chat_messages). Per-pair only; no cross-cloud sync (D-097 / D-168).
+// D-137 — AI Chat core schemas (sessions + messages + durable action recovery).
+// Per-pair only; no cross-cloud sync (D-097 / D-168).
 // D-137 P1.2 — Chat sub-DEK helpers + ChatStore CRUD.
 export {
   ensureChatSchema,
@@ -121,6 +121,7 @@ export {
   type CreateSessionInput,
   type AppendMessageInput,
 } from './chat-store.js';
+export { createSqliteChatPlanStore } from './chat-plan-store.js';
 // D-145 PA1 + PA2 — work entity substrate (task / note / commitment /
 // project) + Source registry + note access ledger + default-Source
 // memory.

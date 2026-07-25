@@ -69,8 +69,8 @@
  *  matching provider truth is skipped), so re-firing costs one read per
  *  customer and no writes.
  *
- *  Spec: `docs/d-196-spec.md` §6.3 (+ §6.2's event table, whose rows this
- *  backstops) + `docs/d-123-spec.md` (idle cadence). */
+ *  Spec: D-196 §6.3 (+ §6.2's event table, whose rows this
+ *  backstops) + D-123 (idle cadence). */
 
 import type {
   HousekeepingCursor,

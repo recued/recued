@@ -25,7 +25,7 @@
  *  standard for random API tokens (cf. Stripe / GitHub PATs / AWS
  *  signature). § A.18.2 elaborates; § Must Hold I-10 enforces.
  *
- *  Spec: `docs/d-149-spec.md` § A.18.1 + § A.18.2 + § Must Hold I-10. */
+ *  Spec: D-149 § A.18.1 + § A.18.2 + § Must Hold I-10. */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { computeBearerHmac } from './server-secret-pepper.js';

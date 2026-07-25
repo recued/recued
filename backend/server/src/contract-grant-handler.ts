@@ -20,7 +20,7 @@
  *  registry for the effective view (mirroring `mcp.visibility.read` +
  *  `housekeeping.registry.describe`).
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block; handover
+ *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
 import { RpcError } from '@recued/contracts';

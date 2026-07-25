@@ -2,6 +2,7 @@
 
 import type { Checkpoint } from '@recued/contracts';
 import type { PreflightNotifier } from '@recued/gateway';
+import { NEVER_ASK_OPERATION_OPTION_ID } from '@recued/gateway';
 import {
   buildAuditEntry,
   createAuditLogStore,
@@ -132,6 +133,39 @@ describe('sweepAwaitingCheckpoints', () => {
       checkpoint_id: 'checkpoint-1',
       ask_id: 'ask-new',
     });
+  });
+
+  it('re-raises the durable D-211 ruling offer and clamp warning', async () => {
+    const log = auditLog();
+    await append(log, anchor());
+    const notes = notifier();
+    const offer = {
+      kind: 'never_ask' as const,
+      ingredient_id: 'pub/cat',
+      operation_id: 'pub/cat.read',
+      op_hash: 'a'.repeat(64),
+      approval: 'never' as const,
+    };
+
+    await sweepAwaitingCheckpoints({
+      checkpointStore: checkpointStore([checkpoint({
+        preflight_context: {
+          tool_slug: 'pub/cat.read',
+          risk_tier: 'read',
+          owner_override_offer: offer,
+          approval_clamped_from: 'never',
+        },
+      })]),
+      auditLog: log,
+      notifier: notes,
+    });
+
+    const [, options, handler] = notes.ask.mock.calls[0]!;
+    expect(options.map((option: { id: string }) => option.id)).toContain(
+      NEVER_ASK_OPERATION_OPTION_ID,
+    );
+    expect(handler.payload.owner_override_offer).toEqual(offer);
+    expect(notes.ask.mock.calls[0]![0].text).toContain("stored approval 'never'");
   });
 
   it('skips anchors that already have ask_id set', async () => {

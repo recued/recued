@@ -16,8 +16,8 @@
  *  connection-agnostic / pack-catalog paths (Slice 5 Increment 2). This resolver
  *  returns `null` for them so a caller can fall through.
  *
- *  Spec: docs/d-182-spec.md §3/§6. Pickup:
- *  recued-project/handovers/handover_d182_slice5_runtime_resolution.md.
+ *  Spec: D-182 §3/§6. Pickup:
+ *  internal design notes.
  */
 import {
   getKernelOp,

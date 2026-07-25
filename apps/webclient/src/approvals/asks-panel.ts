@@ -46,7 +46,7 @@
  *  via `createElement` + `clearChildren` on every render (the same shape
  *  as the bridge side-panel mount), not via an HTML string.
  *
- *  Spec: docs/d-169-spec.md § N.5 #4 / A.4 / I-11 / I-12 / TR-9. */
+ *  Spec: D-169 § N.5 #4 / A.4 / I-11 / I-12 / TR-9. */
 
 import {
   ASK_CARD_STYLES,

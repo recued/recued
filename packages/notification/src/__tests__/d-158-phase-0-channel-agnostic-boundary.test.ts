@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 const REPO = resolve(__dirname, '..', '..', '..', '..');
 const PACKAGES = resolve(REPO, 'packages');
@@ -48,7 +49,7 @@ const collectSourceFiles = (dir: string): string[] => {
     if (name === '__tests__') continue;
     const path = join(dir, name);
     if (statSync(path).isDirectory()) out.push(...collectSourceFiles(path));
-    else if (name.endsWith('.ts')) out.push(path);
+    else if (isTypeScriptSource(name)) out.push(path);
   }
   return out;
 };

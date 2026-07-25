@@ -12,7 +12,7 @@
  *  (`fetchEntries`, `fetchLinks`, `fetchInsight`); the serializer owns
  *  the cursor, dedup, and format logic. Callers stay backend-agnostic.
  *
- *  Spec: docs/d-120-spec.md (Phase 7 — Memory rename + unified export).
+ *  Spec: D-120 (Phase 7 — Memory rename + unified export).
  */
 
 import {

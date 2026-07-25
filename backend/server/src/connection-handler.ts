@@ -29,10 +29,10 @@
  *  responses.
  *
  *  Probe is per-kind in spec § 2.4 (api / mcp / notification with
- *  subtype branches). P4.x ships the real probe handlers; P2.1
- *  installs a placeholder that stamps `{ status: 'unknown',
- *  last_probed_at: now() }` so the rpc + UI plumbing can light up
- *  end-to-end and the row's `health` round-trips cleanly. */
+ *  subtype branches). Enrollment stamps the honest pre-probe baseline
+ *  (`unknown`); `collection.connection.probe` performs the live check and
+ *  replaces it. The Settings "Save and probe" host calls those rpcs in
+ *  sequence so a failed check never rolls back a successfully stored row. */
 
 import {
   RpcError,
@@ -99,7 +99,15 @@ import {
   type VendorOAuthResult,
 } from './connection-vendor-oauth-flow.js';
 import type { ServerIdentity } from './identity/index.js';
-import { exchangeOAuth2ClientCredentials, refreshOAuth2 } from '@recued/ingredients';
+import {
+  exchangeOAuth2ClientCredentials,
+  MCP_TOOL_LIST_PROBE_MAX_PAGES,
+  parseMcpToolListPage,
+  probeMcpStreamTools,
+  refreshOAuth2,
+  resolveStdioMcpLaunchSpec,
+} from '@recued/ingredients';
+import type { StdioSpawn, WsConnect } from '@recued/ingredients';
 import { resolveSharePointDriveId } from './sharepoint-drive-resolver.js';
 
 export interface ConnectionRpcDeps {
@@ -123,6 +131,12 @@ export interface ConnectionRpcDeps {
    *  `/drive` call. Defaults to the global `fetch`; tests inject a fake. Only
    *  invoked on a `sharepoint` enroll that supplied a `site_url` + no `drive_id`. */
   resolveFetch?: typeof fetch;
+  /** Node-backed MCP stream capabilities used by the manual health probe.
+   *  Production reuses the same connector/spawner instances as live MCP
+   *  execution. Optional for portable/dbless harnesses; a missing capability
+   *  produces an honest `unknown` health rather than attempting a fake probe. */
+  wsConnect?: WsConnect;
+  spawnStdioMcp?: StdioSpawn;
   /** D-136 P6 — cascade engine reference. When wired, the delete
    *  handler invokes `cascadeForConnectionDelete(kind, name, vendor)`
    *  AFTER the row is removed from the connection store so vendor-
@@ -951,7 +965,10 @@ export const handleConnectionEnroll = async (
     grantedFromArgs !== undefined
       ? JSON.stringify(grantedFromArgs)
       : existing?.granted_scopes_json;
-  const probe: ConnectionHealth = { status: 'unknown', last_probed_at: now };
+  // No network check has happened yet. Do not stamp `last_probed_at` here:
+  // Settings follows enrollment with the real probe rpc, and if that call is
+  // interrupted the durable row must remain honestly "never probed".
+  const probe: ConnectionHealth = { status: 'unknown' };
   const auth_ciphertext = await encodeAuthForStorage(
     effectiveAuth,
     { kind, name },
@@ -1278,13 +1295,14 @@ export const handleConnectionProbe = async (
   const fetchTimed = async (
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string },
+    timeoutMs = probeTimeoutMs,
   ): Promise<Awaited<ReturnType<HttpFetcher>>> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         fetcher(url, init),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('probe_timeout')), probeTimeoutMs);
+          timer = setTimeout(() => reject(new Error('probe_timeout')), timeoutMs);
         }),
       ]);
     } finally {
@@ -1356,12 +1374,13 @@ export const handleConnectionProbe = async (
     endpoint: string,
     headers: Record<string, string>,
     body: Record<string, unknown>,
+    timeoutMs = probeTimeoutMs,
   ): Promise<{ httpStatus: number; envelope?: Record<string, unknown> }> => {
     const response = await fetchTimed(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-    });
+    }, timeoutMs);
     if (!response.ok) return { httpStatus: response.status };
     const parsed = await response.json();
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -1389,37 +1408,153 @@ export const handleConnectionProbe = async (
       return healthOf('unreachable', errorMessage(err));
     }
   };
-  const extractToolNames = (envelope: Record<string, unknown> | undefined): string[] => {
-    const result = envelope?.result;
-    if (!result || typeof result !== 'object' || Array.isArray(result)) return [];
-    const tools = (result as Record<string, unknown>).tools;
-    if (!Array.isArray(tools)) return [];
-    return tools
-      .map((tool) => (
-        tool && typeof tool === 'object' && !Array.isArray(tool)
-          ? (tool as Record<string, unknown>).name
-          : undefined
-      ))
-      .filter((tool): tool is string => typeof tool === 'string' && tool.length > 0);
-  };
   const probeMcp = async (auth: ConnectionAuth): Promise<ConnectionHealth> => {
     const config = readConfig();
-    const transport = typeof config.transport === 'string'
-      ? config.transport
-      : existing.subtype;
-    if (transport !== undefined && transport !== 'sse') {
-      return healthOf('unknown', `transport_${transport}_probe_not_implemented`);
+    // Match live execution's source of truth (`getTransport`): the row subtype
+    // wins, with config.transport only as a legacy-row fallback. Probing a
+    // different transport than recipes use can produce a false green.
+    const transport = typeof existing.subtype === 'string'
+      && MCP_SUBTYPES.has(existing.subtype)
+      ? existing.subtype
+      : config.transport;
+    const deadline = Date.now() + probeTimeoutMs;
+    const remainingProbeMs = (): number => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('probe_timeout');
+      return remaining;
+    };
+    const streamHealth = (
+      result: Awaited<ReturnType<typeof probeMcpStreamTools>>,
+    ): ConnectionHealth => {
+      if (result.ok) return healthOf('ok', undefined, result.tools);
+      const suffix = result.stage === 'tools_list' ? 'tools_list' : 'initialize';
+      return result.reason === 'jsonrpc_error'
+        ? healthOf('auth_failed', `jsonrpc_${suffix}_error`)
+        : healthOf('unreachable', `jsonrpc_${suffix}_${result.reason}`);
+    };
+    const redactProbeSecrets = (
+      message: string,
+      extraSecrets: readonly string[] = [],
+    ): string => {
+      const authRecord = auth as unknown as Record<string, unknown>;
+      const secrets = [...extraSecrets];
+      const add = (value: unknown): void => {
+        if (typeof value === 'string' && value.length > 0) secrets.push(value);
+      };
+      switch (auth.type) {
+        case 'bearer':
+          add(authRecord.token);
+          break;
+        case 'basic': {
+          add(authRecord.username);
+          add(authRecord.password);
+          if (typeof authRecord.username === 'string' && typeof authRecord.password === 'string') {
+            add(btoa(`${authRecord.username}:${authRecord.password}`));
+          }
+          break;
+        }
+        case 'header':
+          if (Array.isArray(authRecord.headers)) {
+            for (const entry of authRecord.headers) {
+              if (entry && typeof entry === 'object') {
+                add((entry as Record<string, unknown>).value);
+              }
+            }
+          }
+          break;
+        case 'query':
+          add(authRecord.value);
+          break;
+        case 'oauth2_refresh':
+        case 'oauth2_client_credentials':
+          add(authRecord.current_access_token);
+          break;
+        case 'none':
+          break;
+      }
+      const renderings = new Set<string>();
+      for (const secret of secrets) {
+        renderings.add(secret);
+        try { renderings.add(encodeURI(secret)); } catch { /* malformed surrogate */ }
+        try { renderings.add(encodeURIComponent(secret)); } catch { /* malformed surrogate */ }
+        try {
+          renderings.add(new URLSearchParams({ value: secret }).toString().slice('value='.length));
+        } catch { /* defensive — URLSearchParams accepts strings */ }
+      }
+      let redacted = message;
+      for (const rendering of renderings) {
+        if (rendering !== '') redacted = redacted.split(rendering).join('***');
+      }
+      return redacted;
+    };
+    const streamFailure = (
+      err: unknown,
+      extraSecrets: readonly string[] = [],
+    ): ConnectionHealth => {
+      const rawMessage = errorMessage(err);
+      const authStatus = /\bHTTP (401|403)\b/i.exec(rawMessage)?.[1];
+      return authStatus
+        ? healthOf('auth_failed', `http_status_${authStatus}`)
+        : healthOf('unreachable', redactProbeSecrets(rawMessage, extraSecrets));
+    };
+
+    if (transport === 'stdio') {
+      const spawnStdioMcp = deps.spawnStdioMcp;
+      if (spawnStdioMcp === undefined) {
+        return healthOf('unknown', 'transport_stdio_probe_unavailable');
+      }
+      const launch = resolveStdioMcpLaunchSpec(config);
+      if (!launch.ok) return healthOf('unknown', `stdio_${launch.code}`);
+      const { spec } = launch;
+      try {
+        return streamHealth(await probeMcpStreamTools(
+          (signal) => spawnStdioMcp(spec, { signal }),
+          remainingProbeMs(),
+        ));
+      } catch (err) {
+        return streamFailure(
+          err,
+          spec.env === undefined ? [] : Object.values(spec.env),
+        );
+      }
+    }
+
+    if (transport !== 'sse' && transport !== 'websocket') {
+      return healthOf(
+        'unknown',
+        transport === undefined
+          ? 'missing_transport'
+          : `transport_${transport}_probe_unsupported`,
+      );
     }
     const endpoint = config.endpoint;
     if (typeof endpoint !== 'string' || endpoint.trim() === '') {
       return healthOf('unknown', 'missing_endpoint');
     }
     const url = new URL(endpoint);
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
+    const headers: Record<string, string> = {};
     applyAuth(auth, headers, url);
+
+    if (transport === 'websocket') {
+      if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+        return healthOf('unknown', 'websocket_endpoint_must_use_ws');
+      }
+      const wsConnect = deps.wsConnect;
+      if (wsConnect === undefined) {
+        return healthOf('unknown', 'transport_websocket_probe_unavailable');
+      }
+      try {
+        return streamHealth(await probeMcpStreamTools(
+          (signal) => wsConnect(url.toString(), { headers, signal }),
+          remainingProbeMs(),
+        ));
+      } catch (err) {
+        return streamFailure(err);
+      }
+    }
+
+    headers['Content-Type'] = 'application/json';
+    headers.Accept = 'application/json';
     try {
       const initialize = await jsonRpc(url.toString(), headers, {
         jsonrpc: '2.0',
@@ -1430,7 +1565,7 @@ export const handleConnectionProbe = async (
           capabilities: {},
           clientInfo: { name: 'recued-connection-probe', version: '1' },
         },
-      });
+      }, remainingProbeMs());
       if (initialize.httpStatus === 401 || initialize.httpStatus === 403) {
         return healthOf('auth_failed', `http_status_${initialize.httpStatus}`);
       }
@@ -1440,23 +1575,42 @@ export const handleConnectionProbe = async (
       if (initialize.envelope.error !== undefined) {
         return healthOf('auth_failed', 'jsonrpc_initialize_error');
       }
-      const toolsList = await jsonRpc(url.toString(), headers, {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/list',
-      });
-      if (toolsList.httpStatus === 401 || toolsList.httpStatus === 403) {
-        return healthOf('auth_failed', `http_status_${toolsList.httpStatus}`);
+      const tools = new Set<string>();
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      for (let pageIndex = 0; pageIndex < MCP_TOOL_LIST_PROBE_MAX_PAGES; pageIndex += 1) {
+        const toolsList = await jsonRpc(url.toString(), headers, {
+          jsonrpc: '2.0',
+          id: 2 + pageIndex,
+          method: 'tools/list',
+          params: cursor === undefined ? {} : { cursor },
+        }, remainingProbeMs());
+        if (toolsList.httpStatus === 401 || toolsList.httpStatus === 403) {
+          return healthOf('auth_failed', `http_status_${toolsList.httpStatus}`);
+        }
+        if (!toolsList.envelope) {
+          return healthOf('unreachable', `http_status_${toolsList.httpStatus}`);
+        }
+        if (toolsList.envelope.error !== undefined) {
+          return healthOf('auth_failed', 'jsonrpc_tools_list_error');
+        }
+        const page = parseMcpToolListPage(toolsList.envelope.result);
+        if (!page.ok) {
+          return healthOf('unreachable', 'jsonrpc_tools_list_invalid_response');
+        }
+        for (const tool of page.tools) tools.add(tool);
+        if (page.nextCursor === undefined) {
+          return healthOf('ok', undefined, [...tools]);
+        }
+        if (seenCursors.has(page.nextCursor)) {
+          return healthOf('unreachable', 'jsonrpc_tools_list_pagination_cycle');
+        }
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
       }
-      if (!toolsList.envelope) {
-        return healthOf('unreachable', `http_status_${toolsList.httpStatus}`);
-      }
-      if (toolsList.envelope.error !== undefined) {
-        return healthOf('auth_failed', 'jsonrpc_tools_list_error');
-      }
-      return healthOf('ok', undefined, extractToolNames(toolsList.envelope));
+      return healthOf('unreachable', 'jsonrpc_tools_list_pagination_limit');
     } catch (err) {
-      return healthOf('unreachable', errorMessage(err));
+      return healthOf('unreachable', redactProbeSecrets(errorMessage(err)));
     }
   };
   const probeJsonNotification = async (

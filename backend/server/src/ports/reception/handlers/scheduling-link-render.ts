@@ -23,7 +23,7 @@
  *  page shell. No additional fields beyond the closed-list inputs ever
  *  reach the HTML.
  *
- *  Spec: docs/d-149-spec.md § A.5.2 + § A.11 TR-8 (custom-link XSS). */
+ *  Spec: D-149 § A.5.2 + § A.11 TR-8 (custom-link XSS). */
 
 import {
   RECEPTION_PAGE_STATIC_PATH_PREFIX,

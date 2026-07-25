@@ -4004,7 +4004,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_company_addons": {
@@ -4050,7 +4050,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_currencies": {
@@ -4433,7 +4433,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_permission_set_assignments": {
@@ -4510,7 +4510,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_permission_sets": {
@@ -4567,7 +4567,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_project_activities": {
@@ -4914,7 +4914,7 @@
         "recents:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role": {
@@ -4974,7 +4974,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_assignments": {
@@ -5071,7 +5071,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_pipelines": {
@@ -5138,7 +5138,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_settings": {
@@ -5195,7 +5195,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_roles": {
@@ -5282,7 +5282,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_team": {
@@ -5519,7 +5519,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_permissions": {
@@ -5576,7 +5576,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_role_assignments": {
@@ -5673,7 +5673,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_role_settings": {
@@ -5730,7 +5730,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_settings": {
@@ -5776,7 +5776,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_teams": {
@@ -5902,7 +5902,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.put_project_plan_activity": {
@@ -15472,7 +15472,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-projects-fields-v2.search_projects": {
@@ -18159,7 +18159,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.duplicate_deal": {
@@ -18690,7 +18690,7 @@
         "phone-integration"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_comment": {
@@ -18757,7 +18757,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_deal_changelog": {
@@ -19064,7 +19064,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_deal_participants": {
@@ -19709,7 +19709,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_files": {
@@ -19807,7 +19807,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_filter": {
@@ -20282,7 +20282,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_thread": {
@@ -20339,7 +20339,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_thread_messages": {
@@ -20396,7 +20396,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_threads": {
@@ -20473,7 +20473,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_note_comments": {
@@ -20570,7 +20570,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_note_fields": {
@@ -20926,7 +20926,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_organization_relationship": {
@@ -21543,7 +21543,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_person_products": {
@@ -22637,7 +22637,7 @@
         "phone-integration"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.merge_deals": {
@@ -24839,7 +24839,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive.note.search": {
@@ -25096,7 +25096,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive.note.update": {
@@ -26465,7 +26465,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive.user.read": {
@@ -26522,7 +26522,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "pipedrive.user.search": {
@@ -26568,7 +26568,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     }
   }

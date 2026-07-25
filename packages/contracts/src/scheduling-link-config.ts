@@ -23,8 +23,8 @@
  *      Intl.DateTimeFormat probe — that lives at runtime).
  *    - `min_advance_notice_hours` / `max_lead_time_days` / `max_bookings_
  *      per_day` carry per-field numeric bounds.
- *    - `on_booking.notification_target` ∈ closed list per spec
- *      § A.5.2 line 622.
+ *    - `on_booking.notify_visitor_sender`, when present, is a bounded non-empty
+ *      send-capable mail-instance id used by approval-time notification.
  *    - `display_name` / `instructions` / `success_message` length bounds
  *      so the rendered HTML stays compact + the no-leak surface stays
  *      bounded.
@@ -43,7 +43,7 @@
  *  at admin-write time so a corrupt config never reaches the visitor
  *  path.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.2 + § Must Hold I-1 + § A.11 (TR-4
+ *  Spec: D-149 § A.5.2 + § Must Hold I-1 + § A.11 (TR-4
  *  + TR-8). */
 
 import {
@@ -101,6 +101,7 @@ export const SCHEDULING_LINK_DISPLAY_NAME_MAX = 100;
 export const SCHEDULING_LINK_INSTRUCTIONS_MAX = 800;
 export const SCHEDULING_LINK_SUCCESS_MESSAGE_MAX = 400;
 export const SCHEDULING_LINK_TZ_MAX = 64;
+export const SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX = 200;
 
 /** Visitor-side field caps applied at POST `/book` parse. Each field
  *  is sub_dek-encrypted at rest; the cap is what the renderer's
@@ -152,19 +153,16 @@ export interface SchedulingLinkAvailableWindowDefinition {
 // On-booking config + per-link config
 // ────────────────────────────────────────────────────────────────
 
-/** Spec § A.5.2 line 619-624 — actions to fire on booking. The
- *  substrate writes the `reception_form_submission` row synchronously
- *  in the visitor thread; the engine-side reactive trigger (D-115
- *  substrate) consumes the new row + executes the configured side
- *  effects (calendar event creation / commitment entity / notification).
- *  The substrate's only role here is to PERSIST the user's intent at
- *  endpoint-create time. */
+/** Approval-time booking behavior. The scheduling drain mints the canonical
+ *  `data.booking`; an optional sender lets the owner send the visitor's
+ *  confirmation as part of that same fail-closed approval operation. */
 export interface SchedulingLinkOnBookingConfig {
-  /** Whether to create the calendar event in `data.calendar.*` at
-   *  reaction time (default true). */
-  readonly create_calendar_event: boolean;
-  /** Whether to create a D-145 commitment entity (default true). */
-  readonly create_commitment_entity: boolean;
+  /** @deprecated Compatibility-only. The booking row is canonical and this
+   *  flag is ignored; new authoring and templates do not emit it. */
+  readonly create_calendar_event?: boolean;
+  /** @deprecated Compatibility-only. The booking row is canonical and this
+   *  flag is ignored; new authoring and templates do not emit it. */
+  readonly create_commitment_entity?: boolean;
   /** D-210 A.8 slice 3d — the send-capable `data.mail.<name>` the visitor
    *  confirmation is sent FROM when the owner ticks `notify_visitor` at the
    *  approval gate. The owner's own sender, never visitor PII.
@@ -194,11 +192,6 @@ export interface SchedulingLinkOnBookingConfig {
   // a held item reaches (actionable ask vs passive notify). Per-endpoint
   // routing, if ever wanted, belongs on the block's channel selector — not a
   // parallel vocabulary. The validator REFUSES a stale key.
-  /** Optional Standing Instructions ref — when present + matched at
-   *  reaction time, the engine path auto-confirms instead of waiting
-   *  for review. Substrate validates the shape; the engine evaluates
-   *  it (D-145 PB10). */
-  readonly auto_confirm_via_standing_instruction?: string;
 }
 
 /** Singleton-config blob persisted in the registry row's `metadata_blob`.
@@ -531,13 +524,22 @@ export const validateSchedulingLinkConfig = (
     });
   } else {
     const ob = c.on_booking as Record<string, unknown>;
-    if (typeof ob.create_calendar_event !== 'boolean') {
+    // D-210 compatibility: old persisted configs may contain these flags, but
+    // the canonical booking mint no longer performs either advertised side
+    // effect. Validate their old shape without requiring or acting on them.
+    if (
+      ob.create_calendar_event !== undefined
+      && typeof ob.create_calendar_event !== 'boolean'
+    ) {
       failures.push({
         code: 'on_booking_flag_invalid',
         detail: 'on_booking.create_calendar_event must be boolean',
       });
     }
-    if (typeof ob.create_commitment_entity !== 'boolean') {
+    if (
+      ob.create_commitment_entity !== undefined
+      && typeof ob.create_commitment_entity !== 'boolean'
+    ) {
       failures.push({
         code: 'on_booking_flag_invalid',
         detail: 'on_booking.create_commitment_entity must be boolean',
@@ -553,22 +555,26 @@ export const validateSchedulingLinkConfig = (
       });
     }
     if (ob.notify_visitor_sender !== undefined) {
-      if (!isNonEmptyString(ob.notify_visitor_sender)) {
+      if (
+        !isNonEmptyString(ob.notify_visitor_sender)
+        || ob.notify_visitor_sender.trim().length === 0
+        || ob.notify_visitor_sender.length > SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX
+      ) {
         failures.push({
           code: 'on_booking_flag_invalid',
           detail:
-            'on_booking.notify_visitor_sender must be a non-empty string when present',
+            'on_booking.notify_visitor_sender must be a non-empty string no longer than '
+            + `${SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX} characters when present`,
         });
       }
     }
     if (ob.auto_confirm_via_standing_instruction !== undefined) {
-      if (!isNonEmptyString(ob.auto_confirm_via_standing_instruction)) {
-        failures.push({
-          code: 'auto_confirm_ref_invalid',
-          detail:
-            'on_booking.auto_confirm_via_standing_instruction must be a non-empty string when present',
-        });
-      }
+      failures.push({
+        code: 'auto_confirm_ref_invalid',
+        detail:
+          'on_booking.auto_confirm_via_standing_instruction has been retired; '
+          + 'booking approval always requires an owner action. Remove the field.',
+      });
     }
   }
 

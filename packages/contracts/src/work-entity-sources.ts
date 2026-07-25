@@ -7,14 +7,14 @@
  *  declaration + fail-closed validation ONLY: packs declare intent, no
  *  runtime behavior changes (no Source registration, no sync runner).
  *
- *  The shape mirrors `docs/d-192-spec.md` § Contract shape with the
+ *  The shape mirrors D-192 § Contract shape with the
  *  2026-07-01 amendments folded in: `sync.depth` is `'meta'` only (fork
  *  F3 dropped `full`), relationship `write_back` is fail-closed `false`
  *  in v1, and the schema-proof burden is split — op-level proof is
  *  mechanical (`crossCheckCatalogOpenApi`), field-path proof is
  *  authoring discipline + risk-based marketplace review.
  *
- *  Spec: docs/d-192-spec.md · decisions-log D-192. */
+ *  Spec: D-192 · decisions-log D-192. */
 
 // ────────────────────────────────────────────────────────────────
 // Closed enums
@@ -761,7 +761,7 @@ export type WorkEntityCreateArgBinding = WorkEntityConfigArgBinding;
 // list is a single option, label-matched when the caller named it), or — where a
 // `create_op` exists AND the write is authorized — create one. Nested containers
 // (workspace → project → task) chain via `arg_from`, resolved top-down. See
-// `docs/d-192-source-dependencies-design.md`.
+// D-192.
 
 /** Where a dependency's RESOLVED id flows — the op arg it scopes (`list`) or
  *  attributes (`create`). Self-contained: for the container-entity case this
@@ -895,7 +895,7 @@ export interface WorkEntitySourceDeclaration {
    *  Each is resolved to one selected entity by `create_if_not_picked` and its id
    *  flows into the declared `binds`. Supersedes `op_arg_bindings` for the entity
    *  case (a live, user-selected value — not static config). See
-   *  `docs/d-192-source-dependencies-design.md`. */
+   *  D-192. */
   source_dependencies?: WorkEntitySourceDependency[];
   sync: WorkEntitySourceSync;
   read_resolution: WorkEntitySourceReadResolution;

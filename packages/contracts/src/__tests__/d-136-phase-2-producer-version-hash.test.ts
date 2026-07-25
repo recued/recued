@@ -8,7 +8,7 @@
  *    - `consumed_ingredients_versions` order does not matter
  *    - shape: `'fnv1a:<8 lowercase hex chars>'`
  *
- *  Spec: `docs/d-136-spec.md` §A.3 + P2 phase plan. */
+ *  Spec: D-136 §A.3 + P2 phase plan. */
 
 import { describe, expect, it } from 'vitest';
 

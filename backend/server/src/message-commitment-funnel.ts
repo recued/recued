@@ -39,7 +39,7 @@
  *  itself is the proof; an AI-paraphrase layer, if added, sits ABOVE this
  *  funnel).
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` § 3a (M-1). */
+ *  Spec: D-192 § 3a (M-1). */
 
 import {
   COMMITMENT_MESSAGE_EVIDENCE_SNIPPET_MAX,

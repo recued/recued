@@ -18,7 +18,7 @@
  *  so backfill-emitted links surface on the underlying record's actual
  *  date rather than today.
  *
- *  Spec: docs/d-120-spec.md (Phase 7.5).
+ *  Spec: D-120 (Phase 7.5).
  */
 
 import type { RunMode } from '@recued/contracts';

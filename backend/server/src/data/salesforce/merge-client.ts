@@ -28,7 +28,7 @@
  *  merged returns `INVALID_FIELD_FOR_INSERT_UPDATE` we recognize as
  *  terminal-success-equivalent — already-merged is fine).
  *
- *  Spec: `docs/d-138-spec.md` § A.7 + § Phase 5. */
+ *  Spec: D-138 § A.7 + § Phase 5. */
 
 import {
   SALESFORCE_SOAP_PARTNER_PATH,

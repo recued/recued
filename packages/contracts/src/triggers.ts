@@ -191,7 +191,7 @@ export interface TriggerEventPayload {
  *  recipe-side trigger shapes (warehouse-bus / contact_topic_mention)
  *  reads from one file.
  *
- *  Spec: `docs/d-145-spec.md` § B.12. */
+ *  Spec: D-145 § B.12. */
 export type {
   ContactTopicMentionTrigger,
 } from './personal-recipes.js';

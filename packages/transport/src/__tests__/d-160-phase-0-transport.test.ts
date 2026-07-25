@@ -4,7 +4,7 @@
  *  outbound send uses an injected fetch implementation, and inbound
  *  parsing accepts only already-verified user text payloads.
  *
- *  Spec: docs/d-160-spec.md sections N.5 / N.7 / A.5 + invariant I-10.
+ *  Spec: D-160 sections N.5 / N.7 / A.5 + invariant I-10.
  */
 
 import { describe, expect, it } from 'vitest';

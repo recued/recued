@@ -329,7 +329,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 30,
     min: 0,
-    description: 'Days a paused run may wait for preflight approval before the staleness guard expires it (the prompt is withdrawn and the run fails with "approval was not granted in time"). An approval the user already gave is never expired. Set to 0 to keep paused runs waiting forever.',
+    description: 'Days a paused run may wait for preflight approval before the staleness guard expires it (the prompt is withdrawn and the run fails with "approval was not granted in time"). An approval the user already gave is never expired. Set to 0 to keep paused runs waiting forever. This governs the DECISION only — the public /ask link is separately capped at 48h by a fixed constant (ASK_LANDING_LINK_TTL_MS), so 0 does not leave a forwardable bearer URL alive forever.',
   },
 
   // ─── Tier ────────────────────────────────────────────────────

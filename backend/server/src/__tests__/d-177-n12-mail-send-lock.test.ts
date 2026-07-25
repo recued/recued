@@ -32,7 +32,7 @@
  *    B. the gated path is intact — the executor still exists, and
  *       `mail-send` still rides the outbound-send escalation.
  *
- *  Spec: docs/d-177-spec.md § N.12. */
+ *  Spec: D-177 § N.12. */
 
 import { describe, expect, it } from 'vitest';
 import {

@@ -27,7 +27,7 @@
  *  or a server with no contract store) leaves both methods returning
  *  `not_configured` (the whole slice is absent).
  *
- *  Spec: `docs/d-170-spec.md` § N.14 (uninstall + pin-guard), N.15 (rpc
+ *  Spec: D-170 § N.14 (uninstall + pin-guard), N.15 (rpc
  *  surface), N.16 (gateway resolution). */
 
 import {

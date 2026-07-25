@@ -4,7 +4,7 @@
  *  session-layer narrowing, session-node shape validation, graph validation,
  *  reverse-index traversal, and descendant discovery.
  *
- *  Spec: docs/d-153-spec.md lines 507-533. */
+ *  Spec: D-153 lines 507-533. */
 
 import { describe, expect, it } from 'vitest';
 

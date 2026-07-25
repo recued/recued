@@ -10,7 +10,7 @@
  *      empty / all-invalid → undefined (never an accidental empty feed),
  *      mixed → valid subset, dedupe, frozen.
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-7 / I-8 / I-9 / O-2.
+ *  Spec: D-161 § N.8 / A.7 / I-7 / I-8 / I-9 / O-2.
  */
 
 import { describe, expect, it } from 'vitest';

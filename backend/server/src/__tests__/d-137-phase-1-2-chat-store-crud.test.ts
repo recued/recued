@@ -407,6 +407,223 @@ describe('D-137 P1.2 — ChatStore message CRUD', () => {
     ]);
   });
 
+  it('round-trips server-stamped Data diagnosis metadata', async () => {
+    const data_diagnosis = {
+      kind: 'data_verification' as const,
+      plan_id: 'plan-one',
+      run_id: 'run-one',
+      intent: 'explanation' as const,
+      relationship: 'derived' as const,
+      run_correlation: 'matched' as const,
+    };
+    await store.appendMessage({
+      id: 'msg-diagnosis',
+      session_id: 'sess-1',
+      role: 'assistant',
+      content: 'The linked record confirms the write landed.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1100,
+      data_diagnosis,
+    });
+
+    const row = db
+      .prepare(`SELECT metadata_blob FROM chat_messages WHERE message_id = ?`)
+      .get('msg-diagnosis') as { metadata_blob: string };
+    expect(JSON.parse(row.metadata_blob)).toEqual({ data_diagnosis });
+    expect((await store.listMessages('sess-1'))[0]?.data_diagnosis).toEqual(
+      data_diagnosis,
+    );
+  });
+
+  it('persists safe-check closure without discarding other message metadata', async () => {
+    await store.appendMessage({
+      id: 'msg-safe-check',
+      session_id: 'sess-1',
+      role: 'assistant',
+      content: 'The safe lookup found the expected item.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1_100,
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'safe_check',
+        run_correlation: 'matched',
+      },
+    });
+    const row = db.prepare(`
+      SELECT metadata_blob
+        FROM chat_messages
+       WHERE message_id = 'msg-safe-check'
+    `).get() as { metadata_blob: string };
+    db.prepare(`
+      UPDATE chat_messages
+         SET metadata_blob = ?
+       WHERE message_id = 'msg-safe-check'
+    `).run(JSON.stringify({
+      ...(JSON.parse(row.metadata_blob) as Record<string, unknown>),
+      future_metadata: { keep: true },
+    }));
+
+    const updated = await store.setDataDiagnosisResolution!(
+      'sess-1',
+      'msg-safe-check',
+      { status: 'still_uncertain', resolved_at: 2_000 },
+    );
+
+    expect(updated?.data_diagnosis_resolution).toEqual({
+      status: 'still_uncertain',
+      resolved_at: 2_000,
+    });
+    const persisted = db.prepare(`
+      SELECT metadata_blob
+        FROM chat_messages
+       WHERE message_id = 'msg-safe-check'
+    `).get() as { metadata_blob: string };
+    expect(JSON.parse(persisted.metadata_blob)).toMatchObject({
+      data_diagnosis: {
+        intent: 'safe_check',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+      },
+      data_diagnosis_resolution: {
+        status: 'still_uncertain',
+        resolved_at: 2_000,
+      },
+      future_metadata: { keep: true },
+    });
+    expect((await store.listMessages('sess-1'))[0])
+      .toMatchObject({
+        data_diagnosis_resolution: {
+          status: 'still_uncertain',
+          resolved_at: 2_000,
+        },
+      });
+
+    const reordered = await store.setDataDiagnosisResolution!(
+      'sess-1',
+      'msg-safe-check',
+      { status: 'resolved', resolved_at: 1_500 },
+    );
+    expect(reordered?.data_diagnosis_resolution).toEqual({
+      status: 'resolved',
+      resolved_at: 2_001,
+    });
+  });
+
+  it('refuses closure writes on non-safe-check or non-assistant rows', async () => {
+    await store.appendMessage({
+      id: 'msg-explanation',
+      session_id: 'sess-1',
+      role: 'assistant',
+      content: 'This row is only an explanation.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1_100,
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'explanation',
+        run_correlation: 'matched',
+      },
+    });
+    await store.appendMessage({
+      id: 'msg-safe-check-request',
+      session_id: 'sess-1',
+      role: 'user',
+      content: 'Run the safe check.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1_101,
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'safe_check',
+        run_correlation: 'matched',
+      },
+    });
+
+    await expect(store.setDataDiagnosisResolution!(
+      'sess-1',
+      'msg-explanation',
+      { status: 'resolved', resolved_at: 2_000 },
+    )).resolves.toBeNull();
+    await expect(store.setDataDiagnosisResolution!(
+      'sess-1',
+      'msg-safe-check-request',
+      { status: 'resolved', resolved_at: 2_000 },
+    )).resolves.toBeNull();
+    expect(await store.listMessages('sess-1')).toEqual([
+      expect.not.objectContaining({ data_diagnosis_resolution: expect.anything() }),
+      expect.not.objectContaining({ data_diagnosis_resolution: expect.anything() }),
+    ]);
+  });
+
+  it('hydrates pre-intent diagnosis rows as explanations', async () => {
+    await store.appendMessage({
+      id: 'msg-legacy-diagnosis',
+      session_id: 'sess-1',
+      role: 'assistant',
+      content: 'A legacy explanation.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1_100,
+    });
+    db.prepare(`
+      UPDATE chat_messages
+         SET metadata_blob = ?
+       WHERE message_id = 'msg-legacy-diagnosis'
+    `).run(JSON.stringify({
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        run_correlation: 'matched',
+      },
+    }));
+
+    expect((await store.listMessages('sess-1'))[0]?.data_diagnosis)
+      .toMatchObject({ intent: 'explanation' });
+  });
+
+  it('fails closed on malformed diagnosis metadata', async () => {
+    await store.appendMessage({
+      id: 'msg-malformed-diagnosis',
+      session_id: 'sess-1',
+      role: 'assistant',
+      content: 'An ordinary answer.',
+      target_server: 'self',
+      picker_at_send: samplePicker(),
+      model_used: sampleModel(),
+      ts: 1100,
+    });
+    db.prepare(`
+      UPDATE chat_messages
+         SET metadata_blob = ?
+       WHERE message_id = 'msg-malformed-diagnosis'
+    `).run(JSON.stringify({
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: '',
+        run_correlation: 'matched',
+      },
+    }));
+
+    expect(
+      (await store.listMessages('sess-1'))[0]?.data_diagnosis,
+    ).toBeUndefined();
+  });
+
   it('appendMessage encrypts content at rest', async () => {
     await store.appendMessage({
       id: 'msg-1',

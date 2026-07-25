@@ -142,7 +142,7 @@
  *  to a `globalThis.setInterval`-backed impl; tests inject a fake
  *  that captures the handler so they can drive ticks deterministically.
  *
- *  Spec: docs/d-148-spec.md § A.4 (Thin Webclient). */
+ *  Spec: D-148 § A.4 (Thin Webclient). */
 
 import type {
   Conn,
@@ -265,6 +265,12 @@ import {
   bootstrapPacksRoute,
   resolvePackInput,
 } from './packs/bootstrap-packs-route.js';
+import type {
+  OwnerOperationDeleteCaller,
+  OwnerOperationInventoryCaller,
+  OwnerOperationListCaller,
+  OwnerOperationUpsertCaller,
+} from './settings/owner-operation-controls.js';
 import {
   bootstrapRecipesRoute,
   type RecipeExecuteCaller,
@@ -306,12 +312,16 @@ import {
   type DataSharedListCaller,
   type DataFormResponseGetCaller,
   type DataFormResponseListCaller,
+  type DataFormResponseUpdateCaller,
+  type DataFormResponseSetStateCaller,
+  type DataFormResponseExportCaller,
   type DataMemoryCreateCaller,
   type DataMemoryDeleteCaller,
   type DataMemoryGetCaller,
   type DataMemoryImportCaller,
   type DataMemoryListCaller,
   type DataMemoryUpdateCaller,
+  type DataManageRescheduleLinkCaller,
   type DataTimelineCaller,
   type DataUploadCreateCaller,
   type DataUploadDeleteCaller,
@@ -356,6 +366,12 @@ import {
   type ChatRouteConn,
 } from './chat/bootstrap-chat-route.js';
 import {
+  parseConnectedSourceChatSetup,
+  parseChatConnectedSource,
+  projectChatConnectedSourceStatus,
+  serializeChatConnectedSource,
+} from './chat/connected-source-handoff.js';
+import {
   openCreateOverlay,
   type CreateOverlayHandle,
 } from './compose/create-overlay.js';
@@ -375,8 +391,14 @@ import {
   kitchenEditRecipeId,
   kitchenNewRecipeSeed,
   kitchenPackDraftId,
+  parseChatAnswerAddress,
+  parseChatPlanAddress,
+  parseDataEntityVerificationAddress,
+  parseLogsRunAddress,
   parseRouteFromHash,
   parseShellRoute,
+  parseSourceRecordAddress,
+  parseSourceRecordVerificationAddress,
   serializeShellRoute,
   shouldRemountForSameRoute,
   type WebclientRouteId,
@@ -743,8 +765,14 @@ const WEBCLIENT_SHELL_STYLES = `
   min-height: 100dvh;
   height: 100vh;
   height: 100dvh;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   overflow: hidden;
   display: grid;
+  /* Prevent a wide route's min-content size from widening the one implicit
+     shell column (and, transitively, the top bar) beyond the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   background:
     radial-gradient(circle at 18% 0%, var(--accent-weak), transparent 34rem),
@@ -755,6 +783,9 @@ const WEBCLIENT_SHELL_STYLES = `
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] {
   position: relative;
   z-index: 50;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   min-height: 58px;
   display: flex;
   align-items: center;
@@ -856,6 +887,7 @@ const WEBCLIENT_SHELL_STYLES = `
 /* Body — the content fills the row; the drawer overlays it off-canvas, so the
    body is a single column with no rail gutter. */
 [${WEBCLIENT_SHELL_HOST_ATTR}] .webclient-shell-body {
+  min-width: 0;
   min-height: 0;
   display: block;
 }
@@ -1065,6 +1097,13 @@ const WEBCLIENT_SHELL_STYLES = `
   [${WEBCLIENT_SHELL_CONNECTION_HOST_ATTR}]:not(:empty) {
     margin-left: 0;
   }
+  /* Uptime is secondary status and the connection chip already carries the
+     actionable online/offline state. Keeping both pills in the fixed row can
+     force the shell wider than a phone viewport once the first heartbeat
+     arrives, so omit uptime at the narrow breakpoint. */
+  [${SERVER_PILL_HOST_ATTR}] {
+    display: none;
+  }
   [${WEBCLIENT_SHELL_DRAWER_ATTR}] {
     width: min(300px, 92vw);
   }
@@ -1226,6 +1265,10 @@ const createWebclientShell = (opts: {
   head.appendChild(closeBtn);
   drawer.appendChild(head);
 
+  // All live controls inside the overlay, in DOM order. The array is filled
+  // while the seats render below and is also the drawer's focus-loop source.
+  const drawerFocusables: HTMLElement[] = [closeBtn];
+
   // Track the highlight-owning seats only — a seat with `highlight: true` is
   // the single row lit for its route (so the interim duplicate wirings light
   // one row, not two).
@@ -1251,6 +1294,16 @@ const createWebclientShell = (opts: {
       open ? 'Close navigation' : 'Open navigation',
     );
     drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+    // The drawer behaves as a modal overlay. Native `inert` removes the
+    // obscured app chrome + route from keyboard and accessibility traversal;
+    // the document-level Tab loop below keeps focus contained as a fallback.
+    if (open) {
+      topbar.setAttribute('inert', '');
+      body.setAttribute('inert', '');
+    } else {
+      topbar.removeAttribute('inert');
+      body.removeAttribute('inert');
+    }
     if (open) {
       // Move focus into the menu (its first seat) so keyboard + screen-reader
       // users land inside the freshly-opened drawer.
@@ -1297,6 +1350,7 @@ const createWebclientShell = (opts: {
         actionLabel.textContent = item.label;
         button.appendChild(actionLabel);
         sectionEl.appendChild(button);
+        drawerFocusables.push(button);
         continue;
       }
       if (item.stub === true || item.route === null) {
@@ -1332,6 +1386,7 @@ const createWebclientShell = (opts: {
       link.addEventListener('click', () =>
         setDrawerOpen(false, { returnFocus: true }),
       );
+      drawerFocusables.push(link);
       if (item.glyph !== undefined) {
         const glyph = doc.createElement('span');
         glyph.className = 'webclient-shell-drawer-glyph';
@@ -1380,8 +1435,23 @@ const createWebclientShell = (opts: {
   };
   const onDocKeydown = (event: Event): void => {
     if (!drawerOpen) return;
-    if ((event as KeyboardEvent).key === 'Escape') {
+    const keyEvent = event as KeyboardEvent;
+    if (keyEvent.key === 'Escape') {
       setDrawerOpen(false, { returnFocus: true });
+      return;
+    }
+    if (keyEvent.key === 'Tab') {
+      const active = doc.activeElement as HTMLElement | null;
+      const activeIndex = active === null ? -1 : drawerFocusables.indexOf(active);
+      const nextIndex = keyEvent.shiftKey
+        ? activeIndex <= 0
+          ? drawerFocusables.length - 1
+          : activeIndex - 1
+        : activeIndex < 0 || activeIndex >= drawerFocusables.length - 1
+          ? 0
+          : activeIndex + 1;
+      keyEvent.preventDefault();
+      focusShellElement(drawerFocusables[nextIndex] ?? closeBtn);
     }
   };
   docEvents.addEventListener?.('keydown', onDocKeydown);
@@ -1883,6 +1953,9 @@ export interface WebclientHashSource {
   getHash(): string;
   /** Subscribe to hash changes. Returns an unsubscribe fn. */
   onChange(listener: (hash: string) => void): () => void;
+  /** Optional imperative navigation seam. Production and the full-app browser
+   * harness provide it; read-only embedders may omit it. */
+  setHash?(hash: string): void;
 }
 
 /** Mounted webclient handle — tear-down + introspection. */
@@ -1977,6 +2050,9 @@ const resolveDefaultHashSource = (): WebclientHashSource | null => {
         g.removeEventListener!('hashchange', wrapped);
         g.removeEventListener!('popstate', wrapped);
       };
+    },
+    setHash: (hash) => {
+      if (g.location !== undefined) g.location.hash = hash;
     },
   };
 };
@@ -2628,6 +2704,19 @@ export const bootstrapWebclient = async (
     ? undefined
     : (req: import('@recued/contracts').KeyRotateRequest) =>
         rpcConn.call('key.rotate', req);
+  // D-212 §7.10 — the webclient's first `system.status` consumer: the Key
+  // Health page's keyfile-posture card. The rpc is `system.`-prefixed, i.e.
+  // MCP-reserved (host telemetry stays off AI agents) and paired-client
+  // only, same posture as `key.health` beside it. The seam hands the panel
+  // the status object; the rpc envelope (`{ status }`) is unwrapped here so
+  // the panel never learns the wire shape.
+  //
+  // Gated with the Key Health page because that page is where it renders —
+  // opting out of the page must not leave a live status read with nothing
+  // to draw.
+  const systemStatusLoader = keyHealthPanelOff
+    ? undefined
+    : async () => (await rpcConn.call('system.status', undefined)).status;
 
   // D-156 P5 — Devices roster + revoke callers. The bootstrap default
   // stays OFF (opt-in-for-tests discipline), but the production boot
@@ -2805,17 +2894,24 @@ export const bootstrapWebclient = async (
     return rpcConn.call('execute', executeArgs);
   };
 
-  // ⛔ D-210 A.2 (slice 3b) — the `reception.manage.mint` caller lived here, with
-  // a `receptionHttpBaseFromWsUrl` helper that built the link's origin from the
-  // paired server's own ws URL (a WS rpc has no request Host, and the server's
-  // getShareBaseUrl throws on a private/LAN host — so the link worked on LAN and
-  // DDNS alike, which was the whole point of the on-the-go surface).
-  //
-  // Both went with the "Copy reschedule link" button they fed. The rpc now names
-  // a BOOKING, and a booking has no detail surface in the webclient yet (the
-  // collection explorer serves mail/calendar/files/webhook; the work-entity page
-  // is a list + a dialog). Re-add ALL THREE together — a caller with no button
-  // is dead code, and a button with no target is a 404.
+  // D-210 Appendix B — build the absolute manage URL from the paired WS server.
+  // The RPC intentionally returns a path: a WS call has no request Host, while
+  // this client knows the actual LAN/DDNS origin through which it is connected.
+  const receptionHttpBaseFromWsUrl = (wsUrl: string): string => {
+    const url = new URL(wsUrl);
+    const protocol = url.protocol === 'wss:'
+      ? 'https:'
+      : url.protocol === 'ws:' ? 'http:' : url.protocol;
+    return `${protocol}//${url.host}`;
+  };
+  const manageRescheduleLinkCaller: DataManageRescheduleLinkCaller = async (input) => {
+    const result = await rpcConn.call('reception.manage.mint', input);
+    const serverUrl = (await options.localStore.get('server_url')) ?? pair.serverUrl;
+    return {
+      url: `${receptionHttpBaseFromWsUrl(serverUrl)}${result.manage_path}`,
+      expires_at: result.expires_at,
+    };
+  };
 
   // D-174 P5 — Data route callers. These are local-UI pair RPCs only:
   // editable own-it rows use contact.* + work_entity.*, while mirror
@@ -2876,6 +2972,12 @@ export const bootstrapWebclient = async (
     rpcConn.call('form_response.list', args);
   const dataFormResponseGetCaller: DataFormResponseGetCaller = (args) =>
     rpcConn.call('form_response.get', args);
+  const dataFormResponseUpdateCaller: DataFormResponseUpdateCaller = (args) =>
+    rpcConn.call('form_response.update', args);
+  const dataFormResponseSetStateCaller: DataFormResponseSetStateCaller = (args) =>
+    rpcConn.call('form_response.set_state', args);
+  const dataFormResponseExportCaller: DataFormResponseExportCaller = (args) =>
+    rpcConn.call('form_response.export', args);
   // Wire the §D.L2 drawer "Create" action seat (its shell thunk resolves here)
   // to the shared Create overlay — the same 4-kind capture the L1 composer
   // [✎ Create] button opens, with the same local-write callers as Data. Track
@@ -3075,7 +3177,7 @@ export const bootstrapWebclient = async (
     options.enableApprovalsRoute === false
       ? undefined
       : (args) => rpcConn.call('notification.submitAnswer', args);
-  // R20 (Option A) — resolve a chat plan from #approvals / the bell popover.
+  // Resolve a durable Chat plan from #approvals / the bell popover.
   // approve → chat.plan.approve, reject → chat.plan.cancel (wire verb
   // unchanged; only the label is "Reject"). Branched so each call carries a
   // concrete method type.
@@ -3086,16 +3188,24 @@ export const bootstrapWebclient = async (
           args.decision === 'approve'
             ? rpcConn.call('chat.plan.approve', { plan_id: args.plan_id })
             : rpcConn.call('chat.plan.cancel', { plan_id: args.plan_id });
+  const chatPlanPendingListCaller =
+    options.enableApprovalsRoute === false
+      ? undefined
+      : () => rpcConn.call('chat.plans.pending.list', undefined);
 
-  // R20 (Option A) — live chat-plan aggregator. Route-independent chrome-level
-  // state: it subscribes to chat.plan_proposed/resolved on the per-pair bus and
-  // holds the session's pending plans so BOTH the #approvals route and the bell
-  // popover can surface them (the chat route keeps its own in-context cards).
-  // Created once here so it survives hash route swaps; disposed on teardown.
+  // Route-independent durable Chat approval inbox. It subscribes before its
+  // first all-session snapshot, replays racing events over that read, and
+  // reconciles again on reconnect. Created once so both the bell and
+  // #approvals share one truthful map across route swaps.
   const pendingChatPlansStore: PendingChatPlansStore | null =
     options.enableApprovalsRoute === false
       ? null
-      : createPendingChatPlansStore({ subscribe: subscriber.on });
+      : createPendingChatPlansStore({
+          subscribe: subscriber.on,
+          listPending: chatPlanPendingListCaller!,
+          reconnect,
+          ...(options.now !== undefined ? { now: options.now } : {}),
+        });
 
   // D-174 / R6 - global approval attention popover. This is
   // route-independent chrome mounted at the webclient root, so it
@@ -3225,7 +3335,6 @@ export const bootstrapWebclient = async (
             ),
           delete: (args) => rpcConn.call('collection.file.delete', args),
           resync: (args) => rpcConn.call('collection.file.resync', args),
-          reauth: (args) => rpcConn.call('collection.file.reauth', args),
         };
 
   // D-165 P3.enroll-host — Connections ENROLLMENT section callers. Default ON;
@@ -3521,6 +3630,28 @@ export const bootstrapWebclient = async (
     options.enableContractsPanel === false
       ? undefined
       : () => rpcConn.call('collection.contract.listCatalogOperations', undefined);
+  // D-211 — owner replacements for pack-authored operation defaults are
+  // global, actorless, and edited only from the pack detail. Keep their
+  // inventory reader independent of the contract-grant feature flag: Access
+  // and operation defaults are separate axes. The operation namespace includes
+  // simple-form ingredients that the contract catalog inventory intentionally
+  // excludes.
+  const ownerOperationInventoryCaller: OwnerOperationInventoryCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : () => rpcConn.call('collection.operation.listOperations', undefined);
+  const ownerOperationListCaller: OwnerOperationListCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.operation.listOwnerOverrides', args);
+  const ownerOperationUpsertCaller: OwnerOperationUpsertCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.operation.upsertOwnerOverride', args);
+  const ownerOperationDeleteCaller: OwnerOperationDeleteCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.operation.deleteOwnerOverride', args);
   const grantRegistryDescribeCaller: GrantRegistryDescribeCaller | undefined =
     options.enableContractsPanel === false
       ? undefined
@@ -4072,6 +4203,15 @@ export const bootstrapWebclient = async (
     return parsed.surface === route ? parsed.segments[index] : undefined;
   };
 
+  const navigateHash = (hash: string): void => {
+    if (hashSource?.setHash !== undefined) {
+      hashSource.setHash(hash);
+      return;
+    }
+    const location = doc.defaultView?.location;
+    if (location !== undefined) location.hash = hash;
+  };
+
   const mountRoute = (
     route: WebclientRouteId,
   ): {
@@ -4080,6 +4220,9 @@ export const bootstrapWebclient = async (
     /** Leave-guard seam — a route with unsaved work returns true and the
      *  hash listener asks before tearing it down. Absent = never guarded. */
     hasUnsavedChanges?: () => boolean;
+    /** Same-surface deep links can opt into an in-place transition. This is
+     * used by Chat plan handoffs to preserve a same-thread composer draft. */
+    navigateDeepLink?: (hash: string) => boolean;
   } => {
     if (route === 'contracts') {
       activeSettingsRoute = null;
@@ -4203,6 +4346,7 @@ export const bootstrapWebclient = async (
       return bootstrapConnectionsRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
+        navigate: navigateHash,
         // Deep link — segment 0 = the lane tab (mail/calendar/file/others),
         // segment 1 = a foundational account to open in detail, OR the
         // `enroll` verb with segment 2 = a vendor to pre-open the Others
@@ -4358,6 +4502,18 @@ export const bootstrapWebclient = async (
         ...(grantCatalogOperationsCaller !== undefined
           ? { catalogOperationsCaller: grantCatalogOperationsCaller }
           : {}),
+        ...(ownerOperationInventoryCaller !== undefined
+          ? { ownerOperationInventoryCaller }
+          : {}),
+        ...(ownerOperationListCaller !== undefined
+          ? { ownerOperationListCaller }
+          : {}),
+        ...(ownerOperationUpsertCaller !== undefined
+          ? { ownerOperationUpsertCaller }
+          : {}),
+        ...(ownerOperationDeleteCaller !== undefined
+          ? { ownerOperationDeleteCaller }
+          : {}),
         // The Access panel's contract rows ride the SAME flag family as the
         // grant callers (enableContractsPanel) — the local-tools contracts
         // caller alone would strand the panel when local-tools is disabled.
@@ -4470,16 +4626,30 @@ export const bootstrapWebclient = async (
         ...(recipeInstallIntent !== undefined
           ? { initialTab: 'discover' as const }
           : {}),
-        // "Parse the version regularly" — re-download the catalog each time the
-        // user returns to Discover so upgrade badges reflect fresh upstream
-        // versions (conditional 304s keep the re-check cheap).
+        // "Parse the version regularly" — on each return to Discover, re-run the
+        // current query AND re-read the installed roster's catalogue versions,
+        // so upgrade badges reflect fresh upstream versions. (Server search +
+        // the bounded `/catalog/versions` lookup replace the old whole-corpus
+        // re-download; the surface's `refresh` drives both.)
         onReactivate: (tab) => {
-          if (tab === 'discover') void recipeDiscover?.panel.refresh();
+          if (tab === 'discover') recipeDiscover?.refresh();
         },
       });
     }
     if (route === 'data') {
       activeSettingsRoute = null;
+      const parsedDataRoute = hashSource === null
+        ? null
+        : parseShellRoute(hashSource.getHash());
+      const sourceRecordAddress = parsedDataRoute === null
+        ? null
+        : parseSourceRecordAddress(parsedDataRoute);
+      const sourceRecordVerificationAddress = parsedDataRoute === null
+        ? null
+        : parseSourceRecordVerificationAddress(parsedDataRoute);
+      const dataEntityVerificationAddress = parsedDataRoute === null
+        ? null
+        : parseDataEntityVerificationAddress(parsedDataRoute);
       return bootstrapDataRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
@@ -4504,8 +4674,12 @@ export const bootstrapWebclient = async (
         contactImportFileApplyCaller: dataContactImportFileApplyCaller,
         formResponseListCaller: dataFormResponseListCaller,
         formResponseGetCaller: dataFormResponseGetCaller,
+        formResponseUpdateCaller: dataFormResponseUpdateCaller,
+        formResponseSetStateCaller: dataFormResponseSetStateCaller,
+        formResponseExportCaller: dataFormResponseExportCaller,
         recipeListCaller: recipesListCaller,
         recipeExecuteCaller,
+        manageRescheduleLinkCaller,
         timelineCaller: dataTimelineCaller,
         mirrorSearchCaller: dataMirrorSearchCaller,
         memoryListCaller: dataMemoryListCaller,
@@ -4526,14 +4700,62 @@ export const bootstrapWebclient = async (
         uploadDeleteCaller: dataUploadDeleteCaller,
         uploadConnectFactory,
         fileReadCaller: dataFileReadCaller,
-        // R18 — `#data/<tab>/<entity_id>` deep link (R16): hydrate the tab +
-        // open the addressed entity's timeline detail.
-        ...(deepLinkSegment('data') !== undefined
-          ? { initialTab: deepLinkSegment('data') }
+        // Exact citation route wins over the legacy positional deep link. It
+        // carries the collection instance needed to disambiguate two accounts.
+        ...(sourceRecordAddress !== null
+          ? { initialTab: sourceRecordAddress.tab }
+          : sourceRecordVerificationAddress !== null
+            ? { initialTab: sourceRecordVerificationAddress.tab }
+            : dataEntityVerificationAddress !== null
+              ? { initialTab: dataEntityVerificationAddress.tab }
+          : deepLinkSegment('data') !== undefined
+            ? { initialTab: deepLinkSegment('data') }
+            : {}),
+        ...(sourceRecordAddress !== null
+          ? { initialCollectionSlug: sourceRecordAddress.collectionSlug }
           : {}),
-        ...(deepLinkSegment('data', 1) !== undefined
-          ? { initialEntityId: deepLinkSegment('data', 1) }
+        ...(sourceRecordAddress !== null
+          ? { initialEntityId: sourceRecordAddress.recordId }
+          : sourceRecordVerificationAddress !== null
+            ? { initialEntityId: sourceRecordVerificationAddress.recordId }
+            : dataEntityVerificationAddress !== null
+              ? { initialEntityId: dataEntityVerificationAddress.entityId }
+          : deepLinkSegment('data', 1) !== undefined
+            ? { initialEntityId: deepLinkSegment('data', 1) }
+            : {}),
+        ...(sourceRecordAddress?.returnToChat !== undefined
+          ? { chatReturn: sourceRecordAddress.returnToChat }
           : {}),
+        ...(sourceRecordAddress?.returnToRun !== undefined
+          ? { logsReturn: sourceRecordAddress.returnToRun }
+          : sourceRecordVerificationAddress !== null
+            ? { logsReturn: sourceRecordVerificationAddress.returnToRun }
+            : dataEntityVerificationAddress !== null
+              ? { logsReturn: dataEntityVerificationAddress.returnToRun }
+              : {}),
+        ...(sourceRecordVerificationAddress !== null
+          ? { verifyInitialSourceRecord: true }
+          : {}),
+        ...(sourceRecordAddress !== null
+          && sourceRecordAddress.returnToRun !== undefined
+          && sourceRecordAddress.verificationRelationship !== undefined
+          ? {
+              verificationRelationship:
+                sourceRecordAddress.verificationRelationship,
+            }
+          : sourceRecordVerificationAddress?.verificationRelationship
+              !== undefined
+            ? {
+                verificationRelationship:
+                  sourceRecordVerificationAddress.verificationRelationship,
+              }
+            : dataEntityVerificationAddress?.verificationRelationship
+                !== undefined
+              ? {
+                  verificationRelationship:
+                    dataEntityVerificationAddress.verificationRelationship,
+                }
+              : {}),
         subscribe: subscriber.on,
       });
     }
@@ -4593,6 +4815,12 @@ export const bootstrapWebclient = async (
       // deep-links a run's detail; bare `#logs` is the default History view.
       // R24 follow-on — `#logs/recipe/<recipe_id>` opens History pre-scoped to a
       // recipe's runs (the recipe detail's "View runs in Logs" link).
+      const parsedLogsRoute = hashSource === null
+        ? null
+        : parseShellRoute(hashSource.getHash());
+      const logsRunAddress = parsedLogsRoute === null
+        ? null
+        : parseLogsRunAddress(parsedLogsRoute);
       const logsSegment = deepLinkSegment('logs');
       const logsRecipeId = deepLinkSegment('logs', 1);
       return bootstrapLogsRoute({
@@ -4613,8 +4841,15 @@ export const bootstrapWebclient = async (
           ? { initialView: 'active' as const }
           : logsSegment === 'recipe' && logsRecipeId !== undefined
             ? { initialRecipeId: logsRecipeId }
-            : logsSegment !== undefined
-              ? { initialRunId: logsSegment }
+            : logsRunAddress !== null
+              ? {
+                  initialRunId: logsRunAddress.runId,
+                  ...(logsRunAddress.returnToChat !== undefined
+                    ? { chatReturn: logsRunAddress.returnToChat }
+                    : {}),
+                }
+              : logsSegment !== undefined
+                ? { initialRunId: logsSegment }
               : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
         subscribe: subscriber.on,
@@ -4622,14 +4857,40 @@ export const bootstrapWebclient = async (
     }
     if (route === 'chat') {
       activeSettingsRoute = null;
+      const parsedChatRoute = hashSource === null
+        ? null
+        : parseShellRoute(hashSource.getHash());
+      const chatAnswerAddress = parsedChatRoute === null
+        ? null
+        : parseChatAnswerAddress(parsedChatRoute);
+      const chatPlanAddress = parsedChatRoute === null
+        ? null
+        : parseChatPlanAddress(parsedChatRoute);
+      const chatDeepLink = deepLinkSegment('chat');
+      const chatSessionId = chatPlanAddress?.sessionId
+        ?? chatAnswerAddress?.sessionId
+        ?? (chatDeepLink === 'session'
+          ? deepLinkSegment('chat', 1)
+          : undefined);
+      const chatConnectedSource = hashSource === null
+        ? null
+        : parseChatConnectedSource(parseShellRoute(hashSource.getHash()));
+      const chatConnectedSourceLane = chatConnectedSource === null
+        ? undefined
+        : chatConnectedSource.lane === 'mail'
+          ? connectionsMailLane
+          : chatConnectedSource.lane === 'calendar'
+            ? connectionsCalendarLane
+            : connectionsFileLane;
       // The live-control "running" bubble was lifted out of the chat header into
       // route-independent shell chrome (`liveControlBubble`, mounted above), so
       // the chat route no longer wires the `execution.*` callers.
-      return bootstrapChatRoute({
+      const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
         conn: rpcConn.call as ChatRouteConn,
         ...(options.document !== undefined ? { document: options.document } : {}),
         subscribe: subscriber.on,
+        reconnect,
         // Shell-frame Step 4 — the [✎ Create] composer overlay reuses the
         // compose route's local-write callers.
         contactUpsertCaller: dataContactUpsertCaller,
@@ -4645,10 +4906,87 @@ export const bootstrapWebclient = async (
         schedulesDeleteCaller: automationSchedulesDeleteCaller,
         autoRunListCaller: automationAutoRunListCaller,
         autoRunUpdateCaller: automationAutoRunUpdateCaller,
+        // The default landing owns the first-run activation surface. Embedded
+        // chat mounts opt in explicitly so their established empty state stays
+        // stable.
+        enableFirstRunActivation: true,
+        ...(chatDeepLink === 'start'
+          ? { initialStarterPrompt: true }
+          : {}),
+        ...(chatSessionId !== undefined
+          ? { initialSessionId: chatSessionId }
+          : {}),
+        ...(chatAnswerAddress !== null
+          ? { initialMessageId: chatAnswerAddress.messageId }
+          : chatPlanAddress?.messageId !== undefined
+            ? { initialMessageId: chatPlanAddress.messageId }
+            : {}),
+        ...(chatPlanAddress !== null
+          ? { initialPlanId: chatPlanAddress.planId }
+          : {}),
+        ...(chatPlanAddress?.dataVerification !== undefined
+          ? {
+              initialDataVerificationReturn:
+                chatPlanAddress.dataVerification,
+            }
+          : {}),
+        ...(chatConnectedSource !== null
+          ? {
+              initialConnectedSource: chatConnectedSource,
+              onConnectedSourceRetired: () => {
+                const nextHash = serializeShellRoute('chat');
+                const history = doc.defaultView?.history;
+                if (history?.replaceState === undefined) return;
+                try {
+                  history.replaceState(null, '', nextHash);
+                  activeHash = nextHash;
+                } catch {
+                  // A constrained embedder may reject History writes. The
+                  // in-memory handoff still retires; the current draft must
+                  // not be sacrificed to a remount fallback.
+                }
+              },
+              ...(chatConnectedSourceLane !== undefined
+                ? {
+                    connectedSourceStatusCaller: async () => {
+                      const { instances } = await chatConnectedSourceLane.list();
+                      return projectChatConnectedSourceStatus(
+                        chatConnectedSource,
+                        instances,
+                      );
+                    },
+                  }
+                : {}),
+            }
+          : {}),
       });
+      return {
+        ...chatRoute,
+        navigateDeepLink: (hash: string): boolean => {
+          const address = parseChatPlanAddress(parseShellRoute(hash));
+          return address === null
+            ? false
+            : chatRoute.openPlanLanding(address);
+        },
+      };
     }
     if (route === 'settings') {
       const sellerRouteMode = deepLinkSegment('settings', 2);
+      const chatSetupSessionId =
+        deepLinkSegment('settings', 2) === 'session'
+          ? deepLinkSegment('settings', 3)
+          : undefined;
+      const chatSetupConnectedSource =
+        hashSource === null
+          ? null
+          : parseConnectedSourceChatSetup(
+              parseShellRoute(hashSource.getHash()),
+            );
+      const chatSetupReturnHref = chatSetupSessionId === undefined
+        ? chatSetupConnectedSource === null
+          ? serializeShellRoute('chat', 'start')
+          : serializeChatConnectedSource(chatSetupConnectedSource)
+        : serializeShellRoute('chat', 'session', chatSetupSessionId);
       const settings = bootstrapSettingsRoute({
         root: appShell.contentRoot,
         localStore: options.localStore,
@@ -4660,6 +4998,9 @@ export const bootstrapWebclient = async (
         ...(hashSource !== null
           ? {
               initialSectionId: deepLinkSegment('settings'),
+              ...(deepLinkSegment('settings', 1) === 'setup'
+                ? { initialAiModelsView: 'chat-setup' as const }
+                : {}),
               initialSellerSubpage: deepLinkSegment('settings', 1),
               initialSellerItemId: sellerRouteMode === 'detail'
                 ? deepLinkSegment('settings', 3)
@@ -4668,6 +5009,12 @@ export const bootstrapWebclient = async (
                 ? deepLinkSegment('settings', 3)
                 : undefined,
             }
+          : {}),
+        onChatSetupComplete: () => {
+          navigateHash(chatSetupReturnHref);
+        },
+        ...(chatSetupSessionId !== undefined || chatSetupConnectedSource !== null
+          ? { chatSetupReturnHref }
           : {}),
         ...(options.cryptoKeysWiper !== undefined
           ? { cryptoKeysWiper: options.cryptoKeysWiper }
@@ -4703,6 +5050,8 @@ export const bootstrapWebclient = async (
         ...(keyHealthLoader !== undefined && keyRotateCaller !== undefined
           ? { keyHealthLoader, keyRotateCaller }
           : {}),
+        // D-212 §7.10 — keyfile posture on the Key Health page.
+        ...(systemStatusLoader !== undefined ? { systemStatusLoader } : {}),
         ...(certPinWatcher !== null ? { certPinWatcher } : {}),
         ...(pairListCaller !== undefined && pairRevokeCaller !== undefined
           ? { pairListCaller, pairRevokeCaller }
@@ -5193,6 +5542,7 @@ export const bootstrapWebclient = async (
     update?: () => void;
     dispose: () => void;
     hasUnsavedChanges?: () => boolean;
+    navigateDeepLink?: (hash: string) => boolean;
   } = mountRoute(activeRoute);
 
   // 5.5. § A.6.5 + § A.9 / slice 116 — passport-fetch verify pipeline.
@@ -5392,12 +5742,20 @@ export const bootstrapWebclient = async (
           next === activeRoute
           && shouldRemountForSameRoute(next, activeHash, hash);
         if (next === activeRoute && !remountForDeepLink) return;
-        // Leave guard — a route with unsaved work (Kitchen editors) gets a
-        // chance to keep the user. Declining restores the URL by SETTING the
-        // hash (a new entry) — replaceState would DESTROY the history entry a
-        // Back/Forward decline traversed to, decaying the back stack entry by
-        // entry. The resulting hashchange re-dispatch no-ops here (same
-        // route, same hash). Environments without confirm (tests) proceed.
+        if (
+          remountForDeepLink
+          && mountedRouteHandle.navigateDeepLink?.(hash) === true
+        ) {
+          activeHash = hash;
+          return;
+        }
+        // Leave guard — a route with unsaved work (Kitchen editors or a Chat
+        // draft) gets a chance to keep the user. Declining restores the URL by
+        // SETTING the hash (a new entry) — replaceState would DESTROY the
+        // history entry a Back/Forward decline traversed to, decaying the back
+        // stack entry by entry. The resulting hashchange re-dispatch no-ops
+        // here (same route, same hash). Environments without confirm (tests)
+        // proceed.
         if (mountedRouteHandle.hasUnsavedChanges?.() === true) {
           const view = doc?.defaultView;
           const proceed =

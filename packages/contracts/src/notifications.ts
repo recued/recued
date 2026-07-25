@@ -12,7 +12,7 @@
  *  drift on the notification block's side surfaces at the contracts
  *  test boundary, not later at a webclient call site.
  *
- *  Spec: docs/d-163-spec.md § N.5 / N.6 / A.5. */
+ *  Spec: D-163 § N.5 / N.6 / A.5. */
 
 import {
   MESSENGER_VENDOR_DECLARATIONS,

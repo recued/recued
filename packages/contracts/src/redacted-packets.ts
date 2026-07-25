@@ -36,7 +36,7 @@ import { COMMITMENT_LIFECYCLE_STATE_SET } from './work-entities.js';
  *    - Token validation + expiry are enforced at consumer boundary
  *      (substrate exposes `isPacketExpired` + `validateAccessToken`).
  *
- *  Spec: `docs/d-145-spec.md` § B.13. */
+ *  Spec: D-145 § B.13. */
 
 // ── PB12.1 — Closed list of packet kinds ────────────────────────────
 

@@ -55,7 +55,7 @@
  *      iterates all entries + matches by slot grammar; lookup-table
  *      pre-filtering becomes interesting once entry counts grow.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle / § 3 the deterministic gate. */
 
 import type { RegisteredTemplate, TemplatePool } from '../library.js';

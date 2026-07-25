@@ -99,6 +99,7 @@ import {
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 
 import type { ServerExecutorConfig } from './server-executor.js';
+import { executeResponseAuditRunId } from './types.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
@@ -331,22 +332,43 @@ export const wrapRecipeRunResult = (
   result: ExecuteResponse,
   toolLabel?: string,
 ): ChatDispatchResult => {
+  // Host-owned metadata: never infer this from `result_ref`, recipe ids, or
+  // model-visible output. It exists only when the execute handler confirmed
+  // that the exact audit anchor was durably written.
+  const run_id = executeResponseAuditRunId(result);
+  const runAddress = run_id !== undefined ? { run_id } : {};
   if (result.run_terminated !== undefined) {
     return {
       ok: false,
       reason: 'run_cancelled',
       detail: runCancellationMessage(result.run_terminated, toolLabel ?? result.recipe_id),
+      ...runAddress,
     };
   }
   const projected = projectRunResultForAgent(result);
   if (result.awaiting_approval === true) {
-    return { ok: true, result: projected, run_held: { kind: 'approval' } };
+    return {
+      ok: true,
+      result: projected,
+      run_held: { kind: 'approval' },
+      ...runAddress,
+    };
   }
   if (result.container_pick_required !== undefined) {
-    return { ok: true, result: projected, run_held: { kind: 'container_pick' } };
+    return {
+      ok: true,
+      result: projected,
+      run_held: { kind: 'container_pick' },
+      ...runAddress,
+    };
   }
   if (result.create_plan_required !== undefined) {
-    return { ok: true, result: projected, run_held: { kind: 'create_plan' } };
+    return {
+      ok: true,
+      result: projected,
+      run_held: { kind: 'create_plan' },
+      ...runAddress,
+    };
   }
   // D-182 — a genuinely FAILED run (returned errors, NOT held for approval) carries
   // a user-facing failure line the chat broadcast renders as an ERROR activity row.
@@ -355,9 +377,14 @@ export const wrapRecipeRunResult = (
   // All held third states returned above, so only a genuine completed failure
   // reaches this activity-row signal.
   if (result.success === false) {
-    return { ok: true, result: projected, run_failed: { detail: runFailureDetail(result) } };
+    return {
+      ok: true,
+      result: projected,
+      run_failed: { detail: runFailureDetail(result) },
+      ...runAddress,
+    };
   }
-  return { ok: true, result: projected };
+  return { ok: true, result: projected, ...runAddress };
 };
 
 const errMessage = (err: unknown): string =>
@@ -1085,10 +1112,11 @@ const createCalendarSearchHandler =
             });
           }
         } else {
-          // listSnapshots vs list: snapshots carry `source_id` (the
-          // record_id surface the chat agent / consumer needs) without
-          // a second round-trip. Slightly heavier (deserializes JSON
-          // payload) but the per-collection cap bounds the cost.
+          // listSnapshots vs list: snapshots carry both the canonical
+          // `record_id` needed by collection.get and the provider-native
+          // `source_id` without a second round-trip. Slightly heavier
+          // (deserializes JSON payload) but the per-collection cap bounds
+          // the cost.
           const rows = c.table.listSnapshots({
             ...(startSince !== undefined ? { start_since: startSince } : {}),
             ...(startUntil !== undefined ? { start_until: startUntil } : {}),
@@ -1098,7 +1126,9 @@ const createCalendarSearchHandler =
           for (const r of rows) {
             aggregated.push({
               collection_slug: c.slug,
-              record_id: r.source_id,
+              // Exact Data/collection.get address. `source_id` is provider
+              // native and cannot round-trip through the generic explorer.
+              record_id: r.record_id,
               hot_fields: r.hot,
               received_at: r.received_at,
             });
@@ -1272,7 +1302,7 @@ const encodeMemoryCursor = (offset: number): string =>
 
 /** Fail-OPEN to offset 0 on a malformed cursor — a thrown `invalid_args` here
  *  would re-open the agent retry loop (see the 2026-06-09 `enrichment.search`
- *  entry in docs/chat-prompt-optimization-log.md). */
+ *  entry in internal design notes). */
 const decodeMemoryCursor = (raw: unknown): number => {
   if (typeof raw !== 'string' || raw.length === 0) return 0;
   try {
@@ -1324,11 +1354,15 @@ const effectiveTime = (r: UserMemoryRow): number => r.event_at ?? r.ts;
  *  recall tool makes the agent retry-to-timeout (the loop the 2026-06-09
  *  `enrichment.search` fix closed, which cited memory.search's own never-error
  *  fallback as the precedent). Keep it that way. */
-const emptyMemoryResult = (hint: string) => ({
+const emptyMemoryResult = (
+  hint: string,
+  coverage?: 'unavailable',
+) => ({
   ok: true as const,
   result: {
     memories: [] as MemorySearchEntry[],
     budget: { limit_bytes: MEMORY_SEARCH_BUDGET_BYTES, used_bytes: 0, truncated_count: 0 },
+    ...(coverage !== undefined ? { coverage } : {}),
     hint,
   },
 });
@@ -1356,13 +1390,11 @@ const emptyMemoryResult = (hint: string) => ({
  *  ANTI-LOOP INVARIANT: every non-result exit is a guided EMPTY (`ok:true`,
  *  `memories: []`, `hint`), never `ok:false`. A missing arg, a junk query, an
  *  ungranted read, an unknown id — none may error. See the 2026-06-09
- *  `enrichment.search` entry in docs/chat-prompt-optimization-log.md, which
+ *  `enrichment.search` entry in internal design notes, which
  *  cites THIS tool's never-error fallback as the precedent it copied. */
 const createMemorySearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
-    const store = deps.getUserMemoryStore?.();
-    if (!store) return emptyMemoryResult('memory pool unavailable on this server');
     const args = asObject(raw);
     if (!args) return invalidArgs('args must be an object');
 
@@ -1371,6 +1403,14 @@ const createMemorySearchHandler =
     // door needs the seller's explicit `core.memory.read` (owner-default-only).
     if (!admitMemoryRead(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
       return emptyMemoryResult('reading the memory pool is not granted for this caller');
+    }
+
+    const store = deps.getUserMemoryStore?.();
+    if (!store) {
+      return emptyMemoryResult(
+        'memory pool unavailable on this server',
+        'unavailable',
+      );
     }
 
     try {
@@ -2228,7 +2268,7 @@ const createEnrichmentSearchHandler =
       // empty result + a hint to supply a topic (or fall through to a raw-
       // record search) and answers in one more turn. An UNKNOWN topic already
       // returns [] (the store's `list` guards with `isEnrichmentTopic`), so a
-      // guessed topic doesn't loop either. See recued-substrate-bench
+      // guessed topic doesn't loop either. See internal benchmarks
       // tasks/76-routing-enrichment-live.json.
       return {
         ok: true,

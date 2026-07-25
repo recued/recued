@@ -1,5 +1,5 @@
 /** Contact-backed entity-search adapter for the prompt-cache prefetch
- *  middleware (docs/prefetch-middleware-pending-design.md).
+ *  middleware (internal design notes).
  *
  *  Implements `EntitySearchPort` over the per-pair contact warehouse using the
  *  D-167 §1.A prefetch INDEX (not a whole-warehouse scan). The store's
@@ -13,7 +13,7 @@
  *  `scorePrefetchCandidates` re-scores it authoritatively — identical output to an
  *  uncapped brute scan, but at index latency (~0.04ms vs ~42ms@50k) and STORE-WIDE
  *  + COMPLETE at any warehouse size. Two consequences vs the prior recency-capped
- *  scan (`docs/d-167-prefetch-index-and-recall-collision-design.md` §1.A):
+ *  scan (D-167 §1.A):
  *    1. The §2 ambiguity gate runs on a STORE-WIDE candidate set (no recency-page
  *       truncation), so confident fuzzy name/org wins are restored above 10k
  *       contacts. Retrieval is PER TOKEN, so a flooding token never starves a rarer

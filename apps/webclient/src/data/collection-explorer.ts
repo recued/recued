@@ -18,7 +18,7 @@
  *  Pure render (HTML strings) + styles + click-dispatch constants the route
  *  wires — mirrors `memory-lens.ts`.
  *
- *  Spec: docs/d-198-spec.md §4 + docs/d-198-build-plan.md §B Slice 5. */
+ *  Spec: D-198 §4 + D-198 §B Slice 5. */
 
 import {
   getCollectionDisplaySchema,
@@ -36,6 +36,9 @@ export const COLLECTION_DETAIL_CLOSE_ACTION = 'collection-detail-close';
 /** `slug` of the instance the user picked / the `record_id` of the opened row. */
 export const COLLECTION_INSTANCE_SLUG_ATTR = 'data-collection-slug';
 export const COLLECTION_RECORD_ID_ATTR = 'data-collection-record';
+/** Programmatic focus target for an exact record deep-link. */
+export const COLLECTION_DETAIL_HEADING_ATTR =
+  'data-recued-collection-detail-heading';
 
 /** The open record detail — the lazy `collection.get` result for one record. */
 export interface CollectionExplorerDetailState {
@@ -289,7 +292,7 @@ const renderDetail = (
     }
     body = `<div class="col-explorer-detail-head">
         <span class="col-explorer-detail-scope">${e(collection)}</span>
-        <h3 class="col-explorer-detail-title">${e(title)}</h3>
+        <h2 class="col-explorer-detail-title" ${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">${e(title)}</h2>
       </div>
       ${fields ? `<dl class="col-explorer-detail-fields">${fields}</dl>` : ''}
       ${bodyBlock}
@@ -330,7 +333,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 
   let body: string;
   if (props.error !== undefined) {
-    body = `<p class="col-explorer-error">${e(props.error)}</p>`;
+    body = `<p class="col-explorer-error" role="alert">${e(props.error)}</p>`;
   } else if (!props.singleCollection && props.instances.length === 0) {
     body = `<p class="col-explorer-empty">Nothing connected for ${e(props.collection)} yet.</p>`;
   } else if (!props.singleCollection && props.selectedSlug === null && props.instances.length > 1) {
@@ -356,44 +359,48 @@ export const COLLECTION_EXPLORER_STYLES = `
 .col-explorer-instances { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .col-explorer-instance-chip {
   font: inherit; font-size: 0.8125rem; padding: 0.25rem 0.625rem; border-radius: 999px;
-  border: 1px solid var(--border, #d4d4d8); background: transparent; color: var(--text-muted, #71717a); cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--fg-muted); cursor: pointer;
 }
-.col-explorer-instance-chip.is-active { background: var(--accent, #4f46e5); border-color: var(--accent, #4f46e5); color: #fff; }
+.col-explorer-instance-chip.is-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .col-explorer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
 .col-explorer-row { }
 .col-explorer-row-btn {
   width: 100%; text-align: left; display: flex; flex-direction: column; gap: 0.25rem;
-  font: inherit; padding: 0.625rem 0.75rem; border: 1px solid var(--border, #e4e4e7);
-  border-radius: 0.5rem; background: var(--surface, #fff); color: var(--text, #18181b); cursor: pointer;
+  font: inherit; padding: 0.625rem 0.75rem; border: 1px solid var(--border);
+  border-radius: 0.5rem; background: var(--surface); color: var(--fg); cursor: pointer;
 }
-.col-explorer-row-btn:hover { background: var(--surface-2, #f4f4f5); }
+.col-explorer-row-btn:hover { background: var(--surface-sunk); }
 .col-explorer-row-title {
   font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.col-explorer-row-summary { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; color: var(--text-muted, #71717a); }
+.col-explorer-row-summary { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; color: var(--fg-muted); }
 .col-explorer-field { display: inline-flex; gap: 0.3125rem; align-items: baseline; }
-.col-explorer-field-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #a1a1aa); }
+.col-explorer-field-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted); }
 .col-explorer-detail { display: flex; flex-direction: column; gap: 0.625rem; }
 .col-explorer-detail-bar { margin-bottom: 0.25rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
 .col-explorer-detail-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .col-explorer-detail-scope {
   font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
-  padding: 0.125rem 0.5rem; border-radius: 0.375rem; background: var(--surface-2, #f4f4f5); color: var(--text-muted, #52525b);
+  padding: 0.125rem 0.5rem; border-radius: 0.375rem; background: var(--surface-sunk); color: var(--fg-muted);
 }
-.col-explorer-detail-title { margin: 0; font-size: 0.9375rem; font-weight: 600; word-break: break-word; }
+.col-explorer-detail-title { min-height: 24px; margin: 0; font-size: 0.9375rem; font-weight: 600; word-break: break-word; }
+.col-explorer-detail-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .col-explorer-detail-fields { margin: 0; display: grid; grid-template-columns: minmax(6rem, auto) 1fr; gap: 0.25rem 0.75rem; }
 .col-explorer-detail-field { display: contents; }
-.col-explorer-detail-field dt { font-size: 0.75rem; font-weight: 600; color: var(--text-muted, #71717a); }
-.col-explorer-detail-field dd { margin: 0; font-size: 0.8125rem; color: var(--text, #27272a); word-break: break-word; }
+.col-explorer-detail-field dt { font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); }
+.col-explorer-detail-field dd { margin: 0; font-size: 0.8125rem; color: var(--fg); word-break: break-word; }
 .col-explorer-detail-body {
   margin: 0; font: inherit; font-size: 0.875rem; white-space: pre-wrap; word-break: break-word;
-  background: var(--surface-2, #f4f4f5); border-radius: 0.5rem; padding: 0.75rem; color: var(--text, #27272a); max-height: 24rem; overflow: auto;
+  background: var(--surface-sunk); border-radius: 0.5rem; padding: 0.75rem; color: var(--fg); max-height: 24rem; overflow: auto;
 }
-.col-explorer-detail-raw summary { font-size: 0.8125rem; color: var(--text-muted, #71717a); cursor: pointer; }
+.col-explorer-detail-raw summary {
+  min-height: 32px; display: inline-flex; align-items: center;
+  font-size: 0.8125rem; color: var(--fg-muted); cursor: pointer;
+}
 .col-explorer-detail-raw pre {
   margin: 0.375rem 0 0; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word;
-  background: var(--surface-2, #f4f4f5); border-radius: 0.5rem; padding: 0.625rem; color: var(--text-muted, #52525b);
+  background: var(--surface-sunk); border-radius: 0.5rem; padding: 0.625rem; color: var(--fg-muted);
 }
-.col-explorer-empty, .col-explorer-loading, .col-explorer-error { color: var(--text-muted, #71717a); font-size: 0.875rem; }
-.col-explorer-error { color: var(--danger, #dc2626); }
+.col-explorer-empty, .col-explorer-loading, .col-explorer-error { color: var(--fg-muted); font-size: 0.875rem; }
+.col-explorer-error { color: var(--danger); }
 `;

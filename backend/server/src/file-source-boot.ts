@@ -40,7 +40,7 @@
  *  would sweep each other's rows. (`wireWorkEntitySourceBoot` carries the
  *  mirror guard.)
  *
- *  Spec: `docs/d-192-file-source-family.md`; the boot precedent is
+ *  Spec: D-192; the boot precedent is
  *  `work-entity-source-boot.ts`. */
 
 import type { ConnectionRow, FileVendorDeclaration } from '@recued/contracts';
@@ -114,8 +114,8 @@ const reconcileFileSources = (
       source_kind: 'connection',
       sync_posture: 'file_meta_ref',
       source_label: d.source_label,
-      // Read-only meta-only mirror in v1 (bytes never fetched — North star);
-      // there is no write path to flip this true.
+      // The Source sync is a read-only metadata mirror. Lazy remote-byte reads
+      // do not create a provider write path, so this remains false.
       write_capable: false,
       // MCP-exposure default off (privacy posture — D-136 P7.E); the user opts
       // in per Source through Settings.

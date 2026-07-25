@@ -121,11 +121,10 @@ describe('composeFileStack (Phase 7 / D-110)', () => {
     seedRow(stack, 'going');
     await stack.startAll();
 
-    await stack.enrollDeps.onDeleted!('going');
-    // The row itself is deleted by the enroll handler AFTER onDeleted;
-    // simulate that sequence so the post-drop dispatch reflects the
-    // real production path.
+    // The enroll handler removes authority first so an in-flight resync
+    // cannot recreate an adapter while teardown is queued.
     stack.instances.delete('file', 'going');
+    await stack.enrollDeps.onDeleted!('going');
 
     await expect(
       stack.kernelDispatchers.fileWrite({
@@ -171,6 +170,7 @@ describe('composeFileStack (Phase 7 / D-110)', () => {
       'warn',
       expect.stringContaining("unknown adapter_type 'adapter-never-shipped'"),
     );
+    expect(stack.instances.get('file', 'orphan')?.auth_state).toBe('degraded');
     // The healthy adapter still started.
     await expect(
       stack.kernelDispatchers.fileWrite({
@@ -179,6 +179,33 @@ describe('composeFileStack (Phase 7 / D-110)', () => {
         body_b64: '',
       }),
     ).resolves.toEqual({ ok: true, bytes_written: 0 });
+  });
+
+  it('startAll refuses a persisted OAuth row and marks it degraded', async () => {
+    seedRow(stack, 'legacy-oauth');
+    const stored = stack.instances.get('file', 'legacy-oauth')!;
+    stack.instances.updateCaps('file', 'legacy-oauth', {
+      ...stored.caps,
+      auth: 'oauth',
+    });
+
+    await stack.startAll();
+
+    expect(stack.instances.get('file', 'legacy-oauth')?.auth_state).toBe('degraded');
+    expect(log).toHaveBeenCalledWith(
+      'warn',
+      expect.stringContaining("invalid persisted caps for 'legacy-oauth'"),
+      expect.objectContaining({
+        err: expect.stringContaining('connection-backed D-192 Source'),
+      }),
+    );
+    await expect(
+      stack.kernelDispatchers.fileWrite({
+        slug: 'legacy-oauth',
+        path: 'must-not-run',
+        body_b64: '',
+      }),
+    ).rejects.toThrow(/FILE_CAPABILITY_DENIED|FILE_INSTANCE_DEGRADED/);
   });
 
   it('startAll tolerates adapter.start() failures on a single row', async () => {
@@ -214,9 +241,215 @@ describe('composeFileStack (Phase 7 / D-110)', () => {
       expect.stringContaining("adapter.start failed for 'boom'"),
       expect.anything(),
     );
+    expect(stack.instances.get('file', 'boom')?.auth_state).toBe('degraded');
     // 'fine' still started.
     await expect(
       stack.kernelDispatchers.fileRead({ slug: 'fine', path: 'x' }),
     ).rejects.toThrow(/FILE_NOT_FOUND/);
+  });
+
+  it('persists runtime adapter degradation after start resolves', async () => {
+    let degrade: ((error: unknown) => Promise<void> | void) | undefined;
+    stack.adapters.register({
+      type: 'later-failure',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'realtime',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create(ctx) {
+        degrade = ctx.onDegraded;
+        return {
+          async start() {},
+          async stop() {},
+        };
+      },
+    });
+    seedRow(stack, 'runtime-red', 'later-failure');
+    await stack.startAll();
+    expect(stack.instances.get('file', 'runtime-red')?.auth_state).toBe('healthy');
+
+    await degrade!(new Error('watch handle lost'));
+
+    expect(stack.instances.get('file', 'runtime-red')?.auth_state).toBe('degraded');
+    expect(log).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining("adapter runtime degraded for 'runtime-red'"),
+      expect.anything(),
+    );
+  });
+
+  it('onResync performs a bounded stop + start instead of scheduling polling', async () => {
+    let starts = 0;
+    let stops = 0;
+    stack.adapters.register({
+      type: 'restartable',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        return {
+          async start() { starts++; },
+          async stop() { stops++; },
+        };
+      },
+    });
+    seedRow(stack, 'manual', 'restartable');
+    await stack.startAll();
+
+    const stored = stack.instances.get('file', 'manual')!;
+    await stack.enrollDeps.onResync!({
+      slug: stored.slug,
+      platform: 'file',
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    });
+
+    expect(starts).toBe(2);
+    expect(stops).toBe(1);
+  });
+
+  it('serializes concurrent resyncs so only one adapter is live', async () => {
+    let starts = 0;
+    let stops = 0;
+    let active = 0;
+    let maxActive = 0;
+    stack.adapters.register({
+      type: 'serialized',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        let running = false;
+        return {
+          async start() {
+            starts++;
+            // Widen the gap between map lookup and registration. Without the
+            // per-slug lifecycle queue, both replacement starts enter here.
+            if (starts > 1) await new Promise<void>((resolve) => setImmediate(resolve));
+            running = true;
+            active++;
+            maxActive = Math.max(maxActive, active);
+          },
+          async stop() {
+            stops++;
+            if (running) {
+              running = false;
+              active--;
+            }
+          },
+        };
+      },
+    });
+    seedRow(stack, 'serialized-row', 'serialized');
+    await stack.startAll();
+    const stored = stack.instances.get('file', 'serialized-row')!;
+    const row = {
+      slug: stored.slug,
+      platform: 'file' as const,
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    };
+
+    await Promise.all([
+      stack.enrollDeps.onResync!(row),
+      stack.enrollDeps.onResync!(row),
+    ]);
+
+    expect(starts).toBe(3);
+    expect(stops).toBe(2);
+    expect(active).toBe(1);
+    expect(maxActive).toBe(1);
+  });
+
+  it('does not start a replacement when the prior adapter fails to stop', async () => {
+    let starts = 0;
+    stack.adapters.register({
+      type: 'stuck-stop',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        return {
+          async start() { starts++; },
+          async stop() { throw new Error('watcher would not close'); },
+        };
+      },
+    });
+    seedRow(stack, 'stuck', 'stuck-stop');
+    await stack.startAll();
+    const stored = stack.instances.get('file', 'stuck')!;
+
+    await expect(stack.enrollDeps.onResync!({
+      slug: stored.slug,
+      platform: 'file',
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    })).rejects.toThrow('watcher would not close');
+
+    await expect(stack.enrollDeps.onResync!({
+      slug: stored.slug,
+      platform: 'file',
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    })).rejects.toThrow('watcher would not close');
+
+    expect(starts).toBe(1);
+  });
+
+  it('refuses a stale resync snapshot after the instance row is deleted', async () => {
+    let starts = 0;
+    stack.adapters.register({
+      type: 'delete-race',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        return {
+          async start() { starts++; },
+          async stop() {},
+        };
+      },
+    });
+    seedRow(stack, 'deleted-row', 'delete-race');
+    await stack.startAll();
+    const stored = stack.instances.get('file', 'deleted-row')!;
+    const staleRow = {
+      slug: stored.slug,
+      platform: 'file' as const,
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    };
+
+    stack.instances.delete('file', 'deleted-row');
+    await stack.enrollDeps.onDeleted!('deleted-row');
+    await expect(stack.enrollDeps.onResync!(staleRow)).rejects.toThrow(
+      "instance row missing for slug 'deleted-row'",
+    );
+
+    expect(starts).toBe(1);
   });
 });

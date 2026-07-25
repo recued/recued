@@ -1,6 +1,6 @@
 /** D-160 spec-O-5 Stage 3 — chat-stream source-binding adapters.
  *
- *  Stage 3 (`docs/d-160-spec.md` A.8 step 3 + N.9) migrates the chat
+ *  Stage 3 (D-160 A.8 step 3 + N.9) migrates the chat
  *  turn's four inline producers onto the framework's shared `state` via
  *  REGISTERED HOOKS: the chat turn now runs through `runStream` over a
  *  registry that carries these adapters, instead of the orchestrator
@@ -97,7 +97,7 @@
  *  pass-through no-op under the default gate deps, so only `contributePrefetch`
  *  fires.
  *
- *  Spec: docs/d-160-spec.md § N.9 / A.8 step 3 + step 5 / P2.
+ *  Spec: D-160 § N.9 / A.8 step 3 + step 5 / P2.
  */
 
 import type { Middleware, MiddlewareRegistry, TurnContext, TurnResult } from '@recued/middleware';
@@ -146,6 +146,20 @@ import {
   createScopedGrantParseSource,
   type ScopedGrantParseDeps,
 } from './chat-scoped-grant-middleware.js';
+import {
+  createSpanAnchorSource,
+  type SpanAnchorDeps,
+} from './chat-span-anchor-middleware.js';
+import {
+  createExecutionCaseAugmentationSource,
+  type RequestAugmentationDeps,
+} from './execution-case-retrieval.js';
+import {
+  createExecutionCaseFinalizerSource,
+} from './chat-execution-case-finalizer.js';
+import type {
+  ExecutionCaseLifecycle,
+} from './chat-execution-case-tools.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -362,6 +376,21 @@ export interface ChatStreamMiddlewareDeps {
    *  the catalog hook, it is chat-substrate-specific, not a first-party
    *  `@recued/middleware-recued` middleware. */
   readonly getScopedGrantParseDeps?: () => ScopedGrantParseDeps | undefined;
+  /** D-214 S0 — the span-anchor hook's late-bound deps (the root-request edge
+   *  store + a root-id minter + the optional cross-stream continuation
+   *  resolver). Absent (or resolving undefined per turn) → the hook is not
+   *  built at all, which is D-214's §0 R4 removability discipline: unregistered
+   *  means zero footprint on the turn. Built INDEPENDENT of `registry` — it is
+   *  chat-substrate-specific, not a first-party
+   *  `@recued/middleware-recued` middleware, and it contributes nothing
+   *  model-visible. */
+  readonly getSpanAnchorDeps?: () => SpanAnchorDeps | undefined;
+  /** D-214 S4 — optional, experiment-gated request augmentation. */
+  readonly getExecutionCaseAugmentationDeps?:
+    () => RequestAugmentationDeps | undefined;
+  /** D-214 S0/S2 — closes pending reports and harvests strong signals. */
+  readonly getExecutionCaseLifecycle?:
+    () => ExecutionCaseLifecycle | undefined;
   /** Engine clock — the recency window for `correction-learning`. */
   readonly now: () => number;
 }
@@ -595,6 +624,20 @@ export const createChatStreamMiddlewares = (
   if (deps.getScopedGrantParseDeps) {
     middlewares.push(createScopedGrantParseSource(deps.getScopedGrantParseDeps));
   }
+  // D-214 S0 span anchor — before-turn over the turn's own identity; writes the
+  // root-request edge and contributes NOTHING model-visible (request-time
+  // augmentation is Slice 4). Independent of `registry` like the two hooks
+  // above; absent deps → not built, so removal is "stop passing the dep".
+  if (deps.getSpanAnchorDeps) {
+    middlewares.push(createSpanAnchorSource(deps.getSpanAnchorDeps));
+  }
+  if (deps.getExecutionCaseAugmentationDeps) {
+    middlewares.push(
+      createExecutionCaseAugmentationSource(
+        deps.getExecutionCaseAugmentationDeps,
+      ),
+    );
+  }
   // The first-party source adapters — only when the registry is wired.
   // Registration order = the framework's per-hook iteration order, mirroring
   // `@recued/middleware-recued`'s `FIRST_PARTY_MIDDLEWARES`, then the D-164
@@ -614,6 +657,11 @@ export const createChatStreamMiddlewares = (
       createConfidenceShapeSource(deps),
       createPersonalRecipesSource(deps),
       createPromptCacheSource(deps),
+    );
+  }
+  if (deps.getExecutionCaseLifecycle) {
+    middlewares.push(
+      createExecutionCaseFinalizerSource(deps.getExecutionCaseLifecycle),
     );
   }
   // pii-restore — LAST (ratchet-pinned), always-on.

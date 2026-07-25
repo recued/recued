@@ -88,7 +88,7 @@
  *  core-plane withdrawal, and it fired *only* on contacts that had a core record to
  *  damage (an unmatched record never enters `contact_source_blob` at all).
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 6 + `docs/d-205-contact-surface.md`
+ *  Spec: D-192 step 6 + D-205
  *  §1. */
 
 import type {

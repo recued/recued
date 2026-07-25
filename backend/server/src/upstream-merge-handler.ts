@@ -28,7 +28,7 @@
  *  underlying contact-store's `setMergedInto` + `linkPlatformId` are
  *  idempotent.
  *
- *  Spec: `docs/d-138-spec.md` § A.7 + § Phase 5. */
+ *  Spec: D-138 § A.7 + § Phase 5. */
 
 import { createHash, randomUUID } from 'node:crypto';
 

@@ -18,7 +18,7 @@
  *  can branch on the specific failure (invalid input vs expired
  *  token vs unknown token).
  *
- *  Spec: `docs/d-145-spec.md` § B.13.3 + § B.13.4. */
+ *  Spec: D-145 § B.13.3 + § B.13.4. */
 
 import {
   RedactedPacketValidationError,

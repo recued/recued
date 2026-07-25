@@ -31,7 +31,7 @@
  *       args lets the restored dispatch proceed with real args (no alias/real
  *       hash mismatch). See the test's own note on what it does NOT model.
  *
- *  Spec: docs/d-167-spec.md §P2, §"Runtime flow" step 7, §"Field declaration"
+ *  Spec: D-167 §P2, §"Runtime flow" step 7, §"Field declaration"
  *  (`restore_policy: 'approval_preview'`); plan-approval gate: D-137 P3 § A.11
  *  (`packages/gateway/src/plan-approval/`, `chat-orchestrator.ts:1283-1394`).
  */

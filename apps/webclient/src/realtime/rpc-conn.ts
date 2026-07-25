@@ -47,7 +47,7 @@
  *  `'transport_disposed'`, then detaches the ws-client message
  *  subscription. Idempotent.
  *
- *  Spec: docs/d-148-spec.md § A.4.2 + § A.4.4 (lifecycle). */
+ *  Spec: D-148 § A.4.2 + § A.4.4 (lifecycle). */
 
 import {
   RpcError,

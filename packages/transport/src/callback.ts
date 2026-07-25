@@ -10,7 +10,7 @@
  *  `OutboundPrompt` contract, so everything after the first separator is
  *  the option id (which therefore MAY itself contain a `|`).
  *
- *  Spec: docs/d-158-spec.md § P2 / A.4.
+ *  Spec: D-158 § P2 / A.4.
  */
 
 /** The callback-payload field separator. */

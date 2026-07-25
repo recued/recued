@@ -15,7 +15,7 @@
  *  `contact.merge.split` needs — whose the rows were — and, for contributions, would
  *  silently CLOBBER on `(contact_id, kind, source_id)`. Both are pinned below.
  *
- *  Spec: `docs/d-192-contact-source-family.md` (build plan step 4). */
+ *  Spec: D-192 (build plan step 4). */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

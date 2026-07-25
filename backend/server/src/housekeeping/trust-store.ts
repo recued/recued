@@ -10,7 +10,7 @@
  *  here keep callers in one place. The runtime check (scheduler
  *  eligibility, harness forceLayer threading) lands in P2.
  *
- *  Spec: `docs/d-132-spec.md` A.1 / A.3. */
+ *  Spec: D-132 A.1 / A.3. */
 
 import type Database from 'better-sqlite3';
 

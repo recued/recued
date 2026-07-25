@@ -20,7 +20,7 @@
  *    - `CircuitBreakerState` — per-recipe consecutive-failure counter
  *                             that auto-disables a runaway ticker.
  *
- *  Spec: docs/d-115-spec.md.
+ *  Spec: D-115.
  */
 
 import type { VariableDefault } from './recipe.js';

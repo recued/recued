@@ -18,7 +18,7 @@
  *      list reasons end-to-end (`subscription_required` /
  *      `helper_unavailable`).
  *
- *  Spec: `docs/d-148-spec.md` § A.5.3 + § A.6.5. */
+ *  Spec: D-148 § A.5.3 + § A.6.5. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { TLSDomainCertChain, TLSDomainUploadResult } from '@recued/contracts';

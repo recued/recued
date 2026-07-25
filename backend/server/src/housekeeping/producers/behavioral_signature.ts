@@ -35,7 +35,7 @@
  *      of aggregation continues. Same defense-in-depth pattern as
  *      `thread_signals`.
  *
- *  Spec: `docs/launch-sequence-2026-04-30.md` line 44 +
+ *  Spec: internal design notes line 44 +
  *        `ENRICHMENT_REGISTRY.behavioral_signature`. */
 
 import { type ContactRecord } from '@recued/contracts';

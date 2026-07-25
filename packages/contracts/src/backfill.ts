@@ -12,7 +12,7 @@
  *  here. The file name is kept (rather than renamed) because the
  *  spec's Phase 4.5 file-touched list points at it.
  *
- *  Spec: docs/d-122-spec.md.
+ *  Spec: D-122.
  */
 
 /** Time-relative-watcher sweeper interval — the per-tick cadence at

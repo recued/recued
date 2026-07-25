@@ -10,7 +10,7 @@
  *  `wire-housekeeping-substrate`); injected into `composeMessengerLiveControl`
  *  as its `passes` seam.
  *
- *  Spec: docs/d-186-spec.md (session grants) + docs/d-181-spec.md § 8
+ *  Spec: D-186 (session grants) + D-181 § 8
  *  (messenger live-control). */
 
 import type { SessionGrantView } from '@recued/contracts';

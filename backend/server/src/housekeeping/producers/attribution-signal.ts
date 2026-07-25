@@ -61,7 +61,7 @@
  *
  *  Token cost: 0. Pure SQL aggregation.
  *
- *  Spec: `docs/d-129-spec.md` §A.6 + `docs/d-130-spec.md` §A.6 cross-
+ *  Spec: D-129 §A.6 + D-130 §A.6 cross-
  *  vendor widening. */
 
 import {

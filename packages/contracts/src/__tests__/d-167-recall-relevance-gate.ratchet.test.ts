@@ -1,7 +1,7 @@
 /** D-167 — recall relevance-gate descriptor ratchet.
  *
  *  The relevance gate (design §3/§6 of
- *  `docs/d-167-prefetch-index-and-recall-collision-design.md`) is the SOFTER,
+ *  D-167) is the SOFTER,
  *  within-session half of the §2 ambiguity gate: the agent should skip
  *  `memory.search` when the answer is already in the current conversation
  *  (`chat_tail`) — `memory.search`'s real job is CROSS-SESSION recall (earlier

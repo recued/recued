@@ -13,7 +13,7 @@
  *  the empty-state copy + onboarding guidance pointing at Settings →
  *  Connections / Settings → Bundles.
  *
- *  Spec: docs/d-145-spec.md § PA11. */
+ *  Spec: D-145 § PA11. */
 
 import type { SourceRegistration, WorkEntityKind } from '@recued/contracts';
 import { e } from '../../template.js';

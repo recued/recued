@@ -57,7 +57,7 @@
  *      in the library is a string-compare; non-normalized locales
  *      simply won't match queries.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle / § 3 the deterministic gate. */
 
 import {

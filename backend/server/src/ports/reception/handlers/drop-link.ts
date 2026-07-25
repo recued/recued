@@ -44,6 +44,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
 import { Readable } from 'node:stream';
 import {
   DROP_LINK_DEFAULT_SUBMIT_BUTTON_LABEL,
@@ -111,7 +112,12 @@ const MAX_PREFILE_BUFFER_BYTES = 1024 * 1024;
  *  Mirrors the intake_form nonce. */
 export const DROP_LINK_NONCE_TTL_MS = 30 * 60 * 1000;
 
-const NONCE_BYTES = 24;
+/** Bytes of entropy for the per-render CSP script nonce. Its own constant
+ *  because it is a DIFFERENT thing from the single-use form nonce (which the
+ *  shared bounded store now mints) — the two only ever coincidentally shared a
+ *  size. */
+const CSP_SCRIPT_NONCE_BYTES = 24;
+
 
 // ────────────────────────────────────────────────────────────────
 // Form-nonce store (in-memory, per-process)
@@ -122,22 +128,15 @@ export interface DropLinkNonceStore {
   consume(endpoint_id: string, nonce: string, now: number): boolean;
 }
 
+/** ⚠ NO `maxPerScope`: the scope is `endpoint_id`, shared by every concurrent
+ *  visitor to this door. A per-scope cap would let the Nth visitor evict the
+ *  first visitor's nonce. See `bounded-nonce-store.ts`. */
 export const createInMemoryDropLinkNonceStore = (): DropLinkNonceStore => {
-  const inner = new Map<string, number>();
+  const store = createBoundedNonceStore<null>({ ttlMs: DROP_LINK_NONCE_TTL_MS });
   return {
-    issue(endpoint_id, now) {
-      const nonce = randomBytes(NONCE_BYTES).toString('hex');
-      inner.set(`${endpoint_id}|${nonce}`, now);
-      return nonce;
-    },
-    consume(endpoint_id, nonce, now) {
-      const key = `${endpoint_id}|${nonce}`;
-      const stamp = inner.get(key);
-      if (stamp === undefined) return false;
-      inner.delete(key);
-      if (now - stamp > DROP_LINK_NONCE_TTL_MS) return false;
-      return true;
-    },
+    issue: (endpoint_id, now) => store.issue(endpoint_id, now, null),
+    consume: (endpoint_id, nonce, now) =>
+      store.consume(endpoint_id, nonce, now) !== null,
   };
 };
 
@@ -595,7 +594,7 @@ export const createDropLinkPacketHandler = (
     // D-172 step 5c — a fresh per-render CSP nonce admits the ONE SRI-pinned
     // resumable-uploader script (progressive enhancement over the JS-free form).
     // DISTINCT from `form_nonce` (the single-use anti-replay upload token above).
-    const scriptNonce = randomBytes(NONCE_BYTES).toString('base64');
+    const scriptNonce = randomBytes(CSP_SCRIPT_NONCE_BYTES).toString('base64');
 
     const renderInput: DropLinkRenderInput = {
       display_name: config.display_name,

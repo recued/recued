@@ -212,7 +212,7 @@ export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
   // hydrates back from the same table).
   let autoDisabledBlock = '';
   try {
-    const rows = readAutoDisabledFromDb(opts.dbPath);
+    const rows = await readAutoDisabledFromDb(opts.dbPath);
     autoDisabledBlock = '\n' + renderAutoDisabledTable(rows);
   } catch {
     // Status should never be a hard failure — best-effort.

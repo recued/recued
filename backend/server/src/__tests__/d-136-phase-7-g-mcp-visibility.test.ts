@@ -12,7 +12,7 @@
  *  side table. (Store CRUD has its own S1 suite; the `toggle ?? authorDefault`
  *  resolver has its own S2 suite — not re-covered here.)
  *
- *  Spec: docs/d-136-spec.md §A.13.5 + docs/d-187-spec.md §3.2 / §8 (S3b). */
+ *  Spec: D-136 §A.13.5 + D-187 §3.2 / §8 (S3b). */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

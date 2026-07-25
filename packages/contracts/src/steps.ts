@@ -138,7 +138,7 @@ export interface StepMeta {
    *  bypass. Optional + absent on fresh runs + every non-gated step on
    *  resume.
    *
-   *  Spec: docs/d-157-spec.md § A.2 step 5 / I-6 / TR-5. */
+   *  Spec: D-157 § A.2 step 5 / I-6 / TR-5. */
   preflight_admitted?: boolean;
   /** D-165 follow-on (op-identity binding) — the identity the user approved
    *  at the gate, threaded from `Checkpoint.approved_target` via
@@ -148,7 +148,7 @@ export interface StepMeta {
    *  operation_id, connection_name)` matches this — a drifted call re-raises
    *  a fresh ask (fail closed). Absent on fresh runs + non-gated steps.
    *
-   *  Spec: docs/d-157-spec.md § A.2 step 5 / I-6 / TR-5. */
+   *  Spec: D-157 § A.2 step 5 / I-6 / TR-5. */
   preflight_approved_target?: PreflightApprovedTarget;
   /** D-177 P3 — the `allow_session` answer's mint instruction, threaded from
    *  the consumed checkpoint resume (`ExecutionContext.resumeFrom.
@@ -175,7 +175,7 @@ export interface StepMeta {
    *  basis); absent/`'exact'`/unrecognized mints the P3 exact-hash grant
    *  (degrading STRICTER, never looser — exact pins the full payload).
    *
-   *  Spec: docs/d-177-spec.md § N.5 / N.11 / D9; landing order P3 + P5b. */
+   *  Spec: D-177 § N.5 / N.11 / D9; landing order P3 + P5b. */
   preflight_session_grant?: {
     ttl_ms: number;
     max_uses: number;
@@ -200,7 +200,7 @@ export interface StepMeta {
    *  arbitrary step fields); stripped before the inner executor like the
    *  sibling resume markers.
    *
-   *  Spec: docs/d-177-spec.md § N.10 / N.4; landing order P5a. */
+   *  Spec: D-177 § N.10 / N.4; landing order P5a. */
   preflight_batch_claim?: { contract_id: string; member_id: string };
   /** D-165 RUNTIME — trusted surface-dispatch marker. Set by the catalog
    *  gateway when it dispatches a catalog operation over its `surfaces.api`

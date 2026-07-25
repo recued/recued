@@ -43,7 +43,7 @@
  *  cycles. P6 wires the actual scheduler-side gate that consumes
  *  this signal.
  *
- *  Spec: `docs/d-136-spec.md` §A.7 (walk-cap planner) + handover
+ *  Spec: D-136 §A.7 (walk-cap planner) + handover
  *  pickup actions (drain task scoped per spec). */
 
 import {

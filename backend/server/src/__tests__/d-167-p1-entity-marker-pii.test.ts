@@ -14,7 +14,7 @@
  *    (c) byte-identity: an empty entity index / a no-marker packet leaves
  *        resolution + the egress prompt unchanged.
  *
- *  Spec: docs/d-160-n10-part-pii-pending-design.md §E.1 + §"Hard invariants".
+ *  Spec: D-160 §E.1 + §"Hard invariants".
  */
 
 import {

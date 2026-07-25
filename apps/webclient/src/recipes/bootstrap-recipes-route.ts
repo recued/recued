@@ -61,6 +61,7 @@ import {
   type RequiredConnection,
 } from './required-connections.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { fetchPackRecipeRefs } from '../discover/catalog-client.js';
 import type {
   CatalogPackRow,
   CatalogRecipeRow,
@@ -75,15 +76,19 @@ export const RECIPES_ROUTE_SECTION_ATTR = 'data-recued-recipes-section';
 export const RECIPES_ROUTE_RECIPE_CARD_ATTR = 'data-recued-recipes-card';
 export const RECIPES_ROUTE_RECIPE_SUMMARY_ATTR =
   'data-recued-recipes-grant-summary';
-// Installed-recipes search + filter (live, client-side; toggles card
-// `hidden` so the search box never loses focus on a keystroke).
+// Installed-recipes search + filter + bounded paging. Filtering happens over
+// the in-memory recipe list before card markup is emitted, so large libraries
+// never mount thousands of hidden cards.
 export const RECIPES_ROUTE_FILTERS_ATTR = 'data-recued-recipes-filters';
 export const RECIPES_ROUTE_SEARCH_ATTR = 'data-recued-recipes-search';
 export const RECIPES_ROUTE_FILTER_CHIP_ATTR = 'data-recued-recipes-filter-chip';
 export const RECIPES_ROUTE_NO_MATCHES_ATTR = 'data-recued-recipes-no-matches';
+export const RECIPES_ROUTE_COUNT_ATTR = 'data-recued-recipes-count';
+export const RECIPES_ROUTE_PAGER_ATTR = 'data-recued-recipes-pager';
 export const RECIPES_ROUTE_RECIPE_TRIGGER_ATTR = 'data-recued-recipe-trigger';
 export const RECIPES_ROUTE_RECIPE_PACKS_ATTR = 'data-recued-recipe-packs';
 export const RECIPES_ROUTE_RECIPE_SEARCH_ATTR = 'data-recued-recipe-search';
+const RECIPES_PAGE_SIZE = 24;
 /** The per-card "Run" button (the trigger). The Run MODAL it opens is the
  *  shared `@recued/ui-shared` RunModal (its own `RUN_MODAL_*` hooks). */
 export const RECIPES_ROUTE_RUN_BUTTON_ATTR = 'data-recued-recipes-run-button';
@@ -472,8 +477,8 @@ const RECIPES_ROUTE_STYLES = `
   gap: 6px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-chip {
-  min-height: 26px;
-  padding: 2px 11px;
+  min-height: 34px;
+  padding: 5px 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
@@ -501,6 +506,20 @@ const RECIPES_ROUTE_STYLES = `
   background: var(--surface-sunk);
   text-align: center;
   font-size: 13px;
+  color: var(--fg-muted);
+}
+[${RECIPES_ROUTE_COUNT_ATTR}] {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+[${RECIPES_ROUTE_PAGER_ATTR}] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
   color: var(--fg-muted);
 }
 [${RECIPES_ROUTE_SECTION_ATTR}] {
@@ -560,6 +579,12 @@ const RECIPES_ROUTE_STYLES = `
   border: 0;
   padding: 0;
   background: transparent;
+}
+@media (max-width: 560px) {
+  [${RECIPES_ROUTE_HOST_ATTR}] .recipes-chip,
+  [${RECIPES_ROUTE_PAGER_ATTR}] .recipes-button {
+    min-height: 44px;
+  }
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-card-meta {
   display: flex;
@@ -1330,12 +1355,47 @@ const renderFromPack = (depends_on: ReadonlyArray<string>): string => {
   return `<a class="recipes-inline-link" href="#packs" ${RECIPES_ROUTE_FROM_PACK_ATTR}="${e(depends_on.join(' '))}">from ${e(label)}</a>`;
 };
 
-const renderFilterChip = (kind: string, value: string, label: string): string =>
-  `<button type="button" class="recipes-chip" ${RECIPES_ROUTE_ACTION_ATTR}="filter-set" ${RECIPES_ROUTE_FILTER_CHIP_ATTR} data-filter-kind="${e(kind)}" data-filter-value="${e(value)}" aria-pressed="false">${e(label)}</button>`;
+interface RecipeListFilter {
+  query: string;
+  trigger: string | null;
+  pack: string | null;
+}
+
+const recipeListSearchText = (entry: ServerRecipeListEntry): string => [
+  recipeDisplayName(entry),
+  entry.recipe.metadata?.description ?? '',
+  ...(entry.recipe.metadata?.tags ?? []),
+].join(' ').toLocaleLowerCase();
+
+const recipeMatchesListFilter = (
+  entry: ServerRecipeListEntry,
+  filter: RecipeListFilter,
+): boolean => {
+  const query = filter.query.trim().toLocaleLowerCase();
+  if (query !== '' && !recipeListSearchText(entry).includes(query)) return false;
+  if (filter.trigger !== null && deriveTriggerKind(entry) !== filter.trigger) return false;
+  if (filter.pack === null) return true;
+  const packs = entry.recipe.depends_on ?? [];
+  return filter.pack === '__standalone__'
+    ? packs.length === 0
+    : packs.includes(filter.pack);
+};
+
+const renderFilterChip = (
+  kind: 'trigger' | 'pack',
+  value: string,
+  label: string,
+  filter: RecipeListFilter,
+): string => {
+  const current = kind === 'pack' ? filter.pack : filter.trigger;
+  const active = current === null ? value === '__all__' : current === value;
+  return `<button type="button" class="recipes-chip${active ? ' recipes-chip--active' : ''}" ${RECIPES_ROUTE_ACTION_ATTR}="filter-set" ${RECIPES_ROUTE_FILTER_CHIP_ATTR} data-filter-kind="${e(kind)}" data-filter-value="${e(value)}" aria-pressed="${String(active)}">${e(label)}</button>`;
+};
 
 /** Search box + filter-chip rows for the installed-recipes section. */
 const renderRecipeFilters = (
   recipes: ReadonlyArray<ServerRecipeListEntry>,
+  filter: RecipeListFilter,
 ): string => {
   const packChips = topRecipePacks(recipes);
   const hasStandalone = recipes.some(
@@ -1344,15 +1404,15 @@ const renderRecipeFilters = (
   return `
     <div ${RECIPES_ROUTE_FILTERS_ATTR}>
       <input type="search" class="recipes-search" ${RECIPES_ROUTE_SEARCH_ATTR}
-        placeholder="Search recipes…" aria-label="Search installed recipes">
+        value="${e(filter.query)}" placeholder="Search recipes…" aria-label="Search installed recipes">
       <div class="recipes-chip-row" role="group" aria-label="Filter by type">
-        ${RECIPE_TRIGGER_CHIPS.map((c) => renderFilterChip('trigger', c.value, c.label)).join('')}
+        ${RECIPE_TRIGGER_CHIPS.map((c) => renderFilterChip('trigger', c.value, c.label, filter)).join('')}
       </div>
       ${packChips.length > 0
         ? `<div class="recipes-chip-row" role="group" aria-label="Filter by pack">
-            ${renderFilterChip('pack', '__all__', 'All')}
-            ${packChips.map((c) => renderFilterChip('pack', c.value, c.label)).join('')}
-            ${hasStandalone ? renderFilterChip('pack', '__standalone__', 'Standalone') : ''}
+            ${renderFilterChip('pack', '__all__', 'All', filter)}
+            ${packChips.map((c) => renderFilterChip('pack', c.value, c.label, filter)).join('')}
+            ${hasStandalone ? renderFilterChip('pack', '__standalone__', 'Standalone', filter) : ''}
           </div>`
         : ''}
     </div>
@@ -1369,12 +1429,7 @@ const renderRecipeListCard = (
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
 ): string => {
   const name = recipeDisplayName(entry);
-  const tags = entry.recipe.metadata?.tags ?? [];
-  const searchText = [
-    name,
-    entry.recipe.metadata?.description ?? '',
-    ...tags,
-  ].join(' ').toLowerCase();
+  const searchText = recipeListSearchText(entry);
   const deps = entry.recipe.depends_on ?? [];
   return `
     <article ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${e(entry.recipe_id)}"
@@ -1407,16 +1462,33 @@ const renderRecipeSection = (
   catalog: ReadonlyArray<ToolEntry>,
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
+  filter: RecipeListFilter,
+  page: number,
 ): string => {
   if (recipes.length === 0) {
     return `<p ${RECIPES_ROUTE_UNAVAILABLE_ATTR}>No recipes installed yet — install a pack from <a class="recipes-inline-link" href="#packs">Packs</a> to get started.</p>`;
   }
+  const filtered = recipes.filter((entry) => recipeMatchesListFilter(entry, filter));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / RECIPES_PAGE_SIZE));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  const startIndex = (safePage - 1) * RECIPES_PAGE_SIZE;
+  const pageRows = filtered.slice(startIndex, startIndex + RECIPES_PAGE_SIZE);
+  const visibleStart = filtered.length === 0 ? 0 : startIndex + 1;
+  const visibleEnd = Math.min(startIndex + RECIPES_PAGE_SIZE, filtered.length);
   return `
-    ${renderRecipeFilters(recipes)}
-    <p ${RECIPES_ROUTE_NO_MATCHES_ATTR} hidden>No installed recipes match your search.</p>
+    ${renderRecipeFilters(recipes, filter)}
+    <p ${RECIPES_ROUTE_NO_MATCHES_ATTR}${filtered.length === 0 ? '' : ' hidden'}>No installed recipes match your search.</p>
+    <div class="recipes-list-count" ${RECIPES_ROUTE_COUNT_ATTR} aria-live="polite">Showing ${visibleStart}–${visibleEnd} of ${filtered.length} recipe${filtered.length === 1 ? '' : 's'}</div>
     <div class="recipes-card-grid">
-      ${recipes.map((entry) => renderRecipeListCard(entry, catalog, runnability, pii)).join('')}
+      ${pageRows.map((entry) => renderRecipeListCard(entry, catalog, runnability, pii)).join('')}
     </div>
+    ${totalPages > 1
+      ? `<nav class="recipes-pager" ${RECIPES_ROUTE_PAGER_ATTR} aria-label="Installed recipes pages">
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" data-page="${safePage - 1}"${safePage === 1 ? ' disabled' : ''}>‹ Previous</button>
+          <span>Page ${safePage} of ${totalPages}</span>
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" data-page="${safePage + 1}"${safePage === totalPages ? ' disabled' : ''}>Next ›</button>
+        </nav>`
+      : ''}
   `;
 };
 
@@ -2818,15 +2890,25 @@ export const bootstrapRecipesRoute = (
   let bundlePackCatalog: CatalogPackRow[] = [];
   let bundleCatalogLoaded = false;
   let bundleCatalogGeneration = 0;
+  /** Carrier membership, fetched from the per-pack install artifact.
+   *
+   *  `recipe_refs` is pack MEMBERSHIP and belongs to `/packs/<slug>.json`, not
+   *  to the meta catalog — carrying it there was the only reason the catalog's
+   *  server-side read had to touch all 927 pack manifests. 56 distinct carriers
+   *  serve 382 bundled recipes, so it is fetched for the SELECTED recipe's
+   *  carrier only, cached, and folded into the pack snapshot on arrival. The
+   *  render stays synchronous; the data shows up and re-renders. */
+  const carrierRefsFetched = new Set<string>();
   let pendingBundleCatalogPromise: Promise<void> | null = null;
   // R24 delta 1 — the durable detail selection. `null` = the list view.
   let selectedRecipeId: string | null = opts.initialRecipeId ?? null;
   // Installed-recipes filter (client-side, persists across re-renders).
-  let recipeFilter: { query: string; trigger: string | null; pack: string | null } = {
+  let recipeFilter: RecipeListFilter = {
     query: '',
     trigger: null,
     pack: null,
   };
+  let recipePage = 1;
   let connections: ConnectionView[] | null = null;
   // Derived runnability by recipe id. `null` = unknown. Patched in place by
   // the `recipe_runnability_changed` broadcast (full recomputed snapshot).
@@ -2883,61 +2965,6 @@ export const bootstrapRecipesRoute = (
     }
   };
 
-  /** Apply the live installed-recipes filter to the rendered cards (list
-   *  view only). Runs on every keystroke / chip click (no re-render → the
-   *  search box keeps focus) and once at the end of a list render(). */
-  const applyRecipeFilter = (): void => {
-    const q = recipeFilter.query.trim().toLowerCase();
-    const search = routeRoot.querySelector?.(
-      `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
-    ) as HTMLInputElement | null;
-    if (search != null && search.value !== recipeFilter.query) {
-      search.value = recipeFilter.query;
-    }
-    const cards = routeRoot.querySelectorAll?.(`[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`);
-    let total = 0;
-    let visible = 0;
-    cards?.forEach((node) => {
-      const card = node as HTMLElement;
-      total += 1;
-      const matchesSearch =
-        q.length === 0
-        || (card.getAttribute(RECIPES_ROUTE_RECIPE_SEARCH_ATTR) ?? '').includes(q);
-      const matchesTrigger =
-        recipeFilter.trigger === null
-        || card.getAttribute(RECIPES_ROUTE_RECIPE_TRIGGER_ATTR) === recipeFilter.trigger;
-      let matchesPack = true;
-      if (recipeFilter.pack !== null) {
-        const cardPacks = (card.getAttribute(RECIPES_ROUTE_RECIPE_PACKS_ATTR) ?? '')
-          .split(' ')
-          .filter((p) => p.length > 0);
-        matchesPack =
-          recipeFilter.pack === '__standalone__'
-            ? cardPacks.length === 0
-            : cardPacks.includes(recipeFilter.pack);
-      }
-      const show = matchesSearch && matchesTrigger && matchesPack;
-      card.hidden = !show;
-      if (show) visible += 1;
-    });
-    const chips = routeRoot.querySelectorAll?.(`[${RECIPES_ROUTE_FILTER_CHIP_ATTR}]`);
-    chips?.forEach((node) => {
-      const chip = node as HTMLElement;
-      const current =
-        chip.getAttribute('data-filter-kind') === 'pack'
-          ? recipeFilter.pack
-          : recipeFilter.trigger;
-      const value = chip.getAttribute('data-filter-value');
-      const active = current === null ? value === '__all__' : current === value;
-      chip.classList.toggle('recipes-chip--active', active);
-      chip.setAttribute('aria-pressed', String(active));
-    });
-    const noMatches = routeRoot.querySelector?.(
-      `[${RECIPES_ROUTE_NO_MATCHES_ATTR}]`,
-    ) as HTMLElement | null;
-    if (noMatches != null) noMatches.hidden = !(total > 0 && visible === 0);
-  };
-
   const render = (): void => {
     if (disposed) return;
     const selected = selectedRecipeId !== null
@@ -2977,6 +3004,13 @@ export const bootstrapRecipesRoute = (
     }
     resultActions = new Map();
     resultFiles = new Map();
+    const filteredRecipeCount = recipes.filter((entry) =>
+      recipeMatchesListFilter(entry, recipeFilter)).length;
+    const totalRecipePages = Math.max(
+      1,
+      Math.ceil(filteredRecipeCount / RECIPES_PAGE_SIZE),
+    );
+    recipePage = Math.max(1, Math.min(recipePage, totalRecipePages));
     routeRoot.innerHTML = `
       <header class="recipes-header">
         <h1 class="recipes-title" ${RECIPES_ROUTE_HEADING_ATTR}>Recipes</h1>
@@ -2994,10 +3028,38 @@ export const bootstrapRecipesRoute = (
       <section ${RECIPES_ROUTE_SECTION_ATTR}="recipes">
         <h2 class="recipes-section-title">Installed recipes</h2>
         <p class="recipes-section-copy">Run a local recipe, or open one to inspect what it does and the grant boundary it depends on.</p>
-        ${renderRecipeSection(recipes, catalog, runnability, pii)}
+        ${renderRecipeSection(
+          recipes,
+          catalog,
+          runnability,
+          pii,
+          recipeFilter,
+          recipePage,
+        )}
       </section>
     `;
-    applyRecipeFilter();
+  };
+
+  /** Top up the SELECTED recipe's carrier pack with its real membership.
+   *  Idempotent and best-effort: a failure leaves the row's empty refs in place,
+   *  which makes bundle resolution refuse — the same fail-closed answer a
+   *  malformed manifest has always produced. */
+  const ensureCarrierRefs = async (): Promise<void> => {
+    if (selectedRecipeId === null || !bundleCatalogLoaded) return;
+    const row = bundleRecipeCatalog.find((r) => r.recipe_id === selectedRecipeId);
+    const key = row?.recipe_bundle;
+    if (key === undefined) return;
+    const slug = key.slice(key.indexOf('/') + 1);
+    const carrier = bundlePackCatalog.find((p) => p.slug === slug);
+    if (carrier === undefined || carrier.recipe_refs.length > 0) return;
+    if (carrierRefsFetched.has(slug)) return;
+    carrierRefsFetched.add(slug);
+    const myGeneration = bundleCatalogGeneration;
+    const refs = await fetchPackRecipeRefs(slug);
+    if (disposed || myGeneration !== bundleCatalogGeneration || refs.length === 0) return;
+    bundlePackCatalog = bundlePackCatalog.map((p) =>
+      (p.slug === slug ? { ...p, recipe_refs: refs } : p));
+    render();
   };
 
   const loadBundleCatalog = (force = false): Promise<void> => {
@@ -3035,6 +3097,7 @@ export const bootstrapRecipesRoute = (
         bundleCatalogLoaded = false;
       }
       render();
+      void ensureCarrierRefs();
     })();
     pendingBundleCatalogPromise = promise;
     void promise.finally(() => {
@@ -3221,6 +3284,7 @@ export const bootstrapRecipesRoute = (
       resultFileGeneration += 1;
     }
     selectedRecipeId = recipe_id;
+    void ensureCarrierRefs();
     syncRecipeHash();
     render();
     const selected = recipes.find((entry) => entry.recipe_id === recipe_id);
@@ -3694,7 +3758,20 @@ export const bootstrapRecipesRoute = (
       } else {
         recipeFilter = { ...recipeFilter, trigger: recipeFilter.trigger === next ? null : next };
       }
-      applyRecipeFilter();
+      recipePage = 1;
+      render();
+      return;
+    }
+    if (action === 'recipe-page') {
+      const nextPage = Number(target.getAttribute('data-page'));
+      if (Number.isInteger(nextPage) && nextPage > 0) {
+        recipePage = nextPage;
+        render();
+        const section = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_SECTION_ATTR}="recipes"]`,
+        ) as HTMLElement | null;
+        section?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      }
       return;
     }
     if (action === 'open-recipe') {
@@ -3772,15 +3849,25 @@ export const bootstrapRecipesRoute = (
     const target0 = ev.target as
       | (HTMLElement & { value?: string })
       | null;
-    // Installed-recipes search — filter in place (no re-render, so the
-    // search box keeps focus + caret as you type).
+    // Installed-recipes search filters the in-memory list BEFORE markup is
+    // emitted. Re-focus the replacement input so the bounded repaint keeps
+    // the typing flow continuous while mounting at most one page of cards.
     if (
       target0 !== null
       && typeof target0.hasAttribute === 'function'
       && target0.hasAttribute(RECIPES_ROUTE_SEARCH_ATTR)
     ) {
+      const caret = (target0 as HTMLInputElement).selectionStart;
       recipeFilter = { ...recipeFilter, query: target0.value ?? '' };
-      applyRecipeFilter();
+      recipePage = 1;
+      render();
+      const nextSearch = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
+      ) as HTMLInputElement | null;
+      nextSearch?.focus?.();
+      if (caret !== null && caret !== undefined) {
+        nextSearch?.setSelectionRange?.(caret, caret);
+      }
     }
     // Run-modal inputs are owned by the shared RunModal's own delegation.
   };

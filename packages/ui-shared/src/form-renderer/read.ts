@@ -9,7 +9,7 @@
  *    - enum: select.value; '' → null when not required
  *    - array: walks `[data-form-array-item="<name>"]`
  *
- *  Spec: docs/d-145-spec.md § A.3.
+ *  Spec: D-145 § A.3.
  */
 
 import {

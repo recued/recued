@@ -12,7 +12,7 @@
  *  plus seven new optional fields on `AuditEntry`. Query rpcs for the
  *  three tier scopes are P1.B.
  *
- *  Spec: docs/d-153-spec.md § Execution Substrate / Commit substrate.
+ *  Spec: D-153 § Execution Substrate / Commit substrate.
  */
 
 import { isDeclaredMessengerVendor } from './messenger-vendors.js';
@@ -73,7 +73,7 @@ export const isCommitKind = (value: unknown): value is CommitKind =>
  *                      before observing the tool's outcome. No auto-
  *                      resume; user reconciles via Activity surface.
  *
- *  Spec: docs/d-153-spec.md § Dispatch-outbox + crash-recovery.
+ *  Spec: D-153 § Dispatch-outbox + crash-recovery.
  *
  *  Pre-D-153 audit rows (success: true/false) migrate to
  *  `'succeeded'` / `'failed'` at write time. The pending / running /
@@ -143,7 +143,7 @@ export const isTerminalCommitStatus = (status: CommitStatus): boolean =>
  *  derives from `COMMIT_STATUSES` by extension (a new array), leaving
  *  the commit-status closed set untouched (D-157 § A.3 / N.4).
  *
- *  Spec: docs/d-157-spec.md § N.4 / A.3. */
+ *  Spec: D-157 § N.4 / A.3. */
 export const RUN_ANCHOR_STATUSES = [
   ...COMMIT_STATUSES,
   'awaiting_approval',
@@ -209,7 +209,7 @@ export const isRunDegradation = (value: unknown): value is RunDegradation =>
  *  `contract_id` on the `ExecutionSource` (read via
  *  `executionSourceHasContract`) — never as an actor variant.
  *
- *  Spec: docs/d-161-spec.md § N.2 / N.3; docs/d-153-spec.md § (channel ×
+ *  Spec: D-161 § N.2 / N.3; D-153 § (channel ×
  *  actor) policy matrix. */
 export const ACTORS = [
   'user_self',
@@ -237,7 +237,7 @@ export const isActor = (value: unknown): value is Actor =>
  *  at the type-system level today; new channels add a row here, a
  *  row in the policy matrix, and any cognition-component updates.
  *
- *  Spec: docs/d-153-spec.md § (channel × actor) policy matrix —
+ *  Spec: D-153 § (channel × actor) policy matrix —
  *  "Channel list is open for extension". */
 export const CHANNELS = [
   'user',
@@ -298,7 +298,7 @@ export const isChannel = (value: unknown): value is Channel =>
  *  `'contracted_user'` variant — the tightening D-161 keeps over the
  *  looser channel-keyed form.)
  *
- *  Spec: docs/d-161-spec.md § A.1; docs/d-153-spec.md § (channel × actor)
+ *  Spec: D-161 § A.1; D-153 § (channel × actor)
  *  policy matrix. */
 export type ExecutionSource =
   | {
@@ -654,14 +654,20 @@ export const renderActorLabel = (source: ExecutionSource): ActorLabel =>
  *  itself is NOT deferred — without it, post-revocation audit reads
  *  fail closed (or worse, succeed with wrong scope).
  *
- *  Spec: docs/d-153-spec.md § Commit substrate / Contract lifecycle
+ *  Spec: D-153 § Commit substrate / Contract lifecycle
  *  is a deferred concern. */
 export interface ContractSnapshot {
   /** Opaque ref to the contract this commit ran under. */
   contract_id: string;
-  /** Monotonic version of the contract at dispatch time. Bumps on any
-   *  scope change. Pinning by `(contract_id, contract_version)` lets
-   *  audit readers reconstruct the exact policy that was in force. */
+  /** Opaque content version of the resolved authority at dispatch time. It
+   *  changes whenever an authority field in this snapshot changes (tool
+   *  allowlist, approval tiers, scope fence, or trust ceiling) and stays stable
+   *  across dispatches with equivalent authority. Pinning by
+   *  `(contract_id, contract_version)` lets audit readers identify the exact
+   *  policy that was in force even though its fields are resolved from multiple
+   *  live stores. Current server values use the domain-separated
+   *  `authority-sha256-v1:<digest>` scheme; consumers must treat the string as
+   *  opaque. */
   contract_version: string;
   /** Resolved tool allowlist — the set of ingredient.tool slugs the
    *  contract admitted at dispatch time. */
@@ -761,7 +767,7 @@ export const isContractSnapshot = (
  *  the run's `CommitRunIdentity` inherits it, and the Gateway refuses
  *  past this same ceiling.
  *
- *  Spec: docs/d-153-spec.md § Open question #22; docs/d-160-spec.md
+ *  Spec: D-153 § Open question #22; D-160
  *  § I-7. */
 export const MAX_DISPATCH_DEPTH = 32;
 
@@ -775,7 +781,7 @@ export const MAX_DISPATCH_DEPTH = 32;
  *  the Gateway refuses once it passes `MAX_DISPATCH_DEPTH`, bounding a
  *  `messenger`→trigger→`messenger` cycle.
  *
- *  Spec: docs/d-160-spec.md § I-7; docs/d-153-spec.md § Open question
+ *  Spec: D-160 § I-7; D-153 § Open question
  *  #22. */
 export const nextDispatchDepth = (parent: number): number => parent + 1;
 
@@ -803,7 +809,7 @@ export const nextDispatchDepth = (parent: number): number => parent + 1;
  *  `output`. Any write-time redaction policy is a Gateway concern
  *  (slice 3b); the substrate shape carries the full values.
  *
- *  Spec: docs/d-153-spec.md § Commit substrate (atomic). */
+ *  Spec: D-153 § Commit substrate (atomic). */
 export interface Commit {
   /** UUID — the commit's stable identity, Gateway-generated when the
    *  `'pending'` row is written. */

@@ -32,7 +32,7 @@
  *  any source-record change re-stages this producer for the affected
  *  contact via the standard harness skip-rule path.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.2 + A.7.6 #3 +
+ *  Spec: D-145 §§ A.7.2 + A.7.6 #3 +
  *        `ENRICHMENT_REGISTRY.preferred_channel_by_contact` +
  *        `packages/contracts/src/enrichment-declarations/preferred-channel-by-contact.ts`. */
 

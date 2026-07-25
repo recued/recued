@@ -11,7 +11,7 @@
  *      wins on name-collision; extension fields are tagged with
  *      `origin: 'extension'` so the renderer can group / annotate.
  *
- *  Spec: docs/d-145-spec.md § A.3.3.
+ *  Spec: D-145 § A.3.3.
  */
 
 import type {

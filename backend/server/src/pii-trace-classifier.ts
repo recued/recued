@@ -71,6 +71,11 @@ const KERNEL_INGREDIENT_PROFILES: Readonly<Record<string, PiiPathProfile>> = {
   // visitor identity field is classified precisely so auto-PII aliases it
   // before a downstream model call. Ancestor taint on `record.values` also
   // covers refs into arbitrary nested form fields.
+  'form-response-list': {
+    'records.[].values': ['content'],
+    'records.[].visitor.email': ['email'],
+    'records.[].metadata': ['content'],
+  },
   'form-response-get': {
     'record.values': ['content'],
     'record.visitor.email': ['email'],

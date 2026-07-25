@@ -11,7 +11,7 @@
  *  (non-built-in) vendors of the topic's own `crm_alias` family — a built-in
  *  crm_alias scope a topic's static list deliberately OMITS (`pipedrive.person`
  *  is a built-in `crm_alias:'contact'` scope not in `champion_deal_count`'s list)
- *  stays REJECTED. Design: `docs/d-192-engagement-facet.md` S4 + de-hardcode scope.
+ *  stays REJECTED. Design: D-192 S4 + de-hardcode scope.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

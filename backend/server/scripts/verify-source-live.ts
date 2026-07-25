@@ -56,7 +56,7 @@
  *      npx tsx backend/server/scripts/verify-source-live.ts hubspot:task
  *      npx tsx backend/server/scripts/verify-source-live.ts hubspot:note --write
  *
- *  Credentials come from `recued-project/dev.env` — OUTSIDE git, never committed.
+ *  Credentials come from the repository rootdev.env` — OUTSIDE git, never committed.
  *  Nothing here prints a secret, and nothing here prints a record value.
  *  `--write` emits the capture artifact; without it the run is a dry report. */
 

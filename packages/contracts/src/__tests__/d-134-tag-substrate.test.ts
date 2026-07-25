@@ -9,7 +9,7 @@
  *       `surface:` and core-task `extraTags`
  *    - `assertRegistryTagShapes` — registry-wide validator
  *
- *  Spec: `docs/d-134-spec.md` §A.2 / §A.3. */
+ *  Spec: D-134 §A.2 / §A.3. */
 
 import { describe, expect, it } from 'vitest';
 

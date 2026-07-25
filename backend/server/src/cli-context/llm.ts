@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
 import { FLAGS_WITH_VALUES, getArg } from '../cli/parse.js';
 import type { BootTrace } from '../cli/boot-trace.js';
+import { openDatabase } from '../open-database.js';
 import { cmdLLM } from '../commands/llm.js';
 import { createBundleStore } from '../bundle-store.js';
 import { createKeyManager } from '../key-manager.js';
@@ -37,7 +37,7 @@ export async function runLlmProfile(options: LlmProfileOptions): Promise<void> {
   const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

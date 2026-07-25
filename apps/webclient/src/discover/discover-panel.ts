@@ -25,6 +25,7 @@ import {
   type DiscoverQuery,
   type DiscoverResult,
   type DiscoverSpec,
+  type FacetValueCount,
 } from './discover-model.js';
 
 export const DISCOVER_PANEL_HOST_ATTR = 'data-recued-discover-panel';
@@ -37,6 +38,21 @@ export const DISCOVER_PANEL_SUMMARY_ATTR = 'data-recued-discover-summary';
 export const DISCOVER_PANEL_STATUS_ATTR = 'data-recued-discover-status';
 export const DISCOVER_PANEL_CARD_ATTR = 'data-recued-discover-card';
 export const DISCOVER_PANEL_ACTION_ATTR = 'data-recued-discover-action';
+export const DISCOVER_PANEL_FACET_MORE_ATTR = 'data-recued-discover-facet-more';
+export const DISCOVER_PANEL_FACET_SEARCH_ATTR = 'data-recued-discover-facet-search';
+export const DISCOVER_PANEL_RETRY_ATTR = 'data-recued-discover-retry';
+export const DISCOVER_PANEL_NOTICE_ATTR = 'data-recued-discover-notice';
+export const DISCOVER_PANEL_PINNED_ATTR = 'data-recued-discover-pinned';
+
+/** How long a keystroke waits before it becomes a request. Sort / facet / page
+ *  changes are single deliberate acts and fire immediately. */
+const DISCOVER_SEARCH_DEBOUNCE_MS = 220;
+
+/** Keep the browse surface bounded even when a public catalog has thousands
+ *  of distinct tags. Selected values are always retained in the inline row;
+ *  the rest stay reachable through the per-facet finder. */
+const DISCOVER_INLINE_FACET_LIMIT = 12;
+const DISCOVER_FACET_SEARCH_LIMIT = 50;
 
 // The shell is near-monochrome (D-174): ONE accent + ONE danger, no amber/green
 // (`--warn`/`--ok` resolve to `--fg`). Meaning comes from glyph + label + weight,
@@ -71,13 +87,70 @@ export interface DiscoverSortOption {
   label: string;
 }
 
+/** One page of results, however they were computed. `runDiscover` produces this
+ *  shape locally; `search` returns it from the server. The panel renders from
+ *  it and nothing else, which is what keeps `render()` synchronous. */
+export interface DiscoverView<Row> {
+  pageRows: Row[];
+  total: number;
+  totalPages: number;
+  page: number;
+  facets: Record<string, FacetValueCount[]>;
+  /** Rows the SERVER cannot know about — bundled on this server but absent
+   *  from the marketplace catalogue. Rendered above the paged grid and outside
+   *  the pager, because their rank among catalogue rows is not computable
+   *  without the catalogue: pretending to interleave them would invent an
+   *  ordering, and appending them to the last page would hide them. */
+  pinned: Row[];
+}
+
+/** One server page, on the wire. Field-compatible with `catalog-client`'s
+ *  `CatalogPage` (`rows`, not the view's `pageRows`) so a surface can forward a
+ *  fetch result without renaming; the panel maps it into a `DiscoverView`. */
+export interface DiscoverSearchPage<Row> {
+  rows: Row[];
+  total: number;
+  totalPages: number;
+  page: number;
+  facets: Record<string, FacetValueCount[]>;
+  pinned?: Row[];
+}
+
+export type DiscoverSearchOutcome<Row> =
+  | { status: 'ok'; page: DiscoverSearchPage<Row> }
+  | { status: 'error'; message: string };
+
 export interface MountDiscoverPanelOptions<Row> {
   host: HTMLElement;
   document?: Document;
   /** The search/facet/sort engine spec for this row shape. */
   spec: DiscoverSpec<Row>;
-  /** Download the corpus. Resolves `{ status: 'ok', rows }` or an error/no-op. */
+  /** Download the corpus. Resolves `{ status: 'ok', rows }` or an error/no-op.
+   *  With `search` wired this is no longer the load path — it is the FALLBACK,
+   *  fetched lazily only when a search fails. */
   fetchCatalog: () => Promise<{ status: string; rows?: Row[]; message?: string }>;
+  /** Server-side search. When wired, the panel asks the server for one page per
+   *  interaction instead of downloading the corpus and running `runDiscover`
+   *  over it — the only thing that scales past what a browser can hold.
+   *
+   *  `runDiscover` stays the definition of correct behaviour: the endpoint is
+   *  proven equal to it by differential over the real corpus
+   *  (`scripts/verify-discover-parity.mjs`), so the two paths below render the
+   *  same answer and this seam is a transport choice, not a semantics choice. */
+  search?: (query: DiscoverQuery) => Promise<DiscoverSearchOutcome<Row>>;
+  /** Keystroke debounce in ms (default `DISCOVER_SEARCH_DEBOUNCE_MS`). Tests
+   *  set 0 and await `whenIdle()`. */
+  searchDebounceMs?: number;
+  /** Current catalogue versions for the INSTALLED ROSTER — id → latest
+   *  published version, resolved by the surface (`/catalog/versions`, one
+   *  bounded request) and read synchronously here.
+   *
+   *  Server paging means the panel never holds the catalogue, so "N updates
+   *  available" cannot be reduced out of it — reducing over the current page
+   *  would undercount without ever looking wrong. The roster is what the badge
+   *  is actually a fact about, and it is bounded. `null` = not resolved yet /
+   *  lookup failed; the badge then stays hidden rather than asserting zero. */
+  updateVersions?: () => ReadonlyMap<string, number> | null;
   /** Stable id (slug / recipe_id) — the join key + the install action arg. */
   identity: (row: Row) => string;
   /** The catalog's latest version for a row. */
@@ -109,6 +182,10 @@ export interface MountDiscoverPanelOptions<Row> {
     searchPlaceholder: string;
     /** Plural noun for the empty/summary copy ("packs" / "recipes"). */
     kindPlural: string;
+    /** Heading for the `pinned` group. Required by any surface that returns
+     *  pinned rows — an unlabelled group would assert nothing about why those
+     *  cards sit outside the paged results. */
+    pinnedLabel?: string;
   };
   perPage?: number;
   /** Chip-value → human label (e.g. a `service_kind` slug → "CRM"). Identity
@@ -125,8 +202,14 @@ export interface MountDiscoverPanelOptions<Row> {
 
 export interface DiscoverPanelMount {
   getState(): 'loading' | 'ready' | 'error' | 'empty';
-  /** Identities of the rows on the current page, in order. */
+  /** Identities of the cards on screen, in render order (pinned rows first). */
   getRenderedIdentities(): string[];
+  /** Identities of the pinned rows only — the ones outside the pager. */
+  getPinnedIdentities(): string[];
+  /** True when a search failed and the panel fell back to searching a
+   *  downloaded corpus. Surfaced (not silent) so a degraded panel can't be
+   *  mistaken for a working one. */
+  isDegraded(): boolean;
   getInstallState(id: string): InstallState | null;
   getTotal(): number;
   getPage(): number;
@@ -143,12 +226,16 @@ export interface DiscoverPanelMount {
   /** Navigate mode — simulate a card-body click (fires `onSelect`). No-op when
    *  `onSelect` isn't wired. */
   clickSelect(id: string): void;
-  /** Re-download the corpus. */
+  /** Re-run the current query (server mode) / re-download the corpus. */
   refresh(): Promise<void>;
+  /** Re-attempt the server after a failure — clears any degraded fallback. */
+  retry(): Promise<void>;
   /** Update the installed index (after a list rpc / a broadcast) + re-render so
    *  install-state badges reflect the new roster without a corpus re-fetch. */
   setInstalled(lookup: (slug: string) => number | null): void;
   whenLoaded(): Promise<void>;
+  /** Resolves once no debounced or in-flight request is outstanding. */
+  whenIdle(): Promise<void>;
   dispose(): void;
 }
 
@@ -161,12 +248,24 @@ export const mountDiscoverPanel = <Row>(
   }
   const facetLabel = opts.facetLabel ?? ((_k: string, v: string) => v);
 
+  // The corpus. In server mode this stays EMPTY unless a failed search made the
+  // panel fall back to it — which is the whole point: not holding the catalogue
+  // is what scales.
   let rows: Row[] = [];
   let state: 'loading' | 'ready' | 'error' | 'empty' = 'loading';
   let error: string | null = null;
   let installedLookup = opts.installedVersion;
   const installing = new Set<string>();
+  const expandedFacets = new Set<string>();
+  const facetSearches = new Map<string, string>();
   let disposed = false;
+  /** A search failed and the corpus took over. Sticky until `retry()` /
+   *  `refresh()` — re-probing a down endpoint on every keystroke helps nobody. */
+  let degraded = false;
+  const debounceMs = opts.searchDebounceMs ?? DISCOVER_SEARCH_DEBOUNCE_MS;
+  /** Server mode right now — false once degraded, so every downstream branch
+   *  reads one predicate rather than re-deriving the condition. */
+  const usingServer = (): boolean => opts.search !== undefined && !degraded;
 
   const query: DiscoverQuery = {
     search: '',
@@ -241,19 +340,69 @@ export const mountDiscoverPanel = <Row>(
     return installed < opts.catalogVersion(row) ? 'update' : 'installed';
   };
 
-  const updateCount = (): number =>
-    rows.reduce((n, r) => (installStateOf(r) === 'update' ? n + 1 : n), 0);
+  // ── "N updates available" ────────────────────────────────────
+  // Corpus mode reduces over every row, because it HAS every row. Server mode
+  // cannot — it holds one page, and reducing over that would undercount without
+  // ever looking wrong. So the badge is computed the way it is actually
+  // defined: over the installed roster, crossed with those ids' current
+  // catalogue versions (`opts.updateVersions`, one bounded `/catalog/versions`
+  // request the surface makes alongside its page fetch).
+  const updateCount = (): number => {
+    if (!usingServer()) {
+      return rows.reduce((n, r) => (installStateOf(r) === 'update' ? n + 1 : n), 0);
+    }
+    const versions = opts.updateVersions?.() ?? null;
+    if (versions === null) return 0;
+    let n = 0;
+    for (const [id, catalogVersion] of versions) {
+      const installed = installedLookup(id);
+      if (installed !== null && installed < catalogVersion) n += 1;
+    }
+    return n;
+  };
 
-  let last: DiscoverResult<Row> | null = null;
+  let view: DiscoverView<Row> | null = null;
 
-  const setStatus = (text: string, isError = false): void => {
-    status.className = isError ? 'discover-status discover-status--error' : 'discover-status';
-    status.textContent = text;
+  /** The status line, optionally with an affordance that re-attempts the server.
+   *  An error the user cannot act on is a dead end, and after stage 4 there is
+   *  no corpus left to fall back to — so the retry is part of the error, not a
+   *  decoration on it. */
+  const setStatus = (
+    text: string,
+    kind: 'info' | 'error' | 'notice' = 'info',
+    withRetry = false,
+  ): void => {
+    clear(status);
+    status.className =
+      kind === 'error'
+        ? 'discover-status discover-status--error'
+        : kind === 'notice'
+          ? 'discover-status discover-status--notice'
+          : 'discover-status';
     status.hidden = text === '';
+    // Always stamped (never toggled off) so the hook reads the CURRENT kind
+    // rather than the residue of a previous render.
+    status.setAttribute(DISCOVER_PANEL_NOTICE_ATTR, kind);
+    if (text === '') return;
+    const line = doc.createElement('span');
+    line.className = 'discover-status-text';
+    line.textContent = text;
+    status.appendChild(line);
+    // Only a LOAD failure gets a retry — an install failure is error-styled but
+    // re-running the search would not address it, and a button that doesn't do
+    // what it says is worse than no button.
+    if (!withRetry) return;
+    const retryBtn = doc.createElement('button') as HTMLButtonElement;
+    retryBtn.type = 'button';
+    retryBtn.setAttribute(DISCOVER_PANEL_RETRY_ATTR, '');
+    retryBtn.className = 'discover-retry';
+    retryBtn.textContent = 'Retry';
+    retryBtn.addEventListener('click', () => void retry());
+    status.appendChild(retryBtn);
   };
 
   // ── Render ────────────────────────────────────────────────────────
-  const renderFilters = (result: DiscoverResult<Row>): void => {
+  const renderFilters = (result: DiscoverView<Row>): void => {
     clear(filters);
     for (const group of opts.filterGroups) {
       const values = result.facets[group.key] ?? [];
@@ -265,7 +414,8 @@ export const mountDiscoverPanel = <Row>(
       label.textContent = group.label;
       wrap.appendChild(label);
       const selected = query.filters[group.key] ?? [];
-      for (const fv of values) {
+
+      const makeChip = (fv: (typeof values)[number]): HTMLButtonElement => {
         const chip = doc.createElement('button') as HTMLButtonElement;
         chip.type = 'button';
         const active = selected.includes(fv.value);
@@ -278,7 +428,97 @@ export const mountDiscoverPanel = <Row>(
           ev.stopPropagation();
           toggleFilter(group.key, fv.value);
         });
-        wrap.appendChild(chip);
+        return chip;
+      };
+
+      // Selected values never disappear when they fall outside the most-used
+      // inline set. Fill the remaining slots with the leading facet values.
+      const selectedValues = values.filter((fv) => selected.includes(fv.value));
+      const selectedSet = new Set(selectedValues.map((fv) => fv.value));
+      const inlineValues = [
+        ...selectedValues,
+        ...values
+          .filter((fv) => !selectedSet.has(fv.value))
+          .slice(0, Math.max(0, DISCOVER_INLINE_FACET_LIMIT - selectedValues.length)),
+      ];
+      const inlineSet = new Set(inlineValues.map((fv) => fv.value));
+      for (const fv of inlineValues) wrap.appendChild(makeChip(fv));
+
+      if (values.length > inlineValues.length) {
+        const expanded = expandedFacets.has(group.key);
+        const more = doc.createElement('button') as HTMLButtonElement;
+        more.type = 'button';
+        more.className = 'discover-chip discover-chip--more';
+        more.setAttribute(DISCOVER_PANEL_FACET_MORE_ATTR, group.key);
+        more.setAttribute('aria-expanded', String(expanded));
+        more.textContent = expanded
+          ? `Hide ${group.label.toLocaleLowerCase()} finder`
+          : `Find more ${group.label.toLocaleLowerCase()} values (${values.length - inlineValues.length})`;
+        more.addEventListener('click', () => {
+          if (expandedFacets.has(group.key)) expandedFacets.delete(group.key);
+          else expandedFacets.add(group.key);
+          renderFilters(result);
+          if (!expanded) {
+            const queryable = filters as HTMLElement & {
+              querySelector?: (selector: string) => Element | null;
+            };
+            const nextSearch = queryable.querySelector?.(
+              `[${DISCOVER_PANEL_FACET_SEARCH_ATTR}][data-facet="${group.key}"]`,
+            ) as HTMLInputElement | null | undefined;
+            nextSearch?.focus?.();
+          }
+        });
+        wrap.appendChild(more);
+
+        if (expanded) {
+          const finder = doc.createElement('div');
+          finder.className = 'discover-facet-finder';
+          const finderSearch = doc.createElement('input') as HTMLInputElement;
+          finderSearch.type = 'search';
+          finderSearch.className = 'discover-facet-search';
+          finderSearch.setAttribute(DISCOVER_PANEL_FACET_SEARCH_ATTR, '');
+          finderSearch.setAttribute('data-facet', group.key);
+          finderSearch.setAttribute(
+            'aria-label',
+            `Search ${values.length} ${group.label.toLocaleLowerCase()} values`,
+          );
+          finderSearch.placeholder = `Search ${values.length} ${group.label.toLocaleLowerCase()} values…`;
+          finderSearch.value = facetSearches.get(group.key) ?? '';
+          const finderStatus = doc.createElement('div');
+          finderStatus.className = 'discover-facet-status';
+          finderStatus.setAttribute('aria-live', 'polite');
+          const finderResults = doc.createElement('div');
+          finderResults.className = 'discover-facet-results';
+
+          const renderFinderResults = (): void => {
+            clear(finderResults);
+            const needle = finderSearch.value.trim().toLocaleLowerCase();
+            facetSearches.set(group.key, finderSearch.value);
+            if (needle === '') {
+              finderStatus.textContent = `Type to search all ${values.length} ${group.label.toLocaleLowerCase()} values.`;
+              return;
+            }
+            const matches = values.filter((fv) => {
+              if (inlineSet.has(fv.value)) return false;
+              const haystack = `${facetLabel(group.key, fv.value)} ${fv.value}`.toLocaleLowerCase();
+              return haystack.includes(needle);
+            });
+            for (const fv of matches.slice(0, DISCOVER_FACET_SEARCH_LIMIT)) {
+              finderResults.appendChild(makeChip(fv));
+            }
+            finderStatus.textContent = matches.length === 0
+              ? `No ${group.label.toLocaleLowerCase()} values match.`
+              : matches.length > DISCOVER_FACET_SEARCH_LIMIT
+                ? `Showing the first ${DISCOVER_FACET_SEARCH_LIMIT} of ${matches.length} matches.`
+                : `${matches.length} match${matches.length === 1 ? '' : 'es'}.`;
+          };
+          finderSearch.addEventListener('input', renderFinderResults);
+          finder.appendChild(finderSearch);
+          finder.appendChild(finderStatus);
+          finder.appendChild(finderResults);
+          wrap.appendChild(finder);
+          renderFinderResults();
+        }
       }
       filters.appendChild(wrap);
     }
@@ -406,7 +646,27 @@ export const mountDiscoverPanel = <Row>(
     return card;
   };
 
-  const renderPager = (result: DiscoverResult<Row>): void => {
+  /** Rows the server has never heard of — bundled on this server but not in the
+   *  marketplace catalogue. They match the SAME query (the surface runs
+   *  `runDiscover` over that bounded set), but their rank relative to catalogue
+   *  rows is unknowable without the catalogue, so they get their own labelled
+   *  group instead of a fabricated position in the page. */
+  const renderPinnedGroup = (pinned: Row[]): HTMLElement => {
+    const wrap = doc.createElement('div');
+    wrap.setAttribute(DISCOVER_PANEL_PINNED_ATTR, '');
+    wrap.className = 'discover-pinned';
+    const label = doc.createElement('div');
+    label.className = 'discover-pinned-label';
+    label.textContent = opts.copy.pinnedLabel ?? 'On this server';
+    wrap.appendChild(label);
+    const inner = doc.createElement('div');
+    inner.className = 'discover-grid';
+    for (const row of pinned) inner.appendChild(renderCard(row));
+    wrap.appendChild(inner);
+    return wrap;
+  };
+
+  const renderPager = (result: DiscoverView<Row>): void => {
     clear(pager);
     if (result.totalPages <= 1) return;
     const prev = doc.createElement('button') as HTMLButtonElement;
@@ -429,6 +689,32 @@ export const mountDiscoverPanel = <Row>(
     pager.appendChild(next);
   };
 
+  /** Is the query the untouched landing view? Distinguishes "nothing published"
+   *  from "nothing matches", which corpus mode reads off `rows.length` and
+   *  server mode cannot (it never sees a row it didn't ask for). */
+  const isBlankQuery = (): boolean =>
+    query.search.trim() === ''
+    && Object.values(query.filters).every((v) => v.length === 0);
+
+  /** Corpus mode's view — `runDiscover` remains the definition of correct
+   *  behaviour, unchanged and still the unit-test surface. */
+  const localView = (): DiscoverView<Row> => {
+    const result: DiscoverResult<Row> = runDiscover(rows, opts.spec, query);
+    query.page = result.page; // sync to the clamped page the engine chose
+    return {
+      pageRows: result.pageRows,
+      total: result.total,
+      totalPages: result.totalPages,
+      page: result.page,
+      facets: result.facets,
+      pinned: [],
+    };
+  };
+
+  // Synchronous by design. Server mode renders from `view`, which `refetch`
+  // fills; making this async to await a request would ripple through every
+  // caller (chip clicks, install completion, broadcasts) for no benefit, and
+  // would flash the grid on each keystroke.
   const render = (): void => {
     if (state === 'loading') {
       clear(grid);
@@ -443,30 +729,53 @@ export const mountDiscoverPanel = <Row>(
       clear(pager);
       clear(filters);
       summary.hidden = true;
-      setStatus(error ?? 'Couldn’t load the marketplace.', true);
+      setStatus(error ?? 'Couldn’t load the marketplace.', 'error', true);
       return;
     }
-    const result = runDiscover(rows, opts.spec, query);
-    last = result;
-    query.page = result.page; // sync to the clamped page the engine chose
+    const result = usingServer() ? view : localView();
+    if (result === null) {
+      // Server mode before the first page landed — nothing to paint yet.
+      setStatus(`Loading ${opts.copy.kindPlural}…`);
+      return;
+    }
+    view = result;
     renderSummary();
     renderFilters(result);
     clear(grid);
-    if (result.total === 0) {
+    if (result.pinned.length > 0) {
+      grid.appendChild(renderPinnedGroup(result.pinned));
+    }
+    if (result.total === 0 && result.pinned.length === 0) {
+      const nothingPublished = usingServer() ? isBlankQuery() : rows.length === 0;
       setStatus(
-        rows.length === 0
+        nothingPublished
           ? `No ${opts.copy.kindPlural} published yet.`
           : `No ${opts.copy.kindPlural} match your search.`,
       );
+    } else if (degraded) {
+      // Never silent: a panel searching a downloaded catalogue must not look
+      // like one searching the marketplace.
+      setStatus(
+        `Marketplace search is unavailable — showing results from a downloaded ${opts.copy.kindPlural} catalogue.`,
+        'notice',
+        true,
+      );
     } else {
       setStatus('');
-      for (const row of result.pageRows) grid.appendChild(renderCard(row));
     }
+    for (const row of result.pageRows) grid.appendChild(renderCard(row));
     renderPager(result);
   };
 
   // ── Actions ───────────────────────────────────────────────────────
-  const findRow = (id: string): Row | undefined => rows.find((r) => opts.identity(r) === id);
+  // Install targets resolve from what is ON SCREEN. In corpus mode `rows` is
+  // the whole catalogue, so this is the same set as before; in server mode the
+  // corpus is not held and the current page + its pinned rows are precisely the
+  // rows a click can originate from.
+  const findRow = (id: string): Row | undefined => {
+    const match = (r: Row): boolean => opts.identity(r) === id;
+    return view?.pinned.find(match) ?? view?.pageRows.find(match) ?? rows.find(match);
+  };
 
   const runInstall = async (id: string): Promise<void> => {
     if (installing.has(id)) return;
@@ -489,31 +798,39 @@ export const mountDiscoverPanel = <Row>(
         const catV = opts.catalogVersion(row);
         installedLookup = (slug) => (slug === id ? catV : prev(slug));
       } else if (!outcome.ok) {
-        setStatus(outcome.message ?? 'Install failed.', true);
+        setStatus(outcome.message ?? 'Install failed.', 'error');
       }
     } catch (err) {
-      setStatus((err as Error)?.message ?? 'Install failed.', true);
+      setStatus((err as Error)?.message ?? 'Install failed.', 'error');
     } finally {
       installing.delete(id);
       if (!disposed) render();
     }
   };
 
+  /** Repaint immediately (chips flip, the grid keeps the previous page rather
+   *  than flashing) and, in server mode, go fetch the answer. `delayMs` is the
+   *  keystroke debounce; deliberate single acts pass 0. */
+  const applyQueryChange = (delayMs: number): void => {
+    if (usingServer()) scheduleRefetch(delayMs);
+    render();
+  };
+
   const setPage = (page: number): void => {
     query.page = Math.max(1, page);
-    render();
+    applyQueryChange(0);
   };
 
   const applySort = (key: string): void => {
     query.sort = key;
     query.page = 1;
-    render();
+    applyQueryChange(0);
   };
 
   const applySearch = (value: string): void => {
     query.search = value;
     query.page = 1;
-    render();
+    applyQueryChange(debounceMs);
   };
 
   const toggleFilter = (facetKey: string, value: string): void => {
@@ -523,7 +840,7 @@ export const mountDiscoverPanel = <Row>(
       : [...current, value];
     query.filters = { ...query.filters, [facetKey]: next };
     query.page = 1;
-    render();
+    applyQueryChange(0);
   };
 
   // ── Load ──────────────────────────────────────────────────────────
@@ -557,24 +874,109 @@ export const mountDiscoverPanel = <Row>(
     // background + error → silently keep the last-good corpus.
   };
 
+  // ── Server search ─────────────────────────────────────────────────
+  // Shares `loadGeneration` with the corpus load above ON PURPOSE: a corpus
+  // fallback and a search are two ways of answering the same question, and one
+  // must be able to supersede the other. Last request wins, not last completion.
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  let idle: Promise<void> = Promise.resolve();
+
+  const scheduleRefetch = (delayMs: number): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    let settle: () => void = () => {};
+    idle = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      void refetch(true).then(settle, settle);
+    }, delayMs);
+  };
+
+  /** Ask the server for the current query's page. `background` keeps the
+   *  current cards on screen while it runs (every interaction after the first),
+   *  so paging and typing don't blank the grid. */
+  const refetch = async (background: boolean): Promise<void> => {
+    const searchFn = opts.search;
+    if (searchFn === undefined) return;
+    const gen = ++loadGeneration;
+    if (!background) {
+      state = 'loading';
+      error = null;
+      render();
+    }
+    const res = await searchFn({ ...query, filters: { ...query.filters } });
+    if (disposed || gen !== loadGeneration) return;
+    if (res.status === 'ok') {
+      // Map the wire page (`rows`) into the render view (`pageRows`).
+      view = {
+        pageRows: res.page.rows,
+        total: res.page.total,
+        totalPages: Math.max(1, res.page.totalPages),
+        page: res.page.page,
+        facets: res.page.facets,
+        pinned: res.page.pinned ?? [],
+      };
+      query.page = res.page.page; // sync to the clamped page the server chose
+      state = view.total === 0 && view.pinned.length === 0 && isBlankQuery() ? 'empty' : 'ready';
+      error = null;
+      render();
+      return;
+    }
+    await fallbackToCorpus(res.message, gen);
+  };
+
+  /** A search failed. While `description` still ships in `/catalog/*.json` the
+   *  corpus can answer instead — insurance that disappears at stage 4, which is
+   *  exactly why the error branch below has to stand on its own (a message the
+   *  user can read and an affordance they can act on). */
+  const fallbackToCorpus = async (message: string, gen: number): Promise<void> => {
+    const res = await opts.fetchCatalog();
+    if (disposed || gen !== loadGeneration) return;
+    if (res.status === 'ok' && Array.isArray(res.rows)) {
+      rows = res.rows;
+      degraded = true;
+      state = rows.length === 0 ? 'empty' : 'ready';
+      error = null;
+      render();
+      return;
+    }
+    state = 'error';
+    error = message;
+    render();
+  };
+
+  const retry = async (): Promise<void> => {
+    if (opts.search === undefined) {
+      await load(false);
+      return;
+    }
+    degraded = false;
+    rows = [];
+    await refetch(false);
+  };
+
   // ── Events ────────────────────────────────────────────────────────
   const onSearch = (): void => applySearch(search.value);
   const onSort = (): void => applySort(sortSelect.value);
   search.addEventListener('input', onSearch);
   sortSelect.addEventListener('change', onSort);
 
-  let loaded = load();
+  let loaded = opts.search === undefined ? load() : refetch(false);
 
   return {
     getState: () => state,
-    getRenderedIdentities: () => (last?.pageRows ?? []).map(opts.identity),
+    getRenderedIdentities: () =>
+      [...(view?.pinned ?? []), ...(view?.pageRows ?? [])].map(opts.identity),
+    getPinnedIdentities: () => (view?.pinned ?? []).map(opts.identity),
+    isDegraded: () => degraded,
     getInstallState: (id) => {
       const row = findRow(id);
       return row === undefined ? null : installStateOf(row);
     },
-    getTotal: () => last?.total ?? 0,
+    getTotal: () => view?.total ?? 0,
     getPage: () => query.page,
-    getTotalPages: () => last?.totalPages ?? 1,
+    getTotalPages: () => view?.totalPages ?? 1,
     getUpdateCount: () => updateCount(),
     getError: () => error,
     setSearch: (value) => {
@@ -593,17 +995,36 @@ export const mountDiscoverPanel = <Row>(
     clickSelect: (id) => opts.onSelect?.(id),
     refresh: () => {
       // Background — a return-visit re-check keeps the current cards visible.
-      loaded = load(true);
+      // Server mode re-runs the CURRENT query rather than downloading a corpus;
+      // the surface re-reads the roster's catalogue versions as part of that,
+      // because a publish since the last visit is exactly what the update badge
+      // is meant to notice.
+      loaded = usingServer() ? refetch(true) : load(true);
       return loaded;
     },
+    retry,
     setInstalled: (lookup) => {
       installedLookup = lookup;
       if (!disposed && (state === 'ready' || state === 'empty')) render();
     },
     whenLoaded: () => loaded,
+    whenIdle: async () => {
+      // Settle once NEITHER the load promise NOR the debounced-refetch promise
+      // changes across an await. Both can be reassigned mid-await: a keystroke
+      // lands a new `idle`, and a version-probe `onChange` → `refresh()` lands a
+      // new `loaded`. Await both each pass until they're stable.
+      let seenLoaded: Promise<unknown> | null = null;
+      let seenIdle: Promise<void> | null = null;
+      while (seenLoaded !== loaded || seenIdle !== idle) {
+        seenLoaded = loaded;
+        seenIdle = idle;
+        await Promise.all([loaded, idle]);
+      }
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      if (debounceTimer !== undefined) clearTimeout(debounceTimer);
       search.removeEventListener('input', onSearch);
       sortSelect.removeEventListener('change', onSort);
       try {
@@ -652,7 +1073,7 @@ export const DISCOVER_PANEL_STYLES = `
   color: var(--fg-subtle); margin-right: 2px;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip {
-  min-height: 26px; padding: 2px 11px; border: 1px solid var(--border);
+  min-height: 34px; padding: 5px 11px; border: 1px solid var(--border);
   border-radius: 999px; background: var(--surface); color: var(--fg-muted);
   font: inherit; font-size: 12px; cursor: pointer;
   transition: border-color 90ms ease, background 90ms ease, color 90ms ease;
@@ -661,9 +1082,63 @@ export const DISCOVER_PANEL_STYLES = `
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip--active {
   border-color: var(--accent); background: var(--accent-weak); color: var(--fg); font-weight: 600;
 }
-[${DISCOVER_PANEL_STATUS_ATTR}] { font-size: 13px; color: var(--fg-muted); }
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-chip--more {
+  border-style: dashed; color: var(--fg);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-finder {
+  flex: 1 0 100%; box-sizing: border-box; display: grid; gap: 8px;
+  margin-top: 2px; padding: 10px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface-sunk);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-search {
+  box-sizing: border-box; width: min(100%, 360px); min-height: 40px;
+  padding: 8px 11px; border: 1px solid var(--border-strong);
+  border-radius: var(--wc-radius, 6px); background: var(--surface);
+  color: var(--fg); font: inherit; font-size: 13px;
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-search:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-status {
+  font-size: 12px; color: var(--fg-subtle);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-results {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  max-height: 220px; overflow: auto; overscroll-behavior: contain;
+}
+[${DISCOVER_PANEL_STATUS_ATTR}] {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--fg-muted);
+}
+[${DISCOVER_PANEL_STATUS_ATTR}][hidden] { display: none; }
 [${DISCOVER_PANEL_STATUS_ATTR}].discover-status--error {
   border-left: 3px solid var(--warn); padding-left: 8px; color: var(--warn);
+}
+/* Degraded — the marketplace search is down and a downloaded catalogue is
+   answering instead. Real information, not a failure: bordered like the error
+   line so it can't be missed, but on the neutral ramp so it doesn't read as
+   broken. */
+[${DISCOVER_PANEL_STATUS_ATTR}].discover-status--notice {
+  border-left: 3px solid var(--border-strong); padding-left: 8px; color: var(--fg-muted);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-retry {
+  font: inherit; font-size: 12px; font-weight: 650; min-height: 30px; padding: 4px 11px;
+  border-radius: var(--wc-radius, 6px); border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--fg); cursor: pointer;
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-retry:hover { border-color: var(--accent); }
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-retry:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+}
+/* Pinned — rows this server has that the marketplace catalogue doesn't. Sits
+   above the paged grid, outside the pager, with its own heading so the group
+   explains itself rather than looking like page 1 in an odd order. */
+[${DISCOVER_PANEL_PINNED_ATTR}] {
+  grid-column: 1 / -1; display: grid; gap: 10px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-pinned-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-subtle);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -722,5 +1197,7 @@ export const DISCOVER_PANEL_STYLES = `
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-controls { padding: 8px; }
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-sort { flex: 1 1 150px; }
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-grid { grid-template-columns: 1fr; }
+  [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip,
+  [${DISCOVER_PANEL_HOST_ATTR}] .discover-page-btn { min-height: 44px; }
 }
 `;

@@ -113,7 +113,9 @@ export interface InboundFileCollection extends Collection {
   /** SMB-finance slice 3 — read the CAS bytes for one record so a cli op can
    *  materialize a `file_ref` arg to a temp file (`CliInputMaterializeSpec`).
    *  Encapsulates the blob-store access so the engine wiring stays thin. Throws
-   *  on an unknown record or a non-`cas` storage_ref (remote bridging is not v1).
+   *  on an unknown record or a non-`cas` storage_ref. Mirrored provider files
+   *  live in `file_meta_ref` and resolve through the D-192 file-read path, not
+   *  through this CAS collection method.
    *  This is a server-internal read — the Gateway-gated content surface for
    *  recipes / AI is `data-file-read`; this path is reached only after the
    *  producing cli op was itself grant-gated. */
@@ -445,7 +447,7 @@ export const createInboundFileCollection = (
       throw new Error(`data.file.${slug}.readBytes: unknown record '${record_id}'`);
     }
     if (record.storage_ref.kind !== 'cas') {
-      throw new Error(`data.file.${slug}.readBytes: record '${record_id}' is not a CAS blob (remote refs are not readable in v1)`);
+      throw new Error(`data.file.${slug}.readBytes: record '${record_id}' is not a CAS blob (remote refs resolve through the file_meta_ref read path)`);
     }
     const bytes = await blobs.get(record.storage_ref.blob_hash);
     if (!bytes) {

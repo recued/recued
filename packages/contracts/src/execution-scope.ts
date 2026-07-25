@@ -27,8 +27,8 @@
  *  ingredients yields the empty set — install fails on every runtime,
  *  surfacing the conflict at validate time.
  *
- *  Spec: `docs/d-119-spec.md` lines 442–467, 614–623;
- *        `docs/d-126-spec.md` § A.2, § 1.2.
+ *  Spec: D-119 lines 442–467, 614–623;
+ *        D-126 § A.2, § 1.2.
  */
 
 import type { IngredientKind, IngredientManifest } from './ingredient.js';

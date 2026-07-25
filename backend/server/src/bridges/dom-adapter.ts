@@ -51,7 +51,7 @@
  *  `ROLE_RESTRICTION` — same posture as the registry's default
  *  `unsupported('dom', ...)` placeholder.
  *
- *  Spec: docs/d-169-spec.md § N.3 (per-command authority retirement),
+ *  Spec: D-169 § N.3 (per-command authority retirement),
  *  § N.9 / A.8 (multi-bridge fall-through); composes with the dispatcher
  *  from `backend/server/src/bridges/dispatcher.ts` (`ce5bb9a3`). */
 

@@ -24,7 +24,7 @@
  *  `auto_cleanup_days` purge of THAT row is its own retention sweep — this
  *  store's purge drops the subview pointer.
  *
- *  Spec: docs/d-173-spec.md § D10 + N.1 (the inbox is a view; reject moves
+ *  Spec: D-173 § D10 + N.1 (the inbox is a view; reject moves
  *  to the subview, not delete). */
 
 import type Database from 'better-sqlite3';

@@ -32,7 +32,7 @@
  *  never a closed list. The `register()` method's "throws on duplicate
  *  id" remains the only hard constraint; there is no per-id allow-list.
  *
- *  Spec: docs/d-160-spec.md § N.3 / A.3 + docs/d-164-prompt-cache-
+ *  Spec: D-160 § N.3 / A.3 + docs/d-164-prompt-cache-
  *  consolidation-pending-design.md P5 (registry-role clarification).
  */
 

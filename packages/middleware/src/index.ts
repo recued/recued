@@ -32,8 +32,8 @@
  *  `@recued/engine` (run a recipe-as-tool) but MUST NOT import
  *  `@recued/middleware-recued` — a framework never imports a bundle.
  *
- *  Spec: docs/d-160-spec.md (framework) + docs/d-159-spec.md (relocation)
- *  + docs/d-164-prompt-cache-consolidation-pending-design.md P5
+ *  Spec: D-160 (framework) + D-159 (relocation)
+ *  + D-164 P5
  *  (parallel tool dispatch + registry-role clarification).
  */
 

@@ -15,10 +15,11 @@ import {
   type RecuedPlanStore,
   type VaultStore,
 } from '@recued/storage';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
+import { openDatabase } from '../open-database.js';
 import {
   createAuditRetention,
   type AuditRetention,
@@ -245,8 +246,24 @@ export const composeStorageContext = async (
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
 
   bootTrace.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   db.pragma('journal_mode = WAL');
+  // D-212 slice 0 — the page-cache ceiling. Ships independently of the rest of
+  // the at-rest-encryption arc because it is a free win TODAY and it is what
+  // makes every later step of that arc cost ~nothing on reads.
+  //
+  // SQLite's default is ~2 MB, which is the worst case for a workload like this
+  // one: `records`-shaped tables plus FTS5, where a scan re-reads the same pages.
+  // Measured (`scripts/bench-at-rest-encryption.mjs`, 20k rows), encrypted vs
+  // plain at the DEFAULT cache: timeline scan +131%, warm point read +212%,
+  // FTS5 +8.3%. At 20 MB every one of those is statistical NOISE, and by 64 MB
+  // writes fall from +30% to +5.4%. Unencrypted it is simply free headroom.
+  //
+  // ⚠ NEGATIVE value = KIBIBYTES (SQLite convention), not pages. And it is a
+  // CEILING, not a reservation: the page cache grows lazily, so a small database
+  // on a constrained 1-click VPS never allocates 64 MB. Lower it only if a host
+  // genuinely cannot spare the ceiling.
+  db.pragma('cache_size = -64000');
   db.pragma('foreign_keys = ON');
   bootTrace.mark('db-opened');
   bootTrace.mark('shared-setup-start');
@@ -370,7 +387,10 @@ export const composeStorageContext = async (
   });
   const bootSigningIdentity = async (): Promise<void> => {
     if (signingIdentityRef) return;
-    const booted = await bootServerIdentity({ dbPath });
+    // D-212 slice 5 — the server's own boot is where binding this realm to
+    // this machine is a decision someone made, so this is the one caller that
+    // opts into sealing the keyfile against a platform secret store.
+    const booted = await bootServerIdentity({ dbPath, machineSealing: true });
     signingIdentityRef = booted;
     if (booted.created) {
       console.error(

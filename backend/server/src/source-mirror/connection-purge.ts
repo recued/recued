@@ -1,6 +1,6 @@
 /** D-192 source-data-removal — the CONNECTION-level teardown purge.
  *
- *  Spec `docs/d-192-source-data-removal.md` § 5. Fans the per-Source
+ *  Spec D-192 § 5. Fans the per-Source
  *  `purgeSourceData` (this module's sibling `purge.ts`) over every registry
  *  Source a removed connection owns — matched by the connection name embedded
  *  in a connection-Source id (`<vendor>.<name>.<kind>`) — and sums the

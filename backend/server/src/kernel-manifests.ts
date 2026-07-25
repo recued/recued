@@ -2511,6 +2511,34 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "form-response-list",
+    "name": "List accepted form responses",
+    "description": "Return a bounded page of owner-approved data.form_response records with optional endpoint, form-definition, lifecycle, and keyset filters. Records include mutable working values and visitor identity; the sealed Reception submission remains the immutable evidence twin. The operation is owner-default-only and contracted execution is fenced to the exact data.form_response scope.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "form-response",
+      "warehouse",
+      "reception",
+      "list"
+    ],
+    "input": {
+      "endpoint_id": null,
+      "form_definition_id": null,
+      "lifecycle_states": null,
+      "before": null,
+      "limit": 100
+    },
+    "output": {
+      "records": "records",
+      "next_cursor": "next_cursor"
+    }
+  },
+  {
     "slug": "form-response-get",
     "name": "Fetch an accepted form response",
     "description": "Return one owner-approved intake response from `data.form_response` by submission_id. The full frozen form definition, arbitrary visitor values, visitor identity, and metadata are returned only through this explicit recipe-side read. The operation is owner-default-only, and contracted execution is additionally evaluated against the exact `data.form_response` scope.",
@@ -2536,7 +2564,7 @@ const MANIFESTS = [
   {
     "slug": "form-response-set-state",
     "name": "Advance a form response's lifecycle",
-    "description": "Move one `data.form_response` record through the owner's lifecycle: received, in_review, accepted, declined, or no_show. This is the ONLY way to change a form response, and it changes the state and NOTHING ELSE \u2014 the visitor's answers, the frozen form definition, and the submitted/accepted timestamps are not writable here and there is no input for them. To read the answers use form-response-get. The record is the owner's WORKING copy; the sealed, never-edited record of what the visitor actually submitted lives on the reception submission, so advancing a state never rewrites history. `no_show` means the response was accepted and the person did not turn up \u2014 it is deliberately distinct from `declined` (you turned them down), because a repeat-no-show rule cannot be computed once the two collapse. Re-applying the state a record already has is a no-op and does not move `state_changed_at`. The operation is owner-default-only, and contracted execution is additionally evaluated against the exact `data.form_response` scope.",
+    "description": "Move one `data.form_response` record through the owner's lifecycle: received, in_review, accepted, declined, or no_show. This is the only recipe operation that changes lifecycle, and it changes state and nothing else. Owner UI/admin RPCs may edit the working answers or visitor identity; use form-response-get to read the record. The sealed, never-edited record of what the visitor actually submitted lives on the reception submission, so neither kind of owner change rewrites history. `no_show` means the response was accepted and the person did not turn up \u2014 it is deliberately distinct from `declined` (you turned them down), because a repeat-no-show rule cannot be computed once the two collapse. Re-applying the state a record already has is a no-op and does not move `state_changed_at`. The operation is owner-default-only, and contracted execution is additionally evaluated against the exact `data.form_response` scope.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3116,7 +3144,7 @@ const MANIFESTS = [
   {
     "slug": "notify-booking-visitor",
     "name": "Notify a booking's visitor",
-    "description": "Tell the visitor behind a reception booking that their appointment changed (e.g. it was rescheduled) — server-side, without ever holding their email. Given booking_id (a data.booking row), the visitor's SEALED address is resolved INTERNALLY: the dispatcher follows the booking's own reception_record_id back to the reception submission row, decrypts ONLY the email, and sends — the recipient is never an argument, never reaches step state, and never appears in the output, so a recipe (or an AI step) can notify a booking's visitor with zero access to their PII. sender_mail_instance is a registered send-capable data.mail.<name> account (the owner's own sender — IMAP+SMTP, gmail.send, or Mail.Send); subject and body are the message (body_format text or html). Delivery routes through the same collection.mail.send path as mail-send, so the capability check, sender ≠ recipient guard, and mail_send audit row all fire. Returns { notified, reason }: notified:false with a coarse reason (not_a_reception_booking — the booking did not come from a visitor request, so there is nobody sealed behind it; booking_not_found; no_visitor_email — the visitor gave none) when there is nothing to send, and the address is never surfaced in any branch. This IS an irreversible external send: it lifts to the D-157 preflight gate, where the owner approves the notice bound to a specific booking (the raw email is deliberately not shown — it never left the substrate). Pair it with a booking-watcher reactive recipe to close the loop: the audit trail records that the owner moved the booking, this records that the visitor was told. Routes via the paired server; server-only because the visitor PII lives sealed in the warehouse.",
+    "description": "Tell the visitor behind a reception booking that their appointment changed (e.g. it was rescheduled) — server-side, without ever holding their email. Given booking_id (a data.booking row), the visitor's SEALED address is resolved INTERNALLY: the dispatcher follows the booking's own reception_record_id back to the reception submission row, decrypts ONLY the email, and sends — the recipient is never an argument, never reaches step state, and never appears in the output, so a recipe (or an AI step) can notify a booking's visitor with zero access to their PII. sender_mail_instance is a registered send-capable data.mail.<name> account (the owner's own sender — IMAP+SMTP, gmail.send, or Mail.Send); subject and body are the message (body_format text or html). Delivery routes through the same collection.mail.send path as mail-send, so the capability check, sender ≠ recipient guard, and mail_send audit row all fire — with the recipient list REDACTED from that audit row (D-210 audit finding 3b: the row records recipient_count, subject and message-id, never the sealed address; before the fix a one-recipient send always fell under the noise-redaction threshold and wrote it in plaintext to a durable row that travels with a backup). Returns { notified, reason }: notified:false with a coarse reason (not_a_reception_booking — the booking did not come from a visitor request, so there is nobody sealed behind it; booking_not_found; no_visitor_email — the visitor gave none) when there is nothing to send, and the address is never surfaced in any branch. This IS an irreversible external send: it lifts to the D-157 preflight gate, where the owner approves the notice bound to a specific booking (the raw email is deliberately not shown — it never left the substrate). Pair it with a booking-watcher reactive recipe to close the loop: the audit trail records that the owner moved the booking, this records that the visitor was told. Routes via the paired server; server-only because the visitor PII lives sealed in the warehouse.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3509,7 +3537,7 @@ const MANIFESTS = [
   {
     "slug": "reception-materialize",
     "name": "Complete a reviewed reception submission",
-    "description": "Internal kernel ingredient: the LOCAL dispatch target the Gateway routes a reception catalog op's `materialize` to on approve-resume (D-173 P1-dispatch). A reception core-pack op (reception-intake / reception-approval) is a catalog-form `approval_required` operation whose REST binding points at the local-only `https://reception.local` sentinel; the D-157 gate HOLDS it pending until the inbox approves, then the engine re-dispatches the gated op. The ingredient executor recognises the reception-local surface dispatch and routes it here instead of an HTTP call, so completion runs in-process through runReceptionProjection. Entity targets write through their destination Source; `form_response` verifies the canonical accepted row and creates no second entity. INTENDED as the dispatch sink only — but ⛔ that is NOT ENFORCED and this description used to claim it was: nothing stops a recipe naming this slug directly, and a direct `{ingredient: ...}` step reaches it WITHOUT the D-157 gate, because that gate only runs on the catalog path for `{operation, args}`-shaped steps (`catalog-gateway.ts`). The substrate has no flag to express `internal` / `dispatch_sink` (there is no such field on any manifest); `chat_exposed` is catalog visibility and `MCP_EXPOSED_KERNEL_INGREDIENTS` is the MCP tool surface, and neither governs a recipe reference. Marketplace publish blocks it (`isCoreCapabilitySlug` requires a `core-` prefix) but that policy is marketplace-side only and the server never re-runs it, so bundled + locally-installed recipes are unaffected by it. See `docs/d-210-spec.md` (the declared-not-backed finding).",
+    "description": "Internal kernel ingredient: the LOCAL dispatch target the Gateway routes a reception catalog op's `materialize` to on approve-resume (D-173 P1-dispatch). A reception core-pack op (reception-intake / reception-approval) is a catalog-form `approval_required` operation whose REST binding points at the local-only `https://reception.local` sentinel; the D-157 gate HOLDS it pending until the inbox approves, then the engine re-dispatches the gated op. The ingredient executor recognises the reception-local surface dispatch and routes it here instead of an HTTP call, so completion runs in-process through runReceptionProjection. Entity targets write through their destination Source; `form_response` creates or verifies the mutable working destination while preserving its immutable sealed Reception evidence twin. INTENDED as the dispatch sink only — but ⛔ that is NOT ENFORCED and this description used to claim it was: nothing stops a recipe naming this slug directly, and a direct `{ingredient: ...}` step reaches it WITHOUT the D-157 gate, because that gate only runs on the catalog path for `{operation, args}`-shaped steps (`catalog-gateway.ts`). The substrate has no flag to express `internal` / `dispatch_sink` (there is no such field on any manifest); `chat_exposed` is catalog visibility and `MCP_EXPOSED_KERNEL_INGREDIENTS` is the MCP tool surface, and neither governs a recipe reference. Marketplace publish blocks it (`isCoreCapabilitySlug` requires a `core-` prefix) but that policy is marketplace-side only and the server never re-runs it, so bundled + locally-installed recipes are unaffected by it. See D-210 (the declared-not-backed finding).",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3538,6 +3566,8 @@ const MANIFESTS = [
       "duration_minutes": null,
       "timezone": null,
       "booking_request_id": null,
+      "booking_binding": null,
+      "is_all_day": null,
       "file_id": null
     },
     "output": {

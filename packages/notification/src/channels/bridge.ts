@@ -14,7 +14,7 @@
  *  pair-store state — pair presence is checked separately by the
  *  `ChannelReadinessProbe` the host supplies to Settings (D-163 N.5).
  *
- *  Spec: docs/d-163-spec.md § A.3 / N.3-N.4.
+ *  Spec: D-163 § A.3 / N.3-N.4.
  */
 
 import type { Channel } from './channel.js';

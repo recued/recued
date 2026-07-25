@@ -16,7 +16,7 @@
  *  implementation. Every conversion assertion below is written as an absolute
  *  UTC instant for a NON-UTC zone, so the host's own zone cannot make it true.
  *
- *  Spec: `docs/d-210-spec.md`; mapping in `processors/intake-destination-mapping.ts`. */
+ *  Spec: D-210; mapping in `processors/intake-destination-mapping.ts`. */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';

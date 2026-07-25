@@ -18,7 +18,7 @@
 // Control: `kill` (a running run — SIGKILL the subprocess if attached, else
 // abandon the run's await), `cancel` / `promote` (a queued call — delegated to
 // the semaphore). Owner-only enforcement + the bridge-approval gate live in the
-// rpc handler; this class is unauthenticated substrate. See `docs/d-181-spec.md`
+// rpc handler; this class is unauthenticated substrate. See D-181
 // §7.
 
 import type {

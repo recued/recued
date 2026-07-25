@@ -726,7 +726,64 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
     }
   }
 
-  return invokeGoverned(ctx, ingredientSlug, input, output, stepOptions, stepMeta);
+  // D-173 capstone, SECOND HALF — the same gated-args capture the catalog-form
+  // branch does above, for the simple-form branch.
+  //
+  // ⛔ Its absence was NOT cosmetic, and it was the MAJORITY path: every kernel
+  // op lowers here (their manifests carry no `operations` map), so a held
+  // kernel op left `step_state[gated_step_id]` absent entirely and
+  // `defaultResolveInboxSource` — which reads exactly that to build the inbox
+  // prefill — saw `{}`. The sharpest symptom: `d-192-e3`'s held commitment
+  // proposal declares `counterparty_contact_id` / `statement` / `promised_for_at`
+  // on its EDITABLE allowlist, so the owner was offered edit fields for values
+  // the form could not show them.
+  //
+  // 🔑 Surfacing these to the owner is settled, not assumed: `InboxItem.args`
+  // is contracted as *"concrete values — what the held op will dispatch"*, and
+  // `InboxItem.preview` is the field carrying the I-3 redaction obligation.
+  // The owner ruled the same way for the same reason — for a custom intake
+  // there is no way to know in advance which fields someone needs in order to
+  // approve, so the substrate lays them out rather than guessing.
+  try {
+    return await invokeGoverned(ctx, ingredientSlug, input, output, stepOptions, stepMeta);
+  } catch (e) {
+    // ⛔ THREE GUARDS, each learned by breaking something:
+    //
+    // 1. NOT inside a `foreach`. Every iteration's inner `runStep` writes to
+    //    `step.<same id>`, so a capture here would clobber the last-completed
+    //    iteration's result that the pause path documents as its observed
+    //    artifact — and "which iteration's input?" has no answer. A gated step
+    //    needing a prefill is never a fan-out.
+    // 2. RESOLVE first. Object-shaped `input` reaches this branch RAW (the
+    //    dispatch layer resolves it), so capturing verbatim would put literal
+    //    `{{item}}` / `{{step.x}}` strings into the inbox prefill — the owner
+    //    would review templates instead of values. `resolveDeep` is a no-op on
+    //    a concrete object, exactly as in the catalog branch.
+    // 3. Only record something worth recording. A gated step with no resolvable
+    //    input has no prefill to offer, and stamping `{ input: {} }` would add
+    //    a key carrying no information — churn on every inputless gate, and a
+    //    reader could mistake the empty object for "the args were empty"
+    //    rather than "there were none". Absent stays absent.
+    if (
+      isPreflightRequiredSignal(e)
+      && typeof s.id === 'string'
+      && !isInsideForeach(ctx)
+    ) {
+      const resolved = resolveDeep(input, ctx.stores);
+      const heldInput =
+        resolved && typeof resolved === 'object' && !Array.isArray(resolved)
+          ? (resolved as Record<string, unknown>)
+          : {};
+      if (Object.keys(heldInput).length > 0) {
+        setNamespaceValue(
+          ctx.stores.step as Record<string, unknown>,
+          s.id,
+          { input: heldInput },
+        );
+      }
+    }
+    throw e;
+  }
 };
 
 /** Build the D-113 StepMeta envelope from a step's raw fields. The

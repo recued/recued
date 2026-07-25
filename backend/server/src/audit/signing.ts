@@ -218,14 +218,21 @@ export const createSigningAuditLog = (
       if (!shouldSign(entry.action)) {
         return underlying.logActivity(entry, opts);
       }
-      // High-assurance rows pin `reserve: true` BEFORE signing.
-      // The underlying storage auto-classifies reserve based on
-      // RESERVE_ACTIONS (which includes every HIGH_ASSURANCE_AUDIT_
-      // KINDS entry); if we signed without it, the stored row
-      // would later carry `reserve: true` while the signature
-      // commits to the un-pinned shape, breaking verify. Explicit
-      // pre-pin keeps the signed bytes + the stored bytes
-      // identical regardless of caller-side reserve overrides.
+      // High-assurance rows pin `reserve: true` BEFORE signing, so
+      // the signed bytes and the stored bytes stay identical: the
+      // underlying store also auto-classifies from RESERVE_ACTIONS,
+      // and signing an un-pinned row would leave the stored copy
+      // carrying a `reserve: true` the signature never committed to,
+      // breaking verify.
+      //
+      // ⚠ This comment used to claim RESERVE_ACTIONS "includes every
+      // HIGH_ASSURANCE_AUDIT_KINDS entry". It does not — 19 of 37 are
+      // absent (all of D-149's reception kinds), measured 2026-07-23.
+      // The weaker true rule is the one that matters and it is the one
+      // this line enforces: the PIN is what makes a high-assurance row
+      // reserve-class, because the store resolves `entry.reserve`
+      // ahead of auto-classification. Membership in RESERVE_ACTIONS is
+      // belt-and-braces for rows written WITHOUT this wrapper.
       // Codex P1 #1 fold: signActivityEntry stamps the signer's
       // public-key fingerprint alongside the signature so post-
       // rotation verification with a key-history resolver can find

@@ -15,7 +15,7 @@
  *      change.
  *    - HubSpot reprobe rejects with hint at `collection.connection.probe`.
  *
- *  Spec: docs/d-139-spec.md § A.8, § P2 acceptance. */
+ *  Spec: D-139 § A.8, § P2 acceptance. */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

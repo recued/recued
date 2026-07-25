@@ -11,7 +11,7 @@
  *  once (the §0 "shared logic written against the family once" rule); each vendor
  *  leaf supplies only the URL + headers it can't generalize.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import { RpcError, resolveBearerAccessToken } from '@recued/contracts';
 

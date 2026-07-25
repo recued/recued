@@ -47,7 +47,7 @@
  *  as `permissions-panel.ts`), not via an HTML string with `data-action`
  *  delegation.
  *
- *  Spec: docs/d-166-spec.md §"contract_definition lifecycle"; the rpc shapes live
+ *  Spec: D-166 §"contract_definition lifecycle"; the rpc shapes live
  *  in `packages/contracts/src/contract-definition.ts`. */
 
 import {

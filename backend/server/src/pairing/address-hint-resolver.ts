@@ -19,7 +19,7 @@
  *  sqlite-cert-source cluster's `selectServerUrl` cross-check test
  *  catches drift; that suite continues to apply post-extraction.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import type {
   TLSDomainCertListEntry,

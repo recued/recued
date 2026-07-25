@@ -1,9 +1,9 @@
 /** Packs R22 R1.3 — detail re-layout + Delta 6.
  *
- *  Covers the R22.1 `#packs/<slug>` DETAIL sections (IDENTITY / ACCESS /
- *  DECLARES / ABOUT), the action affordances that live in the detail, and the
- *  Delta 6 removal of the "Show advanced" toggle (foundation Delete is direct
- *  in the detail; the confirm-strip warning is the safeguard).
+ *  Covers the R22.1 `#packs/<slug>` fixed IDENTITY plus its DETAIL /
+ *  PERMISSIONS / ACCESS tabs, the action affordances that live in the detail,
+ *  and the Delta 6 removal of the "Show advanced" toggle (foundation Delete is
+ *  direct in the detail; the confirm-strip warning is the safeguard).
  *
  *  The panel is now the DETAIL only — the slim LIST rows moved to the surface's
  *  browse list, so the list-row describe was dropped in the detail-only
@@ -18,6 +18,9 @@ import {
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_REPO_LINK_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
+  PACKS_DETAIL_TAB_ATTR,
+  PACKS_DETAIL_TAB_PANEL_ATTR,
+  PACKS_DETAIL_TABS_ATTR,
   PACKS_DIALOG_ATTR,
   PACKS_ROW_DELETE_BTN_ATTR,
   PACKS_ROW_DELETE_FOUNDATION_WARN_ATTR,
@@ -274,15 +277,52 @@ const setupMount = (packs: PackListEntry[], opts: SetupOptions = {}) => {
 // ──────────────────────────────────────────────────────────────────
 
 describe('Packs R1.3 — detail section layout', () => {
-  it('renders identity / access / declares / about sections in order', async () => {
+  it('renders Detail / Permissions / Access tabs with one active content pane', async () => {
     const { host, mount } = setupMount([entry()]);
     await mount.whenLoaded();
     mount.clickSelectPack('test-pack');
 
-    const sections = findAllByAttr(host, PACKS_DETAIL_SECTION_ATTR).map(
-      (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
-    );
-    expect(sections).toEqual(['identity', 'access', 'declares', 'about']);
+    expect(findByAttr(host, PACKS_DETAIL_TABS_ATTR)).not.toBeNull();
+    expect(
+      findAllByAttr(host, PACKS_DETAIL_TAB_ATTR).map((tab) => ({
+        id: tab.getAttribute(PACKS_DETAIL_TAB_ATTR),
+        label: tab.textContent,
+        selected: tab.getAttribute('aria-selected'),
+      })),
+    ).toEqual([
+      { id: 'detail', label: 'Detail', selected: 'true' },
+      { id: 'permissions', label: 'Permissions', selected: 'false' },
+      { id: 'access', label: 'Access', selected: 'false' },
+    ]);
+    expect(
+      findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)?.getAttribute(
+        PACKS_DETAIL_TAB_PANEL_ATTR,
+      ),
+    ).toBe('detail');
+    expect(
+      findAllByAttr(host, PACKS_DETAIL_SECTION_ATTR).map(
+        (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
+      ),
+    ).toEqual(['identity', 'declares', 'about']);
+
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')!.click();
+    expect(
+      findAllByAttr(host, PACKS_DETAIL_SECTION_ATTR).map(
+        (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
+      ),
+    ).toEqual(['identity', 'operation-defaults']);
+    expect(
+      findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')?.getAttribute(
+        'aria-selected',
+      ),
+    ).toBe('true');
+
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
+    expect(
+      findAllByAttr(host, PACKS_DETAIL_SECTION_ATTR).map(
+        (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
+      ),
+    ).toEqual(['identity', 'access']);
   });
 
   it('IDENTITY carries name, slug · publisher · version facts, and the actions', async () => {
@@ -326,6 +366,7 @@ describe('Packs R1.3 — detail section layout', () => {
     const { host, mount } = setupMount([entry()]);
     await mount.whenLoaded();
     mount.clickSelectPack('test-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
 
     const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
     expect(access).not.toBeNull();

@@ -21,7 +21,7 @@
  *  Both produce byte-identical `flattened` content so any consumer
  *  that joins on hash gets the same answer regardless of origin.
  *
- *  Spec: docs/d-120-spec.md.
+ *  Spec: D-120.
  */
 
 import type { Collection } from './types.js';

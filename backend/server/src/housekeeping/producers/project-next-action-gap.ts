@@ -62,7 +62,7 @@
  *  staling firing into the housekeeping stale-sweep. Same precedent
  *  as [[outbound_commitment_overdue_count]].
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.2 + A.7.3 + A.7.5 + A.7.6 #4 +
+ *  Spec: D-145 §§ A.7.2 + A.7.3 + A.7.5 + A.7.6 #4 +
  *        `ENRICHMENT_REGISTRY.project_next_action_gap` +
  *        `packages/contracts/src/enrichment-declarations/project-next-action-gap.ts`. */
 

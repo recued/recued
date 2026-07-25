@@ -14,7 +14,7 @@
  *  double-drive one (the bespoke reconcilers carry vendor-specific incremental
  *  filters + webhook acceleration the generic full-walk poll deliberately doesn't).
  *
- *  Spec: `handovers/handover_d190_generic_crm_reconciler_scope.md` (MS4). */
+ *  Spec: internal design notes (MS4). */
 
 import {
   composeVendorEntityScope,

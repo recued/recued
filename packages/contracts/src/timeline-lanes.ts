@@ -29,7 +29,7 @@
  *  the other, so they are separate constants (the I-8 ethos: distinct axes,
  *  evaluated independently).
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-7 / I-9 / O-2.
+ *  Spec: D-161 § N.8 / A.7 / I-7 / I-9 / O-2.
  */
 
 import type { Actor } from './commits.js';

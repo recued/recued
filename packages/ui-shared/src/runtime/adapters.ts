@@ -6,7 +6,7 @@
  *  mocks. The extension/webapp surfaces that originally co-consumed
  *  this module were retired in D-148 P11.
  *
- *  Spec ref: `docs/d-121-spec.md` Phase 3 + Phase 4 (`WebStorageAdapter`
+ *  Spec ref: D-121 Phase 3 + Phase 4 (`WebStorageAdapter`
  *  / `WebRpcAdapter` / `WebIdentityAdapter` / `WebTabAdapter`). */
 
 /** Key/value storage abstraction.

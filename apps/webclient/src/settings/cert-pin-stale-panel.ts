@@ -83,7 +83,7 @@
  *  expiry, watcher transitions to a new pin pair — re-render as
  *  before.
  *
- *  Spec: docs/d-148-spec.md § A.6.5 (two-pin overlap protocol). */
+ *  Spec: D-148 § A.6.5 (two-pin overlap protocol). */
 
 import type { WebclientCertPinState } from '@recued/contracts';
 

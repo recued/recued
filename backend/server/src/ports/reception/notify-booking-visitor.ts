@@ -42,10 +42,10 @@
  *  tick without double-delivering.
  *
  *  ⚠ Model-facing surface: the `notify-booking-visitor` manifest description
- *  is logged in `docs/chat-prompt-optimization-log.md` (2026-07-17). This
+ *  is logged in internal design notes (2026-07-17). This
  *  module is the server-side dispatcher behind it.
  *
- *  Spec: docs/d-210-spec.md §7. */
+ *  Spec: D-210 §7. */
 
 import { IngredientError } from '@recued/ingredients';
 
@@ -106,6 +106,12 @@ export type NotifyBookingVisitorMailSend = (input: {
   body_html?: string;
   recipe_id?: string;
   step_id?: string;
+  /** D-210 audit finding 3b — REQUIRED on this seam in practice: the `to` here is
+   *  a sealed visitor address, so the shared send path must not attach it to the
+   *  `mail_send` audit detail. Declared on the narrow seam type (rather than only
+   *  on `MailSendInput`) so the wiring cannot quietly drop it — this type is what
+   *  the excess-property check runs against at the call site. */
+  redact_audit_recipients?: boolean;
 }) => Promise<unknown>;
 
 export interface NotifyBookingVisitorDeps {
@@ -198,6 +204,15 @@ export const handleNotifyBookingVisitor = async (
     to: [email],
     subject: input.subject,
     body_text: input.body_format === 'html' ? '' : input.body,
+    // D-210 audit finding 3b — this recipient is SEALED visitor PII, opened here
+    // and nowhere else. Without this flag the shared send path attached it to the
+    // durable `mail_send` audit detail (one recipient is always under the
+    // noise-redaction threshold), so the address the manifest promises is "never
+    // surfaced in any branch" was written in plaintext to a row that outlives the
+    // run and travels with `server.archive.export`. The seam already scrubs it
+    // from step state, the output and send errors; the audit row was the one
+    // remaining escape.
+    redact_audit_recipients: true,
   };
   if (input.body_format === 'html') sendInput.body_html = input.body;
   if (input.recipe_id !== undefined) sendInput.recipe_id = input.recipe_id;

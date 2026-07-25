@@ -17,7 +17,7 @@
  *  boot-wire (P2) reliably matches `kind === 'api' && config.vendor
  *  === 'hubspot'` without depending on user-typed content.
  *
- *  Spec: `docs/d-129-spec.md` § A.1. */
+ *  Spec: D-129 § A.1. */
 
 import {
   HUBSPOT_API_BASE,

@@ -13,7 +13,7 @@
  *    - Handler factory returns undefined when deps absent.
  *    - `not_configured` propagation via the dispatch slice.
  *
- *  Spec: `docs/d-145-spec.md` § B.13.3 + § B.13.4. */
+ *  Spec: D-145 § B.13.3 + § B.13.4. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

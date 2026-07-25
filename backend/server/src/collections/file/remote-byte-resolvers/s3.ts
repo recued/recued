@@ -10,7 +10,7 @@
  *  preflight on the mirror's `Size` (S3 always reports it) before the fetch; the
  *  post-fetch length check here is a backstop.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import { RpcError } from '@recued/contracts';
 

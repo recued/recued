@@ -11,7 +11,7 @@
  *  fake store. Only the failure-injection wrapper around `RecipeStore.save` is
  *  synthetic, and it delegates everything else to the real store.
  *
- *  Spec: `docs/d-209-spec.md` §1.4; `docs/d-207-spec.md` §5.1b / §5.1d. */
+ *  Spec: D-209 §1.4; D-207 §5.1b / §5.1d. */
 
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';

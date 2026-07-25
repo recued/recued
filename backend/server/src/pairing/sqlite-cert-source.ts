@@ -31,7 +31,7 @@
  *  + ACME-issued certs into `tls_domains` flips the cert source live.
  *  No code change here when that lands — the alignment is already in.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import type { TLSDomainCertSource } from '@recued/contracts';
 import type { CertSource } from './cert-source.js';

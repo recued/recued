@@ -46,6 +46,7 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   'cert.rotation_notice',
   'cert.rotation_reverted',
   'chat.connection_mcp_annotation_changed',
+  'chat.data_diagnosis_resolved',
   'chat.default_model_pref_changed',
   'chat.disambiguation_proposed',
   'chat.inbound_token_changed',

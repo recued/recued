@@ -38,11 +38,17 @@ import {
   PAIR_CODE_INPUT_SERVER_URL_ID,
   PAIR_CODE_INPUT_CODE_ID,
   PAIR_CODE_INPUT_STATUS_ID,
+  PAIR_CODE_INPUT_SERVER_CODE_ATTR,
   PAIR_CODE_INPUT_SUBMIT_ID,
   PAIR_CODE_INPUT_RECOVERY_PREFIX,
   PAIR_CODE_INPUT_GENERATE_ALREADY_ENROLLED_COPY,
   type PairCodeInputCommitResult,
 } from '../auth/pair-code-input-host.js';
+import {
+  PAIR_SERVER_ERROR_COPY,
+  PAIR_SERVER_REFUSED_COPY,
+  PAIR_SERVER_SAID_LABEL,
+} from '@recued/ui-shared/pairing';
 
 // ════════════════════════════════════════════════════════════════
 // String-innerHTML fake DOM
@@ -422,7 +428,12 @@ describe('submitPairCodeInput — server errors', () => {
     if (!result.ok) expect(result.error).toBe('bad_request');
   });
 
-  it('falls through to pair_code_input_server_unknown_error on an unknown code', async () => {
+  // D-212 tail #6 — this used to assert `pair_code_input_server_unknown_error`,
+  // whose copy tells the user to "Check the URL and try again". The URL is
+  // exactly what is NOT wrong here: the request reached the right server and
+  // it answered in the right shape. An unmapped code now carries the server's
+  // own message through instead.
+  it('carries the server’s own message through on an unmapped code', async () => {
     const fetchFake = buildFakeFetch(500, {
       error: { code: 'totally_made_up', message: 'whoops' },
     });
@@ -433,8 +444,11 @@ describe('submitPairCodeInput — server errors', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBe('pair_code_input_server_unknown_error');
+      expect(result.error).toBe('pair_code_input_server_refused');
       expect(result.detail).toBe('whoops');
+      expect(result.serverSaid).toBe('whoops');
+      expect(result.serverCode).toBe('totally_made_up');
+      expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).not.toMatch(/check the url/i);
     }
   });
 
@@ -1009,23 +1023,165 @@ describe('mountPairCodeInputHost — dispose', () => {
 });
 
 describe('error copy map coverage', () => {
-  it('PAIR_CODE_INPUT_ERROR_COPY covers every documented code', () => {
-    // Tripwire — if a new error code is added to PairCodeInputErrorCode,
-    // this assertion forces the copy table to be updated.
-    const codes: Array<keyof typeof PAIR_CODE_INPUT_ERROR_COPY> = [
-      'pair_code_input_no_server_url',
-      'pair_code_input_no_input',
-      'pair_code_input_invalid_recovery_key',
-      'pair_code_input_transport_failed',
-      'pair_code_input_server_unknown_error',
-      'invalid_code',
-      'recovery_key_invalid',
-      'bad_request',
-      'server_not_configured',
-    ];
-    for (const code of codes) {
-      expect(PAIR_CODE_INPUT_ERROR_COPY[code]).toBeTruthy();
+  // ⚠ This used to be a HAND-LISTED array of 9 codes calling itself "every
+  // documented code" — the same shape as the bug D-212 tail #6 fixed. It
+  // passed while the map had grown past it, because a subset always does.
+  // It now walks the map itself and pins the SPREAD instead.
+  it('every code in the map has copy', () => {
+    const entries = Object.entries(PAIR_CODE_INPUT_ERROR_COPY);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [code, copy] of entries) {
+      expect(copy, `no copy for ${code}`).toBeTruthy();
+      expect(copy.trim().length, `blank copy for ${code}`).toBeGreaterThan(0);
     }
+  });
+
+  it('takes the server half from the shared vocabulary rather than restating it', () => {
+    // The drift this closes: the webclient and the Bridge each restated the
+    // server codes, and each fell four behind. Asserting the values MATCH
+    // (not merely exist) is what makes a future divergent edit fail here.
+    for (const [code, copy] of Object.entries(PAIR_SERVER_ERROR_COPY)) {
+      expect(
+        PAIR_CODE_INPUT_ERROR_COPY[code as keyof typeof PAIR_CODE_INPUT_ERROR_COPY],
+        `${code} diverged from the shared map`,
+      ).toBe(copy);
+    }
+    // …and the spread did not clobber the client half on its way in.
+    expect(PAIR_CODE_INPUT_ERROR_COPY.pair_code_input_no_server_url).toBeTruthy();
+    expect(PAIR_CODE_INPUT_ERROR_COPY.pair_code_input_server_refused).toBeTruthy();
+  });
+});
+
+describe('D-212 tail #6 — an unmapped server code reaches the user', () => {
+  it('quotes the server in its own attributed element, outside Recued’s sentence', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(503, {
+      error: { code: 'realm_sealed_for_maintenance', message: 'Back at 14:00 UTC.' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    const status = fake.getStatus();
+    expect(status?.dataset.error).toBe('pair_code_input_server_refused');
+    // Recued's sentence says only that the server refused …
+    expect(status?.textContent).toBe(PAIR_SERVER_REFUSED_COPY);
+    expect(status?.textContent).not.toContain('14:00');
+    expect(status?.textContent).not.toMatch(/check the url/i);
+    // … and the server's words live in their OWN element, labelled.
+    const html = fake.splash.innerHTML;
+    expect(html).toContain('data-server-said');
+    expect(html).toContain(PAIR_SERVER_SAID_LABEL);
+    expect(html).toContain('Back at 14:00 UTC.');
+  });
+
+  it('renders tailored copy with NO quoted server message', async () => {
+    // `instance_revoked` is one of the four that used to render as "check
+    // the URL". It now has Recued's own words — and must not also quote the
+    // raw server text underneath them.
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(403, {
+      error: { code: 'instance_revoked', message: 'this instance was previously revoked' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    const status = fake.getStatus();
+    expect(status?.dataset.error).toBe('instance_revoked');
+    expect(status?.textContent).toBe(PAIR_CODE_INPUT_ERROR_COPY.instance_revoked);
+    expect(status?.textContent).not.toMatch(/check the url/i);
+    expect(fake.splash.innerHTML).not.toContain('data-server-said');
+  });
+
+  it('carries the raw server code as an attribute, never as copy', async () => {
+    // The field was assigned and read by nobody — a declaration with nothing
+    // behind it. It exists for support ("what did your server actually
+    // say?"), so it has to reach the DOM; it must not reach the sentence.
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(503, {
+      error: { code: 'realm_sealed_for_maintenance', message: 'Back at 14:00.' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash, fetch: fetchFake, onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    expect(fake.splash.innerHTML).toContain(
+      `${PAIR_CODE_INPUT_SERVER_CODE_ATTR}="realm_sealed_for_maintenance"`,
+    );
+    // Recued's own sentence stays free of it.
+    expect(fake.getStatus()?.textContent).not.toContain('realm_sealed');
+  });
+
+  it('drops a server code that is not code-shaped', async () => {
+    // ⚠ Unauthenticated text. A "code" that is a paragraph is not a code, and
+    // an attribute is a poor place for arbitrary input even escaped.
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(503, {
+      error: { code: 'a code with spaces and <angle> brackets', message: 'x' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash, fetch: fetchFake, onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    expect(fake.splash.innerHTML).not.toContain(PAIR_CODE_INPUT_SERVER_CODE_ATTR);
+    // …and the refusal still renders.
+    expect(fake.getStatus()?.dataset.error).toBe('pair_code_input_server_refused');
+  });
+
+  it('adds no server-code attribute for a code Recued maps', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(403, {
+      error: { code: 'instance_revoked', message: 'revoked' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash, fetch: fetchFake, onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+    expect(fake.splash.innerHTML).not.toContain(PAIR_CODE_INPUT_SERVER_CODE_ATTR);
+  });
+
+  it('escapes what the unauthenticated host sent', async () => {
+    // Pairing runs before any trust exists — the quoted text is attacker-
+    // controllable if the user was pointed at a hostile URL.
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(500, {
+      error: {
+        code: 'weird',
+        message: '<img src=x onerror=alert(1)>"escape me"',
+      },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    const html = fake.splash.innerHTML;
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img src=x');
+    expect(html).not.toContain('onerror=alert(1)>"');
   });
 });
 

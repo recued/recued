@@ -10,7 +10,7 @@
  *  200th look ABSENT from a walk claiming to be complete, and the sync would tear out
  *  their CRM contributions. Silently, and with nothing failing. That test seeds 250.
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 7. */
+ *  Spec: D-192 step 7. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

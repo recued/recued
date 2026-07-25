@@ -47,8 +47,8 @@
  *      against the seeded ledger (the content pass) so a body that mentions an
  *      already-aliased address / name is replaced consistently.
  *
- *  Spec: docs/d-167-spec.md §Scope, §Field declaration, §Integration/D-165;
- *  docs/canonical-shapes.md (ContactRecord / CanonicalEvent / mail hot_fields). */
+ *  Spec: D-167 §Scope, §Field declaration, §Integration/D-165;
+ *  internal design notes (ContactRecord / CanonicalEvent / mail hot_fields). */
 
 import {
   assertEntitySchemaIngredientValid,
@@ -88,7 +88,7 @@ const MAIL_SCHEMA: EntitySchemaIngredientInput = {
 };
 
 /** `data.contact` (contributing_source) — the personal contact graph, keyed on
- *  canonical email. Two PII fields per `docs/canonical-shapes.md` ContactRecord:
+ *  canonical email. Two PII fields per internal design notes ContactRecord:
  *  `email` (the key) and `name` (display name). This is the lever's universal
  *  floor — every self-hoster materializes a contact graph from mail/calendar. */
 const CONTACT_SCHEMA: EntitySchemaIngredientInput = {

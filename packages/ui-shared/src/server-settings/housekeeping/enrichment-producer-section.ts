@@ -18,8 +18,8 @@
  *  radios), and the filter-bar actions back to the matching
  *  `housekeeping.*` rpcs / mount-local filter state.
  *
- *  Spec: `docs/d-123-spec.md` §5.2/§5.3 + `docs/d-132-spec.md` §A.7 +
- *  `handovers/webclient-ia-treemap.md` §R25 (LOCKED). */
+ *  Spec: D-123 §5.2/§5.3 + D-132 §A.7 +
+ *  internal design notes §R25 (LOCKED). */
 
 import type {
   ConfidenceDriftSignal,

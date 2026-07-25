@@ -7,7 +7,14 @@
  *
  *  ## What it does
  *
- *  Given a local calendar event id, it walks the `scheduled-from` link back to
+ *  ⚠ D-210 audit finding 17 — THIS HEADER DESCRIBES THE PRE-A.2 DESIGN AND IS
+ *  WRONG. The implementation below takes a `booking_id` and reads the booking's
+ *  own `reception_record_id`; the `scheduled-from` link was DELETED in A.2 and
+ *  `booking.resolved_calendar_event_id` no longer exists. Kept visible rather
+ *  than quietly rewritten because this is exactly the kind of site that would
+ *  talk a future change into re-wiring reception to a calendar.
+ *
+ *  ~~Given a local calendar event id, it walks the `scheduled-from` link back to
  *  the booking that produced the event, then issues a single-use, short-TTL
  *  manage credential scoped to that booking. The result is the RELATIVE link
  *  path (`/reception/manage/<secret>`); the webclient prepends its own origin,
@@ -23,7 +30,7 @@
  *  `scheduled-from` link and the mint refuses. Manual events reschedule at-desk
  *  via R-4.
  *
- *  Modelled on `reception-record-handler.ts`. Spec: `docs/d-210-spec.md` Appendix B. */
+ *  Modelled on `reception-record-handler.ts`. Spec: D-210 Appendix B. */
 
 import type {
   ReceptionManageMintInput,

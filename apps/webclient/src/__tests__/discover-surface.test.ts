@@ -248,10 +248,13 @@ describe('recipe-discovery config', () => {
     expect(text).toContain('hubspot');
     expect(text).toContain('recued-core');
   });
-  it('badges: certified (accent) + type + platforms (muted, capped at 3)', () => {
+  it('badges: certified (accent) + platforms (muted, capped at 3); no dead type badge', () => {
     const b = recipeBadges(rr({ publisher_certified: true, type: 'action', platforms: ['a', 'b', 'c', 'd'] }));
     expect(b[0]).toMatchObject({ label: '✓ Certified', tone: 'accent' });
-    expect(b.some((x) => x.label === 'action')).toBe(true);
+    // The `type` column was dropped in migration 002, so `r.type` is always ''
+    // in the catalog — the badge (and its facet) were removed as dead. Even a
+    // row carrying a stray `type` must not render one.
+    expect(b.some((x) => x.label === 'action')).toBe(false);
     // certified is the ONLY accent; the 4 platforms are capped to 3 muted badges.
     expect(b.filter((x) => x.tone === 'accent')).toHaveLength(1);
     expect(b.filter((x) => x.label === 'a' || x.label === 'b' || x.label === 'c')).toHaveLength(3);
@@ -261,6 +264,16 @@ describe('recipe-discovery config', () => {
     expect(recipeMeta(rr({ publisher_id: 'p', download_count: 1 }))).toBe('p · 1 install');
     expect(recipeMeta(rr({ publisher_id: 'p', download_count: 5, rating_avg: 4.5, rating_count: 8 }))).toBe(
       'p · 5 installs · ★ 4.5 (8)',
+    );
+  });
+  it('omits the installs chip entirely at 0 — never renders "0 installs"', () => {
+    // `download_count` has no writer, so every real row is 0. The chip must be
+    // ABSENT, not zero-valued: a rendered "0 installs" is a popularity claim
+    // with nothing behind it. Asserted on the whole string so a reappearing
+    // chip cannot hide in a substring match.
+    expect(recipeMeta(rr({ publisher_id: 'p', download_count: 0 }))).toBe('p');
+    expect(recipeMeta(rr({ publisher_id: 'p', download_count: 0, rating_avg: 4.5, rating_count: 8 }))).toBe(
+      'p · ★ 4.5 (8)',
     );
   });
 
@@ -330,6 +343,73 @@ describe('recipe-discovery config', () => {
     // Handoff is not an optimistic install; the pack broadcast reconciles it.
     expect(mount.panel.getInstallState('watch-task')).toBe('available');
     mount.dispose();
+  });
+
+  /** The meta catalog no longer carries `recipe_refs` — pack MEMBERSHIP belongs
+   *  to the per-pack install artifact, and carrying it in the meta was the only
+   *  reason that catalog's server-side read had to touch all 927 manifests.
+   *
+   *  ⚠ The test above injects rows that ALREADY have refs, so it exercises the
+   *  fast path and would keep passing with this fetch broken. These cover the
+   *  shape the wire actually delivers now: `recipe_refs: []`. */
+  const withCarrierFetch = (manifest: unknown, status = 200) =>
+    vi.spyOn(globalThis, 'fetch').mockImplementation((async (url: string) =>
+      new Response(JSON.stringify(manifest), { status: String(url).includes('/packs/') ? status : 404 })) as never);
+
+  it('tops the carrier up from /packs/<slug>.json when the meta carries no refs', async () => {
+    const bundle = 'recued-core/task-closure';
+    const rows = [
+      rr({ recipe_id: 'create-task', recipe_bundle: bundle }),
+      rr({ recipe_id: 'watch-task', recipe_bundle: bundle }),
+    ];
+    const openPack = vi.fn();
+    const spy = withCarrierFetch({
+      slug: 'task-closure', publisher: 'recued-core',
+      recipes: rows.map((r) => ({ slug: r.recipe_id, version: r.version })),
+    });
+    try {
+      const mount = mountRecipeDiscovery({
+        host: makeEl('div') as unknown as HTMLElement,
+        document: fakeDoc(),
+        installBySlug: vi.fn(async (slug: string) => ({ result: { ok: true as const, recipe_id: slug, version: 1 } })),
+        listInstalled: async () => ({ recipes: [] }),
+        fetchCatalog: async () => ({ status: 'ok', rows }),
+        // The wire shape after the drop: identity, no membership.
+        fetchPackCatalog: async () => ({ status: 'ok', rows: [pr({ slug: 'task-closure', recipe_refs: [] })] }),
+        openPack,
+      });
+      await mount.panel.whenLoaded();
+      await mount.panel.clickInstall('watch-task');
+      expect(openPack).toHaveBeenCalledWith('task-closure');
+      mount.dispose();
+    } finally { spy.mockRestore(); }
+  });
+
+  it('fails CLOSED when the per-pack artifact is unreachable', async () => {
+    // No refs from the meta and none from the artifact ⇒ the pack cannot be
+    // shown to contain the recipe, so the handoff must not happen — and it must
+    // NOT silently degrade into installing the one recipe.
+    const bundle = 'recued-core/task-closure';
+    const rows = [rr({ recipe_id: 'watch-task', recipe_bundle: bundle })];
+    const openPack = vi.fn();
+    const installBySlug = vi.fn(async (slug: string) => ({ result: { ok: true as const, recipe_id: slug, version: 1 } }));
+    const spy = withCarrierFetch({ error: 'nope' }, 503);
+    try {
+      const mount = mountRecipeDiscovery({
+        host: makeEl('div') as unknown as HTMLElement,
+        document: fakeDoc(),
+        installBySlug,
+        listInstalled: async () => ({ recipes: [] }),
+        fetchCatalog: async () => ({ status: 'ok', rows }),
+        fetchPackCatalog: async () => ({ status: 'ok', rows: [pr({ slug: 'task-closure', recipe_refs: [] })] }),
+        openPack,
+      });
+      await mount.panel.whenLoaded();
+      await mount.panel.clickInstall('watch-task');
+      expect(openPack).not.toHaveBeenCalled();
+      expect(installBySlug).not.toHaveBeenCalled();
+      mount.dispose();
+    } finally { spy.mockRestore(); }
   });
 
   it('fails a missing bundle identity closed without single-recipe install', async () => {

@@ -168,18 +168,46 @@ describe('KeyManager — lock + zeroization', () => {
     expect(keyBBytes).toEqual(keyABytes);
   });
 
-  it('zeroization on lock — captured sub-DEK reference becomes zero bytes', async () => {
+  /** This case used to assert the opposite — that `lock()` reached buffers a
+   *  caller was still holding. That only worked because `getSubDEK` handed out
+   *  the manager's own cached array, which is the aliasing that let a caller
+   *  following this codebase's dominant `finally { k.fill(0) }` idiom zero the
+   *  cache in place: every later read of that domain returned 32 zero bytes,
+   *  so everything written afterwards was encrypted under a publicly known key,
+   *  silently and process-wide.
+   *
+   *  The trade is deliberate. Reaching a caller's copy is worth less than it
+   *  looks — a lock firing mid-operation would zero a key an in-flight
+   *  encryption is still using — and its failure mode was global and silent,
+   *  where the residual now is one caller holding one stale copy for its own
+   *  lifetime. What `lock()` guarantees is that the MANAGER holds nothing and
+   *  every later request fails closed. */
+  it('lock zeroes the manager\'s own material and fails closed afterwards', async () => {
     const store = mkFakeStore();
     const km = createKeyManager(store);
     await km.init({ password: 'pw' });
-    const keyRef = km.getSubDEK('server-data');
-    // Before lock — non-zero
-    expect(keyRef.some(b => b !== 0)).toBe(true);
+    const provider = km.keyProvider('server-data');
+    expect(provider()!.some(b => b !== 0)).toBe(true);
+
     km.lock();
-    // After lock — the buffer that `keyRef` points to has been wiped.
-    // This is the zeroization contract: even copies of the reference
-    // become unusable post-lock.
-    expect(keyRef.every(b => b === 0)).toBe(true);
+
+    expect(provider()).toBeNull();
+    expect(() => km.getSubDEK('server-data')).toThrow(/locked/i);
+    expect(km.state()).toBe('locked');
+  });
+
+  it('a copy handed out before lock is the caller\'s to wipe, not the manager\'s', async () => {
+    const store = mkFakeStore();
+    const km = createKeyManager(store);
+    await km.init({ password: 'pw' });
+    const held = km.getSubDEK('server-data');
+
+    km.lock();
+
+    // Still live — the manager cannot reach it, which is the point: wiping a
+    // caller's buffer out from under an in-flight operation would encrypt
+    // under zeros. Callers own what they were handed.
+    expect(held.some(b => b !== 0)).toBe(true);
   });
 
   it('lock on uninitialized is a no-op (stays uninitialized)', () => {
@@ -192,13 +220,20 @@ describe('KeyManager — lock + zeroization', () => {
 });
 
 describe('KeyManager — sub-DEK behavior', () => {
-  it('caches sub-DEKs across calls', async () => {
+  /** Caching means the HKDF runs once, not that callers share one array —
+   *  identity was the proxy this used to assert, and sharing the array was the
+   *  hazard above. The observable contract is: same bytes, separate buffers. */
+  it('caches sub-DEKs across calls — same key, independent copies', async () => {
     const store = mkFakeStore();
     const km = createKeyManager(store);
     await km.init({ password: 'pw' });
     const a = km.getSubDEK('server-data');
     const b = km.getSubDEK('server-data');
-    expect(a).toBe(b); // same reference → cached
+    expect(Buffer.from(b).equals(Buffer.from(a))).toBe(true);
+    expect(b).not.toBe(a);
+    // Mutating one must not be visible through the other.
+    a.fill(0);
+    expect(km.getSubDEK('server-data').some((x) => x !== 0)).toBe(true);
   });
 
   it('different domains return different bytes', async () => {

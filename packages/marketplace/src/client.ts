@@ -14,7 +14,7 @@
  *  their own fetch (extension service worker, test mocks, etc.).
  */
 
-import type { RecipeDefinition } from '@recued/contracts';
+import { INSTALL_MANIFEST_MARKER_HEADER, type RecipeDefinition } from '@recued/contracts';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -40,6 +40,21 @@ export const SUPABASE_URL = 'https://zzremnbtteclikewrlbr.supabase.co';
 export const SUPABASE_ANON_KEY = 'sb_publishable_1Fcs9ugXnly0RUT84rFRKw_FX4MjbKi';
 
 const jsonHeaders = { 'Accept': 'application/json' };
+
+/** Headers for an apex install-manifest fetch (`/{recipes,packs}/<slug>.json`).
+ *  `install` adds the install-vs-browse marker — see
+ *  `INSTALL_MANIFEST_MARKER_HEADER`. Shared with `bulk-pack-resolver.ts` so both
+ *  fetchers cannot drift. */
+export const manifestFetchHeaders = (install: boolean): Record<string, string> =>
+  install
+    ? { ...jsonHeaders, [INSTALL_MANIFEST_MARKER_HEADER]: '1' }
+    : jsonHeaders;
+
+/** Whether a manifest fetch should be marked as an install. Browse / preview
+ *  paths (`packs.resolveBySlug`) leave it unset. */
+export interface ManifestFetchOptions {
+  install?: boolean;
+}
 
 /** Unwrap the Worker's `{ data, meta }` envelope. */
 interface Envelope<T> {
@@ -96,9 +111,10 @@ export interface MarketplaceRecipeResult {
 export const fetchRecipeBySlug = async (
   slug: string,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  opts: ManifestFetchOptions = {},
 ): Promise<MarketplaceRecipeResult | null> => {
   const url = `${MARKETPLACE_APEX_URL}/recipes/${encodeURIComponent(slug)}.json`;
-  const res = await fetchFn(url, { headers: jsonHeaders });
+  const res = await fetchFn(url, { headers: manifestFetchHeaders(opts.install === true) });
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(`Marketplace fetch failed: ${res.status} ${res.statusText}`);

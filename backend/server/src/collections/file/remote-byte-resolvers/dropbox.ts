@@ -12,7 +12,7 @@
  *  and the download responds `application/octet-stream`, so the resolver returns
  *  no mime → the orchestrator defaults it; the filename rides the mirror `meta`.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';

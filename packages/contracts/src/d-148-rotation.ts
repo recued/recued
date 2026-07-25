@@ -84,7 +84,12 @@ export type RotationErrorCode =
   | 'target_not_found'
   | 'forbidden'
   | 'unsigned_notice'
-  | 'storage_io_error';
+  | 'storage_io_error'
+  /** The wired Master-DEK reencryptor does not rekey the realm database.
+   *  D-212 derives the database key from the Master DEK, so rotating without
+   *  that step leaves the file readable by neither the keyfile nor the recovery
+   *  key. Refused rather than attempted. */
+  | 'database_rekey_unsupported';
 
 export const ROTATION_ERROR_CODES: ReadonlyArray<RotationErrorCode> = [
   'op_unknown',
@@ -97,6 +102,7 @@ export const ROTATION_ERROR_CODES: ReadonlyArray<RotationErrorCode> = [
   'target_not_found',
   'forbidden',
   'unsigned_notice',
+  'database_rekey_unsupported',
   'storage_io_error',
 ] as const;
 

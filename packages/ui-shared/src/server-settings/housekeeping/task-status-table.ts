@@ -12,8 +12,8 @@
  *  `housekeeping.task.run_now` confirm flow. Empty list → a hint (tasks
  *  register at server boot).
  *
- *  Spec: `docs/d-123-spec.md` §5.2 +
- *  `handovers/webclient-ia-treemap.md` §R25 (LOCKED). */
+ *  Spec: D-123 §5.2 +
+ *  internal design notes §R25 (LOCKED). */
 
 import type {
   HousekeepingLastStatus,

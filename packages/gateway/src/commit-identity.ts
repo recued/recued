@@ -29,7 +29,7 @@
  *  cognition window and the field stays undefined until a cognition
  *  component is wired into a policy cell.
  *
- *  Spec: docs/d-153-spec.md § Three-tier session IDs.
+ *  Spec: D-153 § Three-tier session IDs.
  */
 
 import type { ExecutionSource } from '@recued/contracts';

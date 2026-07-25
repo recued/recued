@@ -18,7 +18,7 @@
  *  that future engine-prefetch wiring (PA3 + later) can call to seed
  *  `stores.data.<kind>.*` for recipe-time `{{ref}}` resolution.
  *
- *  Spec: `docs/d-145-spec.md` § A.2 + Phase PA2. */
+ *  Spec: D-145 § A.2 + Phase PA2. */
 
 import {
   WORK_ENTITY_KIND_SET,

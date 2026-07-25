@@ -19,7 +19,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import CipherDatabase from 'better-sqlite3-multiple-ciphers';
+import type Database from 'better-sqlite3';
 
 import { mintRebindIntoStagedDb } from '../archive/archive-runtime.js';
 import type { ArchiveImportDrivingClient } from '../archive/archive-handler.js';
@@ -38,12 +39,15 @@ const DRIVER: ArchiveImportDrivingClient = {
 let dir: string;
 let stagingPath: string;
 
+const openCipherDatabase = (path: string): Database.Database =>
+  new CipherDatabase(path) as unknown as Database.Database;
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'recued-rebind-mint-'));
   stagingPath = join(dir, 'staged.db');
   // Model the staged restore db: a real WAL-mode sqlite file (the source server
   // runs WAL, so the streamed-verbatim archive db is WAL too).
-  const db = new Database(stagingPath);
+  const db = openCipherDatabase(stagingPath);
   db.pragma('journal_mode = WAL');
   db.exec('CREATE TABLE example (k TEXT PRIMARY KEY)');
   db.prepare('INSERT INTO example VALUES (?)').run('seed');
@@ -63,7 +67,7 @@ describe('mintRebindIntoStagedDb', () => {
     // would leave the bearer in the `-wal` → the main-file copy below misses it
     // → this test fails (an idle reader does not hold a snapshot, so TRUNCATE
     // still succeeds on the real code).
-    const keepalive = new Database(stagingPath);
+    const keepalive = openCipherDatabase(stagingPath);
     let rebind: Awaited<ReturnType<typeof mintRebindIntoStagedDb>>;
     try {
       rebind = await mintRebindIntoStagedDb(stagingPath, DRIVER, {
@@ -79,7 +83,7 @@ describe('mintRebindIntoStagedDb', () => {
       // roster are durable in it.
       const swapped = join(dir, 'live.db');
       copyFileSync(stagingPath, swapped);
-      const live = new Database(swapped);
+      const live = openCipherDatabase(swapped);
       try {
         const verified = await createClientTokenStore(live, {
           argon2_params: FAST_ARGON,
@@ -110,7 +114,7 @@ describe('mintRebindIntoStagedDb', () => {
     // mint's writes, so `wal_checkpoint(TRUNCATE)` cannot reclaim the WAL and
     // reports busy != 0. The bearer would then live only in the `-wal` the swap
     // discards, so the handoff must fail closed (no phantom rebind).
-    const blocker = new Database(stagingPath);
+    const blocker = openCipherDatabase(stagingPath);
     blocker.pragma('journal_mode = WAL');
     blocker.exec('BEGIN');
     blocker.prepare('SELECT count(*) AS n FROM example').get(); // acquire snapshot

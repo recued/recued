@@ -1,7 +1,7 @@
 /** D-192 C-2 (Stance 2) — the contact contribution-projection substrate.
  *
  *  The canonical-vocabulary half of the kinds-taxonomy §0 governing rule
- *  (`docs/d-192-kinds-taxonomy.md` §3c) applied to contacts: contact-import is
+ *  (D-192 §3c) applied to contacts: contact-import is
  *  inherently many-sources-into-one-person (Google + Outlook + HubSpot +
  *  Salesforce + Zoho + vCard each contribute a PARTIAL view of the same human).
  *  A single-valued column cannot hold that — whoever writes last wins, silently.
@@ -29,7 +29,7 @@
  *  conflict policy — a second implementation of "which value wins" is the bug
  *  this module exists to prevent.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` §3c + C-2a; decisions-log § D-192. */
+ *  Spec: D-192 §3c + C-2a; decisions-log § D-192. */
 
 // Type-only, so no runtime import cycle: `contact.ts` already imports
 // `ContactProjectionProvenance` from here, and both edges are erased at compile

@@ -26,6 +26,7 @@
  *  SYNC_OBJECTS substrate). */
 
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
+import type { CollectionPlatform } from './collections.js';
 import { INGREDIENT_KINDS, type IngredientKind } from './ingredient.js';
 import type { DependencyReadAdmission } from './work-entity-dependency-admission.js';
 // ⚠ The tool enums below are DERIVED from this list. A hand-copy here is the
@@ -299,6 +300,12 @@ export interface ChatDispatchContext {
   session_id?: string;
   /** Set on internal-channel dispatches; undefined on mcp_wire. */
   turn_id?: string;
+  /** Framework-owned, process-local scratch for one cooperative chat turn.
+   * Never serialized, persisted, or accepted from an MCP caller. Synthetic
+   * chat-only brokers use it for cumulative budgets and private source handles
+   * that must survive tool-loop reinvocation without entering model-visible
+   * results. */
+  turn_state?: Map<string, unknown>;
   /** Set on mcp_wire dispatches; the per-pair MCP token id used for
    *  rate-limit + visibility-filter dispatch. Undefined on internal
    *  channel. */
@@ -424,8 +431,18 @@ export type ChatDispatchResult =
       result: unknown;
       run_failed?: ChatRunFailure;
       run_held?: ChatRunHeld;
+      /** Exact durable execution-audit anchor supplied by the host that ran
+       * the recipe. This is addressability only, never execution authority. */
+      run_id?: string;
     }
-  | { ok: false; reason: ChatDispatchReason; detail?: string };
+  | {
+      ok: false;
+      reason: ChatDispatchReason;
+      detail?: string;
+      /** Present when the failed/cancelled dispatch still wrote a durable run
+       * that the executing host can open in Logs. */
+      run_id?: string;
+    };
 
 /** § A.1.1 — registry surface. Implementations live in
  *  `packages/middleware/src/internal-tool-registry/`. The chat
@@ -876,21 +893,25 @@ export interface ChatPriorToolCall {
   completed_at: number;
 }
 
-/** D-167 (recall path) — the `ChatPriorToolCall.tool_name`s whose result is a
- *  memory RECALL artifact (freeform recalled prose, NOT a schema-tagged entity
+/** D-167 / D-213 — source-aggregating tools whose result is a RECALL artifact
+ *  (freeform recalled prose, NOT a schema-tagged entity
  *  record). The chat prompt composer routes these out of `prior_tool_calls` into
  *  the typed `recall_context` packet field so the PII egress aliases their result
  *  against the contact recall index (seed ⊇ scan) + overlap-reveal — closing the
- *  cross-session recall leak — instead of sniffing tool names at the egress seam.
- *  Single-element today; a future `data.timeline`-style recall tool joins the set
- *  in ONE place (the composer + egress both read it through here). */
-export const MEMORY_RECALL_TOOL_NAMES: ReadonlySet<string> = new Set([
+ *  cross-session recall leak — instead of sniffing tool names at the egress seam. */
+export const NON_RETAINABLE_RECALL_TOOL_NAMES: ReadonlySet<string> = new Set([
   'memory.search',
+  'recall.search',
 ]);
 
-/** D-167 (recall path) — partition the cooperative tool loop's accumulated
+/** Compatibility name retained for existing imports. This is the same central
+ * classification set; callers must not fork a memory-only copy. */
+export const MEMORY_RECALL_TOOL_NAMES = NON_RETAINABLE_RECALL_TOOL_NAMES;
+
+/** D-167 / D-213 — partition the cooperative tool loop's accumulated
  *  `prior_tool_calls` into the non-recall `prior` calls and the `recall` calls
- *  (`tool_name ∈ MEMORY_RECALL_TOOL_NAMES`), preserving order within each arm.
+ *  (`tool_name ∈ NON_RETAINABLE_RECALL_TOOL_NAMES`), preserving order within
+ *  each arm.
  *  Pure; the composer calls it to emit the typed `recall_context` field. Keeping
  *  the classification here (the SSOT) keeps the PII egress free of tool-name
  *  domain knowledge — it gathers the typed field. */
@@ -900,7 +921,11 @@ export const partitionPriorToolCalls = (
   const prior: ChatPriorToolCall[] = [];
   const recall: ChatPriorToolCall[] = [];
   for (const call of calls) {
-    (MEMORY_RECALL_TOOL_NAMES.has(call.tool_name) ? recall : prior).push(call);
+    (
+      NON_RETAINABLE_RECALL_TOOL_NAMES.has(call.tool_name)
+        ? recall
+        : prior
+    ).push(call);
   }
   return { prior, recall };
 };
@@ -911,6 +936,13 @@ export interface ChatProvenanceRef {
   /** Source identifier: `'local' | 'hubspot' | 'salesforce' | <peer-
    *  name> | …`. Renderer maps to human-readable labels. */
   source: string;
+  /** Canonical warehouse platform for a locally addressable record. Paired
+   * with `collection_slug`; both are required before a client may build an
+   * exact Data deep link. */
+  collection_platform?: CollectionPlatform;
+  /** Exact collection-instance slug that owns `record_id`. Record ids are
+   * only unique inside `(collection_platform, collection_slug)`. */
+  collection_slug?: string;
   /** Stable id of the underlying record (record `_id` in canonical
    *  shape). */
   record_id?: string;
@@ -921,6 +953,107 @@ export interface ChatProvenanceRef {
 export interface ChatMessageAttachment {
   file_id: string;
   media_class: string;
+}
+
+/** Closed vocabulary for how a Data item relates to an execution run. The
+ * relationship is intentionally evidence-scoped: none of these values is an
+ * execution verdict or permission to perform another action. */
+export type ChatDataDiagnosisRelationship =
+  | 'action'
+  | 'involved'
+  | 'derived';
+
+export const CHAT_DATA_DIAGNOSIS_RELATIONSHIPS: ReadonlyArray<
+  ChatDataDiagnosisRelationship
+> = [
+  'action',
+  'involved',
+  'derived',
+] as const;
+
+export const CHAT_DATA_DIAGNOSIS_RELATIONSHIP_SET: ReadonlySet<
+  ChatDataDiagnosisRelationship
+> = new Set(
+  CHAT_DATA_DIAGNOSIS_RELATIONSHIPS,
+);
+
+export const isChatDataDiagnosisRelationship = (
+  value: unknown,
+): value is ChatDataDiagnosisRelationship =>
+  typeof value === 'string'
+  && CHAT_DATA_DIAGNOSIS_RELATIONSHIP_SET.has(
+    value as ChatDataDiagnosisRelationship,
+  );
+
+/** The owner-visible purpose of a grounded diagnosis turn. An explanation
+ * summarizes evidence; a safe check may use read-only tools but still carries
+ * no approval, retry, or mutation authority. */
+export type ChatDataDiagnosisIntent = 'explanation' | 'safe_check';
+
+export const CHAT_DATA_DIAGNOSIS_INTENTS: ReadonlyArray<
+  ChatDataDiagnosisIntent
+> = ['explanation', 'safe_check'] as const;
+
+export const CHAT_DATA_DIAGNOSIS_INTENT_SET: ReadonlySet<
+  ChatDataDiagnosisIntent
+> = new Set(CHAT_DATA_DIAGNOSIS_INTENTS);
+
+export const isChatDataDiagnosisIntent = (
+  value: unknown,
+): value is ChatDataDiagnosisIntent =>
+  typeof value === 'string'
+  && CHAT_DATA_DIAGNOSIS_INTENT_SET.has(value as ChatDataDiagnosisIntent);
+
+/** Owner-confirmed closure after reviewing a completed safe check. These
+ * statuses record the owner's next-step judgement; they are not an execution
+ * result and never grant authority to run or retry anything. */
+export type ChatDataDiagnosisResolutionStatus =
+  | 'resolved'
+  | 'still_uncertain'
+  | 'needs_new_action';
+
+export const CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUSES: ReadonlyArray<
+  ChatDataDiagnosisResolutionStatus
+> = ['resolved', 'still_uncertain', 'needs_new_action'] as const;
+
+export const CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUS_SET: ReadonlySet<
+  ChatDataDiagnosisResolutionStatus
+> = new Set(CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUSES);
+
+export const isChatDataDiagnosisResolutionStatus = (
+  value: unknown,
+): value is ChatDataDiagnosisResolutionStatus =>
+  typeof value === 'string'
+  && CHAT_DATA_DIAGNOSIS_RESOLUTION_STATUS_SET.has(
+    value as ChatDataDiagnosisResolutionStatus,
+  );
+
+export interface ChatDataDiagnosisResolution {
+  status: ChatDataDiagnosisResolutionStatus;
+  /** Server timestamp for the owner's latest explicit closure choice. */
+  resolved_at: number;
+}
+
+/** Client request to ground an explanation or safe check in one reviewed
+ * action and one Logs run. The server resolves the plan in the same Chat
+ * session and derives `run_correlation`; the client cannot assert that
+ * relationship itself. */
+export interface ChatDataDiagnosisRequest {
+  plan_id: string;
+  run_id: string;
+  relationship?: ChatDataDiagnosisRelationship;
+  /** Optional for wire compatibility with older clients. Current servers
+   * normalize omission to `explanation` before persistence. */
+  intent?: ChatDataDiagnosisIntent;
+}
+
+/** Server-normalized, durable context stamped on both rows of a guided
+ * diagnosis turn. This is addressability and evidence provenance only: it
+ * cannot approve, execute, or retry an action. */
+export interface ChatDataDiagnosisContext extends ChatDataDiagnosisRequest {
+  kind: 'data_verification';
+  intent: ChatDataDiagnosisIntent;
+  run_correlation: 'matched' | 'unverified';
 }
 
 export interface ChatMessage {
@@ -939,6 +1072,14 @@ export interface ChatMessage {
   tool_calls?: ChatToolCall[];
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  /** Durable grounding for a user-requested Data explanation or safe check.
+   * Server-stamped after validating the same-session consumed action and run
+   * correlation. Presentation-only; never approval or retry authority. */
+  data_diagnosis?: ChatDataDiagnosisContext;
+  /** Owner-confirmed closure of this assistant message's completed safe check.
+   * Present only on a `data_diagnosis.intent === 'safe_check'` answer. This is
+   * workflow state, not proof that an external effect did or did not occur. */
+  data_diagnosis_resolution?: ChatDataDiagnosisResolution;
   /** D-177 5.f — server-stamped contributor (see
    *  {@link ChatSessionContributor}). Attachments inherit the row's stamp
    *  (an attachment on a user turn is user-contributed). Stamped by the
@@ -1005,8 +1146,21 @@ export type ChatRpcMethod =
   | 'chat.session.export'
   | 'chat.egress.get'
   | 'chat.send'
+  /** Persist the owner's explicit closure of one completed, grounded safe
+   * check. It cannot approve, execute, or retry an action. */
+  | 'chat.data_diagnosis.resolve'
+  /** Owner-only recovery snapshot for the route-independent approval inbox.
+   * Returns every still-proposed Chat plan across sessions; it never resumes
+   * or consumes an action. */
+  | 'chat.plans.pending.list'
   | 'chat.plan.approve'
   | 'chat.plan.cancel'
+  /** Owner-only explicit outcome feedback. The server resolves the named turn
+   * to a durable span; callers cannot name or steer a stored case. */
+  | 'chat.execution.feedback'
+  /** Owner-only aggregate D-214 diagnostics. No raw source, case,
+   * intervention, prompt, argument, result, or error row is returned. */
+  | 'chat.execution.diagnostics'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   // D-167 chat provider-threading — per-session model-pref override
@@ -1107,8 +1261,12 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.session.export',
   'chat.egress.get',
   'chat.send',
+  'chat.data_diagnosis.resolve',
+  'chat.plans.pending.list',
   'chat.plan.approve',
   'chat.plan.cancel',
+  'chat.execution.feedback',
+  'chat.execution.diagnostics',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   'chat.session.clear_model_pref',
@@ -1152,6 +1310,7 @@ export type ChatBroadcastEventKind =
   | 'chat.plan_proposed'
   | 'chat.transparency'
   | 'chat.message_complete'
+  | 'chat.data_diagnosis_resolved'
   | 'chat.session_changed'
   // D-137 W2.2 § A.1.1 — fires once when Mary toggles a per-kind
   // catalog scope checkbox. Fans the new enabled-kinds list to every
@@ -1215,6 +1374,7 @@ export const CHAT_BROADCAST_EVENT_KINDS: ReadonlyArray<ChatBroadcastEventKind> =
   'chat.plan_proposed',
   'chat.transparency',
   'chat.message_complete',
+  'chat.data_diagnosis_resolved',
   'chat.session_changed',
   'chat.tool_catalog_scope_changed',
   'chat.default_model_pref_changed',
@@ -1269,17 +1429,17 @@ export const isChatSessionChangedField = (
  *  D-168). Each table is created via `ensureChatSchema(db)` at boot
  *  (idempotent CREATE TABLE IF NOT EXISTS).
  *
- *  P1 lands two tables as fully-shaped (not placeholders — chat
- *  storage IS the substrate that ships first):
+ *  The core thread/recovery tables are fully shaped:
  *
  *    - `chat_sessions`  — per-session row with picker / model_routing
  *      / metadata.
  *    - `chat_messages`  — per-turn row with role / content / tool_calls
  *      / provenance / target_server / picker_at_send / model_used.
+ *    - `chat_plans`     — durable reviewed-action state + encrypted
+ *      arguments/execution detail for reload/restart recovery.
  *
- *  Both are encrypted at rest via a new `chat` sub-DEK domain (lands
- *  with the rpc handler slice; P1 schema reserves the encrypted-blob
- *  columns). */
+ *  Message content plus reviewed action arguments / terminal detail are
+ *  encrypted at rest via the `chat` sub-DEK domain. */
 /** P1 closed-list inventory — the *core* chat-thread tables landed by
  *  `ensureChatSchema`. W2.2 / W2.3 ship their own ensure-functions
  *  (`ensureChatToolCatalogSchema` / `ensureChatConnectionMcpAnnotationSchema`)
@@ -1288,11 +1448,15 @@ export const isChatSessionChangedField = (
  *  narrow scope. The Must-Hold per-pair-only invariant applies to
  *  every per-pair chat table regardless of which ensure-fn lands
  *  it. */
-export type ChatTableName = 'chat_sessions' | 'chat_messages';
+export type ChatTableName =
+  | 'chat_sessions'
+  | 'chat_messages'
+  | 'chat_plans';
 
 export const CHAT_TABLES: ReadonlyArray<ChatTableName> = [
   'chat_sessions',
   'chat_messages',
+  'chat_plans',
 ] as const;
 
 export const CHAT_TABLE_SET: ReadonlySet<ChatTableName> = new Set(CHAT_TABLES);
@@ -1714,7 +1878,7 @@ export const isScopeSearchSourceId = (
 /** § Contract Tightening — one candidate emitted by one source. The
  *  shape mirrors the spec: `source` is the stable id (not the display
  *  label); `record` is the canonical-shape record per
- *  `docs/canonical-shapes.md`; `score` is optional 0–1 relevance/
+ *  internal design notes; `score` is optional 0–1 relevance/
  *  similarity consumed by § A.5 dispatch (P3 wires it). */
 export interface ScopeSearchCandidate<T> {
   source: ScopeSearchSourceId;
@@ -2055,6 +2219,11 @@ export interface ChatPlanProposal {
   plan_id: string;
   session_id: string;
   turn_id: string;
+  /** The consumed action whose uncertain outcome this proposal follows.
+   * Present only when the owner explicitly sent a verify-before-retry turn.
+   * This is lineage, never permission: the new plan still starts proposed
+   * and requires its own approval. */
+  retry_of_plan_id?: string;
   tool: string;
   tier: ToolTier;
   classification: 'read' | 'write' | 'unknown';
@@ -2094,6 +2263,56 @@ export interface ChatPlanProposal {
    *  proposal. Undefined until consumption; only ever set on
    *  `'approved'` plans. */
   consumed_at?: number;
+}
+
+/** Durable lifecycle receipt for the single dispatch that consumed a plan.
+ * `unknown` is recovery-only: the spend survived but terminal truth could not
+ * be safely recovered (for example, a process restart or corrupt receipt).
+ * It must never be treated as success or trigger an automatic retry. */
+export type ChatPlanExecutionReceipt =
+  | {
+      status: 'running';
+      turn_id: string;
+    }
+  | {
+      status: 'completed';
+      turn_id: string;
+      result_ref: string;
+      /** Exact durable Logs run when the dispatch produced one. Older
+       * receipts and non-run tools legitimately omit it. */
+      run_id?: string;
+    }
+  | {
+      status: 'held';
+      turn_id: string;
+      result_ref: string;
+      hold_kind: ChatRunHeld['kind'];
+      run_id?: string;
+    }
+  | {
+      status: 'failed';
+      turn_id: string;
+      reason: ChatDispatchReason;
+      detail?: string;
+      run_id?: string;
+    }
+  | {
+      status: 'unknown';
+      turn_id: string;
+    };
+
+/** Durable Chat-plan recovery row. Returned by `chat.session.get` and by the
+ * all-session `chat.plans.pending.list` approval-inbox snapshot. The reviewed
+ * payload is encrypted at rest. A corrupt or currently unavailable payload
+ * still yields the non-executable shell with `payload_available: false`;
+ * clients must not offer approve/continue/retry controls when the exact
+ * reviewed arguments cannot be recovered. Safe cancellation may remain
+ * available so the owner can make a pending shell permanently non-runnable. */
+export interface ChatPlanRecord {
+  plan: ChatPlanProposal;
+  message_id?: string;
+  execution?: ChatPlanExecutionReceipt;
+  payload_available: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────

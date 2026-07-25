@@ -373,7 +373,6 @@ describe('makeCollectionHandlers', () => {
       'collection.deleteRecord',
       'collection.file.delete',
       'collection.file.enroll',
-      'collection.file.reauth',
       'collection.file.resync',
       'collection.file.update',
       'collection.get',

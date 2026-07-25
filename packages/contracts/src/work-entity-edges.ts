@@ -38,7 +38,7 @@
  *  - `calendar.event` / `mail_message` — v1 persists the scoped
  *    reference only (`remote_id` pairing); no local resolver yet.
  *
- *  Spec: docs/d-192-spec.md § Identity and relationships + § P5;
+ *  Spec: D-192 § Identity and relationships + § P5;
  *  decisions-log D-192 (Relationships). */
 
 import type {

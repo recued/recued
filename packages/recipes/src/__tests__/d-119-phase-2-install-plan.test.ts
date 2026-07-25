@@ -9,11 +9,19 @@
  *    - vault-scope key shapes per install source kind
  *    - signatureStatus passes through (unverified-not-signed →
  *      unverified-not-signed; bad-shape → crypto-invalid)
+ *    - remote trust partition is derived from signature + final transport,
+ *      never caller metadata
  */
 
 import { describe, it, expect } from 'vitest';
 
-import type { InstallSource, RecipeDefinition } from '@recued/contracts';
+import type {
+  FetchedRemoteBundle,
+  InstallSource,
+  RecipeBundle,
+  RecipeDefinition,
+  RedirectResolvedBundleUrl,
+} from '@recued/contracts';
 import { planBundleInstall } from '../install-plan.js';
 
 const validRecipe: RecipeDefinition = {
@@ -36,6 +44,14 @@ const validRecipe: RecipeDefinition = {
 };
 
 const noopLookup = async (_k: string) => null;
+
+const fetchedRemoteBundle = (
+  finalUrl: string,
+  bundle: RecipeBundle = { recipe: validRecipe },
+): FetchedRemoteBundle => ({
+  bundle,
+  finalUrl: finalUrl as RedirectResolvedBundleUrl,
+});
 
 describe('planBundleInstall — invalid outcome', () => {
   it('returns kind:invalid when bundle fails parseBundle', async () => {
@@ -109,18 +125,53 @@ describe('planBundleInstall — ready outcome', () => {
 
   it('returns the correct scopeKey for bundle-remote install source (URL normalised)', async () => {
     const out = await planBundleInstall({
-      input: { recipe: validRecipe },
+      fetched: fetchedRemoteBundle('HTTPS://Recipes.Example.COM/Q3/Contracts'),
       source: {
         kind: 'bundle-remote',
-        url: 'HTTPS://Recipes.Example.COM/Q3/Contracts',
         slug: 'r',
-        verified: true,
       },
       contentHash: 'h',
       lookupExisting: noopLookup,
     });
-    if (out.kind === 'ready') expect(out.scopeKey).toBe('bundle:recipes.example.com/q3/contracts/r');
-    else expect.fail(`expected ready, got ${out.kind}`);
+    if (out.kind === 'ready') {
+      expect(out.scopeKey).toBe('bundle:recipes.example.com/q3/contracts/r');
+      expect(out.vaultScope).toMatchObject({ kind: 'bundle-remote', verified: true });
+    } else expect.fail(`expected ready, got ${out.kind}`);
+  });
+});
+
+describe('planBundleInstall — remote trust partition', () => {
+  it('marks an unsigned HTTP bundle unverified', async () => {
+    const out = await planBundleInstall({
+      fetched: fetchedRemoteBundle('http://recipes.example.com/q3/contracts'),
+      source: { kind: 'bundle-remote', slug: 'r' },
+      contentHash: 'h',
+      lookupExisting: noopLookup,
+    });
+
+    if (out.kind === 'ready') {
+      expect(out.signatureStatus.status).toBe('unverified-not-signed');
+      expect(out.scopeKey).toBe('bundle:recipes.example.com/q3/contracts-unverified/r');
+      expect(out.vaultScope).toMatchObject({ kind: 'bundle-remote', verified: false });
+    } else expect.fail(`expected ready, got ${out.kind}`);
+  });
+
+  it('keeps a malformed claimed signature unverified even over HTTPS', async () => {
+    const out = await planBundleInstall({
+      fetched: fetchedRemoteBundle('https://recipes.example.com/q3/contracts', {
+        recipe: validRecipe,
+        signature: { algorithm: 'ed25519', publisher_pubkey: 'AAAA', signature: 'BBBB' },
+      }),
+      source: { kind: 'bundle-remote', slug: 'r' },
+      contentHash: 'h',
+      lookupExisting: noopLookup,
+    });
+
+    if (out.kind === 'ready') {
+      expect(out.signatureStatus.status).toBe('crypto-invalid');
+      expect(out.scopeKey).toBe('bundle:recipes.example.com/q3/contracts-unverified/r');
+      expect(out.vaultScope).toMatchObject({ kind: 'bundle-remote', verified: false });
+    } else expect.fail(`expected ready, got ${out.kind}`);
   });
 });
 

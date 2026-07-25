@@ -19,7 +19,7 @@
  *      changes ARE meaningful identity events for our purposes (e.g.
  *      a 50→500 employee transition).
  *
- *  Spec: `docs/d-129-spec.md` § A.3, § Phase 4. */
+ *  Spec: D-129 § A.3, § Phase 4. */
 
 import {
   HUBSPOT_COMPANY_PROPERTIES,

@@ -158,10 +158,12 @@ const dispatchToolsSearch = (
     };
   };
 
-/** Insert `entry` immediately after the last Tier-1 entry so tools.search
- *  sits with the core tools rather than trailing the Tier-2/3 lists.
- *  Deterministic (no reordering of existing entries). */
-const insertAfterTier1 = (
+/** Insert `entry` immediately after the last Tier-1 entry so a synthetic
+ *  chat-only tool sits with the core tools rather than trailing the Tier-2/3
+ *  lists. Deterministic (no reordering of existing entries). Exported because
+ *  `chat-recall-search-tool.ts` wraps the same registry the same way — it held a
+ *  verbatim copy, which is one edit away from two orderings. */
+export const insertToolEntryAfterTier1 = (
   base: ReadonlyArray<ToolEntry>,
   entry: ToolEntry,
 ): ToolEntry[] => {
@@ -224,7 +226,7 @@ export const wrapRegistryWithToolsSearch = (
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
   const dispatchSearch = dispatchToolsSearch(inner, opts.getScope);
   return {
-    list: () => insertAfterTier1(inner.list(), entry),
+    list: () => insertToolEntryAfterTier1(inner.list(), entry),
     listByTier: (tier: ToolTier) =>
       tier === 1 ? [...inner.listByTier(1), entry] : inner.listByTier(tier),
     getByName: (name: string) =>

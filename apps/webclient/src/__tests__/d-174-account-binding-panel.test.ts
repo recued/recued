@@ -448,6 +448,21 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     expect(textOf(host)).toContain('not_configured: pro_convenience.status');
     mount.dispose();
   });
+
+  it('replaces a raw recued.com fetch failure with contextual recovery copy', async () => {
+    const { host, mount } = mountFixture({
+      runReadSession: vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+    });
+    await mount.whenLoaded();
+
+    expect(textOf(host)).toContain(
+      'Couldn’t reach recued.com. Your local Recued server is still connected.',
+    );
+    expect(textOf(host)).not.toContain('Failed to fetch');
+    mount.dispose();
+  });
 });
 
 describe('R27 account panel — Free-account card', () => {

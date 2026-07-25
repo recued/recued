@@ -15,7 +15,7 @@
  *  single-WhoId/single-WhatId with `coverage.sources_unavailable:
  *  ['salesforce.task_relation']` flagged on every downstream row.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
+ *  Spec: D-139 § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
  *  § A.3.6, § A.3.7. */
 
 import {

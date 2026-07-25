@@ -10,7 +10,7 @@
  *  testable; the webclient install flow provides the thin adapter
  *  module that wires fetch / WebRpcAdapter.
  *
- *  Spec: `docs/d-122-spec.md` §"Atomic install".
+ *  Spec: D-122 §"Atomic install".
  */
 
 import {

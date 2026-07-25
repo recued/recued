@@ -16,7 +16,7 @@
  *  reschedule runner is INJECTED (`deps.runReschedule`) exactly as the intake
  *  paired-run coordinator is.
  *
- *  Spec: docs/d-210-spec.md Appendix B. */
+ *  Spec: D-210 Appendix B. */
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -54,6 +54,13 @@ import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoi
 
 export const RECEPTION_MANAGE_PATH = '/reception/manage' as const;
 export const RECEPTION_MANAGE_ENDPOINT_ID = '__manage__' as const;
+
+/** A form nonce is bound to the exact manage credential that rendered it.
+ *  The public endpoint id alone would let a nonce from link A authorize a POST
+ *  made with link B. Credential ids are non-secret and never leave this
+ *  handler; the URL secret remains the capability. */
+export const receptionManageNonceScope = (credential_id: string): string =>
+  `${RECEPTION_MANAGE_ENDPOINT_ID}:${credential_id}`;
 
 const MAX_BODY_BYTES = 16 * 1024;
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
@@ -369,7 +376,10 @@ export const createReceptionManageHandler = (
       return { action_taken: 'reject', outcome: 'rejected' };
     }
     const slots = enumerateManageSlots(deps, target.config, target.duration_minutes);
-    const nonce = deps.getFormNonceStore().issue(RECEPTION_MANAGE_ENDPOINT_ID, deps.now());
+    const nonce = deps.getFormNonceStore().issue(
+      receptionManageNonceScope(resolved.credential_id),
+      deps.now(),
+    );
     writeHtml(
       res,
       renderManageReschedulePage({
@@ -415,14 +425,27 @@ export const createReceptionManageHandler = (
     writeHtml(res, UNAVAILABLE(), 400);
     return { action_taken: 'reject', outcome: 'rejected' };
   }
-  // Consume the single-use form nonce (CSRF), then the credential (single-use).
-  if (!deps.getFormNonceStore().consume(RECEPTION_MANAGE_ENDPOINT_ID, parsed.form_nonce, deps.now())) {
+  // Resolve the credential NON-CONSUMING first so the CSRF nonce can be checked
+  // in that credential's own namespace. A bad nonce must not burn the link.
+  const now = deps.now();
+  const preflight = deps.getCredentialStore().peek(secret, now);
+  if (preflight.status !== 'ok') {
+    writeHtml(res, UNAVAILABLE(), 410);
+    return preflight.status === 'expired'
+      ? { action_taken: 'expired', outcome: 'expired' }
+      : { action_taken: 'invalid_token', outcome: 'invalid_token' };
+  }
+  if (!deps.getFormNonceStore().consume(
+    receptionManageNonceScope(preflight.credential_id),
+    parsed.form_nonce,
+    now,
+  )) {
     res.statusCode = 403;
     res.setHeader('cache-control', 'no-store');
     res.end('forbidden');
     return { action_taken: 'reject', outcome: 'rejected' };
   }
-  const consumed = deps.getCredentialStore().consume(secret, deps.now());
+  const consumed = deps.getCredentialStore().consume(secret, now);
   if (consumed.status !== 'ok') {
     writeHtml(res, UNAVAILABLE(), 410);
     // A replay of a spent link vs a late click after expiry — both are a
@@ -431,6 +454,12 @@ export const createReceptionManageHandler = (
     return consumed.status === 'expired'
       ? { action_taken: 'expired', outcome: 'expired' }
       : { action_taken: 'invalid_token', outcome: 'invalid_token' };
+  }
+  // The store contract makes this stable, but enforce it at the boundary so a
+  // future implementation cannot swap the credential between peek and CAS.
+  if (consumed.credential_id !== preflight.credential_id) {
+    writeHtml(res, UNAVAILABLE(), 410);
+    return { action_taken: 'invalid_token', outcome: 'invalid_token' };
   }
   const target = resolveTarget(deps, consumed.scope);
   if (target === null) {
@@ -476,13 +505,21 @@ export const createReceptionManageHandler = (
     return { action_taken: 'submit', outcome: 'ok' };
   }
   // failed / no_door — the request was not accepted; tell them plainly.
+  //
+  // ⛔ "Try again later" would be a LIE: the credential was consumed above and
+  // is single-use, so THIS link is already dead. Send them where a retry can
+  // actually succeed — the same instruction the slot-conflict branch above
+  // gives, for the same reason. A page that names an impossible next step
+  // costs the owner a booking while they retry a URL that can never work.
   writeHtml(
     res,
     renderManageResultHtml({
       display_name: target.config.display_name,
       tz_label: target.config.available_window_definition.tz,
       heading: 'Couldn’t request the reschedule',
-      message: 'Something went wrong and your request was not recorded. Please try again later.',
+      message:
+        'Something went wrong and your request was not recorded. This link has '
+        + 'now been used up — please request a new one and try again.',
     }),
     500,
   );

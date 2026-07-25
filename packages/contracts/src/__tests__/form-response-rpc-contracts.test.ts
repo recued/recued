@@ -11,10 +11,16 @@ import {
   isReservedLocalRpc,
 } from '../index.js';
 
-describe('form_response owner-read RPC contracts', () => {
-  const methods = ['form_response.list', 'form_response.get'] as const;
+describe('form_response paired-owner RPC contracts', () => {
+  const methods = [
+    'form_response.list',
+    'form_response.get',
+    'form_response.set_state',
+    'form_response.update',
+    'form_response.export',
+  ] as const;
 
-  it('registers both methods exactly once', () => {
+  it('registers every method exactly once', () => {
     for (const method of methods) {
       expect(SERVER_RPC_METHODS).toContain(method);
       expect(SERVER_RPC_METHOD_SET.has(method)).toBe(true);

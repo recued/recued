@@ -31,7 +31,7 @@
  *      target_id=...` resolves the engagement set for
  *      `engagement_silence_duration` rollup.
  *
- *  Spec: docs/d-139-spec.md § A.4, § A.6.3, § A.3.7, § A.9.1
+ *  Spec: D-139 § A.4, § A.6.3, § A.3.7, § A.9.1
  *  (engagement_silence_duration). */
 
 import Database from 'better-sqlite3';

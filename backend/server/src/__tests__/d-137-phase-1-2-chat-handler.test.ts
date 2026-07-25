@@ -3,7 +3,7 @@
  *  Acceptance per spec § Wire A + § Contract Tightening:
  *    - makeChatHandlers returns a slice that claims all ten CHAT_RPC_METHODS
  *    - chat.session.create persists a row + emits chat_session_created audit
- *    - chat.session.get returns the persisted session + messages list
+ *    - chat.session.get returns the persisted session + messages + action list
  *    - chat.session.delete cascades + emits chat_session_deleted
  *    - chat.session.export returns the export bundle + emits chat_export
  *    - chat.send is a thin wrapper over the orchestrator
@@ -16,7 +16,13 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { CHAT_RPC_METHODS, RpcError, type RecuedServerSignature } from '@recued/contracts';
+import {
+  CHAT_RPC_METHODS,
+  RpcError,
+  type ChatPlanProposal,
+  type RecuedServerSignature,
+} from '@recued/contracts';
+import { planApproval } from '@recued/gateway';
 import {
   createChatStore,
   ensureChatSchema,
@@ -25,6 +31,8 @@ import {
 import {
   handlePlanApprove,
   handlePlanCancel,
+  handleDataDiagnosisResolve,
+  handlePlansPendingList,
   handleEgressGet,
   handleSend,
   handleSessionCreate,
@@ -153,6 +161,47 @@ describe('D-137 P1.2 — chat.sessions.list / chat.session.get', () => {
     const result = await handleSessionGet(deps, { session_id: 'mint-stub' });
     expect(result.id).toBe('mint-stub');
     expect(result.messages).toEqual([]);
+    expect(result.plans).toEqual([]);
+  });
+
+  it('chat.session.get includes durable reviewed-action recovery records', async () => {
+    const planStore = planApproval.createPlanApprovalStore();
+    const args = { to: 'owner@example.com', body: 'Send once' };
+    planStore.put({
+      plan_id: 'plan-handler-recovery',
+      session_id: 'mint-stub',
+      turn_id: 'turn-proposal',
+      tool: 'mail.send',
+      tier: 1,
+      classification: 'write',
+      args,
+      args_hash: planApproval.computePlanArgsHash(args),
+      status: 'approved',
+      created_at: 2_000,
+      resolved_at: 3_000,
+      consumed_at: 4_000,
+    });
+    planStore.recordExecution('plan-handler-recovery', {
+      status: 'unknown',
+      turn_id: 'turn-execution',
+    });
+    deps.planApprovalStore = planStore;
+
+    const result = await handleSessionGet(deps, { session_id: 'mint-stub' });
+
+    expect(result.plans).toEqual([
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          plan_id: 'plan-handler-recovery',
+          status: 'approved',
+        }),
+        execution: {
+          status: 'unknown',
+          turn_id: 'turn-execution',
+        },
+        payload_available: true,
+      }),
+    ]);
   });
 
   it('chat.session.get on missing session → not_found', async () => {
@@ -165,6 +214,163 @@ describe('D-137 P1.2 — chat.sessions.list / chat.session.get', () => {
     await expect(
       handleSessionGet(deps, { session_id: '' }),
     ).rejects.toThrow(/required/);
+  });
+});
+
+describe('Chat safe-check result closure', () => {
+  let deps: ChatRpcDeps;
+  beforeEach(async () => {
+    deps = setup();
+    await handleSessionCreate(deps);
+    await store.appendMessage({
+      id: 'msg-safe-check',
+      session_id: 'mint-stub',
+      role: 'assistant',
+      content: 'The read-only lookup found the expected record.',
+      target_server: 'self',
+      picker_at_send: { display_name: 'Self', signature: selfSignature },
+      model_used: { provider: 'local', model_id: 'local' },
+      ts: 1_001,
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'safe_check',
+        run_correlation: 'matched',
+      },
+    });
+  });
+
+  it('persists, broadcasts, and idempotently returns owner closure', async () => {
+    const first = await handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'resolved',
+    });
+
+    expect(first).toEqual({
+      resolution: { status: 'resolved', resolved_at: 1_000 },
+    });
+    expect((await store.listMessages('mint-stub'))[0])
+      .toMatchObject({
+        data_diagnosis_resolution: {
+          status: 'resolved',
+          resolved_at: 1_000,
+        },
+      });
+    expect(broadcastedEvents).toEqual([{
+      kind: 'chat.data_diagnosis_resolved',
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      resolution: { status: 'resolved', resolved_at: 1_000 },
+    }]);
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
+
+    const replay = await handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'resolved',
+    });
+    expect(replay).toEqual(first);
+    expect(broadcastedEvents).toHaveLength(1);
+
+    const changed = await handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'needs_new_action',
+    });
+    expect(changed.resolution).toEqual({
+      status: 'needs_new_action',
+      resolved_at: 1_001,
+    });
+    expect(broadcastedEvents.at(-1)).toMatchObject({
+      kind: 'chat.data_diagnosis_resolved',
+      resolution: {
+        status: 'needs_new_action',
+        resolved_at: 1_001,
+      },
+    });
+  });
+
+  it('rechecks an apparently idempotent choice at the store serialization point', async () => {
+    await handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'resolved',
+    });
+    broadcastedEvents.length = 0;
+    const persist = store.setDataDiagnosisResolution!;
+    const serialized = vi.fn(async (
+      session_id: string,
+      message_id: string,
+      resolution: Parameters<typeof persist>[2],
+    ) => {
+      await persist(session_id, message_id, {
+        status: 'needs_new_action',
+        resolved_at: 1_001,
+      });
+      return persist(session_id, message_id, resolution);
+    });
+    deps.store.setDataDiagnosisResolution = serialized;
+
+    const replay = await handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'resolved',
+    });
+
+    expect(serialized).toHaveBeenCalledOnce();
+    expect(replay.resolution).toEqual({
+      status: 'resolved',
+      resolved_at: 1_002,
+    });
+    expect(broadcastedEvents).toEqual([{
+      kind: 'chat.data_diagnosis_resolved',
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      resolution: {
+        status: 'resolved',
+        resolved_at: 1_002,
+      },
+    }]);
+  });
+
+  it('rejects closure on anything except an exact assistant safe check', async () => {
+    await store.appendMessage({
+      id: 'msg-explanation',
+      session_id: 'mint-stub',
+      role: 'assistant',
+      content: 'Explanation only.',
+      target_server: 'self',
+      picker_at_send: { display_name: 'Self', signature: selfSignature },
+      model_used: { provider: 'local', model_id: 'local' },
+      ts: 1_002,
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'explanation',
+        run_correlation: 'matched',
+      },
+    });
+
+    await expect(handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-explanation',
+      status: 'resolved',
+    })).rejects.toMatchObject({ code: 'bad_request', status: 400 });
+    await expect(handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-missing',
+      status: 'resolved',
+    })).rejects.toMatchObject({ code: 'not_found', status: 404 });
+    await expect(handleDataDiagnosisResolve(deps, {
+      session_id: 'mint-stub',
+      message_id: 'msg-safe-check',
+      status: 'model_claimed_success',
+    })).rejects.toMatchObject({ code: 'bad_request', status: 400 });
+    expect(broadcastedEvents).toEqual([]);
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
   });
 });
 
@@ -248,6 +454,8 @@ describe('D-137 P1.2 — chat.session.delete', () => {
   });
 
   it('deletes the row + emits chat_session_deleted audit with deleted message count', async () => {
+    const deleteSessionExecutionCases = vi.fn(async () => 2);
+    deps.deleteSessionExecutionCases = deleteSessionExecutionCases;
     await store.appendMessage({
       id: 'msg-delete-1',
       session_id: 'mint-stub',
@@ -265,6 +473,8 @@ describe('D-137 P1.2 — chat.session.delete', () => {
     ).resolves.toEqual({ ok: true });
 
     expect(store.getSession('mint-stub')).toBeNull();
+    expect(deleteSessionExecutionCases).toHaveBeenCalledOnce();
+    expect(deleteSessionExecutionCases).toHaveBeenCalledWith('mint-stub');
     expect(auditRows[0].action).toBe('chat_session_deleted');
     expect(auditRows[0].target).toBe('mint-stub');
     expect(auditRows[0].detail).toBeTypeOf('string');
@@ -339,6 +549,240 @@ describe('D-137 P1.2 — chat.send', () => {
     });
     expect(result.turn_id).toBe('turn-stub');
     expect(orchestrator.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates and forwards an explicit verify-before-retry origin', async () => {
+    const approvalStore = planApproval.createPlanApprovalStore();
+    const args = { to: 'owner@example.com', body: 'Send once' };
+    const origin: ChatPlanProposal = {
+      plan_id: 'plan-uncertain',
+      session_id: 'mint-stub',
+      turn_id: 'turn-proposal',
+      tool: 'mail.send',
+      tier: 1,
+      classification: 'write',
+      args,
+      args_hash: planApproval.computePlanArgsHash(args),
+      status: 'proposed',
+      created_at: 1_100,
+    };
+    approvalStore.put(origin);
+    approvalStore.resolve(origin.plan_id, 'approved', 1_200);
+    approvalStore.markConsumed(
+      origin.plan_id,
+      1_300,
+      'turn-origin-execution',
+    );
+    approvalStore.recordExecution(origin.plan_id, {
+      status: 'unknown',
+      turn_id: 'turn-origin-execution',
+    });
+    deps.planApprovalStore = approvalStore;
+
+    await handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Verify before trying this again.',
+      picker_state: { current: 'self' },
+      retry_of_plan_id: origin.plan_id,
+    });
+
+    expect(orchestrator.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        retry_of_plan_id: origin.plan_id,
+      }),
+    );
+  });
+
+  it('refuses retry lineage that is missing or not an uncertain consumed action', async () => {
+    deps.planApprovalStore = planApproval.createPlanApprovalStore();
+    await expect(handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Try this again.',
+      picker_state: { current: 'self' },
+      retry_of_plan_id: 'plan-not-in-this-session',
+    })).rejects.toMatchObject({
+      code: 'bad_request',
+      status: 400,
+    });
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
+  });
+
+  it('validates and server-stamps an explicit safe-check intent', async () => {
+    const approvalStore = planApproval.createPlanApprovalStore();
+    const args = { to: 'owner@example.com', body: 'Send once' };
+    const origin: ChatPlanProposal = {
+      plan_id: 'plan-diagnosis',
+      session_id: 'mint-stub',
+      turn_id: 'turn-proposal',
+      tool: 'mail.send',
+      tier: 1,
+      classification: 'write',
+      args,
+      args_hash: planApproval.computePlanArgsHash(args),
+      status: 'proposed',
+      created_at: 1_100,
+    };
+    approvalStore.put(origin);
+    approvalStore.resolve(origin.plan_id, 'approved', 1_200);
+    approvalStore.markConsumed(origin.plan_id, 1_300, 'turn-execution');
+    approvalStore.recordExecution(origin.plan_id, {
+      status: 'completed',
+      turn_id: 'turn-execution',
+      result_ref: 'result:one',
+      run_id: 'run-one',
+    });
+    deps.planApprovalStore = approvalStore;
+
+    const ack = await handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Help me understand the linked evidence.',
+      picker_state: { current: 'self' },
+      data_diagnosis: {
+        plan_id: origin.plan_id,
+        run_id: 'run-one',
+        intent: 'safe_check',
+        relationship: 'derived',
+      },
+    });
+
+    expect(orchestrator.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data_diagnosis: {
+          kind: 'data_verification',
+          plan_id: origin.plan_id,
+          run_id: 'run-one',
+          intent: 'safe_check',
+          relationship: 'derived',
+          run_correlation: 'matched',
+        },
+      }),
+    );
+    expect(ack.data_diagnosis).toEqual({
+      kind: 'data_verification',
+      plan_id: origin.plan_id,
+      run_id: 'run-one',
+      intent: 'safe_check',
+      relationship: 'derived',
+      run_correlation: 'matched',
+    });
+  });
+
+  it('keeps diagnosis run correlation unverified when the receipt has no run id', async () => {
+    const approvalStore = planApproval.createPlanApprovalStore();
+    const args = { id: 'record-one' };
+    const origin: ChatPlanProposal = {
+      plan_id: 'plan-diagnosis-unverified',
+      session_id: 'mint-stub',
+      turn_id: 'turn-proposal',
+      tool: 'record.update',
+      tier: 2,
+      classification: 'write',
+      args,
+      args_hash: planApproval.computePlanArgsHash(args),
+      status: 'proposed',
+      created_at: 1_100,
+    };
+    approvalStore.put(origin);
+    approvalStore.resolve(origin.plan_id, 'approved', 1_200);
+    approvalStore.markConsumed(origin.plan_id, 1_300, 'turn-execution');
+    approvalStore.recordExecution(origin.plan_id, {
+      status: 'unknown',
+      turn_id: 'turn-execution',
+    });
+    deps.planApprovalStore = approvalStore;
+
+    const ack = await handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Explain this without assuming the run belongs to the action.',
+      picker_state: { current: 'self' },
+      data_diagnosis: {
+        plan_id: origin.plan_id,
+        run_id: 'run-from-data',
+      },
+    });
+
+    expect(ack.data_diagnosis).toEqual({
+      kind: 'data_verification',
+      plan_id: origin.plan_id,
+      run_id: 'run-from-data',
+      intent: 'explanation',
+      run_correlation: 'unverified',
+    });
+  });
+
+  it('rejects a diagnosis run that conflicts with the action receipt', async () => {
+    const approvalStore = planApproval.createPlanApprovalStore();
+    const args = { id: 'record-one' };
+    const origin: ChatPlanProposal = {
+      plan_id: 'plan-diagnosis-mismatch',
+      session_id: 'mint-stub',
+      turn_id: 'turn-proposal',
+      tool: 'record.update',
+      tier: 2,
+      classification: 'write',
+      args,
+      args_hash: planApproval.computePlanArgsHash(args),
+      status: 'proposed',
+      created_at: 1_100,
+    };
+    approvalStore.put(origin);
+    approvalStore.resolve(origin.plan_id, 'approved', 1_200);
+    approvalStore.markConsumed(origin.plan_id, 1_300, 'turn-execution');
+    approvalStore.recordExecution(origin.plan_id, {
+      status: 'failed',
+      turn_id: 'turn-execution',
+      reason: 'execution_error',
+      run_id: 'run-receipt',
+    });
+    deps.planApprovalStore = approvalStore;
+
+    await expect(handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Explain this result.',
+      picker_state: { current: 'self' },
+      data_diagnosis: {
+        plan_id: origin.plan_id,
+        run_id: 'run-other',
+      },
+    })).rejects.toMatchObject({
+      code: 'bad_request',
+      status: 400,
+    });
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
+  });
+
+  it('never combines diagnosis grounding with retry lineage', async () => {
+    await expect(handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Explain this and retry it.',
+      picker_state: { current: 'self' },
+      retry_of_plan_id: 'plan-retry',
+      data_diagnosis: {
+        plan_id: 'plan-diagnosis',
+        run_id: 'run-one',
+      },
+    })).rejects.toMatchObject({
+      code: 'bad_request',
+      status: 400,
+    });
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
+  });
+
+  it('rejects an open-ended diagnosis intent before dispatch', async () => {
+    await expect(handleSend(deps, {
+      session_id: 'mint-stub',
+      message: 'Check this and fix it.',
+      picker_state: { current: 'self' },
+      data_diagnosis: {
+        plan_id: 'plan-diagnosis',
+        run_id: 'run-one',
+        intent: 'check_and_execute' as never,
+      },
+    })).rejects.toMatchObject({
+      code: 'bad_request',
+      status: 400,
+    });
+    expect(orchestrator.runTurn).not.toHaveBeenCalled();
   });
 
   it('threads the request time_zone into orchestrator.runTurn (D-193)', async () => {
@@ -553,6 +997,59 @@ describe('D-137 P1.2 — args-shape validation (Codex P2 fold)', () => {
 });
 
 describe('D-137 P3 § A.11 — plan-approval rpc handlers (was P1.2 not_implemented)', () => {
+  it('lists still-pending plans across sessions with durable message linkage', async () => {
+    const deps = setup();
+    const planStore = planApproval.createPlanApprovalStore();
+    const makePlan = (
+      plan_id: string,
+      session_id: string,
+      created_at: number,
+    ): ChatPlanProposal => {
+      const args = { to: `${session_id}@example.com` };
+      return {
+        plan_id,
+        session_id,
+        turn_id: `turn-${plan_id}`,
+        tool: 'mail.send',
+        tier: 2,
+        classification: 'write',
+        args,
+        args_hash: planApproval.computePlanArgsHash(args),
+        status: 'proposed',
+        created_at,
+      };
+    };
+    const old = makePlan('plan-old', 'session-a', 1_000);
+    const pending = makePlan('plan-pending', 'session-b', 2_000);
+    planStore.put(old);
+    planStore.put(pending);
+    planStore.linkTurnToMessage(
+      pending.session_id,
+      pending.turn_id,
+      'message-pending',
+    );
+    planStore.resolve(old.plan_id, 'cancelled', 3_000);
+    deps.planApprovalStore = planStore;
+
+    await expect(handlePlansPendingList(deps)).resolves.toEqual({
+      plans: [
+        {
+          plan: pending,
+          message_id: 'message-pending',
+          payload_available: true,
+        },
+      ],
+    });
+  });
+
+  it('pending-plan recovery is explicitly unavailable without a durable store', async () => {
+    const deps = setup();
+    await expect(handlePlansPendingList(deps)).rejects.toMatchObject({
+      code: 'not_configured',
+      status: 501,
+    });
+  });
+
   it('chat.plan.approve throws not_configured (501) when no planApprovalStore is wired', async () => {
     const deps = setup();
     // deps without a `planApprovalStore` must surface a clean 501,

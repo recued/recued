@@ -46,7 +46,7 @@
  *  at admin-write time so a corrupt config never reaches the visitor
  *  path.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.3 + § Must Hold I-1 + § A.10 + § A.11
+ *  Spec: D-149 § A.5.3 + § Must Hold I-1 + § A.10 + § A.11
  *  (TR-2 + TR-7 + TR-14). */
 
 import {
@@ -135,11 +135,10 @@ export const INTAKE_FORM_CALENDAR_DURATION_MINUTES_MAX = 24 * 60;
 export const INTAKE_FORM_DOMAIN_ALLOWLIST_MAX = 32;
 export const INTAKE_FORM_DOMAIN_ALLOWLIST_ENTRY_MAX = 254;
 
-/** Closed list of submission-processing DESTINATIONS — the entity a reviewed
- *  submission materializes on approval. OPTIONAL on the rule (see
- *  `IntakeFormSubmissionProcessingRule.target_kind`): absent = **log-only**, the
- *  immutable `form_response` record (written at submit) is the whole record and
- *  no destination entity is minted.
+/** Closed list of submission-processing DESTINATIONS — the record a reviewed
+ *  submission materializes on approval. The rule must name one explicitly;
+ *  forms whose answers are the record use the mutable `form_response`
+ *  destination, backed by the sealed submission as immutable evidence.
  *
  *  D-210 A.7 (centre/leaf) — the destination is the CENTRE; the submission and
  *  the commitment are leaves. Three corrections landed with that ruling:
@@ -168,7 +167,7 @@ export const INTAKE_FORM_DOMAIN_ALLOWLIST_ENTRY_MAX = 254;
  *    and kept even for spam. With the evidence held there, `form_response` is
  *    free to be what an owner actually needs: a mutable landing zone that
  *    carries a lifecycle. Same shape as A.3 reversing the siblings ruling.
- *    ⇒ see `docs/chat-prompt-optimization-log.md` (2026-07-19). */
+ *    ⇒ see internal design notes (2026-07-19). */
 export const INTAKE_FORM_TARGET_KINDS = [
   'task',
   'note',
@@ -203,6 +202,20 @@ export const INTAKE_FORM_TARGET_KIND_SET: ReadonlySet<IntakeFormTargetKind> = ne
  *  ⛔ There is deliberately no commitment tier. No destination mints a
  *  commitment (A.5) — that whole slice was deleted by the pressure test, not
  *  deferred. */
+/** ⚠ D-210 audit finding 14 — DECLARED, AND NOT YET READ AT RUNTIME.
+ *  A.7.1 calls this "the ONLY axis", but an exhaustive sweep finds references
+ *  only in this file and the contracts barrel: nothing gates a lifecycle
+ *  affordance on `track_state`, and nothing suppresses one for `record_fact`.
+ *
+ *  It is NOT dead weight, and that distinction is the reason it stays: the
+ *  total `Record<IntakeFormTargetKind, ReceptionDestinationTier>` below makes
+ *  adding a destination without classifying it a COMPILE ERROR. That is a real
+ *  guarantee — a compile-time checklist — just not a runtime one.
+ *
+ *  Kept honest rather than quietly deleted or quietly "used": this remains a
+ *  compile-time destination checklist, not a runtime capability gate. The
+ *  `form_response` lifecycle is now backed independently; surfaces still key
+ *  their controls from the concrete destination kind. */
 export type ReceptionDestinationTier =
   /** Tier 1 — record a fact. Written once, then it just IS. */
   | 'record_fact'
@@ -297,21 +310,19 @@ export interface IntakeFormSubmissionProcessingRule {
    *  ⚠ D-210 A.8 slice 2b adds the ⊇ direction for a real (non-`form_response`)
    *  destination: the two lists TOGETHER must cover every visible non-honeypot
    *  field (`field_not_placed`). A destination projects only what is named, so
-   *  an unplaced field is discarded — and once the submit-time `form_response`
-   *  log goes, nothing else holds it in plaintext. */
+   *  an unplaced field is discarded — and the sealed evidence row is not an
+   *  owner-queryable substitute for a complete destination. */
   readonly fields_to_attach_as_metadata: ReadonlyArray<string>;
   // D-210 Phase C — `triggered_recipe_id` RETIRED (owner ruling, 2026-07-18).
   // It was a hook on the auto-accept path, and the contract already called it
   // legacy: "Reviewed responses use the canonical `form_response.accepted`
   // trigger instead." With `auto_accept` retired its whole scope went, and its
-  // named replacement does NOT cover the approve moment either — WS2 moved that
-  // trigger to SUBMIT time.
+  // named replacement is the destination collection's approval-time create event.
   //
   // The capability survives without a per-endpoint string: the approve leg
   // creates the DESTINATION entity, so a reactive recipe on that collection's
-  // `created` event fires exactly when the owner approves. (A LOG-ONLY intake
-  // mints no destination and so has no such signal — a post-approval event is
-  // the way to close that, not this field.)
+  // `created` event fires exactly when the owner approves. A `form_response`
+  // destination emits the same event from its approval-time promotion.
   // The validator REFUSES a stale key rather than ignoring it.
   // D-210 Phase C — `notification_target` RETIRED (owner ruling, 2026-07-18).
   // It was a per-endpoint copy of the D-158 notification-channel vocabulary
@@ -830,8 +841,8 @@ export const validateIntakeFormConfig = (
     });
   } else {
     const r = c.submission_processing_rule as Record<string, unknown>;
-    // D-210 WS2: `target_kind` is OPTIONAL — absent = log-only. A PRESENT value
-    // must still be one of the closed destination kinds.
+    // D-210: `target_kind` is required and must be one of the closed destination
+    // kinds. Runtime validation matters because stored JSON bypasses TypeScript.
     // ⚠ A REQUIRED TypeScript field guards nothing at runtime — a stored or
     // hand-authored JSON config never passes through the compiler. This is the
     // only thing that refuses an absent destination, so it is its own failure
@@ -925,20 +936,15 @@ export const validateIntakeFormConfig = (
     //
     // The two lists above were validated ⊆ only (every NAMED field must be
     // real). Nothing required them to COVER the form, and `buildEntityShape`
-    // is asymmetric: log-only mode projects every visible non-honeypot field,
-    // while destination mode projects ONLY the named ones. A field in neither
+    // is asymmetric: `form_response` retains every visible non-honeypot field,
+    // while entity destinations project ONLY the named ones. A field in neither
     // list is therefore dropped from the destination entirely.
     //
-    // That was survivable while `form_response` was written at submit for
-    // every intake — it retained the full values blob, so an unplaced field
-    // was still readable there. 2b removes that log, and NO owner surface
-    // decrypts `submission_blob_encrypted` (the reception Records projection
-    // deliberately omits it). Without this rule an unplaced field becomes
+    // NO owner surface exposes `submission_blob_encrypted` (the reception
+    // Records projection deliberately omits it). Without this rule an unplaced field becomes
     // unreadable to the owner permanently and silently.
     //
     // ⛔ Scoped to a REAL non-`form_response` destination:
-    //   - absent `target_kind` ⇒ the knobs are ignored (log-only projects
-    //     everything), so demanding coverage would demand something meaningless;
     //   - `form_response` ⇒ "its canonical record retains every submitted
     //     value" (see the field docs above), so coverage is automatic;
     //   - an INVALID `target_kind` already has its own failure — do not pile a

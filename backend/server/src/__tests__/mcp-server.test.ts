@@ -10,6 +10,7 @@ import type {
   IngredientManifest,
   InternalToolRegistry,
   RecipeDefinition,
+  ScanFn,
   ToolEntry,
 } from '@recued/contracts';
 import { RpcError } from '@recued/contracts';
@@ -1142,7 +1143,7 @@ describe('D-153 P2.C — MCP registry-routed source + snapshot dispatch', () => 
 
       const snapshot = ctx.contract_snapshot;
       expect(snapshot?.contract_id).toBe(source.contract_id);
-      expect(snapshot?.contract_version).toBe('1');
+      expect(snapshot?.contract_version).toMatch(/^authority-sha256-v1:[0-9a-f]{64}$/);
       expect(snapshot?.allowed_tools).toEqual(['alpha-http', 'beta-http']);
       expect(snapshot?.approval_required).toEqual([]);
       expect(snapshot?.scope_restrictions).toEqual([]);
@@ -1429,7 +1430,7 @@ describe('MCP per-ingredient dispatch', () => {
     expect(contractSnapshot.contract_id).toBe(executionSource.contract_id);
     expect(contractSnapshot.allowed_tools).toContain('fetch-thing');
     expect(contractSnapshot.approval_required).toEqual([]);
-    expect(contractSnapshot.contract_version).toBe('1');
+    expect(contractSnapshot.contract_version).toMatch(/^authority-sha256-v1:[0-9a-f]{64}$/);
     expect(contractSnapshot.scope_restrictions).toEqual([]);
     expect(typeof contractSnapshot.resolved_at).toBe('number');
 
@@ -1787,13 +1788,14 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
   // signal `resolveTrustCeiling` keys on: absent → the owner's own stdio client (the
   // STDIO_MCP_TOKEN_ID sentinel → admin ceiling); present → a delegated door (→ contracted
   // LOW, whether or not it also carries a bound contract).
-  const depsWith = (overlay: unknown, mcpTokenId?: string) =>
+  const depsWith = (overlay: unknown, mcpTokenId?: string, contractScan?: ScanFn) =>
     ({
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
       contractOverlay: overlay,
       ...(mcpTokenId !== undefined ? { mcpTokenId } : {}),
+      ...(contractScan !== undefined ? { contractScan } : {}),
     }) as unknown as Parameters<typeof _testing.handleToolCall>[1];
   const isError = (res: unknown): boolean => (res as { isError?: boolean }).isError === true;
 
@@ -1856,6 +1858,36 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
     expect(isError(res)).toBe(true);
     expect(JSON.stringify(res)).toContain('approval');
     expect(recordUse).not.toHaveBeenCalled();
+  });
+
+  it('D-211: one global owner approval holds the same native read for owner and delegated MCP callers', async () => {
+    const scan: ScanFn = (scope, prefix) =>
+      scope === 'owner_operation'
+        && prefix[0] === 'recued_listRecipes'
+        && prefix[1] === 'recued_listRecipes'
+        ? [{
+            segments: ['recued_listRecipes', 'recued_listRecipes'],
+            value: { approval: 'always' },
+          }]
+        : [];
+
+    const owner = overlayWithCell(null);
+    const ownerResult = await _testing.handleToolCall(
+      { name: 'recued_listRecipes', arguments: {} },
+      depsWith(owner.overlay, undefined, scan),
+    );
+    expect(isError(ownerResult)).toBe(true);
+    expect(JSON.stringify(ownerResult)).toContain('approval');
+    expect(owner.recordUse).not.toHaveBeenCalled();
+
+    const delegated = overlayWithCell(null);
+    const delegatedResult = await _testing.handleToolCall(
+      { name: 'recued_listRecipes', arguments: {} },
+      depsWith(delegated.overlay, 'tok-inbound-door', scan),
+    );
+    expect(isError(delegatedResult)).toBe(true);
+    expect(JSON.stringify(delegatedResult)).toContain('approval');
+    expect(delegated.recordUse).not.toHaveBeenCalled();
   });
 
   it('admits + meters a native tool the cell does not deny (per-tool deny is exact)', async () => {

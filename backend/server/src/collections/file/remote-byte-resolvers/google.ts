@@ -14,7 +14,7 @@
  *  mirror's `meta.mime_type` BEFORE the fetch. Binary files (PDF / image / …)
  *  download normally.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import { RpcError } from '@recued/contracts';
 

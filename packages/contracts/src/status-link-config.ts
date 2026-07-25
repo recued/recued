@@ -56,7 +56,7 @@
  *      ISO timestamps (per § A.14 line 1303 "no exact last-seen
  *      timestamps").
  *
- *  Spec: `docs/d-149-spec.md` § A.5.6 + § Must Hold I-2 + I-12. */
+ *  Spec: D-149 § A.5.6 + § Must Hold I-2 + I-12. */
 
 import {
   STATUS_LINK_PROJECTION_KIND_SET,

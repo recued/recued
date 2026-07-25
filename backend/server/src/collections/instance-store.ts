@@ -17,8 +17,8 @@
  *
  *  `caps_json` is the serialized `FileCollectionCaps` produced at
  *  enroll time by the adapter's `probeCaps()`. Cached so parseRecipe
- *  doesn't need to touch the adapter on every install — re-probe is
- *  a background task (`collection.file.resync`).
+ *  doesn't need to touch the adapter on every install. Re-probe and the
+ *  bounded adapter restart are explicit (`collection.file.resync`).
  *
  *  `auth_state` is separated from `caps_json` so runtime token
  *  expiry flips one column without rewriting the cached caps. The
@@ -128,8 +128,7 @@ export interface CollectionInstanceStore {
     slug: string,
     patch: { auth_state: CollectionAuthState; last_synced_at?: number },
   ): CollectionInstanceRecord | null;
-  /** Narrow write for the re-probe background job — replaces caps +
-   *  marks the row refreshed. */
+  /** Narrow write for an explicit re-probe — replaces cached caps. */
   updateCaps(
     platform: CollectionPlatform,
     slug: string,

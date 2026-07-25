@@ -43,7 +43,7 @@
  *
  *  ⛔ `approved_at` IS LOAD-BEARING — SEE BELOW.
  *
- *  Spec: `docs/d-210-spec.md` Phase C; D-157 § A.2 / N.3. */
+ *  Spec: D-210 Phase C; D-157 § A.2 / N.3. */
 
 import type { Checkpoint } from '@recued/contracts';
 import type { CheckpointStore } from '@recued/storage';

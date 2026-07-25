@@ -9,8 +9,10 @@
  *    2. Network-only for `*://*\/v1\/*`, `*://*\/ws*`, anything in
  *       `sessionStorage` (never reached here), or anything not under
  *       the SW's scope.
- *    3. Cache-first for same-origin static assets — the bundle's
- *       cache-busting filename invalidates old entries on deploy.
+ *    3. Cache-first for same-origin static assets. ⚠ The bundle
+ *       filename is NOT cache-busted (`webclient-main.js` is fixed), so
+ *       nothing invalidates on its own — `CACHE_NAME` is the ONLY lever.
+ *       See DD#1.
  *    4. On install, pre-caches the closed-list shell so the next launch
  *       works offline without first hitting the assets via the page.
  *    5. On activate, sweeps caches whose names don't match the current
@@ -20,9 +22,21 @@
  *  ── Key design decisions ───────────────────────────────────────────
  *
  *  DD#1 — Cache name carries a version suffix. A bundle deploy that
- *  changes shell contents must bump the suffix so the activate sweep
- *  evicts the old shell. The buildscript stamps this in production;
- *  the source default is `webclient-shell-v1`.
+ *  changes shell contents MUST bump the suffix by hand, in this file,
+ *  as part of that deploy.
+ *
+ *  ⚠ NOTHING AUTOMATES THIS. No buildscript stamps it (an earlier version
+ *  of this comment claimed one did — it never existed). Two mechanisms have
+ *  to fire and both key off these bytes:
+ *    · the browser only re-runs `install`/`activate` when `sw.js` ITSELF
+ *      differs byte-wise, and the suffix is the only thing that changes;
+ *    · `activate` only evicts a cache whose name ≠ `CACHE_NAME`.
+ *  Ship an unchanged `sw.js` and returning users keep serving the OLD
+ *  bundle from the surviving cache for a full session (stale-while-
+ *  revalidate repairs it only on the launch AFTER). That is a live
+ *  old-client-vs-new-server skew window — it broke pack installs during
+ *  the `recipe_refs` catalog drop (2026-07-23), which is why this is
+ *  spelled out.
  *
  *  DD#2 — `/v1/*` + `/ws*` are never cached. The webclient stores ZERO
  *  durable application state per spec § A.4.1 — caching the rpc /
@@ -41,7 +55,19 @@
  *  cache for the next launch. This trades freshness for offline-
  *  resilience, which matches the PWA install promise. */
 
-const CACHE_NAME = 'webclient-shell-v5';
+// v6 (2026-07-23) — the `recipe_refs` catalog drop. The new bundle tops pack
+// membership up from `/packs/<slug>.json`; the v5 bundle still expects it in
+// the meta catalog, so a client left on v5 fails every bundled-recipe install
+// once the marketplace stops emitting it. Bumping evicts v5 on activate.
+//
+// v7 (2026-07-23) — Discover consumes server-side search (stage 2). The new
+// bundle pages the catalogue from `/catalog/search` + `/catalog/versions`
+// instead of downloading + reducing over the whole corpus; a client left on v6
+// keeps downloading it. Bumping evicts v6 so the shell replaces itself (fixed
+// filename behind a cache-first SW → the cache name is the only lever). ⚠ MUST
+// match `WEBCLIENT_SHELL_CACHE_NAME` in `src/runtime/service-worker.ts` — a
+// parity test enforces it.
+const CACHE_NAME = 'webclient-shell-v7';
 
 /** Pre-cache list — the app shell. Network-only for everything else.
  *  Adding a new shell asset requires an entry here + a `CACHE_NAME`

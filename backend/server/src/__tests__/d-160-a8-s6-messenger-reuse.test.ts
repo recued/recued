@@ -66,7 +66,15 @@ import {
 } from '../chat-orchestrator.js';
 import { createChatStreamMiddlewares } from '../chat-stream-middleware.js';
 import { readPiiEgressPlan } from '../chat-pii-egress.js';
-import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
+import {
+  RECALL_SEARCH_TOOL_ENTRY,
+  RECALL_SEARCH_TOOL_NAME,
+} from '../chat-recall-search-tool.js';
+import {
+  CHAT_MESSAGE_RECALL_ELIGIBILITY,
+  createChatStore,
+  ensureChatSchema,
+} from '../storage/chat-store.js';
 
 const NOW = Date.UTC(2030, 0, 15, 12, 0, 0);
 const SESSION = 'sess-msgr';
@@ -265,6 +273,94 @@ const runMessengerTurn = async (opts: {
 };
 
 describe('D-160 A.8 step 6 — messenger reuses the s5 hooks over the same registry', () => {
+  it('presents recall.search to direct owner chat but omits it from messenger over the same registry', async () => {
+    const db = new Database(':memory:');
+    try {
+      ensureChatSchema(db);
+      const chatStore = createChatStore(db);
+      chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
+      const registry: InternalToolRegistry = {
+        list: () => [RECALL_SEARCH_TOOL_ENTRY],
+        listByTier: (tier) =>
+          tier === 1 ? [RECALL_SEARCH_TOOL_ENTRY] : [],
+        getByName: (name) =>
+          name === RECALL_SEARCH_TOOL_NAME
+            ? RECALL_SEARCH_TOOL_ENTRY
+            : null,
+        dispatch: vi.fn(async () => ({ ok: true, result: {} }) as const),
+        subscribeRefresh: () => () => {},
+      };
+      const executeAiCall = vi.fn<ExecuteChatAiCall>(async () => ({
+        body: { response: 'ok', events: [], tool_calls: [] } satisfies AIOutput,
+      }));
+      const orchestrator = createChatOrchestrator({
+        chatStore,
+        registry,
+        selfSignature,
+        executeAiCall,
+        now: () => NOW,
+      });
+
+      await orchestrator.runTurn({
+        session_id: SESSION,
+        message: 'What did I say before?',
+        picker_state: { current: 'self' },
+      });
+
+      const sessionStore = createInMemorySessionStore();
+      const { channel } = fakeMessengerChannel({
+        vendor: 'slack',
+        sessionStore,
+        token: 'byo-token',
+        recipient: 'C-recipient',
+        sessionId: SESSION,
+        parsedText: 'What did I say before?',
+        now: () => NOW,
+      });
+      let messengerTurn: Promise<ChatTurnAck> | undefined;
+      channel.onInbound((inbound) => {
+        messengerTurn = orchestrator.runMessengerTurn({
+          channel,
+          sessionStore,
+          inbound,
+        });
+      });
+      await channel.ingest({ vendor: 'slack' });
+      await messengerTurn!;
+
+      const toolNames = (callIndex: number): string[] => {
+        const input = executeAiCall.mock.calls[callIndex]![1];
+        const prompt = JSON.parse(String(input['llm.prompt'])) as {
+          available_tools: Array<{ recipe_slug: string }>;
+        };
+        return prompt.available_tools.map((tool) => tool.recipe_slug);
+      };
+      expect(toolNames(0)).toContain(RECALL_SEARCH_TOOL_NAME);
+      expect(toolNames(1)).not.toContain(RECALL_SEARCH_TOOL_NAME);
+
+      const stamps = db.prepare(`
+        SELECT recall_eligibility, COUNT(*) AS count
+          FROM chat_messages
+         GROUP BY recall_eligibility
+         ORDER BY recall_eligibility
+      `).all() as Array<{ recall_eligibility: string; count: number }>;
+      expect(stamps).toEqual([
+        {
+          recall_eligibility:
+            CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+          count: 2,
+        },
+        {
+          recall_eligibility:
+            CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_MESSENGER,
+          count: 1,
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('drives the scope-search → confidence-shape chain on a MESSENGER turn (the reuse)', async () => {
     const spy = spyContactSource();
     const { ack } = await runMessengerTurn({

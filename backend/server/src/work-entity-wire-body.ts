@@ -5,7 +5,7 @@
  *  dependency resolver's container `create_op` invoke. Sharing it is load-bearing
  *  — a second copy would drift, and a create that composes its body differently
  *  than the sync/update path is exactly the silent mis-scope the collision guards
- *  exist to prevent (`docs/d-192-source-dependencies-design.md`, Slice-5 rescope
+ *  exist to prevent (D-192, Slice-5 rescope
  *  note).
  *
  *  The catalog gateway passes caller args through in WIRE-KEY form; the

@@ -5,7 +5,7 @@
  *  ledger gate; resolves the task record via
  *  `/crm/v3/objects/tasks/{id}` follow-up GET.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6. */
 
 import { HUBSPOT_TASK_PROPERTIES } from '@recued/contracts';
 

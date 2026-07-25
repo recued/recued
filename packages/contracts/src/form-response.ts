@@ -1,12 +1,9 @@
 /**
  * Canonical intake-form response — the generic DESTINATION (D-210 A.4).
  *
- * ⚠ The previous version of this header said a response *"enters this data
- * contract only after the owner accepts it"*. That has been wrong since D-210
- * WS2 moved the write to SUBMIT time (`intake-form.ts` — the public visitor
- * POST handler), and it is now wrong a second way: A.8 slice 2 makes the record
- * MUTABLE. Trusting that sentence over the behaviour already produced one wrong
- * conclusion; it is corrected here rather than left to mislead again.
+ * A response enters this data contract only after the owner accepts it. The
+ * public POST writes the sealed `reception_form_submission` evidence row; the
+ * approve funnel creates this mutable working destination.
  *
  * Under centre/leaf this is a **stage-3 destination**, not evidence. The sealed,
  * never-edited record of what a visitor submitted is
@@ -76,6 +73,8 @@ export interface FormResponse extends CanonicalRecord {
   readonly visitor: FormResponseVisitor;
   readonly submitted_at: number;
   readonly accepted_at: number;
+  /** Last owner edit to values or visitor identity. Initially accepted_at. */
+  readonly updated_at: number;
   /** Visitor-authored content remains tainted after owner acceptance.
    *
    *  ⛔ This stays `'anonymous'` even though the owner can now advance
@@ -88,7 +87,7 @@ export interface FormResponse extends CanonicalRecord {
   readonly origin_actor: 'anonymous';
   /** Server-owned promotion path; never caller supplied. */
   readonly origin_surface: 'system';
-  /** D-210 A.7.1 — owner-authored, the only field the owner advances. */
+  /** D-210 A.7.1 — owner-authored lifecycle. */
   readonly lifecycle_state: FormResponseLifecycleState;
   /** When `lifecycle_state` last actually CHANGED — not when the row was last
    *  touched. A metadata edit must not move it, or "when did they no-show?"
@@ -115,6 +114,7 @@ export interface FormResponseListQuery {
   /** Exclusive, stable keyset cursor matching the store's sort order. */
   readonly before?: FormResponseListCursor;
   readonly limit?: number;
+  readonly lifecycle_states?: ReadonlyArray<FormResponseLifecycleState>;
 }
 
 export interface FormResponseListCursor {
@@ -132,6 +132,9 @@ export interface FormResponseListItem {
   readonly visitor: FormResponseVisitor;
   readonly submitted_at: number;
   readonly accepted_at: number;
+  readonly updated_at: number;
+  readonly lifecycle_state: FormResponseLifecycleState;
+  readonly state_changed_at: number;
   readonly template_ref?: string;
 }
 
@@ -184,6 +187,47 @@ export interface FormResponseSetStateRpcRequest {
  *  error here, the same shape `form_response.get` returns. */
 export interface FormResponseSetStateRpcResponse {
   readonly response: FormResponse | null;
+}
+
+/** Owner edits the working destination only. Provenance, frozen definition,
+ * submission/acceptance timestamps, and lifecycle are intentionally absent. */
+export interface FormResponseUpdateRpcRequest {
+  readonly submission_id: string;
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly visitor: FormResponseVisitor;
+}
+
+export interface FormResponseUpdateRpcResponse {
+  readonly response: FormResponse | null;
+}
+
+export type FormResponseExportFormat = 'json' | 'csv';
+
+export interface FormResponseExportRpcRequest {
+  readonly format: FormResponseExportFormat;
+  readonly endpoint_id?: string;
+  readonly form_definition_id?: string;
+  readonly lifecycle_states?: ReadonlyArray<FormResponseLifecycleState>;
+  /** Resume point for the NEXT chunk — echo back `next_cursor` from the
+   *  previous response. Absent ⇒ the first chunk (and, for CSV, the only one
+   *  that carries a header row). */
+  readonly before?: FormResponseListCursor;
+}
+
+export interface FormResponseExportRpcResponse {
+  readonly filename: string;
+  readonly mime_type: 'application/json' | 'text/csv';
+  readonly content: string;
+  readonly record_count: number;
+  /** Present iff more records remain past this chunk. The per-call ceiling
+   *  bounds ONE rpc payload, not the owner's ability to export their data:
+   *  a caller loops on this until it is absent.
+   *
+   *  ⛔ It previously threw `result exceeds N records; narrow the filters` —
+   *  naming filters the responses tab does not expose, so an owner past the
+   *  ceiling could never export anything at all. A partial file presented as
+   *  complete would have been worse; this is neither. */
+  readonly next_cursor?: FormResponseListCursor;
 }
 
 export interface FormResponseGetRpcRequest {

@@ -17,7 +17,7 @@
  *     what is best."* So this is BEHAVIOR-PRESERVING at zero revokes; it only makes the
  *     owner's call ENFORCEABLE. Do NOT "harden" it by tightening the default.
  *  2. **NEVER `ok:false`** — the Tier-1 ANTI-LOOP invariant (`createMemorySearchHandler` +
- *     the 2026-06-09 `enrichment.search` entry in `docs/chat-prompt-optimization-log.md`):
+ *     the 2026-06-09 `enrichment.search` entry in internal design notes):
  *     an errored read sends a reasoning model into a retry-to-timeout loop.
  *  3. **NEVER a silent / unexplained empty.** Each tool has a DIFFERENT envelope, and two of
  *     them can LIE outright: mail+calendar refuse into `{ matches: [] }` (indistinguishable

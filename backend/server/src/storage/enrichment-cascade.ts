@@ -34,8 +34,8 @@
  *  optional — db-less harnesses + the existing
  *  `createEnrichmentCascade(store)` test calls work unchanged.
  *
- *  Spec: `docs/d-122-spec.md` §"Enrichment substrate" — Cascade engine.
- *  D-123 wiring: `docs/d-123-spec.md` §6.1. */
+ *  Spec: D-122 §"Enrichment substrate" — Cascade engine.
+ *  D-123 wiring: D-123 §6.1. */
 
 import {
   CONNECTION_VENDOR_ENTITIES,

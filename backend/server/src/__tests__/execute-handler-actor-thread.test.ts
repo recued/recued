@@ -1,9 +1,11 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ExecutionContext, ExecutionResult } from '@recued/engine';
-import type {
-  ExecutionSource,
-  RecipeDefinition,
-  RecipeStep,
+import {
+  executionSourceContractId,
+  type ContractSnapshot,
+  type ExecutionSource,
+  type RecipeDefinition,
+  type RecipeStep,
 } from '@recued/contracts';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
@@ -25,16 +27,13 @@ import { createRecipeStore } from '../recipe-store.js';
  *  preserved via `importOriginal` (same pattern as the sibling
  *  `d-157-server-wiring-execute-handler.test.ts`).
  *
- *  Channels are mostly chosen from the NON-policy-gated set
- *  (`webhook` / `reception`) so the pre-engine `(channel × actor)` policy
- *  gate in `handleExecute` never short-circuits before `executeRecipe` is
- *  reached — the test exercises the actor thread, not the gate. The one
- *  gated channel (`schedule`, covering the `system` actor after D-209 #1
- *  W3 moved webhook to `anonymous`) rides the transform-only fixture,
- *  which the gate cannot deny. The `capturedActorFor` helper throws if
- *  dispatch was never reached, so a future gate change that swallows
- *  these channels fails loudly instead of making the `undefined`
- *  assertion pass vacuously. */
+ *  D-209 now policy-gates `webhook`, `reception`, and `schedule`. This
+ *  harness therefore supplies a matching snapshot whenever the source is
+ *  contract-bearing; the recipe itself stays transform-only, so the gate
+ *  has no ingredient call to deny. The `capturedActorFor` helper throws if
+ *  dispatch was never reached, so a future gate change that swallows these
+ *  channels fails loudly instead of making the `undefined` assertion pass
+ *  vacuously. */
 
 const executeRecipeMock = vi.hoisted(() => vi.fn());
 
@@ -96,6 +95,21 @@ const successResult = (): ExecutionResult => ({
   validation_issues: [],
 });
 
+const contractSnapshotFor = (
+  source: ExecutionSource,
+): ContractSnapshot | undefined => {
+  const contract_id = executionSourceContractId(source);
+  if (contract_id === undefined) return undefined;
+  return {
+    contract_id,
+    contract_version: 'v1',
+    allowed_tools: [],
+    approval_required: [],
+    scope_restrictions: [],
+    resolved_at: 1_000,
+  };
+};
+
 /** Run `handleExecute` with the given source and return whatever `actor`
  *  the host threaded onto the engine ctx. Throws if `executeRecipe` was
  *  never reached (e.g. a future policy-gate denial), so the `undefined`
@@ -108,9 +122,15 @@ const capturedActorFor = async (
     captured = ctx;
     return successResult();
   });
+  const contract_snapshot = execution_source === undefined
+    ? undefined
+    : contractSnapshotFor(execution_source);
   await handleExecute(makeDeps(), {
     recipe_id: RECIPE_ID,
     ...(execution_source ? { execution_source } : {}),
+    // The actor-thread test is a producer harness. Satisfy the canonical
+    // contract-source invariant so it reaches the engine boundary it observes.
+    ...(contract_snapshot === undefined ? {} : { contract_snapshot }),
   });
   if (!captured) {
     throw new Error(

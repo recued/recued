@@ -1,6 +1,6 @@
 /** D-175 P5 — account ↔ server binding (server half).
  *
- *  The gate per `factory/dispatch/d175-p5-binding-backend.md`:
+ *  The gate per `internal planning notes`:
  *    - the full receive → exchange (mock) → store → conflict →
  *      confirmed-rebind → audit path;
  *    - order-independence (account-first AND server-first);

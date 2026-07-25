@@ -5,7 +5,7 @@
  *  living in `@recued/ingredients` carries the per-manifest gate test;
  *  this file is the contracts-package boundary check.
  *
- *  Spec: `docs/d-136-spec.md` §A.4 + audit §27.2. */
+ *  Spec: D-136 §A.4 + audit §27.2. */
 
 import { describe, expect, it } from 'vitest';
 

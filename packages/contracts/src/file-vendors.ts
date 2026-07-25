@@ -1,7 +1,7 @@
 /** D-192 file SOURCE family (slice 3) — the `FileVendorDeclaration` registry.
  *
  *  The canonical-vocabulary half of the kinds-taxonomy §0 governing rule
- *  (`docs/d-192-kinds-taxonomy.md`): "for any multi-vendor family, split the
+ *  (D-192): "for any multi-vendor family, split the
  *  design into (1) a canonical vocabulary + a declaration the shared logic is
  *  written against ONCE and (2) a thin per-vendor adapter for only what can't
  *  generalize — the API leaf, the auth flow, the byte-format." A new file
@@ -25,10 +25,10 @@
  *  Every facet is grounded in real per-vendor variance — Dropbox rides a
  *  `list_folder` cursor and exposes `rev`; S3 has no native delta (re-list) and
  *  no `ContentType` in `ListObjectsV2` (its `mime_type` is deliberately
- *  omitted) — never speculation. Bytes are NEVER fetched (North star);
- *  everything here is metadata projection.
+ *  omitted) — never speculation. Source sync fetches metadata only; explicit
+ *  reads use a separate lazy remote-byte resolver.
  *
- *  Spec: `docs/d-192-file-source-family.md`; taxonomy §0 / §3b. */
+ *  Spec: D-192; taxonomy §0 / §3b. */
 
 // ────────────────────────────────────────────────────────────────
 // Closed enums (the declaration's controlled vocabulary)
@@ -445,8 +445,10 @@ export const FILE_VENDOR_DECLARATIONS: ReadonlyArray<FileVendorDeclaration> = [
     // hash skip keeps an unchanged re-walk cheap; `cursor_kind: 'none'`. The
     // completeness proof is "complete over the SHARED set" across both prongs
     // (unshared pages/data sources are invisible — the leaf never absence-deletes
-    // without a positive exhaustion of the shared walk). Byte-fetch is deferred
-    // family-wide (metadata-only North star).
+    // without a positive exhaustion of the shared walk). Explicit byte reads
+    // are separate from sync: block-backed files can be re-resolved lazily;
+    // synthetic data-source-property rows that lack a stable object locator
+    // fail closed as unresolvable.
     list: { mode: 'full', cursor_kind: 'none' },
     projection: {
       // The leaf SYNTHESIZES a flat row per file (the native shapes are deeply

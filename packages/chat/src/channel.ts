@@ -11,7 +11,7 @@
  *  surface; `@recued/messenger` type-imports it. Neither names the other
  *  at runtime — `messenger` imports these as `import type` only.
  *
- *  Spec: docs/d-160-spec.md § N.2 / N.5 / N.6 / A.5.
+ *  Spec: D-160 § N.2 / N.5 / N.6 / A.5.
  */
 
 import type { ChatMessageAttachment, ExecutionSource } from '@recued/contracts';

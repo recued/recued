@@ -24,7 +24,7 @@
  *  must never drive a handle release — the DDNS subdomain release
  *  reshapes every paired client's server-address pin.
  *
- *  Spec: docs/d-148-spec.md § A.5.2 + § A.6.3. */
+ *  Spec: D-148 § A.5.2 + § A.6.3. */
 
 import {
   RpcError,

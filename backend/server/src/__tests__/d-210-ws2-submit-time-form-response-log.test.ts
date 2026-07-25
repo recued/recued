@@ -1,4 +1,20 @@
-/** D-210 WS2 — the canonical `form_response` log is written at SUBMIT.
+/** D-210 finding 3a — NOTHING is written to `form_response` at SUBMIT.
+ *
+ *  ⚠ THIS FILE'S CENTRAL CLAIM WAS REVERSED on 2026-07-20. It used to pin
+ *  "the canonical log is written at SUBMIT"; the code audit found that this
+ *  made approval gate NOTHING about the destination row's existence — the row
+ *  is a `data.*` collection with owner-default grants, so it was queryable by
+ *  the owner's AI before the owner had seen the submission. A.1: "Approve is
+ *  the only door, and it is where the record becomes real."
+ *
+ *  The POSITIVE claims (what gets written, with which values, and the
+ *  destination discrimination) moved with the write, to
+ *  `form-response-promotion.test.ts`. They were re-homed rather than deleted:
+ *  once nothing is written at submit, every "does NOT log" assertion here is
+ *  trivially true, so leaving them as the only coverage would be a gate that
+ *  passes by doing less. ⇒ [[a_reduction_is_faked_by_doing_less]]
+ *
+ *  Historical note — what the file used to pin:
  *
  *  This is the whole rule matrix in one place, driven through the REAL intake
  *  POST handler with a REAL submission store and a REAL `form_response` store
@@ -24,7 +40,7 @@
  *  deleting the outcome gate entirely left the suite green. An unpaired spam
  *  submission had no test at all. Found by mutation, not by reading.
  *
- *  Spec: `docs/d-210-spec.md`; the write site is
+ *  Spec: D-210; the write site is
  *  `ports/reception/handlers/intake-form.ts`. */
 
 import Database from 'better-sqlite3';
@@ -139,8 +155,6 @@ const submit = async (input: {
   const registry = {
     findById: (id: string) => (id === ENDPOINT_ID ? { metadata: input.config } : null),
   };
-  const created: string[] = [];
-
   const getRes = fakeRes();
   await createIntakeFormPacketHandler({
     getStore: () => registry as never,
@@ -154,11 +168,9 @@ const submit = async (input: {
   await createIntakeFormSubmitHandler({
     getStore: () => registry as never,
     getSubmissionStore: () => submissionStore,
-    getFormResponseStore: () => responseStore,
     getFormNonceStore: () => nonceStore,
     getFormSubmissionPiiKey: () => PII_KEY,
     auditLog: { logActivity: async () => undefined } as unknown as AuditLogStore,
-    onFormResponseCreated: (response) => created.push(response.submission_id),
     now: () => NOW,
   })(
     fakeReq('POST', new URLSearchParams({
@@ -177,34 +189,23 @@ const submit = async (input: {
     .get() as { submission_id: string; processing_outcome: string } | undefined;
   const logged = responseStore.list();
   db.close();
-  return { status: postRes.statusCode, row, logged, created };
+  return { status: postRes.statusCode, row, logged };
 };
 
-describe('D-210 WS2 — the canonical form_response log is written at submit', () => {
-  it('logs an accepted UNPAIRED submission before any approval, with its values sealed nowhere else', async () => {
+describe('D-210 finding 3a — no form_response row is written at submit', () => {
+  it('writes NO destination row for an accepted UNPAIRED submission — approval is the door', async () => {
+    // ⚠ INVERTED 2026-07-20 (audit finding 3a). This asserted the OPPOSITE:
+    // that the row was logged "before any approval". That WAS the defect.
     const seen = await submit({ config: formConfig(), email: 'lead@example.com' });
 
     expect(seen.status).toBe(200);
+    // The SUBMISSION is durable and fully reviewable — nothing is lost by
+    // waiting, which is what makes deferring the destination row safe.
     expect(seen.row?.processing_outcome).toBe('pending');
-    expect(seen.logged).toHaveLength(1);
-    // The row is the SUBMISSION, in full — not a projection of it. The handler
-    // had the plaintext in hand pre-sealing, so nothing here required a key.
-    expect(seen.logged[0]).toMatchObject({
-      submission_id: seen.row?.submission_id,
-      endpoint_id: ENDPOINT_ID,
-      form_definition_id: FORM_DEFINITION_ID,
-      values: { topic: 'Pricing', details: 'How much for the enterprise tier?' },
-      visitor: { email: 'lead@example.com' },
-      submitted_at: NOW,
-      accepted_at: NOW,
-      origin_actor: 'anonymous',
-    });
-    // The frozen definition travels with it, so a later form edit cannot
-    // reinterpret these answers under different labels.
-    expect(seen.logged[0]?.definition_snapshot).toEqual(formConfig().form_definition);
-    // …and the first-create fan-out ran, so owner Data + the trigger bus see it
-    // at submit rather than at approval.
-    expect(seen.created).toEqual([seen.row?.submission_id]);
+    // …and no destination row until approve. The submit handler does not even
+    // accept that store as a dependency, so this cannot regress to a hidden
+    // pre-approval write through the public port.
+    expect(seen.logged).toEqual([]);
   });
 
   // ══════════════════════════════════════════════════════════════
@@ -222,25 +223,20 @@ describe('D-210 WS2 — the canonical form_response log is written at submit', (
     expect(seen.row?.processing_outcome).toBe('pending');
     // …but its record is the TASK it will materialize, not a row here.
     expect(seen.logged).toEqual([]);
-    // And no first-create fan-out fired, so owner Data and the trigger bus are
-    // not told a response landed when none did.
-    expect(seen.created).toEqual([]);
   });
 
-  it('DOES log when the destination is form_response EXPLICITLY', async () => {
+  it('writes NO row at submit even when the destination is form_response EXPLICITLY', async () => {
+    // The POSITIVE half of this claim moved to the approve path — see
+    // `form-response-promotion.test.ts`, "writes the canonical row for an
+    // UNPAIRED form_response approval". Keeping only the negative here would
+    // leave the write itself untested.
     const seen = await submit({
       config: formConfig({ target_kind: 'form_response' }),
       email: 'lead@example.com',
     });
 
-    expect(seen.logged).toHaveLength(1);
-    expect(seen.logged[0]).toMatchObject({
-      values: { topic: 'Pricing', details: 'How much for the enterprise tier?' },
-      // Born in the default state — the owner has not worked it yet.
-      lifecycle_state: 'received',
-      state_changed_at: 0,
-    });
-    expect(seen.created).toEqual([seen.row?.submission_id]);
+    expect(seen.status).toBe(200);
+    expect(seen.logged).toEqual([]);
   });
 
   it('has NO absent-target_kind case left — the synonym is retired', () => {
@@ -262,7 +258,6 @@ describe('D-210 WS2 — the canonical form_response log is written at submit', (
 
     expect(seen.row?.processing_outcome).toBe('spam');
     expect(seen.logged).toEqual([]);
-    expect(seen.created).toEqual([]);
   });
 
   it('does NOT log a rejected-domain submission (owner ruling: not spam, but not accepted)', async () => {
@@ -273,33 +268,28 @@ describe('D-210 WS2 — the canonical form_response log is written at submit', (
 
     expect(seen.row?.processing_outcome).toBe('rejected_domain');
     expect(seen.logged).toEqual([]);
-    expect(seen.created).toEqual([]);
   });
 
-  it('logs at SUBMIT, before anything decides what happens to the submission', async () => {
-    // ⚠ D-210 Phase C RE-AIMED. This was the AUTO-ACCEPT case — before WS2 the
-    // canonical record was minted by the approve-time pre-resume hook, which an
-    // auto-accepting endpoint never reached, so its submissions were recorded
-    // nowhere the owner could read. `auto_accept` is now retired on all three
-    // reception kinds (owner ruling, 2026-07-18), so that particular gap can no
-    // longer occur.
+  it('writes nothing at submit even before the drain has looked at the row', async () => {
+    // ⚠ INVERTED 2026-07-20. This pinned "the log is written at SUBMIT … BEFORE
+    // the drain has looked at the row and long before any approval" — stated as
+    // a guarantee, and it was exactly the exposure. The surviving guarantee is
+    // the SUBMISSION's: durable, complete and reviewable from the moment the
+    // visitor posts, with the destination row deferred to approve.
     //
-    // WS2's guarantee is broader than the gap that motivated it, and THAT is
-    // what this now pins: the log is written at SUBMIT, with the plaintext the
-    // handler already holds, BEFORE the drain has looked at the row and long
-    // before any approval. The row is still `pending` — nothing has decided
-    // anything yet — and the log is already complete.
+    // The gap that originally motivated submit-time logging (an `auto_accept`
+    // endpoint never reached the approve-time hook, so its submissions were
+    // recorded nowhere readable) can no longer occur: D-210 Phase C retired
+    // `auto_accept` on all three reception kinds (owner ruling, 2026-07-18).
     const seen = await submit({
       config: formConfig(),
       email: 'lead@example.com',
     });
 
-    // Untouched by the drain, and already logged.
+    // Untouched by the drain, durable, and carrying everything…
     expect(seen.row?.processing_outcome).toBe('pending');
-    expect(seen.logged).toHaveLength(1);
-    expect(seen.logged[0]).toMatchObject({
-      values: { topic: 'Pricing', details: 'How much for the enterprise tier?' },
-      visitor: { email: 'lead@example.com' },
-    });
+    expect(seen.row?.submission_id).toBeDefined();
+    // …with no destination row yet.
+    expect(seen.logged).toEqual([]);
   });
 });

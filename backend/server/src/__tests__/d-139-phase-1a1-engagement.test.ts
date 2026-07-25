@@ -20,7 +20,7 @@
  *      `inline_body` for short bodies; `truncated_inline` for large).
  *    - HubSpot webhook processor idempotency-ledger gating.
  *
- *  Spec: docs/d-139-spec.md § A.3, § A.3.2, § A.3.3, § A.3.5,
+ *  Spec: D-139 § A.3, § A.3.2, § A.3.3, § A.3.5,
  *  § A.3.6, § A.3.8, § A.4, § A.5, § A.5.0, § A.5.1, § P1a.1
  *  acceptance. */
 

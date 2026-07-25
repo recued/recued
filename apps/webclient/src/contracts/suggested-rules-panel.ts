@@ -34,7 +34,7 @@
  *  Suggestions are NEVER serialized into model-visible context (N.9.1): the
  *  rpc family is reserved out of MCP; this panel is the only consumer.
  *
- *  Spec: docs/d-177-spec.md § N.13; landing order P6c. */
+ *  Spec: D-177 § N.13; landing order P6c. */
 
 import {
   DELEGATION_RULE_MAX_USES,

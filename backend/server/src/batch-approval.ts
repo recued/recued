@@ -53,7 +53,7 @@
  *  the durable state machine itself (version guard + recorded answer +
  *  idempotent re-entry).
  *
- *  Spec: docs/d-177-spec.md § N.10 / N.4; landing order P5a. */
+ *  Spec: D-177 § N.10 / N.4; landing order P5a. */
 
 import {
   BATCH_ASK_MAX_MEMBERS,
@@ -66,6 +66,7 @@ import {
 import type {
   BatchAskKey,
   BatchAskRecord,
+  AuthorizationProvenance,
   Checkpoint,
   ExecutionSource,
   RiskTier,
@@ -73,7 +74,10 @@ import type {
 } from '@recued/contracts';
 import {
   buildPreflightAsk,
+  NEVER_ASK_OPERATION_OPTION_ID,
+  readPreflightOverrideOffer,
   readSessionGrantPayload,
+  RELAX_OPERATION_TO_ASK_OPTION_ID,
 } from '@recued/gateway';
 import type {
   PreflightAskContext,
@@ -99,6 +103,8 @@ export interface BatchHoldRegistration {
   readonly operation_id?: string;
   readonly connection_name?: string;
   readonly risk_tier: RiskTier;
+  /** D-209 §1.7 — batch is a session-grant mode, so `always` is ineligible. */
+  readonly authorization_provenance: AuthorizationProvenance;
   readonly recipe_id: string;
   readonly recipe_hash: string;
   readonly arg_shape_hash: string;
@@ -114,6 +120,10 @@ export interface BatchHoldRegistration {
     readonly tool_slug?: string;
     readonly risk_tier?: string;
     readonly reason?: string;
+    readonly owner_override_offer?: PreflightAskContext['owner_override_offer'];
+    readonly approval_clamped_from?: PreflightAskContext['approval_clamped_from'];
+    readonly authorization_provenance?:
+      PreflightAskContext['authorization_provenance'];
     readonly open_projection_preview?: {
       readonly pinned: ReadonlyArray<{
         readonly label: string;
@@ -152,6 +162,11 @@ export interface CreateBatchApprovalCoordinatorDeps {
   /** The batch mint + (transitively) the member-claim substrate. Absent
    *  (dbless harness) ⇒ approves degrade to plain marker resumes. */
   readonly sessionGrantResolver?: SessionGrantResolver;
+  /** D-211 — authoritative standing-ruling writer. The coordinator owns
+   *  this side effect for batch answers so its version guard runs first. */
+  readonly upsertOverride?: (
+    offer: NonNullable<PreflightAskContext['owner_override_offer']>,
+  ) => Promise<void>;
   readonly now?: () => number;
   readonly newBatchId?: () => string;
 }
@@ -219,6 +234,15 @@ export const createBatchApprovalCoordinator = (
         ? { risk_tier: askContext.risk_tier }
         : {}),
       ...(askContext.reason !== undefined ? { reason: askContext.reason } : {}),
+      ...(askContext.owner_override_offer !== undefined
+        ? { owner_override_offer: askContext.owner_override_offer }
+        : {}),
+      ...(askContext.approval_clamped_from !== undefined
+        ? { approval_clamped_from: askContext.approval_clamped_from }
+        : {}),
+      ...(askContext.authorization_provenance !== undefined
+        ? { authorization_provenance: askContext.authorization_provenance }
+        : {}),
       // `allow_session` rides single-member asks only (P3 parity). The P5b
       // open preview follows the same rule — it renders the offer's
       // open-grant block, which only exists where the offer does.
@@ -256,10 +280,15 @@ export const createBatchApprovalCoordinator = (
   const registerHold = (reg: BatchHoldRegistration): Promise<RegisterHoldResult> =>
     serialize(async (): Promise<RegisterHoldResult> => {
       try {
-        // Batch only what the eventual grant could bind (D7): write/admin.
-        // read/destructive-tier holds keep per-hold asks (destructive
-        // deserves individual review; read-tier asks are rare policy
-        // configurations).
+        // Batch only what the eventual session grant could bind: exact
+        // pre-lift never/ask plus a D7 read/write/admin tier. Missing/malformed
+        // runtime provenance and `always` both fall back to an individual ask.
+        if (
+          reg.authorization_provenance.pre_lift_approval !== 'never'
+          && reg.authorization_provenance.pre_lift_approval !== 'ask'
+        ) {
+          return { kind: 'fallback' };
+        }
         if (
           !(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(reg.risk_tier)
         ) {
@@ -474,16 +503,42 @@ export const createBatchApprovalCoordinator = (
       serialize(async (): Promise<'handled' | 'fallback'> => {
         const batch = readBatchPayload(payload);
         if (batch === undefined) return 'fallback';
+        const overrideOptionSelected =
+          answer.option === NEVER_ASK_OPERATION_OPTION_ID
+          || answer.option === RELAX_OPERATION_TO_ASK_OPTION_ID;
+        const overrideOffer = overrideOptionSelected
+          ? readPreflightOverrideOffer(payload.owner_override_offer)
+          : undefined;
+        const expectedOverrideOption = overrideOffer?.kind === 'never_ask'
+          ? NEVER_ASK_OPERATION_OPTION_ID
+          : overrideOffer?.kind === 'relax_to_ask'
+            ? RELAX_OPERATION_TO_ASK_OPTION_ID
+            : undefined;
+        if (
+          overrideOptionSelected
+          && (overrideOffer === undefined || answer.option !== expectedOverrideOption)
+        ) {
+          throw new Error(
+            'batch-approval: standing override option does not match a valid offer',
+          );
+        }
+        if (overrideOptionSelected && deps.upsertOverride === undefined) {
+          throw new Error(
+            'batch-approval: standing override option selected but no writer is wired',
+          );
+        }
         // The closed option lists pre-validate at the block; everything
         // not an affirmative is the deny arm (legacy defense-in-depth).
-        const option =
-          answer.option === 'approve' || answer.option === 'allow_session'
+        const recordedOption =
+          answer.option === 'approve'
+          || answer.option === 'allow_session'
+          || overrideOptionSelected
             ? answer.option
             : 'deny';
         const closed = await deps.batchAskStore.close(
           batch.batch_id,
           batch.payload_version,
-          option,
+          recordedOption,
           now(),
         );
         if (closed.kind === 'not_found') {
@@ -508,6 +563,13 @@ export const createBatchApprovalCoordinator = (
           );
           return 'handled';
         }
+        // D-211 — only a successfully version-guarded close may change a
+        // standing owner ruling. Re-entry repeats the idempotent upsert before
+        // retrying member settlement; a stale answer never reaches this line.
+        if (overrideOffer !== undefined) {
+          await deps.upsertOverride!(overrideOffer);
+        }
+        const option = overrideOffer !== undefined ? 'approve' : recordedOption;
         const row = closed.row;
         if (option === 'deny') {
           await settleMembers(row, 'deny', undefined, answer.answered_at);

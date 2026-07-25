@@ -15,7 +15,7 @@
  *  default drive. This mirrors the list leaf, which keys the same OneDrive `/delta`
  *  adapter on both slugs.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Design: D-192. */
 
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';

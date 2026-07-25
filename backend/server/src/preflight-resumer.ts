@@ -36,7 +36,7 @@
  *  block leaves the ask `'answered'` and the next boot's sweep
  *  retries. The guard above makes a successful retry idempotent.
  *
- *  Spec: docs/d-157-spec.md § A.2 / A.3 / I-6 / TR-5; the gateway-side
+ *  Spec: D-157 § A.2 / A.3 / I-6 / TR-5; the gateway-side
  *  contract is `packages/gateway/src/preflight-reconciliation.ts`.
  */
 

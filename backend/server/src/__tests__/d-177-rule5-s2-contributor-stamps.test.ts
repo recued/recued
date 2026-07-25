@@ -13,7 +13,7 @@
  *  canonicalized with `parseAddress` rigor; the index is in-memory,
  *  per-session, oldest-evicting.
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.d / 5.e / 5.f). */
+ *  Spec: D-177 § N.11 rule 5 (5.d / 5.e / 5.f). */
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';

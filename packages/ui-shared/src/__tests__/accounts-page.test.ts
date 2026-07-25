@@ -9,6 +9,7 @@ import { e } from '../template.js';
 import {
   ACCOUNT_LANES,
   ACCOUNT_SLUG_REGEX,
+  canSubmitAccountForm,
   findAccountLane,
   findAccountProvider,
   initialAccountsPanelState,
@@ -25,6 +26,8 @@ import {
 
 const imap = (): AccountProvider =>
   findAccountProvider(findAccountLane('mail')!, 'imap')!;
+const gmail = (): AccountProvider =>
+  findAccountProvider(findAccountLane('mail')!, 'gmail')!;
 const fs = (): AccountProvider =>
   findAccountProvider(findAccountLane('file')!, 'fs')!;
 const s3 = (): AccountProvider =>
@@ -36,10 +39,10 @@ const withSeed = (
 ): AccountFormValues => ({ ...seedAccountFormValues(p), ...over });
 
 describe('ACCOUNT_LANES structure', () => {
-  it('exposes the four-lane top split with the locked providers', () => {
+  it('exposes the three-lane top split with the locked providers', () => {
     expect(ACCOUNT_LANES.map((l) => l.id)).toEqual(['mail', 'calendar', 'file']);
-    // Mail = IMAP + Gmail/Microsoft OAuth (Slice 2c); Calendar = none yet
-    // (pending); Files = fs + s3 (no ext-downloads in the manual picker).
+    // Mail = IMAP + Gmail/Microsoft OAuth; Files = local fs + mutable S3
+    // (OAuth document providers use connection-backed D-192 Sources + packs).
     expect(findAccountLane('mail')!.providers.map((p) => p.id)).toEqual([
       'imap',
       'gmail',
@@ -69,6 +72,7 @@ describe('ACCOUNT_LANES structure', () => {
     expect(seeded['folders']).toBe('INBOX');
     // No default for an un-seeded text field.
     expect(seeded['host']).toBeUndefined();
+    expect(seedAccountFormValues(s3())['use_path_style']).toBe('true');
   });
 });
 
@@ -276,7 +280,6 @@ describe('project()', () => {
         access_key: 'AK',
         secret_key: 'SK',
         endpoint: 'https://x.r2.cloudflarestorage.com',
-        use_path_style: 'true',
       }),
     );
     expect((full['config'] as Record<string, unknown>)['endpoint']).toBe(
@@ -293,22 +296,52 @@ describe('renderAccountsPanel', () => {
     ...over,
   });
 
-  it('renders the list stage with an Add button + no tab bar', () => {
+  it('renders an outcome-led first-run card with supported providers', () => {
     const html = renderAccountsPanel({ state: base({ rows: [] }) });
     expect(html).toContain('data-accounts-lane="mail"');
+    expect(html).toContain('data-accounts-empty');
+    expect(html).toContain('Connect your first mailbox');
+    expect(html).toContain('Find messages in Chat');
+    expect(html).toContain('Available options');
+    expect(html).toContain('aria-labelledby="accounts-empty-mail-providers-label"');
+    expect(html).toContain('IMAP / SMTP');
+    expect(html).toContain('Gmail');
+    expect(html).toContain('Microsoft');
     expect(html).toContain('data-action="accounts-open-add"');
+    expect(html).toContain('Connect mailbox');
+    expect(html).not.toContain('+ Connect mailbox');
     // Mail OAuth is buildable now (Slice 2c) — no pending note.
     expect(html).not.toContain('Gmail and Microsoft');
     // The unified tab bar lives in the route, not this panel.
     expect(html).not.toContain('accounts-pick-lane');
   });
 
-  it('renders a lane pending note when one is set (file)', () => {
-    const html = renderAccountsPanel({ state: base({ rows: [], lane: 'file' }) });
-    expect(html).toContain('Google Drive'); // file lane pending note
+  it('keeps the first action out of the loading state', () => {
+    const html = renderAccountsPanel({
+      state: base({ loading: true, rows: [] }),
+    });
+    expect(html).toContain('role="status"');
+    expect(html).toContain('Loading mail…');
+    expect(html).not.toContain('data-action="accounts-open-add"');
+    expect(html).not.toContain('data-accounts-empty');
   });
 
-  it('renders a row with provider badge + status + escapes the slug', () => {
+  it('does not offer enrollment when the lane list is unavailable', () => {
+    const html = renderAccountsPanel({
+      state: base({ error: 'This lane is not available on this server yet.' }),
+    });
+    expect(html).toContain('This lane is not available');
+    expect(html).not.toContain('data-action="accounts-open-add"');
+  });
+
+  it('renders a lane pending note when one is set (file)', () => {
+    const html = renderAccountsPanel({ state: base({ rows: [], lane: 'file' }) });
+    expect(html).toContain('Using Dropbox, Google Drive, Box, or OneDrive?');
+    expect(html).toContain('Data → Files');
+    expect(html).toContain('more provider actions');
+  });
+
+  it('renders a row with provider badge + truthful first-sync status + escapes the slug', () => {
     const html = renderAccountsPanel({
       state: base({
         rows: [
@@ -324,10 +357,159 @@ describe('renderAccountsPanel', () => {
     });
     expect(html).toContain('data-action="accounts-open-detail"');
     expect(html).toContain('IMAP / SMTP');
-    expect(html).toContain('Connected');
+    expect(html).toContain('data-state="syncing"');
+    expect(html).toContain('First sync pending');
     expect(html).toContain('can send');
     expect(html).toContain('fast&lt;x&gt;mail');
     expect(html).not.toContain('fast<x>mail');
+    expect(html).toContain('+ Connect mailbox');
+  });
+
+  it('confirms the connected identity while the first sync is pending', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        connectionSuccess: { slug: 'work', providerId: 'gmail' },
+        rows: [{
+          slug: 'work',
+          adapterType: 'gmail',
+          authState: 'healthy',
+          sublabel: 'me@example.com',
+          lastSyncedAt: null,
+        }],
+      }),
+    });
+
+    expect(html).toContain('data-accounts-connection-success');
+    expect(html).toContain('data-sync-state="pending"');
+    expect(html).toContain('tabindex="-1"');
+    expect(html).toContain('Gmail connected');
+    expect(html).toContain('me@example.com');
+    expect(html).toContain('First sync pending');
+    expect(html).toContain('syncing continues on your server');
+    expect(html).toContain('prepare a first question when this account is searchable');
+    expect(html).toContain('Continue to Chat');
+    expect(html).toContain('data-action="accounts-success-go-chat"');
+    expect(html).toContain('data-action="accounts-success-open-lane" data-lane="calendar"');
+    expect(html).toContain('data-action="accounts-success-refresh"');
+    expect(html).toContain('data-action="accounts-dismiss-success"');
+  });
+
+  it('promotes the confirmation to ready only after a successful sync timestamp', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        connectionSuccess: { slug: 'work', providerId: 'gmail' },
+        rows: [{
+          slug: 'work',
+          adapterType: 'gmail',
+          authState: 'healthy',
+          lastSyncedAt: 1_700_000_000_000,
+        }],
+      }),
+    });
+
+    expect(html).toContain('data-sync-state="ready"');
+    expect(html).toContain('Gmail is ready');
+    expect(html).toContain('Ready for Chat');
+    expect(html).toContain('The first sync finished');
+    expect(html).toContain('Ask about this account');
+    expect(html).not.toContain('First sync pending');
+  });
+
+  it('keeps a saved connection recoverable when status refresh cannot confirm it', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        connectionSuccess: { slug: 'work', providerId: 'gmail' },
+        // A failed post-enroll refresh must not promote from a stale row left
+        // over from the pre-connect list.
+        rows: [{
+          slug: 'work',
+          adapterType: 'gmail',
+          authState: 'healthy',
+          lastSyncedAt: 1_699_000_000_000,
+        }],
+        error: 'Server unavailable',
+      }),
+    });
+
+    expect(html).toContain('data-sync-state="unknown"');
+    expect(html).toContain('Connection saved');
+    expect(html).toContain('could not refresh its sync status');
+    expect(html).toContain('do not need to repeat the sign-in flow');
+    expect(html).toContain('Check sync status');
+    expect(html).not.toContain('Ready for Chat');
+    expect(html).not.toContain('Connect your first mailbox');
+  });
+
+  it('surfaces an unhealthy post-connect row as attention, not ready', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        connectionSuccess: { slug: 'office', providerId: 'graph' },
+        rows: [{
+          slug: 'office',
+          adapterType: 'graph',
+          authState: 'unauthorized',
+          lastSyncedAt: null,
+        }],
+      }),
+    });
+
+    expect(html).toContain('data-sync-state="attention"');
+    expect(html).toContain('Microsoft connected, but needs attention');
+    expect(html).toContain('Unauthorized');
+    expect(html).toContain('data-action="accounts-open-detail"');
+    expect(html).not.toContain('Ready for Chat');
+  });
+
+  it('details distinguish a pending first sync from an account that never syncs', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        stage: 'detail',
+        detailSlug: 'work',
+        rows: [{
+          slug: 'work',
+          adapterType: 'gmail',
+          authState: 'healthy',
+          lastSyncedAt: null,
+        }],
+      }),
+    });
+
+    expect(html).toContain('First sync pending');
+    expect(html).toContain('Waiting for first sync');
+    expect(html).not.toContain('>never<');
+  });
+
+  it('shows reauthorization for OAuth calendar rows, never file rows', () => {
+    const calendar = renderAccountsPanel({
+      state: base({
+        lane: 'calendar',
+        stage: 'detail',
+        detailSlug: 'work',
+        rows: [{
+          slug: 'work',
+          adapterType: 'gcal',
+          authState: 'expired',
+          reauthAvailable: true,
+        }],
+      }),
+    });
+    const file = renderAccountsPanel({
+      state: base({
+        lane: 'file',
+        stage: 'detail',
+        detailSlug: 'archive',
+        rows: [{
+          slug: 'archive',
+          adapterType: 's3',
+          authState: 'expired',
+          // Even a malformed caller cannot revive the retired file OAuth UI.
+          reauthAvailable: true,
+        }],
+      }),
+    });
+
+    expect(calendar).toContain('data-action="accounts-reauth"');
+    expect(file).not.toContain('data-action="accounts-reauth"');
   });
 
   it('renders the IMAP form on the form stage', () => {
@@ -337,6 +519,8 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('data-action="accounts-submit-form"');
     expect(html).toContain('data-acct-field="host"');
     expect(html).toContain('data-acct-field="folders"');
+    expect(html).toContain('<h2 class="accounts-form-title">Connect IMAP / SMTP</h2>');
+    expect(html).toContain('Connect account');
   });
 
   it('renders a Connect button (not a field-submit) for the Gmail OAuth form', () => {
@@ -392,6 +576,7 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('data-provider="s3"');
     expect(html).toContain('Local folder');
     expect(html).toContain('S3 bucket');
+    expect(html).toContain('<h2 class="accounts-picker-title">Choose a file source</h2>');
   });
 
   // ── Operator redirect-URI hint (Setup-instruction UX) ──
@@ -502,7 +687,7 @@ describe('renderAccountsPanel', () => {
     microsoft: OAuthAppConfigStatus = status(),
   ): OAuthAppConfigSnapshot => ({ google, microsoft });
 
-  it('OAuth form renders the inline client_id + secret fields, redirect URI + guide', () => {
+  it('OAuth form turns missing config into an ordered one-time setup checklist', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -513,19 +698,25 @@ describe('renderAccountsPanel', () => {
       }),
     });
     expect(html).toContain('data-action="accounts-oauth-connect"');
-    expect(html).toContain('Your Google sign-in app');
+    expect(html).toContain('data-oauth-app-state="setup"');
+    expect(html).toContain('One-time server setup');
+    expect(html).toContain('Set up Google sign-in');
     expect(html).toContain('data-oauth-cred-field="client_id"');
     expect(html).toContain('data-oauth-cred-field="client_secret"');
-    // The exact redirect URI to register + the per-issuer guide are inline.
+    expect(html).toContain('Save setup &amp; connect Gmail');
+    expect(html).toMatch(/data-action="accounts-oauth-connect" disabled/);
+    // The exact redirect URI + Copy action and the open provider guide are inline.
     expect(html).toContain(e(buildOpenerRelayRedirectUri('https://app.recued.com')));
-    expect(html).toContain('How to create a Google OAuth app');
+    expect(html).toContain('data-action="accounts-copy-oauth-redirect"');
+    expect(html).toContain('<summary>1. Create a Google OAuth app</summary>');
+    expect(html).toContain('class="accounts-oauth-guide" open');
+    expect(html).toContain('href="https://console.cloud.google.com/apis/credentials"');
+    expect(html).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain('aria-label="Open Google Cloud Console (opens in a new tab)"');
     expect(html).toContain('One Google app covers both Gmail and Google Calendar');
-    // No separate setup stage / Set up / Manage gating any more.
-    expect(html).not.toContain('accounts-oauth-open-setup');
-    expect(html).not.toContain('accounts-oauth-setup');
   });
 
-  it('OAuth form, unknown config (null): still renders Connect + the inline fields', () => {
+  it('OAuth form, unknown config (null): preserves the legacy optional-settings path', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -535,10 +726,13 @@ describe('renderAccountsPanel', () => {
       }),
     });
     expect(html).toContain('data-action="accounts-oauth-connect"');
+    expect(html).toContain('data-oauth-app-state="unknown"');
+    expect(html).toContain('If this server already provides Google sign-in');
     expect(html).toContain('data-oauth-cred-field="client_id"');
+    expect(html).not.toContain('One-time server setup');
   });
 
-  it('OAuth form, configured (stored): saved client_id + a "leave blank to reuse" note', () => {
+  it('OAuth form, configured (stored): keeps credentials behind a closed manage disclosure', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -549,11 +743,15 @@ describe('renderAccountsPanel', () => {
       }),
     });
     expect(html).toContain('value="SAVED-CID"');
-    expect(html).toContain('Your Google app is saved');
-    expect(html).toContain('leave blank to reuse');
+    expect(html).toContain('data-oauth-app-state="ready"');
+    expect(html).toContain('Google sign-in is ready');
+    expect(html).toContain('Saved securely on this server');
+    expect(html).toContain('<summary>Change Google sign-in app</summary>');
+    expect(html).toContain('<details class="accounts-oauth-manage">');
+    expect(html).not.toContain('One-time server setup');
   });
 
-  it('OAuth form, configured via env: notes sign-in is configured on the server', () => {
+  it('OAuth form, configured via env: renders the same lightweight ready state', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -562,10 +760,11 @@ describe('renderAccountsPanel', () => {
         oauthAppConfig: cfg(status({ client_id: 'ENV-CID', has_secret: true, source: 'env' })),
       }),
     });
-    expect(html).toContain('Google sign-in is configured on this server');
+    expect(html).toContain('Google sign-in is ready');
+    expect(html).toContain('Provided by this server');
   });
 
-  it('OAuth form, env client_id but NO secret: no reuse note (still prompts for entry)', () => {
+  it('OAuth form, env client_id but NO secret: explains the partial setup', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -575,7 +774,8 @@ describe('renderAccountsPanel', () => {
         oauthAppConfig: cfg(status({ client_id: 'ENV-CID', has_secret: false, source: 'env' })),
       }),
     });
-    expect(html).not.toContain('Leave the fields blank');
+    expect(html).toContain('data-oauth-app-state="setup"');
+    expect(html).toContain('only partly configured');
     expect(html).toContain('Stored encrypted on your server');
   });
 
@@ -592,8 +792,9 @@ describe('renderAccountsPanel', () => {
         ),
       }),
     });
-    expect(html).toContain('Your Microsoft sign-in app');
-    expect(html).toContain('How to create a Microsoft OAuth app');
+    expect(html).toContain('Set up Microsoft sign-in');
+    expect(html).toContain('1. Create a Microsoft OAuth app');
+    expect(html).toContain('href="https://entra.microsoft.com/"');
     expect(html).toContain('One Microsoft app covers both Outlook mail and calendar');
     expect(html).toContain('data-action="accounts-oauth-connect"');
   });
@@ -627,7 +828,7 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('recued_relay=opener');
   });
 
-  it('the secret field hint reflects whether a secret is already saved', () => {
+  it('the secret field hint distinguishes replacement from first-time setup', () => {
     const saved = renderAccountsPanel({
       state: base({
         stage: 'form',
@@ -635,11 +836,58 @@ describe('renderAccountsPanel', () => {
         oauthAppConfig: cfg(status({ client_id: 'C', has_secret: true, source: 'stored' })),
       }),
     });
-    expect(saved).toContain('leave blank to reuse');
+    expect(saved).toContain('A secret is already saved');
     const fresh = renderAccountsPanel({
       state: base({ stage: 'form', providerId: 'gmail', oauthAppConfig: cfg(status({ source: null })) }),
     });
     expect(fresh).toContain('Stored encrypted on your server');
+  });
+
+  it('OAuth submit readiness requires setup credentials only when the server needs them', () => {
+    const provider = gmail();
+    const configured = base({
+      stage: 'form',
+      providerId: 'gmail',
+      values: { name: 'work' },
+      oauthAppConfig: cfg(status({ client_id: 'SAVED', has_secret: true, source: 'stored' })),
+    });
+    expect(canSubmitAccountForm(provider, configured)).toBe(true);
+    expect(canSubmitAccountForm(provider, {
+      ...configured,
+      oauthCredValues: { client_id: 'SAVED', client_secret: '' },
+    })).toBe(true);
+    expect(canSubmitAccountForm(provider, {
+      ...configured,
+      oauthCredValues: { client_id: 'REPLACEMENT', client_secret: '' },
+    })).toBe(false);
+    expect(canSubmitAccountForm(provider, {
+      ...configured,
+      oauthCredValues: { client_id: 'REPLACEMENT', client_secret: 'SECRET' },
+    })).toBe(true);
+
+    const unconfigured = {
+      ...configured,
+      oauthAppConfig: cfg(status({ source: null })),
+      oauthCredValues: { client_id: '', client_secret: '' },
+    };
+    expect(canSubmitAccountForm(provider, unconfigured)).toBe(false);
+    expect(canSubmitAccountForm(provider, {
+      ...unconfigured,
+      oauthCredValues: { client_id: 'NEW', client_secret: 'SECRET' },
+    })).toBe(true);
+    expect(canSubmitAccountForm(provider, {
+      ...unconfigured,
+      oauthCredValues: { client_id: '', client_secret: 'SECRET' },
+    })).toBe(false);
+    expect(canSubmitAccountForm(provider, {
+      ...unconfigured,
+      oauthCredValues: { client_id: 'NEW', client_secret: '   ' },
+    })).toBe(false);
+    expect(canSubmitAccountForm(provider, {
+      ...unconfigured,
+      oauthAppConfig: null,
+      oauthCredValues: { client_id: 'DRAFT', client_secret: '' },
+    })).toBe(false);
   });
 
   it('non-OAuth forms (IMAP) render NO inline credential section', () => {

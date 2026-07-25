@@ -26,7 +26,7 @@
  *  No `bin.ts` edit. The chip filter automatically picks up the new
  *  tag the next time the panel renders.
  *
- *  Spec: `docs/d-134-spec.md` §A.3. */
+ *  Spec: D-134 §A.3. */
 
 import { auditCompactionTask } from './tasks/audit-compaction.js';
 import { cacheEvictionBeyondTtlTask } from './tasks/cache-eviction-beyond-ttl.js';

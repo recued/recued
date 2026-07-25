@@ -23,7 +23,7 @@
  *  the public-key half of the response. Tokens never touch the cloud
  *  (D-148 I-18): the exchange runs on the user-server in slice 2.
  *
- *  Spec: `docs/d-148-spec.md` § A.12 + `project-d165-vendor-oauth-popup-scope`. */
+ *  Spec: D-148 § A.12 + `project-d165-vendor-oauth-popup-scope`. */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { randomBytes, base64ToBytes, bytesToBase64 } from '@recued/crypto';

@@ -99,6 +99,15 @@ describe('D-166 policy projection map', () => {
     ]);
     expect(POLICY_PROJECTIONS.override_policy?.deny_flag).toEqual(['denied']);
     expect(POLICY_PROJECTIONS.override_policy?.rename.denied).toBe('allowed');
+    // Legacy actor-scoped approval remains a tightening lattice field. D-211
+    // global owner defaults use a separate inventory shape.
+    expect(Object.keys(POLICY_PROJECTIONS.override_policy?.rename ?? {}).sort()).toEqual([
+      'approval',
+      'cache_ttl_ms',
+      'denied',
+      'max_risk_without_approval',
+      'timeout_ms',
+    ]);
   });
 });
 
@@ -173,7 +182,21 @@ describe('D-166 projectToPolicyFields override_policy deny flag', () => {
     expect('allowed' in projected).toBe(false);
   });
 
-  it('keeps canonical override fields and removes non-canonical keys', () => {
+  it('drops fields that belong to the separate global owner-operation shape', () => {
+    const projected = projectToPolicyFields('override_policy', {
+      approval: 'never',
+      risk: 'write',
+      op_hash: 'abc',
+      denied: true,
+    });
+
+    expect(projected).toEqual({ allowed: false, approval: 'never' });
+    expect(projected.approval).toBe('never');
+    expect('risk' in projected).toBe(false);
+    expect('op_hash' in projected).toBe(false);
+  });
+
+  it('keeps canonical tighten-only override fields and removes non-canonical keys', () => {
     expect(
       projectToPolicyFields('override_policy', {
         denied: true,

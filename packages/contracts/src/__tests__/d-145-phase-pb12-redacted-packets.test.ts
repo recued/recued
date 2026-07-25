@@ -18,7 +18,7 @@
  *      validation / `isPacketExpired`.
  *    - Audit emission seam — build emit fires + activity_id stamps.
  *
- *  Spec: `docs/d-145-spec.md` § B.13. */
+ *  Spec: D-145 § B.13. */
 
 import { describe, expect, it } from 'vitest';
 

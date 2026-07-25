@@ -26,7 +26,7 @@
  *    - CONTACT    — a contact keyed on the SEALED visitor email, resolved
  *      server-side at materialize, with a mapped display name.
  *
- *  Spec: `docs/d-210-spec.md`. */
+ *  Spec: D-210. */
 
 import Database from 'better-sqlite3';
 import { IncomingMessage, ServerResponse } from 'node:http';
@@ -201,7 +201,6 @@ const submitAndDrain = async (
   await createIntakeFormSubmitHandler({
     getStore: () => registryView as never,
     getSubmissionStore: () => world.submissionStore,
-    getFormResponseStore: () => world.formResponseStore,
     getFormNonceStore: () => nonceStore,
     getFormSubmissionPiiKey: () => PII_KEY,
     auditLog: { logActivity: async () => undefined } as unknown as AuditLogStore,

@@ -24,11 +24,12 @@
  *  probe isn't wired (P4e ships the orchestration shape; the real
  *  warehouse probe lands with P4f / P5).
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 gate / § 3 the deterministic gate (Invariant 6). */
 
 import type { SlotValue } from '../ner/index.js';
 import type { RenderTemplate, Template } from '../types.js';
+import type { ContactAttribute } from '../templates/contact-attribute.js';
 
 /** Frozen warehouse snapshot the gate hands to the renderer. `data`
  *  is opaque to the orchestrator — the template knows what fields it
@@ -56,7 +57,31 @@ import type { RenderTemplate, Template } from '../types.js';
 export interface DataSnapshot {
   readonly data: Readonly<Record<string, unknown>>;
   readonly render_template_override?: RenderTemplate;
+  /** Bounded schema-bound values that actually support this deterministic
+   * render. The gate contributes them as live EntityPromptParts before
+   * resolving; raw snapshot state and renderer functions never enter storage. */
+  readonly entity_parts?: ReadonlyArray<{
+    readonly entity: string;
+    readonly payload: readonly Record<string, unknown>[];
+  }>;
 }
+
+const contactEntityPart = (
+  payload: readonly Record<string, unknown>[],
+): NonNullable<DataSnapshot['entity_parts']> => [{
+  entity: 'contact',
+  payload,
+}];
+
+const renderTemplateFieldNames = (template: Template): ReadonlySet<string> => {
+  if (template.kind !== 'render_template') return new Set();
+  const names = new Set<string>();
+  for (const match of template.body.matchAll(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/gu)) {
+    const top = match[1]?.split('.')[0];
+    if (top) names.add(top);
+  }
+  return names;
+};
 
 /** Inputs the probe sees: the matched template plus the certainty-
  *  gated slots NER extracted. The probe maps slots to warehouse keys
@@ -65,6 +90,9 @@ export interface DataSnapshot {
 export interface DataPresenceQuery {
   readonly template: Template;
   readonly slots: ReadonlyArray<SlotValue>;
+  /** Primary response locale selected by the extraction ladder. Optional for
+   * direct/legacy probe callers; live `runGate` always supplies it. */
+  readonly locale?: string;
 }
 
 /** The probe signature. Sync OR async — the gate awaits either form
@@ -92,10 +120,15 @@ export const noopDataPresenceProbe: DataPresenceProbe = () => null;
  *  probe is a render-source, not a record reader, so it never carries
  *  more PII than the template can emit. */
 export interface ContactAttributeRow {
+  /** Opaque contact identity used only to re-bind exact identifier proposals
+   *  and to prove multi-contact rows are distinct. Never interpolated. */
+  readonly identityKey?: string;
   readonly name?: string;
   readonly email?: string;
   readonly phone?: string;
   readonly company?: string;
+  readonly title?: string;
+  readonly birthday?: string;
   /** EVERY canonical address Recued links to this contact — the row's
    *  own canonical email first, then addresses merged away into it
    *  (D-138 tombstone emails whose `merged_into` chain terminates at
@@ -122,27 +155,36 @@ export interface ContactAttributeRow {
 
 /** The warehouse read seam — injected at boot, mirroring the prefetch's
  *  `EntitySearchPort`. Given a display-name query it returns the candidate
- *  contacts whose name *contains* the query (the backend wires
- *  `ContactStore.list({ name_contains })`); the probe applies the
- *  exact-name + uniqueness filter itself so the port stays a dumb
- *  substring fetch. Sync OR async — the probe awaits either form.
+ *  contacts that may carry that name (the backend uses its contact FTS index,
+ *  with a bounded substring fallback where the index cannot tokenize); the
+ *  probe applies the exact-name + uniqueness filter itself so the port never
+ *  constitutes identity resolution. An optional typed reference asks the
+ *  backend to re-attest the original identifier/alias mapping as well as the
+ *  opaque contact key. Sync OR async — the probe awaits either form.
  *
  *  The package stays IO-free per the import boundary (D-159 N.7): the
  *  backend owns the warehouse read + the per-pair read scope (D-157),
  *  this port is the only channel through which a warehouse row reaches
  *  the gate. The no-op default (`() => []`) makes the probe a faithful
  *  pass-through until a real port is wired. */
+export interface ContactAttributeReference {
+  readonly key: string;
+  readonly surface: string;
+  readonly evidence: NonNullable<SlotValue['referenceEvidence']>;
+}
+
 export type ContactAttributeLookup = (
   name: string,
+  reference?: ContactAttributeReference,
 ) => Promise<readonly ContactAttributeRow[]> | readonly ContactAttributeRow[];
 
-/** Normalise a display name for the exact-match compare: trim + collapse
- *  internal whitespace + lower-case. The lookup is a substring fetch
- *  (`name LIKE %x%`), so `"Alice  Bond"` (double space) and `"alice bond"`
- *  must compare equal to the NER slot value `"Alice Bond"`. Matches the
- *  contact store's `COLLATE NOCASE` keying without importing it. */
+/** Normalise a display name for the exact-match compare: Unicode NFC, trim,
+ *  collapse internal whitespace, then lower-case. Candidate retrieval may retain
+ *  spelling/layout variants, so `"Alice  Bond"` (double space) and `"alice bond"`
+ *  compare equal to the NER slot value `"Alice Bond"`; canonically equivalent
+ *  NFC/NFD spellings compare on the same surface too. */
 const normaliseName = (raw: string): string =>
-  raw.trim().replace(/\s+/g, ' ').toLowerCase();
+  raw.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase();
 
 /** Resolve the certainty-gated slots to a SINGLE, UNIQUE, exact-name
  *  contact, or `null` to pass through. This is the shared identity step
@@ -154,9 +196,10 @@ const normaliseName = (raw: string): string =>
  *
  *    1. Require EXACTLY ONE `entity.name` slot. Zero (nothing to resolve)
  *       or two-plus (ambiguous) → `null`.
- *    2. Fetch candidates via the injected `lookup`, then keep only the
- *       rows whose display name EXACTLY equals the slot value (case- /
- *       whitespace-insensitive). A substring fetch can surface near-misses
+ *    2. Fetch candidates via the injected `lookup`; a typed exact reference
+ *       must be re-attested by its original surface + evidence + opaque key.
+ *       Then keep only rows whose display name EXACTLY equals the slot value (case- /
+ *       whitespace-insensitive). Candidate retrieval can surface near-misses
  *       (`"Alice Bondsmith"` for `"Alice Bond"`); the exact filter drops them.
  *    3. Fire ONLY on a UNIQUE exact match (`exact.length === 1`). Two
  *       contacts sharing the exact name → `null` (ambiguous → the LLM
@@ -174,17 +217,33 @@ export const resolveUniqueExactContact = async (
   if (names.length !== 1) return null;
   const wanted = normaliseName(names[0]!.value);
   if (wanted.length === 0) return null;
+  const referenceKey = names[0]!.referenceKey;
+  const referenceEvidence = names[0]!.referenceEvidence;
+  if ((referenceKey === undefined) !== (referenceEvidence === undefined)) return null;
+  const reference = referenceKey === undefined
+    ? undefined
+    : {
+      key: referenceKey,
+      surface: names[0]!.raw,
+      evidence: referenceEvidence!,
+    };
+  if (reference !== undefined && (reference.key.length === 0 || reference.surface.length === 0)) {
+    return null;
+  }
 
   let rows: readonly ContactAttributeRow[];
   try {
-    rows = await lookup(names[0]!.value);
+    rows = reference === undefined
+      ? await lookup(names[0]!.value)
+      : await lookup(names[0]!.value, reference);
   } catch {
     return null;
   }
 
-  const exact = rows.filter(
-    (r) => typeof r.name === 'string' && normaliseName(r.name) === wanted,
-  );
+  const exact = rows.filter((r) =>
+    typeof r.name === 'string'
+    && normaliseName(r.name) === wanted
+    && (referenceKey === undefined || r.identityKey === referenceKey));
   if (exact.length !== 1) return null; // 0 = absent, 2+ = ambiguous
   return exact[0]!;
 };
@@ -198,7 +257,7 @@ export const resolveUniqueExactContact = async (
  *       Zero / two-plus names → `null` (nothing, or ambiguous, to resolve).
  *    2. Fetches candidates via the injected `lookup`, then keeps only the
  *       rows whose display name EXACTLY equals the slot value (case- /
- *       whitespace-insensitive). A substring fetch can return near-misses
+ *       whitespace-insensitive). Candidate retrieval can return near-misses
  *       (`"Alice Bondsmith"` for `"Alice Bond"`); the exact filter drops them.
  *    3. Fires ONLY on a UNIQUE exact match (`exact.length === 1`) — the
  *       "100% data presence" half of the two-way rule (design § 3
@@ -218,23 +277,107 @@ export const resolveUniqueExactContact = async (
  *  construction (design § 3, NER-templates are render-only). */
 export const createContactAttributePresenceProbe = (
   lookup: ContactAttributeLookup,
-): DataPresenceProbe => async ({ slots }): Promise<DataSnapshot | null> => {
+): DataPresenceProbe => async ({ slots, template }): Promise<DataSnapshot | null> => {
   const row = await resolveUniqueExactContact(lookup, slots);
   if (row === null) return null;
 
   const data: Record<string, string> = {};
-  const put = (key: 'name' | 'email' | 'phone' | 'company', v: unknown): void => {
+  const put = (
+    key: 'name' | 'email' | 'phone' | 'company' | 'title' | 'birthday',
+    v: unknown,
+  ): void => {
     if (typeof v === 'string' && v.trim().length > 0) data[key] = v;
   };
   put('name', row.name);
   put('email', row.email);
   put('phone', row.phone);
   put('company', row.company);
+  put('title', row.title);
+  put('birthday', row.birthday);
   // Every template needs the display name to render; without it there's
   // nothing to short-circuit on.
   if (data.name === undefined) return null;
 
-  return { data: Object.freeze(data) };
+  const used = renderTemplateFieldNames(template);
+  const retained = Object.fromEntries(
+    Object.entries(data).filter(([key]) => used.has(key)),
+  );
+  return {
+    data: Object.freeze(data),
+    entity_parts: contactEntityPart([Object.freeze(retained)]),
+  };
+};
+
+/** Minimal descriptor seam for cardinality-specific multi-contact templates.
+ * The template module owns the audited hash registry; the probe consumes it
+ * without importing runtime template objects (avoids a gate↔template cycle). */
+export interface ContactAttributeListProbeDescriptor {
+  readonly attribute: ContactAttribute;
+  readonly slotCount: number;
+}
+
+/** Build the all-or-nothing 2..5 contact attribute-list probe. Every name is
+ * resolved independently through the same exact/keyed identity rule as a
+ * single read; every resolved row must expose a distinct opaque identity and a
+ * non-empty requested value. One miss, duplicate, malformed line value, or
+ * read error defers the WHOLE answer—never a partial list. */
+export const createContactAttributeListPresenceProbe = (
+  lookup: ContactAttributeLookup,
+  descriptors: ReadonlyMap<string, ContactAttributeListProbeDescriptor>,
+): DataPresenceProbe => async ({ slots, template }): Promise<DataSnapshot | null> => {
+  const descriptor = descriptors.get(template.template_hash);
+  if (
+    descriptor === undefined
+    || descriptor.slotCount < 2
+    || descriptor.slotCount > 5
+    || slots.length !== descriptor.slotCount
+    || slots.some((slot) => slot.kind !== 'entity.name')
+  ) return null;
+
+  const ordered = [...slots].sort((a, b) => a.position - b.position);
+  // The live backend lookup is synchronous SQLite. Starting every resolver
+  // before this single await prevents another request from interleaving writes
+  // between rows and producing a mixed-time list snapshot.
+  const resolvedRows = await Promise.all(
+    ordered.map((slot) => resolveUniqueExactContact(lookup, [slot])),
+  );
+  const rows: ContactAttributeRow[] = [];
+  const identities = new Set<string>();
+  for (const row of resolvedRows) {
+    if (
+      row === null
+      || typeof row.identityKey !== 'string'
+      || row.identityKey.length === 0
+      || identities.has(row.identityKey)
+    ) return null;
+    identities.add(row.identityKey);
+    rows.push(row);
+  }
+
+  const lines: string[] = [];
+  for (const row of rows) {
+    const name = row.name;
+    const value = row[descriptor.attribute];
+    if (
+      typeof name !== 'string'
+      || name.trim().length === 0
+      || typeof value !== 'string'
+      || value.trim().length === 0
+      || /[\r\n]/u.test(name)
+      || /[\r\n]/u.test(value)
+    ) return null;
+    lines.push(`- ${name}: ${value}`);
+  }
+
+  return {
+    data: Object.freeze({ items: lines.join('\n') }),
+    entity_parts: contactEntityPart(
+      rows.map((row) => Object.freeze({
+        name: row.name!,
+        [descriptor.attribute]: row[descriptor.attribute]!,
+      })),
+    ),
+  };
 };
 
 // ── Calendar next-meeting probe ─────────────────────────────────────
@@ -269,6 +412,7 @@ export interface CalendarNextMeeting {
  *  real port is wired. */
 export type CalendarNextMeetingLookup = (
   emails: readonly string[],
+  locale?: string,
 ) => Promise<CalendarNextMeeting | null> | CalendarNextMeeting | null;
 
 /** Build the data-presence probe for the calendar next-meeting class
@@ -289,7 +433,7 @@ export type CalendarNextMeetingLookup = (
  *       merged-away address would falsify it. A port that did not (or
  *       could not) enumerate the set omits `emails` and the probe defers;
  *       `email` alone NEVER stands in.
- *    3. Calls the injected `nextMeetingLookup(emails)`; `null` (no future
+ *    3. Calls the injected `nextMeetingLookup(emails, locale)`; `null` (no future
  *       meeting with that attendee, an ambiguous per-address response
  *       split, or a read / format failure) → `null`.
  *    4. Returns a FROZEN by-value snapshot (Invariant 6) carrying the
@@ -302,7 +446,7 @@ export type CalendarNextMeetingLookup = (
 export const createCalendarNextMeetingProbe = (
   contactLookup: ContactAttributeLookup,
   nextMeetingLookup: CalendarNextMeetingLookup,
-): DataPresenceProbe => async ({ slots }): Promise<DataSnapshot | null> => {
+): DataPresenceProbe => async ({ slots, locale }): Promise<DataSnapshot | null> => {
   const row = await resolveUniqueExactContact(contactLookup, slots);
   if (row === null) return null;
   if (typeof row.name !== 'string' || row.name.trim().length === 0) return null;
@@ -315,7 +459,9 @@ export const createCalendarNextMeetingProbe = (
 
   let meeting: CalendarNextMeeting | null;
   try {
-    meeting = await nextMeetingLookup(row.emails);
+    meeting = locale === undefined
+      ? await nextMeetingLookup(row.emails)
+      : await nextMeetingLookup(row.emails, locale);
   } catch {
     // A warehouse read / format failure is a pass-through, never a turn
     // failure — the LLM path is the safety net (design § 3 Invariant 7).
@@ -331,6 +477,9 @@ export const createCalendarNextMeetingProbe = (
       summary: meeting.summary,
       when: meeting.when,
     }),
+    entity_parts: contactEntityPart([
+      Object.freeze({ name: row.name }),
+    ]),
   };
 };
 
@@ -396,8 +545,8 @@ const formatMailCountPhrase = (count: number): string => {
  *       (design § 3 Invariant 7 — defer the uncertain case, answer the
  *       confident one).
  *    5. Returns a FROZEN by-value snapshot (Invariant 6 — render-snapshot
- *       freeze) carrying the contact display name and the pluralized count
- *       phrase for the person-scoped body — see `templates/mail-from-count.ts`.
+ *       freeze) carrying the display name, a string count for localized
+ *       bodies, and the English pluralized count phrase.
  *
  *  READ-ONLY by construction (design § 3, NER-templates are render-only). */
 export const createMailFromCountProbe = (
@@ -422,16 +571,20 @@ export const createMailFromCountProbe = (
     return null;
   }
   if (count === null) return null;
-  // Fire only on a positive, well-formed count. `<= 0` defers the zero case
-  // (see step 4); `!Number.isInteger` guards a lookup bug (NaN / float) from
-  // rendering "You have NaN emails".
-  if (!Number.isInteger(count) || count <= 0) return null;
+  // Fire only on a positive, exactly representable count. `<= 0` defers the
+  // zero case (see step 4); `!Number.isSafeInteger` guards NaN / floats and a
+  // lookup value whose integer precision JavaScript has already lost.
+  if (!Number.isSafeInteger(count) || count <= 0) return null;
 
   return {
     data: Object.freeze({
       name: row.name,
+      count: String(count),
       count_phrase: formatMailCountPhrase(count),
     }),
+    entity_parts: contactEntityPart([
+      Object.freeze({ name: row.name }),
+    ]),
   };
 };
 
@@ -452,6 +605,13 @@ export const createMailFromCountProbe = (
  *  `chat-prompt-cache-gate.ts`); the package only consumes the boolean.
  *  Sync OR async. */
 export type HasCrmContactSource = () => Promise<boolean> | boolean;
+
+/** A fixed negative body preserves the original one-locale API; a resolver
+ * lets multilingual families choose the negative sibling that matches the
+ * affirmative template selected by the lexical matcher. */
+export type NoEmailTemplateSelector =
+  | RenderTemplate
+  | ((matchedTemplate: Template) => RenderTemplate | null);
 
 /** Build the data-presence probe for the contact has-email class ("do I
  *  have `<Name>`'s email?"). The first probe to use the snapshot's
@@ -491,21 +651,27 @@ export type HasCrmContactSource = () => Promise<boolean> | boolean;
  *       renders. Any other combination → `null` (pass through; the LLM
  *       checks CRM) — the pre-CRM-gate behavior, unchanged.
  *
- *  `noEmailTemplate` is injected by the boot wiring (the family owns its
- *  sibling bodies; the gate layer stays template-free) and is typed
- *  `RenderTemplate` so the override is render-only by construction.
+ *  `noEmailTemplate` is injected by boot as either a fixed sibling or a
+ *  resolver from the matched affirmative template to its same-locale
+ *  negative sibling. Either path yields only a `RenderTemplate`, so the
+ *  override remains render-only by construction.
  *  READ-ONLY (design § 3, NER-templates are render-only). */
 export const createContactHasEmailProbe = (
   contactLookup: ContactAttributeLookup,
   hasCrmContactSource: HasCrmContactSource,
-  noEmailTemplate: RenderTemplate,
-): DataPresenceProbe => async ({ slots }): Promise<DataSnapshot | null> => {
+  noEmailTemplate: NoEmailTemplateSelector,
+): DataPresenceProbe => async ({ slots, template }): Promise<DataSnapshot | null> => {
   const row = await resolveUniqueExactContact(contactLookup, slots);
   if (row === null) return null;
   if (typeof row.name !== 'string' || row.name.trim().length === 0) return null;
 
   if (typeof row.email === 'string' && row.email.trim().length > 0) {
-    return { data: Object.freeze({ name: row.name, email: row.email }) };
+    return {
+      data: Object.freeze({ name: row.name, email: row.email }),
+      entity_parts: contactEntityPart([
+        Object.freeze({ name: row.name, email: row.email }),
+      ]),
+    };
   }
 
   // The negative requires the port's completeness claim to be PRESENT and
@@ -524,8 +690,16 @@ export const createContactHasEmailProbe = (
   }
   if (crmCouldHoldIt) return null;
 
+  const negative = typeof noEmailTemplate === 'function'
+    ? noEmailTemplate(template)
+    : noEmailTemplate;
+  if (negative === null) return null;
+
   return {
     data: Object.freeze({ name: row.name }),
-    render_template_override: noEmailTemplate,
+    render_template_override: negative,
+    entity_parts: contactEntityPart([
+      Object.freeze({ name: row.name }),
+    ]),
   };
 };

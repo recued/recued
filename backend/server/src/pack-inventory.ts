@@ -46,7 +46,7 @@
  *  boot-ordering / reconcile slice. The user-driven `packs.install` /
  *  `packs.uninstall` rpc path is fully covered.
  *
- *  Spec: `docs/d-165-spec.md` § "Install planner" (bullet 6, inventory
+ *  Spec: D-165 § "Install planner" (bullet 6, inventory
  *  half); the `contract.*` schema + write-validator live in
  *  `packages/contracts/src/contract-schema.ts`. */
 

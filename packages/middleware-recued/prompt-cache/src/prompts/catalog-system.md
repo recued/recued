@@ -1,7 +1,7 @@
 # Catalog System Prompt
 
 > Bench-harvested verbatim from
-> `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts:120-164`.
+> `the benchmark harness compose-agent:120-164`.
 > Mirrored as string constants in `../templates/render.ts` (the runtime
 > source of truth). This MD is provenance + diff-target for future
 > bench re-harvests; the render code does NOT read this file at

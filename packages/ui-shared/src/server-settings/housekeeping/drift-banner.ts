@@ -21,7 +21,7 @@
  *  on the signal row — when set + severity unchanged, banner stays
  *  collapsed.
  *
- *  Spec: `docs/d-133-spec.md` §A.7. */
+ *  Spec: D-133 §A.7. */
 
 import { e } from '../../template.js';
 import { button } from '../../primitives/button.js';

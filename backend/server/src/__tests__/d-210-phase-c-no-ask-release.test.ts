@@ -356,7 +356,7 @@ describe('D-210 Phase C — a no-ask release satisfies the intake acceptance hoo
     ).rejects.toThrow(/no valid durable approval timestamp/);
   });
 
-  it('an UNPAIRED intake is not double-logged by the release (WS2 wrote it at submit)', async () => {
+  it('an UNPAIRED form_response intake IS written by the release — approve is the door', async () => {
     await seedSubmission();
     await auditLog.append(askLessIntakeAnchor());
     const release = createNoAskRelease({
@@ -366,10 +366,21 @@ describe('D-210 Phase C — a no-ask release satisfies the intake acceptance hoo
 
     await release(intakeCheckpoint(), { kind: 'approve', approved_at: RELEASED_AT });
 
-    // WS2 moved the canonical log to submit time; the approve leg writes for
-    // a D-200 pair only. A no-ask release must not resurrect the old
-    // approve-time write.
-    expect(responseStore.list()).toEqual([]);
+    // ⚠ INVERTED 2026-07-20 (D-210 audit finding 3a). This asserted the
+    // opposite — "not double-logged by the release (WS2 wrote it at submit)".
+    // WS2's submit-time write is gone: it made the destination row exist, and
+    // be AI-queryable via its owner-default grant, before the owner had seen
+    // the submission. Approve is the only door (A.1), so the release leg is
+    // now the writer for an unpaired `form_response` destination — there is
+    // no submit-time row for it to double.
+    //
+    // ⛔ This red was introduced by the 3a commit and NOT caught there: that
+    // run's pattern never named this file. ⇒ [[a_baseline_that_omits_a_suite_hides_its_reds]]
+    const rows = responseStore.list();
+    expect(rows).toHaveLength(1);
+    // Exactly ONE row — the point the original test was protecting (no double
+    // write) still holds; only the writer moved.
+    expect(rows[0]).toMatchObject({ submission_id: 'sub-1' });
   });
 
   it('the DENY leg never runs the acceptance hook', async () => {

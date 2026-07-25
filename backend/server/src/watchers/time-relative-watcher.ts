@@ -24,7 +24,7 @@
  *  exception: while `state = "reminder_pending"`, task state is the
  *  acknowledgement marker so all-channel notification failures can retry.
  *
- *  Spec: `docs/d-122-spec.md` §"Kernel ingredient gap-closure" —
+ *  Spec: D-122 §"Kernel ingredient gap-closure" —
  *  `time-relative-watcher`. */
 
 import type Database from 'better-sqlite3';

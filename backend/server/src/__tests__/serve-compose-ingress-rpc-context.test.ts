@@ -236,11 +236,6 @@ describe('composeIngressRpcContext', () => {
       ipBlockStore: storage.ipBlockStoreRef,
       schedulingFormNonceStore: storage.schedulingFormNonceStoreRef,
       intakeFormSubmissionStore: storage.intakeFormSubmissionStoreRef,
-      // D-210 WS2 — the canonical form_response log the intake POST writes at
-      // submit. `undefined` here only because this stub storage context omits
-      // the ref; production threads the same instance the approve-time D-200
-      // promotion writes through.
-      formResponseStore: storage.formResponseStoreRef,
       intakeRecipePairStore: storage.intakeRecipePairStoreRef,
       recipeStore: storage.recipeStore,
       // D-207 slice 1c — the reception door. The contract stores come from the SAME

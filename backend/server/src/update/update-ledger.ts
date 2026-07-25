@@ -10,13 +10,15 @@
  *  persist (I-3). The ledger is ALSO what the boot-failure counter + the update
  *  lock key off — they must outlive both crash loops and snapshot restores.
  *
- *  Pure fs append/read over an injected path; entries are never mutated or
- *  deleted (append-only). A malformed line is skipped on read rather than
- *  poisoning the tail — the sidecar is the source of truth and partial-write
- *  corruption of the last line must not lose the rest of the history.
+ *  The append/read mechanics live in `../jsonl-ledger.js` — this file is the
+ *  typed shape over them. They moved when D-212's keyfile-event ledger needed
+ *  the same substrate: entries are never mutated or deleted, a malformed line is
+ *  skipped rather than poisoning the tail, and a torn final line from a crashed
+ *  append is repaired on the next one. Two hand-rolled copies of that would
+ *  drift, the way `durable-fs.ts`'s pattern did before it was made singular.
  */
 
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { createJsonlLedger, type JsonlLedger } from '../jsonl-ledger.js';
 
 export const UPDATE_LEDGER_FILE = 'updates.log';
 
@@ -55,69 +57,18 @@ export interface UpdateLedgerEntry {
   detail?: string;
 }
 
-export interface UpdateLedger {
-  append(entry: UpdateLedgerEntry): void;
-  /** Read all entries oldest-first (malformed lines skipped). */
-  readAll(): UpdateLedgerEntry[];
-  /** The last `n` entries (newest-last), for the boot-replay tail. */
-  tail(n: number): UpdateLedgerEntry[];
-}
+export type UpdateLedger = JsonlLedger<UpdateLedgerEntry>;
 
-const parseLine = (line: string): UpdateLedgerEntry | null => {
-  const trimmed = line.trim();
-  if (!trimmed) return null;
-  try {
-    const o = JSON.parse(trimmed) as Partial<UpdateLedgerEntry>;
-    if (typeof o.id !== 'string' || typeof o.kind !== 'string') return null;
-    return o as UpdateLedgerEntry;
-  } catch {
-    return null;
-  }
+const acceptEntry = (parsed: unknown): UpdateLedgerEntry | null => {
+  const o = parsed as Partial<UpdateLedgerEntry>;
+  if (typeof o?.id !== 'string' || typeof o?.kind !== 'string') return null;
+  return o as UpdateLedgerEntry;
 };
 
 /** Open the JSONL ledger at `path`. The directory is assumed to exist (the
  *  data volume). Reads tolerate a missing file (empty history). */
-export const createUpdateLedger = (path: string): UpdateLedger => {
-  const readAll = (): UpdateLedgerEntry[] => {
-    if (!existsSync(path)) return [];
-    const raw = readFileSync(path, 'utf8');
-    const out: UpdateLedgerEntry[] = [];
-    for (const line of raw.split('\n')) {
-      const e = parseLine(line);
-      if (e) out.push(e);
-    }
-    return out;
-  };
-  // A crash mid-append can leave the file ending without a trailing newline
-  // (a torn final line). Appending naively would concatenate the next good
-  // entry onto that corrupt line, and the malformed-line skip in readAll would
-  // then drop BOTH — losing a real lock/boot-failure record. Guard by checking
-  // the last byte and prefixing a newline when the boundary isn't clean.
-  const endsWithNewline = (): boolean => {
-    if (!existsSync(path)) return true;
-    const size = statSync(path).size;
-    if (size === 0) return true;
-    const fd = openSync(path, 'r');
-    try {
-      const buf = Buffer.alloc(1);
-      readSync(fd, buf, 0, 1, size - 1);
-      return buf[0] === 0x0a;
-    } finally {
-      closeSync(fd);
-    }
-  };
-  return {
-    append(entry) {
-      const prefix = endsWithNewline() ? '' : '\n';
-      appendFileSync(path, `${prefix}${JSON.stringify(entry)}\n`, 'utf8');
-    },
-    readAll,
-    tail(n) {
-      const all = readAll();
-      return n >= all.length ? all : all.slice(all.length - n);
-    },
-  };
-};
+export const createUpdateLedger = (path: string): UpdateLedger =>
+  createJsonlLedger(path, acceptEntry);
 
 /** From the ledger tail, the entries not yet mirrored into the D-120 audit log
  *  — the caller passes the set of already-seen ids (idempotent replay, I-3). */

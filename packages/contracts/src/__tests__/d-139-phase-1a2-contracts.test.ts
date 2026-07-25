@@ -7,7 +7,7 @@
  *    - `hubspot.call`
  *    - `hubspot.task`
  *
- *  Spec: docs/d-139-spec.md § A.1, § A.3, § A.3.6, § P1a.2 acceptance. */
+ *  Spec: D-139 § A.1, § A.3, § A.3.6, § P1a.2 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

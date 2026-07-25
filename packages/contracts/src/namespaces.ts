@@ -57,7 +57,7 @@
  *  resolver does not hydrate it and the validator's NS walk rejects fresh
  *  `{{contract.*}}` references. Listed on the type as a reserved top-level
  *  prefix so the storage / inventory machinery shares the namespace vocabulary.
- *  See `docs/d-165-spec.md` §"Contract namespace" +
+ *  See D-165 §"Contract namespace" +
  *  `packages/contracts/src/contract-schema.ts`. */
 export type Namespace =
   | 'vault'

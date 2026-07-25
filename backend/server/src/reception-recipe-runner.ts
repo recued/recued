@@ -38,7 +38,7 @@
  *  nothing, so every op would hard-deny and the run would fail step 1. Detect it up front
  *  and say so, rather than manufacturing a failed run whose cause is invisible.
  *
- *  Spec: `docs/d-207-spec.md` §5.3. */
+ *  Spec: D-207 §5.3. */
 
 import {
   buildReceptionOrderContext,

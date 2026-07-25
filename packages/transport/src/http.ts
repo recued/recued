@@ -4,7 +4,7 @@
  *  hands the parsed envelope back. Vendor-level `ok: false` is the
  *  per-transport caller's concern, not this helper's.
  *
- *  Spec: docs/d-160-spec.md § A.5.
+ *  Spec: D-160 § A.5.
  */
 
 import type { TransportErrorKind } from './types.js';
@@ -373,7 +373,10 @@ export const downloadToFile = async (
       const body = response.body
         ? Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
         : Readable.from([]);
-      await pipeline(body, tap, createWriteStream(opts.destPath));
+      // Owner-only from creation: this lands inbound media in the clear on
+      // the same volume as the encrypted realm, and a default-mode create
+      // publishes it world-readable for the life of the download.
+      await pipeline(body, tap, createWriteStream(opts.destPath, { mode: 0o600 }));
     } catch (e) {
       await cleanupPartial();
       // An idle-timeout fires via the AbortController → the body stream errors;

@@ -60,10 +60,11 @@
  *  exactly this consumer); absent, the channel degrades to its visible
  *  "file ingest is not configured" note.
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5 / A.8 step 6; docs/d-148-spec.md
- *  § P9 / A.13; docs/d-163-spec.md § N.5 / A.1. */
+ *  Spec: D-160 § N.5 / A.5 / A.8 step 6; D-148
+ *  § P9 / A.13; D-163 § N.5 / A.1. */
 
 import { getMessengerVendorDeclaration } from '@recued/contracts';
+import { mkdirSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
   createMessengerChannel,
@@ -148,6 +149,22 @@ export const composeMessengerTurnIngest = (
 ): MessengerTurnIngest | undefined => {
   const { orchestrator, connectionStore, fileCollection, log } = deps;
   if (!orchestrator || !connectionStore) return undefined;
+
+  // Claim the media scratch dir owner-only before any transport writes into it.
+  // A download lands the vendor's photo / voice note / PDF there in PLAINTEXT
+  // until the CAS ingest encrypts it, and the transports create the directory
+  // lazily at Node's default 0777 & umask. Creating it first at 0700 makes the
+  // tree untraversable to other local accounts, which is what actually protects
+  // the files — the transports write them at the default 0666 & umask. Best
+  // effort: an unwritable data volume surfaces on the download itself, and a
+  // hygiene step must never fail the wiring.
+  if (deps.downloadDir !== undefined) {
+    try {
+      mkdirSync(deps.downloadDir, { recursive: true, mode: 0o700 });
+    } catch {
+      /* surfaces on the first download instead */
+    }
+  }
 
   // D-192 CORE #6 — the vendor→transport and vendor→credential-resolver maps
   // are built by iterating the messenger registry + the slug-keyed leaves (no

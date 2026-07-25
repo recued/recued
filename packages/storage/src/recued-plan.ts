@@ -25,7 +25,7 @@
  *  primitive to call it; PB7 wires the Transparency Stream renderer
  *  to consume `user_visible_internal_steps`.
  *
- *  Spec: `docs/d-145-spec.md` § B.5. */
+ *  Spec: D-145 § B.5. */
 
 import {
   RECUED_PLAN_MEMORY_KIND,

@@ -20,7 +20,7 @@
  *  (record delete, recipe upgrade) aren't aborted by an unrelated
  *  housekeeping bug.
  *
- *  Spec: `docs/d-123-spec.md` §6.1. */
+ *  Spec: D-123 §6.1. */
 
 import type {
   HousekeepingContext,

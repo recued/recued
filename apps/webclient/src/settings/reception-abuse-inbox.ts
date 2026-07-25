@@ -47,7 +47,7 @@
  *  one broadcast carries enough to apply optimistically; nothing here
  *  does.
  *
- *  Spec: docs/d-149-spec.md § A.20.5 (Abuse Inbox) + § A.16.7 (access-
+ *  Spec: D-149 § A.20.5 (Abuse Inbox) + § A.16.7 (access-
  *  log source-IP-hash truncation) + § A.11 (threat model the inbox
  *  operationalises). */
 

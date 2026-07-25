@@ -1,6 +1,6 @@
 /** D-160 P1 -- middleware registry.
  *
- *  Spec: docs/d-160-spec.md sections N.3 / A.3.
+ *  Spec: D-160 sections N.3 / A.3.
  */
 
 import { describe, expect, it } from 'vitest';

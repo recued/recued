@@ -9,7 +9,7 @@
  *    2. The Pro entitlement resolved OFF the binding credential
  *       (`ProEntitlementSource` — the typed cloud seam; today a stub that
  *       fails closed to `pending`). This is the load-bearing gate.
- *    3. A reachability proof (`docs/d-175-spec.md` `:636-637`).
+ *    3. A reachability proof (D-175 `:636-637`).
  *
  *  Gate (all of Pro ∧ bound ∧ reachable required for an item to even be
  *  eligible to provision):

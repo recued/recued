@@ -17,7 +17,7 @@
  * `pii.Phone1.gb`) it can reason over, instead of opaque hash tokens.
  * `hash_replace` / `hash_restore` stay as the escape hatch for non-aliasable
  * PII (signing keys, free-form blobs with no kind that fits the 9-kind enum).
- * See docs/d-167-spec.md §Transform exports.
+ * See D-167 §Transform exports.
  *
  * Hard invariant — restoration must not fail. An unknown / dropped handle, an
  * unknown alias, or a non-aliasable value all pass through unchanged; the

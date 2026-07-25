@@ -6,7 +6,7 @@
  *  Topo-sort honours `meta.depends_on`; cycles throw at sort time
  *  (programming error, not runtime condition).
  *
- *  Spec: `docs/d-123-spec.md` §1.3. */
+ *  Spec: D-123 §1.3. */
 
 import type Database from 'better-sqlite3';
 

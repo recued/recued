@@ -31,7 +31,7 @@
  *  propagate: that is transient, and the D-153 no-auto-resume posture wants the
  *  approval retried after unlock, not recorded as a permanent failure.
  *
- *  Spec: `docs/d-210-spec.md`; the seal is `ports/reception/form-pii.ts`. */
+ *  Spec: D-210; the seal is `ports/reception/form-pii.ts`. */
 
 import { openFormSubmissionField } from '../form-pii.js';
 import type { FormSubmissionStore } from '../../../storage/reception-form-store.js';

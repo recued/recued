@@ -7,7 +7,7 @@
  *  is glue that keeps housekeeping idle-detection in sync with the
  *  actual execution state.
  *
- *  Spec: `docs/d-123-spec.md` §2.1. */
+ *  Spec: D-123 §2.1. */
 
 import type { CollectionInstanceStore } from '../collections/instance-store.js';
 

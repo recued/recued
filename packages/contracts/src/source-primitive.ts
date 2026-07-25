@@ -6,7 +6,7 @@
  *  lays the registration shape + table; PA2 wires the resolver +
  *  default-Source memory + connection-Source auto-register.
  *
- *  Spec: docs/d-145-spec.md § A.2. */
+ *  Spec: D-145 § A.2. */
 
 import {
   WORK_ENTITY_KINDS,
@@ -21,7 +21,7 @@ import {
  *  in later phases. `file` (D-192 file SOURCE family) is a `file_meta_ref`
  *  posture kind — populated by per-vendor meta adapters, never a reception
  *  write path (it follows the `mail_message` arm, not `contact`);
- *  `docs/d-192-file-source-family.md`. */
+ *  D-192. */
 export const SOURCE_TOP_TIER_KINDS = [
   ...WORK_ENTITY_KINDS,
   'mail_message',
@@ -44,10 +44,10 @@ export const SOURCE_KIND_SET: ReadonlySet<SourceKind> = new Set(SOURCE_KINDS);
  *  vs a document-meta-ref), so the spine dispatches on posture, not the
  *  shape. `records` = the full-walk reconcile every Source built today
  *  uses (mail / calendar / CRM work-entities); `file_meta_ref` = list
- *  metadata + `storage_ref:'remote'`, bytes never fetched (the file
- *  SOURCE family); `contact_import` = scoped import into `data.contact`
- *  via D-138 merge. Taxonomy `docs/d-192-kinds-taxonomy.md` § 2 +
- *  `docs/d-192-file-source-family.md`. */
+ *  metadata + `storage_ref:'remote'` without fetching bodies during sync
+ *  (explicit reads resolve lazily); `contact_import` = scoped import into `data.contact`
+ *  via D-138 merge. Taxonomy D-192 § 2 +
+ *  D-192. */
 export const SOURCE_SYNC_POSTURES = ['records', 'file_meta_ref', 'contact_import'] as const;
 export type SourceSyncPosture = (typeof SOURCE_SYNC_POSTURES)[number];
 export const SOURCE_SYNC_POSTURE_SET: ReadonlySet<SourceSyncPosture> = new Set(

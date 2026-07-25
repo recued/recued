@@ -32,7 +32,7 @@
  *      list `value.stage` enum can't widen across vendors without
  *      breaking either side. The raw `LeadSource` lands here verbatim.
  *
- *  Spec: `docs/d-130-spec.md` § A.3, § Phase 3. */
+ *  Spec: D-130 § A.3, § Phase 3. */
 
 import {
   canonicalizeMailingAddress,

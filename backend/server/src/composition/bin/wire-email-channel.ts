@@ -35,7 +35,7 @@
  *  row live the moment this channel is present in `allChannels` AND a
  *  `connection.notification.email` record is enrolled.
  *
- *  Spec: docs/d-158-spec.md § P2b / N.4; leaf: `channels/email.ts`;
+ *  Spec: D-158 § P2b / N.4; leaf: `channels/email.ts`;
  *  outbound mail seam: D-127 P3.1 (`handleCollectionMailSend`). */
 
 import {

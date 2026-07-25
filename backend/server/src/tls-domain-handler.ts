@@ -29,7 +29,7 @@
  *  cert + private key pair IS the server's identity to its pinned
  *  clients; an MCP-channel mutation would be catastrophic.
  *
- *  Spec: docs/d-148-spec.md § A.6.3 + Amendment 2026-05-11. */
+ *  Spec: D-148 § A.6.3 + Amendment 2026-05-11. */
 
 import {
   RpcError,

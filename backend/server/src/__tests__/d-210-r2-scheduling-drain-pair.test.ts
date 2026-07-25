@@ -566,10 +566,14 @@ describe('D-210 R-2 — every uncertain state HOLDS, never the default', () => {
     expect(outcomeOf(env, 'req-1')).toBe('pending');
   });
 
-  it('a paired run that FAILS leaves the booking pending — it must not free the slot', async () => {
-    // `rejected` is what the overlap check excludes, so rejecting here would hand the slot
-    // to a stranger because the owner's recipe had a bug, while the visitor believes they
-    // hold it.
+  it('a paired run that FAILS leaves the booking pending — it must not end the reservation', async () => {
+    // ⚠ RATIONALE CORRECTED (D-210 audit 2026-07-20). This used to read "`rejected` is what
+    // the overlap check excludes, so rejecting here would hand the slot to a stranger" —
+    // that mechanism is GONE: `hasOverlappingBooking` was deleted with the capacity-1
+    // hardcode, so no query reads the outcome and `rejected` frees nothing. The harm is
+    // simpler and worse: `markProcessed` REFUSES `pending`, so `rejected` is TERMINAL —
+    // the booking is silently lost forever over a bug the owner could have fixed, while
+    // the visitor believes they hold the slot.
     seedEndpoint(env, 'ep-1');
     bindScheduling(env, 'ep-1', recipe('book-handler', 1));
     await insertBooking(env, { request_id: 'req-1', endpoint_id: 'ep-1', slot_start_at: NOW + DAY });
@@ -584,6 +588,66 @@ describe('D-210 R-2 — every uncertain state HOLDS, never the default', () => {
     expect(run.calls).toHaveLength(1);
     expect(fire.calls).toHaveLength(0);
     expect(outcomeOf(env, 'req-1')).toBe('pending');
+  });
+
+  it('a paired run that THROWS leaves the booking pending — a throw is not a terminal state', async () => {
+    // D-210 audit finding 2. `plan.run` reaches `handleExecute`, which THROWS for a
+    // request-shape problem (`recipe_not_found`, `assertRunTargets`, the engine catch-all)
+    // instead of returning `{kind:'failed'}` — and nothing between the two converted it.
+    // The throw escaped to the tick's outer catch, which marks `rejected`.
+    //
+    // ⛔ There was NO test for the throw path at all, which is why the inversion survived:
+    // every modelled outcome was pinned and the un-modelled one was not.
+    seedEndpoint(env, 'ep-1');
+    bindScheduling(env, 'ep-1', recipe('book-handler', 1));
+    await insertBooking(env, { request_id: 'req-1', endpoint_id: 'ep-1', slot_start_at: NOW + DAY });
+    const fire = fakeFire();
+    const calls: FakeRun['calls'] = [];
+    const throwingRun: RunPairedBooking = async (input) => {
+      calls.push(input);
+      throw new Error('recipe_not_found');
+    };
+    const res = await processorFor(env, {
+      fireReceptionWorkflow: fire.fn,
+      runPairedBooking: throwingRun,
+    }).drainOnce({ now: NOW, limit: 50 });
+
+    // Identical to the returned-`failed` case above — ONE policy, not two.
+    expect(res).toEqual({ processed: 0, failed: 0 });
+    expect(calls).toHaveLength(1);
+    // ⛔ It must NOT fall through to the pack's default (§3a.2: drift ⇒ HOLD, never the default).
+    expect(fire.calls).toHaveLength(0);
+    expect(outcomeOf(env, 'req-1')).toBe('pending');
+  });
+
+  it('a booking whose paired run THREW is RE-DRAINED on the next tick', async () => {
+    // The label was never the harm — `rejected` being TERMINAL was. `markProcessed` refuses
+    // `pending`, so the pre-fix row could never come back no matter what the owner fixed.
+    // Pin the property the spec actually promises: "retryable, dispatching once the owner
+    // re-binds".
+    seedEndpoint(env, 'ep-1');
+    bindScheduling(env, 'ep-1', recipe('book-handler', 1));
+    await insertBooking(env, { request_id: 'req-1', endpoint_id: 'ep-1', slot_start_at: NOW + DAY });
+    const fire = fakeFire();
+    const throwingRun: RunPairedBooking = async () => {
+      throw new Error('recipe_not_found');
+    };
+    await processorFor(env, {
+      fireReceptionWorkflow: fire.fn,
+      runPairedBooking: throwingRun,
+    }).drainOnce({ now: NOW, limit: 50 });
+    expect(outcomeOf(env, 'req-1')).toBe('pending');
+
+    // The owner fixes the recipe; the very next tick reaches it and hands off.
+    const healthy = fakeRun({ kind: 'held' });
+    const res2 = await processorFor(env, {
+      fireReceptionWorkflow: fire.fn,
+      runPairedBooking: healthy.fn,
+    }).drainOnce({ now: NOW, limit: 50 });
+
+    expect(healthy.calls).toHaveLength(1);
+    expect(res2).toEqual({ processed: 1, failed: 0 });
+    expect(outcomeOf(env, 'req-1')).toBe('processed');
   });
 
   it('a pair with no minted door (`no_door`) holds', async () => {

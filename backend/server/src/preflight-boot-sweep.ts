@@ -32,7 +32,7 @@
  *  releasing the raise, but that requires AskStore-level reservation
  *  which is out of slice scope.
  *
- *  Spec: docs/d-157-spec.md § A.3.
+ *  Spec: D-157 § A.3.
  */
 
 import type { AuditLogStore, CheckpointStore } from '@recued/storage';
@@ -206,6 +206,7 @@ export const sweepAwaitingCheckpoints = async (
     const context: PreflightAskContext = {
       recipe_id: checkpoint.recipe_id,
       gated_step_id: checkpoint.gated_step_id,
+      ...(checkpoint.preflight_context ?? {}),
     };
     let freshAskId: string;
     try {

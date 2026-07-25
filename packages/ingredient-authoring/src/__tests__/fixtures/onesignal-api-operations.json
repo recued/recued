@@ -3,13 +3,13 @@
     "source": {
       "reference_index": {
         "url": "https://documentation.onesignal.com/llms.txt",
-        "bytes": 79954,
-        "sha256": "160d31f36bc19560d1def81d5869b97d66c9d3da8a4073e2d9ea654fa8422a8c"
+        "bytes": 80239,
+        "sha256": "818fc1c980febeab3befbf4128a7632d184e547d9a57ca95865e4acc7eb0f259"
       },
       "reference_pages": {
         "count": 59,
-        "bytes": 1473491,
-        "bundle_sha256": "eea2f18d060a77cf682df2e40197756ccefb65d84f68df2247210a3ed663f0cb",
+        "bytes": 1475700,
+        "bundle_sha256": "184b584bf4e4e52b447051148423f58263ebebf5b97f7f430994ea84216565f1",
         "entries": [
           {
             "slug": "add-a-device",
@@ -78,16 +78,16 @@
           {
             "slug": "create-message",
             "url": "https://documentation.onesignal.com/reference/create-message.md",
-            "bytes": 23537,
-            "sha256": "0d19e23a033f7cc54e0ad2108d03a7c96b138f869df23e7a5c4d916720c77837",
+            "bytes": 23924,
+            "sha256": "b0137a2b9a58cb536af9a39d37bf90788c519d147ee96d24509aff08acf22847",
             "has_openapi": false,
             "kind": "operation"
           },
           {
             "slug": "create-segments",
             "url": "https://documentation.onesignal.com/reference/create-segments.md",
-            "bytes": 32966,
-            "sha256": "1ec94064f74a68bc0f4a6df8d35457f3aa4ea11b47b8be600b33f66485a64738",
+            "bytes": 33349,
+            "sha256": "19efaff8bbbd067abd99872896e3c05d41c825d859a1486dd9171d7d7b937c92",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -254,8 +254,8 @@
           {
             "slug": "push-notification",
             "url": "https://documentation.onesignal.com/reference/push-notification.md",
-            "bytes": 80551,
-            "sha256": "9f31f02711301308f8b7e106f60399e743fd97e440907b16d1d78ed78bd1729d",
+            "bytes": 81256,
+            "sha256": "406c10b316efffcca3f362910ea2e2e3a08ae29f207a2ae93cb0e7bf9062958d",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -398,8 +398,8 @@
           {
             "slug": "view-apps",
             "url": "https://documentation.onesignal.com/reference/view-apps.md",
-            "bytes": 17675,
-            "sha256": "64331cbf2c1f700934f8a5066d668b874d0e04d6655c4ba354384c59bba6b018",
+            "bytes": 18409,
+            "sha256": "14eea4844400fe1d1930a490165046e7938a4f80a53f9dfd60db9cff0d47e725",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -5200,7 +5200,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -5376,7 +5376,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -6396,7 +6396,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -6458,7 +6458,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -6514,7 +6514,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -6985,7 +6985,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -7119,7 +7119,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -7864,7 +7864,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -9180,7 +9180,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -9246,7 +9246,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -9311,7 +9311,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -9383,7 +9383,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -10028,7 +10028,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -10083,7 +10083,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": false
     },
@@ -10348,7 +10348,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -10392,7 +10392,7 @@
       "pagination": null,
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -10648,7 +10648,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     },
@@ -10714,7 +10714,7 @@
       },
       "static_query": null,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "request_schema_closed": true
     }

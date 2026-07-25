@@ -41,7 +41,7 @@
  *  job is the SEMANTIC incompleteness above (a well-formed page that could not
  *  prove exhaustion). Same contract as `drainIdKeyedDelta`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; taxonomy §0. */
+ *  Spec: D-192; taxonomy §0. */
 
 // ────────────────────────────────────────────────────────────────
 // The two per-vendor closures + the parsed-page shape

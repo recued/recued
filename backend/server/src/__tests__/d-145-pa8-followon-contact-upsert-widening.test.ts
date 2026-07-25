@@ -94,6 +94,25 @@ describe('handleContactUpsert — widened manual fields', () => {
     expect(store.get('alice@example.com')?.company_source).toBe('manual');
   });
 
+  it('forwards job title and an absolute/yearless birthday unchanged', async () => {
+    const result = await handleContactUpsert(
+      { store, now: () => NOW },
+      {
+        email: 'alice@example.com',
+        name: 'Alice',
+        title: 'Director',
+        birthday: '--03-04',
+      },
+    );
+
+    expect(result.contact.title).toBe('Director');
+    expect(result.contact.birthday).toBe('--03-04');
+    expect(store.get('alice@example.com')).toMatchObject({
+      title: 'Director',
+      birthday: '--03-04',
+    });
+  });
+
   it('validates network_domain through sanitizeNetworkDomains before writing', async () => {
     const result = await handleContactUpsert(
       { store, now: () => NOW },

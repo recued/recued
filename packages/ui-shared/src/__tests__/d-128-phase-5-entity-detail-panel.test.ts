@@ -17,7 +17,7 @@
  *    - Helpers: `pickFreshestMetaSnapshot`, `collapseToFreshestPerTopic`,
  *      `formatMetaFieldValue`, `summarizeEnrichmentValue`.
  *
- *  Spec: docs/d-128-spec.md §A.4 + Phase 5. */
+ *  Spec: D-128 §A.4 + Phase 5. */
 
 import { describe, expect, it } from 'vitest';
 import {

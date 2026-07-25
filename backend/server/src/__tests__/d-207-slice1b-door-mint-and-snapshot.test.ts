@@ -155,6 +155,7 @@ describe('D-207 — the SNAPSHOT is the tool axis, and a dead door is a kill-swi
     const snap = buildReceptionContractSnapshot(anonSource(contract_id), deps(s, ['stripe']));
     expect(snap.allowed_tools).toEqual(['stripe']);
     expect(snap.contract_id).toBe(contract_id);
+    expect(snap.contract_version).toMatch(/^authority-sha256-v1:[0-9a-f]{64}$/);
   });
 
   it('a REVOKED door authorizes NOTHING — allowed_tools collapses to empty', () => {
@@ -165,9 +166,11 @@ describe('D-207 — the SNAPSHOT is the tool axis, and a dead door is a kill-swi
         door: 'reception', recipeId: 'r', capability: cap(['a.op'], ['stripe']), mintedBy: 'o' },
       { ...s, now: NOW },
     );
+    const live = buildReceptionContractSnapshot(anonSource(contract_id), deps(s, ['stripe']));
     s.definitionStore.revoke(contract_id, 'unbound');
-    const snap = buildReceptionContractSnapshot(anonSource(contract_id), deps(s, ['stripe']));
-    expect(snap.allowed_tools).toEqual([]);
+    const revoked = buildReceptionContractSnapshot(anonSource(contract_id), deps(s, ['stripe']));
+    expect(revoked.allowed_tools).toEqual([]);
+    expect(revoked.contract_version).not.toBe(live.contract_version);
   });
 
   it('an UNKNOWN / deleted door authorizes NOTHING', () => {

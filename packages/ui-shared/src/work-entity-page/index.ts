@@ -1,7 +1,7 @@
 /** D-145 PA6 — work-entity page substrate barrel.
  *
  *  Pairs with `@recued/contracts/work-entity-page` (types + state
- *  machine + filtering). Spec: docs/d-145-spec.md § Phase PA6. */
+ *  machine + filtering). Spec: D-145 § Phase PA6. */
 
 export {
   renderSourceAffordanceChips,
@@ -20,4 +20,8 @@ export {
   renderWorkEntityPage,
   type WorkEntityPageProps,
 } from './page.js';
+export {
+  renderBookingDetail,
+  type BookingDetailProps,
+} from './booking-detail.js';
 export { WORK_ENTITY_PAGE_STYLES } from './styles.js';

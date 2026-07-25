@@ -29,7 +29,7 @@
  *  with its rpc handler + tests; bin.ts composes the production
  *  `DdnsHandleControl` once the cloud-side release endpoint lands.
  *
- *  Spec: docs/d-148-spec.md § A.5.2 (DDNS update API) + § A.6.3 (`pro_acme`
+ *  Spec: D-148 § A.5.2 (DDNS update API) + § A.6.3 (`pro_acme`
  *  cert source + unbinding requirement) + § A.7.4 (high-assurance audit
  *  invariants). */
 

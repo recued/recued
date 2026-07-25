@@ -28,7 +28,7 @@
  *  `connection` slot stays a `KIND_NOT_YET_IMPLEMENTED` placeholder
  *  until D-125 P3 swaps in the outbound-endpoint adapter.
  *
- *  Spec: `docs/d-126-spec.md` § 2.1, § A.3. */
+ *  Spec: D-126 § 2.1, § A.3. */
 
 import type { IngredientKind } from '@recued/contracts';
 import type { Adapter } from '@recued/ingredients';

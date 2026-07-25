@@ -23,7 +23,12 @@
  */
 
 import type Database from 'better-sqlite3';
-import type { BatchAskRecord, Checkpoint, Commit } from '@recued/contracts';
+import type {
+  BatchAskRecord,
+  Checkpoint,
+  Commit,
+  PreflightOverrideOffer,
+} from '@recued/contracts';
 import { createBatchAskStore } from '@recued/storage';
 import type { ActivityAction, ActivityEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 import {
@@ -43,6 +48,8 @@ import {
   type RemoteChannel,
 } from '@recued/notification';
 import {
+  NEVER_ASK_OPERATION_OPTION_ID,
+  RELAX_OPERATION_TO_ASK_OPTION_ID,
   raiseInDoubtAsks,
   registerInDoubtHandler,
   registerPreflightHandler,
@@ -102,6 +109,8 @@ export interface ComposeNotificationBlockDeps {
     checkpoint: Checkpoint,
     context: PreflightAskContext,
   ) => Promise<void>;
+  /** D-211 — authoritative standing-ruling writer for preflight affordances. */
+  upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
   /** D-192 Slice 6c — lazy accessor for the boot-singleton work-entity write
    *  executor (populated post-listener; `null` at compose time). The create-plan
    *  answer dispatcher derefs it at ANSWER time to run `executeCreatePlan`. */
@@ -195,6 +204,15 @@ export interface NotificationBlockBundle {
   block: NotificationBlock;
   resumer: PreflightResumer;
   batchApprovals: BatchApprovalCoordinator;
+  /** Narrow LIVE read of a batch row's membership — the `/ask` landing needs
+   *  to know whether a batch-registered ask covers ONE member or many before
+   *  it may render that member's values as the approval.
+   *
+   *  ⛔ A reader, not the store: nothing outside this bundle may mutate a
+   *  batch row, and a caller that only needs the count must not be handed
+   *  `close` / `create` to reach it. Read at render time because an `open`
+   *  batch accumulates members. */
+  getBatch: (batch_id: string) => Promise<{ members: readonly unknown[] } | null>;
 }
 
 /** Decorate the one host resumer used by both the legacy single-checkpoint
@@ -243,7 +261,12 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
  *  ⚠ The detail line always carries the RAW option, so an unusual answer is
  *  never misread as a plain denial by a human reading the row. */
 const answerAuditAction = (option: string): ActivityAction =>
-  option === 'approve' || option === 'allow_session' ? 'approval_allow' : 'approval_deny';
+  option === 'approve'
+  || option === 'allow_session'
+  || option === NEVER_ASK_OPERATION_OPTION_ID
+  || option === RELAX_OPERATION_TO_ASK_OPTION_ID
+    ? 'approval_allow'
+    : 'approval_deny';
 
 export const withBeforePreflightResume = (
   resumer: PreflightResumer,
@@ -532,12 +555,18 @@ export const composeNotificationBlock = (
     ...(deps.sessionGrantResolver !== undefined
       ? { sessionGrantResolver: deps.sessionGrantResolver }
       : {}),
+    ...(deps.upsertOverride !== undefined
+      ? { upsertOverride: deps.upsertOverride }
+      : {}),
   });
 
   registerPreflightHandler(block, {
     checkpointStore,
     resumer,
     batchApprovals: batchApprovals.hooks,
+    ...(deps.upsertOverride !== undefined
+      ? { upsertOverride: deps.upsertOverride }
+      : {}),
   });
   registerInDoubtHandler(
     block,
@@ -585,7 +614,12 @@ export const composeNotificationBlock = (
     });
   }
 
-  return { block, resumer, batchApprovals };
+  return {
+    block,
+    resumer,
+    batchApprovals,
+    getBatch: async (batch_id: string) => await batchAskStore.get(batch_id),
+  };
 };
 
 /** Dependencies the boot-time pending-ask + awaiting-checkpoint

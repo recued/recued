@@ -24,7 +24,7 @@
  *  gate against the overlap COUNT on the approval ask — D-173 D7's
  *  "confirmed at approval". The guard also produced two live defects; see
  *  `d-173-i5-slot-edit-row-staleness.test.ts` and
- *  `handovers/calendar-reservation-landing-zone-audit.md` § 9.
+ *  internal design notes § 9.
  *
  *  This is a deliberate retirement, not a regression: re-adding an overlap
  *  refusal here would re-hardcode capacity to 1. */

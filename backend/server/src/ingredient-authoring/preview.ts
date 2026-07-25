@@ -29,7 +29,7 @@
  *  and `static_query` / `static_headers` fold authoritatively. So a previewed
  *  read is the same call the installed catalog would make.
  *
- *  Spec: `docs/d-170-spec.md` § N.4 (test-before-save), N.15 (server-side rpc,
+ *  Spec: D-170 § N.4 (test-before-save), N.15 (server-side rpc,
  *  "preview runs through the real gateway connection adapter"). */
 
 import {

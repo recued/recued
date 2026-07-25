@@ -23,7 +23,7 @@
  *  hit an explicit row — the author-default branch is reached only for DOORS' sparse,
  *  un-toggled entries.
  *
- *  Spec: `docs/d-187-spec.md` AMENDMENT block §3; handover
+ *  Spec: D-187 AMENDMENT block §3; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
 import { OWNER_CONTRACT_ID } from './contract-definition.js';
@@ -74,7 +74,7 @@ export const isGrantedReadAdmissible = (
  *      collection — raw incoming external webhook payloads; and
  *      `core.webhook.event.get`, whose additional active-run authority gate
  *      scopes one accepted decoded event.
- *    - `core.data.form-response.get` + `data.form_response` — arbitrary accepted
+ *    - `core.data.form-response.list/get` + `data.form_response` — arbitrary accepted
  *      visitor form contents. Unlike a typed entity, the free-form payload has no
  *      per-field sensitivity contract.
  *
@@ -83,6 +83,7 @@ export const isGrantedReadAdmissible = (
 export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   'core.contact.engagements.read',
   'core.audit.read',
+  'core.data.form-response.list',
   // D-198 Slice 4 — collective memory is OWNER-on / door-off by default; the
   // seller grants a customer tier in per §3 (fail-closed, opt-in write + read).
   'core.memory.write',

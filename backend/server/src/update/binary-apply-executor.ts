@@ -19,11 +19,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import { chmodSync, closeSync, createWriteStream, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, createWriteStream, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { verify } from '@recued/release';
+import { fsyncDir, fsyncFile } from '../durable-fs.js';
 
 /** Detached-signature sidecar suffix written beside the binary on the volume so
  *  the D-178 thin `:managed` launcher can RE-VERIFY before exec (I-2 second
@@ -195,43 +196,12 @@ export const rollbackSwap = (oldPath: string, binaryPath: string): void => {
 };
 
 /** Copy the SQLite file to `snapshotPath` before a migrating boot (mechanism c).
- *  Injected `backup` does the consistent copy (`db.backup` in production); CAS
+ *  Injected `backup` does the consistent copy (`VACUUM INTO` in production); CAS
  *  is content-addressed + append-only so it is NOT snapshotted. */
 export type DbBackupFn = (snapshotPath: string) => Promise<void>;
 
 export const takeSnapshot = async (backup: DbBackupFn, snapshotPath: string): Promise<void> => {
   await backup(snapshotPath);
-};
-
-/** fsync a file so its bytes are durable before we rely on it across a crash.
- *  Best-effort: a platform/filesystem that can't fsync (or a transient failure)
- *  must not abort the restore — the atomic rename still gives process-crash safety. */
-const fsyncFile = (path: string): void => {
-  try {
-    const fd = openSync(path, 'r');
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    /* best-effort durability */
-  }
-};
-
-/** fsync a directory so a rename into it survives power loss. Best-effort — many
- *  platforms (notably Windows) can't open a directory for fsync. */
-const fsyncDir = (path: string): void => {
-  try {
-    const fd = openSync(path, 'r');
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    /* best-effort — unsupported platform: skip */
-  }
 };
 
 /** Restore a pre-migration snapshot over the live db path (rollback's data half —

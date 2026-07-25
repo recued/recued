@@ -274,7 +274,7 @@ const resolveSurvivorAddress = (
  *  survivor's `contacts.name`, resolved through the same alias + merge walk
  *  as `contactAddressSet` (one definition; see the module header).
  *
- *  Bench harvest (`recued-enrichment-benchmark` P1 v6–v12): enrichment
+ *  Bench harvest (internal benchmarks P1 v6–v12): enrichment
  *  producers denormalize `{ entity, name }` pairs into their values at
  *  producer-run time so LLM surfaces present people by name without a
  *  per-question `entity.query` resolution loop. `undefined` when the input

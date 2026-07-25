@@ -22,6 +22,8 @@
  *  the internet anyway, so this is the honest surface, not a regression.
  */
 
+import { extractBulkPackRecipeRefs } from '@recued/contracts';
+
 // ────────────────────────────────────────────────────────────────
 // Row types — mirror the worker's projection (apps/marketplace/src/ssr/worker.ts
 // `CatalogRecipe` / `CatalogPack`). Defined here (not imported) because the
@@ -43,6 +45,10 @@ export interface CatalogRecipeRow {
   rating_avg: number;
   rating_count: number;
   created_at: string;
+  /** Last publish / meta-edit time — the `updated` sorter's key, falling back to
+   *  `created_at`. Optional because the catalog projection omits it on rows
+   *  written before the column was selected. */
+  updated_at?: string;
   /** D-182 `depends_on` — the Tier-P packs this recipe hard-depends on
    *  (`<publisher>.<pack>`). Carried in the catalog (a tiny string[]) so the
    *  install deps box resolves dependencies from the already-downloaded corpus,
@@ -72,6 +78,8 @@ export interface CatalogPackRow {
    *  (`recipes[]` and/or v2 recipe `contents[]`). */
   recipe_refs: Array<{ slug: string; version: number }>;
   created_at: string;
+  /** See `CatalogRecipeRow.updated_at`. */
+  updated_at?: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -163,6 +171,7 @@ export const parseRecipeRow = (u: unknown): CatalogRecipeRow | null => {
     rating_avg: num(u.rating_avg),
     rating_count: num(u.rating_count),
     created_at: str(u.created_at) ?? '',
+    ...(str(u.updated_at) !== null ? { updated_at: str(u.updated_at) as string } : {}),
     depends_on: strArr(u.depends_on),
     ...(str(u.recipe_bundle) !== null
       ? { recipe_bundle: str(u.recipe_bundle) as string }
@@ -194,6 +203,7 @@ export const parsePackRow = (u: unknown): CatalogPackRow | null => {
     item_count: num(u.item_count),
     recipe_refs: recipeRefs(u.recipe_refs),
     created_at: str(u.created_at) ?? '',
+    ...(str(u.updated_at) !== null ? { updated_at: str(u.updated_at) as string } : {}),
   };
 };
 
@@ -287,3 +297,271 @@ export const fetchRecipeCatalog = (
 export const fetchPackCatalog = (
   opts?: FetchCatalogOptions,
 ): Promise<CatalogResult<CatalogPackRow>> => fetchCatalog('pack', parsePackRow, opts);
+
+// ────────────────────────────────────────────────────────────────
+// Server-side search (`/catalog/search`) — the paged answer
+// ────────────────────────────────────────────────────────────────
+
+/** One page of server-computed Discover results. Deliberately the same shape
+ *  `runDiscover` produces (minus `matched`, which only exists because the local
+ *  engine holds the whole corpus) so the panel renders either identically. */
+export interface CatalogPage<Row> {
+  rows: Row[];
+  total: number;
+  totalPages: number;
+  page: number;
+  facets: Record<string, Array<{ value: string; count: number }>>;
+}
+
+export type CatalogPageResult<Row> =
+  | { status: 'ok'; page: CatalogPage<Row> }
+  | { status: 'error'; message: string; httpStatus?: number };
+
+/** The query the endpoint takes. Structurally `DiscoverQuery` (discover-model),
+ *  restated here so the fetch layer keeps no dependency on the engine — the two
+ *  are proven equivalent by differential, not by sharing a type. */
+export interface CatalogSearchQuery {
+  search: string;
+  filters: Record<string, readonly string[]>;
+  sort: string;
+  page: number;
+  perPage: number;
+}
+
+/** ⚠ The wire shape is the one `scripts/verify-discover-parity.mjs` proved
+ *  against the live corpus — `f.<facet>=a,b`, comma-joined. The endpoint also
+ *  accepts repeated `f.<facet>` params, but only this form has been shown
+ *  equal to `runDiscover` end-to-end, so it is the form the client sends.
+ *  (A facet VALUE containing a comma would be split by the endpoint; no value
+ *  in the live catalogue contains one, and that is a property of the vocabulary
+ *  — tags / platforms / kind slugs — not an assumption about user input.) */
+export const catalogSearchParams = (
+  kind: CatalogKind,
+  query: CatalogSearchQuery,
+): URLSearchParams => {
+  const p = new URLSearchParams({
+    kind,
+    q: query.search,
+    sort: query.sort,
+    page: String(query.page),
+    per_page: String(query.perPage),
+  });
+  for (const [key, values] of Object.entries(query.filters)) {
+    if (values.length > 0) p.set(`f.${key}`, values.join(','));
+  }
+  return p;
+};
+
+const facetsOf = (u: unknown): Record<string, Array<{ value: string; count: number }>> => {
+  if (!isRecord(u)) return {};
+  const out: Record<string, Array<{ value: string; count: number }>> = {};
+  for (const [key, raw] of Object.entries(u)) {
+    if (!Array.isArray(raw)) continue;
+    const vals: Array<{ value: string; count: number }> = [];
+    for (const entry of raw) {
+      if (!isRecord(entry)) continue;
+      const value = str(entry.value);
+      if (value === null || typeof entry.count !== 'number') continue;
+      vals.push({ value, count: entry.count });
+    }
+    out[key] = vals;
+  }
+  return out;
+};
+
+/** Ask the server for ONE page of Discover results.
+ *
+ *  Same defensive posture as the corpus download: the response is untrusted
+ *  network JSON, a malformed row is dropped rather than thrown, and a network /
+ *  CORS / HTTP failure resolves to an `error` result so the panel can show a
+ *  retry (and, while the corpus is still shipped, degrade to searching it). */
+const fetchSearch = async <Row>(
+  kind: CatalogKind,
+  parse: (u: unknown) => Row | null,
+  query: CatalogSearchQuery,
+  opts: FetchCatalogOptions = {},
+): Promise<CatalogPageResult<Row>> => {
+  const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
+  const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
+  if (fetchFn === undefined) {
+    return { status: 'error', message: 'No fetch available in this environment' };
+  }
+
+  let res: Response;
+  try {
+    res = await fetchFn(`${origin}/catalog/search?${catalogSearchParams(kind, query)}`, {
+      headers: { Accept: 'application/json' },
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+  } catch (e) {
+    return {
+      status: 'error',
+      message: `Couldn't reach the marketplace — ${(e as Error)?.message ?? String(e)}`,
+    };
+  }
+  if (!res.ok) {
+    return {
+      status: 'error',
+      message: `Marketplace search unavailable (HTTP ${res.status})`,
+      httpStatus: res.status,
+    };
+  }
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+  }
+  if (!isRecord(body)) {
+    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+  }
+
+  const rows = parseWith(body.rows, parse);
+  // `total` is what the pager and the "N results" copy assert, so a missing or
+  // non-numeric one is a malformed response, not a zero.
+  if (typeof body.total !== 'number' || typeof body.totalPages !== 'number') {
+    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+  }
+  return {
+    status: 'ok',
+    page: {
+      rows,
+      total: body.total,
+      totalPages: Math.max(1, body.totalPages),
+      page: typeof body.page === 'number' ? body.page : query.page,
+      facets: facetsOf(body.facets),
+    },
+  };
+};
+
+/** One page of recipe search results (`/catalog/search?kind=recipe`). */
+export const fetchRecipeSearch = (
+  query: CatalogSearchQuery,
+  opts?: FetchCatalogOptions,
+): Promise<CatalogPageResult<CatalogRecipeRow>> =>
+  fetchSearch('recipe', parseRecipeRow, query, opts);
+
+/** One page of pack search results (`/catalog/search?kind=pack`). */
+export const fetchPackSearch = (
+  query: CatalogSearchQuery,
+  opts?: FetchCatalogOptions,
+): Promise<CatalogPageResult<CatalogPackRow>> =>
+  fetchSearch('pack', parsePackRow, query, opts);
+
+// ────────────────────────────────────────────────────────────────
+// Bounded version lookup (`/catalog/versions`)
+// ────────────────────────────────────────────────────────────────
+
+/** Matches the endpoint's own cap. Over it the server 400s rather than
+ *  truncating (a short map would read as "no update available"), so the client
+ *  chunks instead of trusting one oversized request. */
+const VERSIONS_CHUNK = 200;
+
+/** Current catalogue versions for a BOUNDED id set — the installed roster.
+ *
+ *  This is what lets Discover keep saying "N updates available" once it pages
+ *  from the server and no longer holds the corpus to reduce over. Failure is
+ *  reported, never silently answered with an empty map: an empty map is
+ *  indistinguishable from "nothing has an update", so the badge would quietly
+ *  go dark on every error. */
+export const fetchCatalogVersions = async (
+  kind: CatalogKind,
+  ids: readonly string[],
+  opts: FetchCatalogOptions = {},
+): Promise<
+  | { status: 'ok'; versions: Map<string, number> }
+  | { status: 'error'; message: string }
+> => {
+  const unique = [...new Set(ids.filter((id) => id !== ''))].sort();
+  const versions = new Map<string, number>();
+  if (unique.length === 0) return { status: 'ok', versions };
+
+  const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
+  const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
+  if (fetchFn === undefined) {
+    return { status: 'error', message: 'No fetch available in this environment' };
+  }
+
+  for (let i = 0; i < unique.length; i += VERSIONS_CHUNK) {
+    const chunk = unique.slice(i, i + VERSIONS_CHUNK);
+    const p = new URLSearchParams({ kind, ids: chunk.join(',') });
+    let res: Response;
+    try {
+      res = await fetchFn(`${origin}/catalog/versions?${p}`, {
+        headers: { Accept: 'application/json' },
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      });
+    } catch (e) {
+      return {
+        status: 'error',
+        message: `Couldn't reach the marketplace — ${(e as Error)?.message ?? String(e)}`,
+      };
+    }
+    if (!res.ok) {
+      return { status: 'error', message: `Marketplace version lookup unavailable (HTTP ${res.status})` };
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      return { status: 'error', message: 'Marketplace version lookup returned a malformed response' };
+    }
+    const map = isRecord(body) && isRecord(body.versions) ? body.versions : null;
+    if (map === null) {
+      return { status: 'error', message: 'Marketplace version lookup returned a malformed response' };
+    }
+    for (const [id, v] of Object.entries(map)) {
+      if (typeof v === 'number' && Number.isFinite(v)) versions.set(id, v);
+    }
+  }
+  return { status: 'ok', versions };
+};
+
+// ────────────────────────────────────────────────────────────────
+// Per-pack membership (the install artifact, not the meta catalog)
+// ────────────────────────────────────────────────────────────────
+
+/** Fetch ONE pack's recipe membership from `/packs/<slug>.json`.
+ *
+ *  `recipe_refs` is pack MEMBERSHIP, and the add-a-pack model puts membership in
+ *  the per-pack install artifact — `all_meta_*` is list, search and version. It
+ *  rode in the meta catalog anyway, and that one field was the only reason the
+ *  catalog's server-side read had to touch every pack manifest: 97 KB emitted,
+ *  empty on 665 of 927 rows, and read for exactly ONE pack per install — the
+ *  resolved carrier.
+ *
+ *  So it is fetched here instead, per carrier, on demand. There are 56 distinct
+ *  carriers across 382 bundled recipes, so eagerly loading them would be 56
+ *  round-trips; a reader only ever needs the one they are looking at.
+ *
+ *  ⚠ The SAME validator the worker ran, from the same package — not a
+ *  reimplementation. `extractBulkPackRecipeRefs` is fail-closed: a malformed or
+ *  conflicting manifest yields `null`, which surfaces here as `[]`, which makes
+ *  bundle resolution refuse. That is the behaviour the projection had.
+ *
+ *  Never throws — a network / CORS / parse failure resolves to `[]`, so the
+ *  caller degrades to "no bundle offer" rather than breaking the page. */
+export const fetchPackRecipeRefs = async (
+  slug: string,
+  opts: FetchCatalogOptions = {},
+): Promise<Array<{ slug: string; version: number }>> => {
+  const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
+  const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
+  if (fetchFn === undefined) return [];
+  try {
+    const res = await fetchFn(`${origin}/packs/${encodeURIComponent(slug)}.json`, {
+      headers: { Accept: 'application/json' },
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+    if (!res.ok) return [];
+    const manifest = (await res.json()) as unknown;
+    // Identity guard, as the projection applied it: a manifest that does not
+    // name the pack it was served for cannot speak for its membership.
+    const m = manifest as { slug?: unknown } | null;
+    if (m === null || typeof m !== 'object' || m.slug !== slug) return [];
+    return extractBulkPackRecipeRefs(manifest) ?? [];
+  } catch {
+    return [];
+  }
+};

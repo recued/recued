@@ -14,7 +14,7 @@
  *     (`user_self`+`system`); `contracted_user` / `anonymous` rows are
  *     reachable via an explicit `origin_actors`, never dropped (I-7).
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-7 / I-9 / O-2.
+ *  Spec: D-161 § N.8 / A.7 / I-7 / I-9 / O-2.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';

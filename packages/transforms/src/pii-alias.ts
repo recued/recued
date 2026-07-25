@@ -17,12 +17,12 @@
  * is then NOT an alias surface, so restore leaves it untouched instead of
  * mapping every `Person1` to whichever real name turn-1 aliased — killing the
  * common restore-collision. The `.invalid`-bearing email composite
- * (`m<N>@d<M>.invalid`) + bare domain (`d<N>.invalid`) are already collision-
- * proof (a shape humans never type) and keep their unprefixed form. See
- * `PII_ALIAS_PREFIX`. The residual — a user literally typing the PREFIXED
- * `pii.PersonN` — is Slice 3's pre-scan reserve/escape job.
+ * (`m<N>@d<M>.invalid`) + bare domain (`d<N>.invalid`) keep their unprefixed
+ * form. See `PII_ALIAS_PREFIX`. A user can still paste any emitted surface,
+ * however, so Slice 3's pre-scan reserves or escapes BOTH the readable family
+ * and the `.invalid` family before a provider request.
  *
- * Spec: docs/d-167-spec.md §Alias vocabulary, §Alias ledger, §Runtime flow.
+ * Spec: D-167 §Alias vocabulary, §Alias ledger, §Runtime flow.
  */
 
 import type {
@@ -50,8 +50,9 @@ import {
  * no longer a restorable alias surface — collision-proofing (module doc).
  *
  * The unprefixed email composite (`m<N>@d<M>.invalid`) and bare domain
- * (`d<N>.invalid`) stay as-is — already collision-proof via the reserved
- * `.invalid` TLD. Generation references this constant; the restore /
+ * (`d<N>.invalid`) stay as-is. Their reserved `.invalid` TLD prevents collision
+ * with a deliverable address, while the packet pre-scan handles a literal copy
+ * of the alias surface itself. Generation references this constant; the restore /
  * `stripAliasSuffix` / `kindFromBase` / `isAlreadyAliased` regexes encode the
  * SAME prefix literally as `pii\.` (kept in sync by hand — the value is a fixed
  * design decision, not a tunable).
@@ -88,6 +89,29 @@ export interface Ledger {
    *  `byKindRealValue` — the content pass iterates that map, and a `pii.*`-shaped
    *  `real_value` there would let `scanContent` re-process an emitted alias. */
   preScanLiterals: Map<string, RedactionAliasEntry>;
+  /** D-167 — deterministic slot ordering: `${kind}::${real_value}` → the
+   *  per-kind identity NUMBER that value MUST receive when it allocates.
+   *
+   *  A reservation is NOT an allocation: no forward/reverse row, no restore
+   *  power, nothing the model can see. It only fixes WHICH number a value gets
+   *  IF the packet contains it, so P1 ("allocate only for a value present in the
+   *  outbound packet") is untouched. Entries are kept after consumption — the
+   *  map doubles as the "this ledger was already seeded" marker, and a consumed
+   *  reservation is inert because `getOrAllocate` returns the existing entry
+   *  before ever consulting it. Installed by `reserveAliasSlotOrdering`. */
+  slotReservations: Map<string, number>;
+  /** `${kind}::${n}` for every reservation not yet consumed. `nextCounter` steps
+   *  past these so an UNRESERVED value can never take a reserved slot. */
+  reservedSlotKeys: Set<string>;
+}
+
+/**
+ * Request-scoped reverse authority. The ordinary ledger's forward index stays
+ * session-wide for stable coreference; this filtered ledger contains only
+ * aliases present in one final provider-bound packet.
+ */
+export interface PiiRestoreAuthority {
+  readonly ledger: Ledger;
 }
 
 /**
@@ -107,7 +131,146 @@ const createAliasNamespace = (): AliasNamespace => ({
   counters: new Map(),
   siblingCounters: new Map(),
   preScanLiterals: new Map(),
+  slotReservations: new Map(),
+  reservedSlotKeys: new Set(),
 });
+
+const cloneAliasEntry = (
+  entry: RedactionAliasEntry,
+): RedactionAliasEntry => ({
+  ...entry,
+  first_observed_at: { ...entry.first_observed_at },
+});
+
+/**
+ * Clone a ledger for one staged provider request. A failed validation,
+ * serialization, or provider call can then be discarded without adding an
+ * unseen mapping to the active session ledger.
+ */
+export const cloneLedger = (ledger: Ledger): Ledger => {
+  const entryCopies = new Map<RedactionAliasEntry, RedactionAliasEntry>();
+  const cloneEntry = (entry: RedactionAliasEntry): RedactionAliasEntry => {
+    const existing = entryCopies.get(entry);
+    if (existing !== undefined) return existing;
+    const cloned = cloneAliasEntry(entry);
+    entryCopies.set(entry, cloned);
+    return cloned;
+  };
+  return {
+    scope_id: ledger.scope_id,
+    byKindRealValue: new Map(
+      [...ledger.byKindRealValue].map(([key, entry]) => [key, cloneEntry(entry)]),
+    ),
+    byKindBaseAlias: new Map(
+      [...ledger.byKindBaseAlias].map(([key, entry]) => [key, cloneEntry(entry)]),
+    ),
+    counters: new Map(ledger.counters),
+    siblingCounters: new Map(ledger.siblingCounters),
+    preScanLiterals: new Map(
+      [...ledger.preScanLiterals].map(([key, entry]) => [key, cloneEntry(entry)]),
+    ),
+    // Copied, not shared: a staged request that consumes a reservation must not
+    // mutate the live ledger's unconsumed set before it commits.
+    slotReservations: new Map(ledger.slotReservations),
+    reservedSlotKeys: new Set(ledger.reservedSlotKeys),
+  };
+};
+
+/**
+ * Commit a staged request ledger without replacing the live object held by the
+ * session-ledger store and its other consumers.
+ */
+export const commitLedger = (target: Ledger, staged: Ledger): void => {
+  if (target.scope_id !== staged.scope_id) {
+    throw new Error('pii-alias: cannot commit a staged ledger to another scope');
+  }
+  const replaceMap = <K, V>(into: Map<K, V>, from: ReadonlyMap<K, V>): void => {
+    into.clear();
+    for (const [key, value] of from) into.set(key, value);
+  };
+  replaceMap(target.byKindRealValue, staged.byKindRealValue);
+  replaceMap(target.byKindBaseAlias, staged.byKindBaseAlias);
+  replaceMap(target.counters, staged.counters);
+  replaceMap(target.siblingCounters, staged.siblingCounters);
+  replaceMap(target.preScanLiterals, staged.preScanLiterals);
+  replaceMap(target.slotReservations, staged.slotReservations);
+  // ⚠ `commitLedger` is NOT compiler-checked against `Ledger`'s field list (it
+  // names each map by hand), so a new field silently stops committing. Covered
+  // by a clone→consume→commit test.
+  target.reservedSlotKeys.clear();
+  for (const key of staged.reservedSlotKeys) target.reservedSlotKeys.add(key);
+};
+
+const aliasEntryIdentity = (entry: RedactionAliasEntry): string =>
+  `${entry.kind}\u0000${entry.real_value}\u0000${entry.alias_value}`;
+
+/**
+ * Remove request-local allocations whose alias never appeared in the exact
+ * serialized provider packet. Existing session mappings always survive, as do
+ * the canonical entries referenced by an exposed casing sibling.
+ *
+ * Counters deliberately remain monotonic. A removed mapping has no forward or
+ * reverse lookup and therefore no restore power, while retaining the consumed
+ * number guarantees that even an unexposed staged alias byte is never reused.
+ */
+export const restrictStagedLedgerToRestoreAuthority = (
+  baseline: Ledger,
+  staged: Ledger,
+  authority: PiiRestoreAuthority,
+): void => {
+  if (
+    baseline.scope_id !== staged.scope_id
+    || baseline.scope_id !== authority.ledger.scope_id
+  ) {
+    throw new Error(
+      'pii-alias: cannot restrict a staged ledger across scopes',
+    );
+  }
+
+  const keep = new Set<string>();
+  const addEntries = (
+    entries: Iterable<RedactionAliasEntry>,
+  ): void => {
+    for (const entry of entries) keep.add(aliasEntryIdentity(entry));
+  };
+  addEntries(baseline.byKindRealValue.values());
+  addEntries(baseline.byKindBaseAlias.values());
+  addEntries(authority.ledger.byKindBaseAlias.values());
+
+  // An exposed casing sibling deliberately shares its canonical identity
+  // number. Preserve that relationship anchor even when only the variant
+  // spelling appeared in this packet.
+  let added = true;
+  while (added) {
+    added = false;
+    const keptAliases = new Set<string>();
+    for (const entry of staged.byKindBaseAlias.values()) {
+      if (keep.has(aliasEntryIdentity(entry))) {
+        for (const ref of entry.relationship_refs ?? []) keptAliases.add(ref);
+      }
+    }
+    for (const entry of staged.byKindBaseAlias.values()) {
+      if (
+        keptAliases.has(entry.alias_value)
+        && !keep.has(aliasEntryIdentity(entry))
+      ) {
+        keep.add(aliasEntryIdentity(entry));
+        added = true;
+      }
+    }
+  }
+
+  const retainMapEntries = <K>(
+    map: Map<K, RedactionAliasEntry>,
+  ): void => {
+    for (const [key, entry] of map) {
+      if (!keep.has(aliasEntryIdentity(entry))) map.delete(key);
+    }
+  };
+  retainMapEntries(staged.byKindRealValue);
+  retainMapEntries(staged.byKindBaseAlias);
+  retainMapEntries(staged.preScanLiterals);
+};
 
 /**
  * Build a ledger. With `shared` omitted the ledger owns a private alias
@@ -127,16 +290,45 @@ export const createLedger = (scope_id: string, shared?: AliasNamespace): Ledger 
     counters: ns.counters,
     siblingCounters: ns.siblingCounters,
     preScanLiterals: ns.preScanLiterals,
+    slotReservations: ns.slotReservations,
+    reservedSlotKeys: ns.reservedSlotKeys,
   };
 };
 
 const kindKey = (kind: LedgerKind, value: string) => `${kind}::${value}`;
+
+/** Key for an unconsumed slot reservation (`reservedSlotKeys`). */
+const slotKey = (kind: LedgerKind, n: number) => `${kind}::${n}`;
 
 /** A value made only of digits. Such a value is ambiguous in prose — `94043` is a postcode
  *  or an invoice number or a year, and nothing in the string says which — so `scanContent`
  *  refuses to blind-replace it (see the guard there). Deliberately NOT a length rule:
  *  alphanumeric postcodes (UK `SW1A 1AA`, CA `K1A 0B1`) are distinctive and stay scannable. */
 const ALL_DIGITS_RE = /^\d+$/;
+
+/**
+ * Whether a known value may be BLIND-REPLACED in prose — the one rule that
+ * decides both halves of the content pass.
+ *
+ * ⛔ SEED AND REPLACE MUST AGREE. `seedKnownValuesFromContent` allocates, and
+ * `scanContent` replaces; they consulted this rule at ONE site only, so an
+ * all-digit value was allocated and then never replaced. That allocation is a
+ * P1 violation — "allocate only for a value present in an outbound packet key
+ * or value", stated as a security property, not budget hygiene — and it was
+ * being neutralised one layer down by D-167 P3's per-request restore
+ * authority, which drops a mapping whose alias never reached the packet. The
+ * outcome was safe; the NAMED enforcement point was doing no work
+ * (`feedback_two_layers_validating_one_rule`). Derive both from here.
+ *
+ * `phone` is EXEMPT because it owns its digit logic (the ≥ 7-digit floor plus
+ * the national / trunk-zero variant rows, which are all-digit by construction).
+ */
+export const isBlindReplaceableKnownValue = (
+  kind: LedgerKind,
+  real_value: string,
+): boolean =>
+  real_value.length > 0
+  && (kind === 'phone' || !ALL_DIGITS_RE.test(real_value));
 
 /**
  * Next free per-kind counter — SKIP-aware (D-167 Slice 3). Increments past any
@@ -148,7 +340,13 @@ const ALL_DIGITS_RE = /^\d+$/;
  * identical to the old `+1` for the existing alias path. */
 const nextCounter = (ledger: Ledger, kind: LedgerKind): number => {
   let n = (ledger.counters.get(kind) ?? 0) + 1;
-  while (ledger.byKindBaseAlias.has(kindKey(kind, defaultBaseAlias(kind, n)))) {
+  while (
+    ledger.byKindBaseAlias.has(kindKey(kind, defaultBaseAlias(kind, n)))
+    // D-167 — a slot another value has RESERVED is not free. Without this an
+    // unreserved value could take it and the reserved value would fall through
+    // to a fresh number, which is the drift the ordering exists to remove.
+    || ledger.reservedSlotKeys.has(slotKey(kind, n))
+  ) {
     n += 1;
   }
   ledger.counters.set(kind, n);
@@ -211,6 +409,25 @@ interface AllocOpts {
   aliasBuilder?: (n: number) => { alias_value: string; base_alias: string };
 }
 
+/** Consume this value's reserved slot, or `undefined` when it has none (or the
+ *  slot was somehow taken — fall back to the counter rather than collide). The
+ *  reservation ENTRY is deliberately left in place; see `Ledger.slotReservations`.
+ *  The counter is NOT advanced: it tracks the unreserved frontier, and reserved
+ *  numbers are skipped by `nextCounter` on their own. */
+const takeReservedSlot = (
+  ledger: Ledger,
+  kind: LedgerKind,
+  key: string,
+): number | undefined => {
+  const reserved = ledger.slotReservations.get(key);
+  if (reserved === undefined) return undefined;
+  if (ledger.byKindBaseAlias.has(kindKey(kind, defaultBaseAlias(kind, reserved)))) {
+    return undefined;
+  }
+  ledger.reservedSlotKeys.delete(slotKey(kind, reserved));
+  return reserved;
+};
+
 /**
  * Lookup-or-allocate keyed on (scope_id, kind, real_value). Repeat lookups
  * for the same triple reuse the existing alias unconditionally. Used both
@@ -227,7 +444,7 @@ export const getOrAllocate = (
   const existing = ledger.byKindRealValue.get(key);
   if (existing) return existing;
 
-  const n = nextCounter(ledger, kind);
+  const n = takeReservedSlot(ledger, kind, key) ?? nextCounter(ledger, kind);
   const built = opts.aliasBuilder
     ? opts.aliasBuilder(n)
     : { alias_value: defaultBaseAlias(kind, n), base_alias: defaultBaseAlias(kind, n) };
@@ -546,7 +763,7 @@ export const parseAddressComponents = (
 
 /**
  * Already-alias guard — P0 of the D-167 entity-marker design
- * (`docs/d-160-n10-part-pii-pending-design.md` §N.10.2 / P0).
+ * (D-160 §N.10.2 / P0).
  *
  * `aliasIdentifierField` keys allocation on the REAL value via `getOrAllocate`,
  * with no check that the value is itself ALREADY an alias surface. The
@@ -739,7 +956,7 @@ const aliasAddress = (
   }).alias_value;
 };
 
-/** D-167 — the canonical structured-address shape (`docs/canonical-shapes.md` MailingAddress),
+/** D-167 — the canonical structured-address shape (internal design notes MailingAddress),
  *  plus the aliases vendors actually use. Read only to DERIVE composite match-forms; the
  *  record's own fields are aliased leaf-by-leaf as always, so the object never collapses. */
 export interface AddressComponents {
@@ -769,8 +986,14 @@ const ADDRESS_KEYS: Readonly<Record<keyof AddressComponents, readonly string[]>>
  *  (`pii.Address1.mountain-view.ca`) carries the same grain even where the run is replaced.
  *
  *  So: do NOT "tighten" this by aliasing city / state / country. It would not be a stricter
- *  version of the same design — it would be a different, worse product. (Open-question #9.) */
-const ADDRESS_COARSE_KEYS: ReadonlySet<string> = new Set([
+ *  version of the same design — it would be a different, worse product. (Open-question #9.)
+ *
+ *  ⛔ **The POSTCODE is deliberately absent from this set** — it is a precise identifier and
+ *  IS aliased at its leaf. Anything deriving a coarse-address rule must import THIS const
+ *  rather than restate it: D-213's flat projector once carried its own copy, and three
+ *  documents drifted into calling the postcode coarse (D-213
+ *  § "T2′ — the POSTCODE is not coarse"). Exported for that reason. */
+export const ADDRESS_COARSE_KEYS: ReadonlySet<string> = new Set([
   ...ADDRESS_KEYS.city,
   ...ADDRESS_KEYS.state,
   ...ADDRESS_KEYS.country,
@@ -1027,7 +1250,7 @@ export const scanContent = (
     // the blind prose replacement is withheld, and RESTORE is unaffected (it reads
     // `byKindBaseAlias`). A postcode written out in free prose is an accepted miss — D-167:
     // "aliasing may MISS; the HARD invariant is RESTORE".
-    if (entry.kind !== 'phone' && ALL_DIGITS_RE.test(real)) continue;
+    if (!isBlindReplaceableKnownValue(entry.kind, real)) continue;
     // Leading boundary: the `@` in the lookbehind shields a bare 'domain' row
     // from matching inside an already-aliased email shape (`m1@acme.com`) — that
     // span is regenerated by the email composite emit below; we replace bare
@@ -1290,12 +1513,90 @@ export const seedKnownValuesFromContent = (
     const seed = index.meta[patternIndex];
     if (seed === undefined) continue;
     seededPatterns.add(patternIndex);
+    // ⛔ P1 — do not allocate what `scanContent` will refuse to replace. An
+    // all-digit value (a US postcode, an id) is withheld from blind prose
+    // replacement, so seeding it minted an alias the packet never carries.
+    // Same predicate as the replace site, by construction.
+    if (!isBlindReplaceableKnownValue(seed.kind, seed.value)) continue;
     getOrAllocate(ledger, seed.kind, seed.value);
   }
 
   // IDENTIFIERS — registry-resolved phone/email rows.
   for (const seed of identifierSeeds) {
     aliasIdentifierField(ledger, seed.kind, seed.value);
+  }
+};
+
+/** One durable-source value in the order the session recorded it. */
+export interface AliasSlotSeed {
+  readonly kind: Exclude<EntityFieldPrivacy, 'content'>;
+  readonly value: string;
+}
+
+/**
+ * D-167 — install a DETERMINISTIC slot ordering on a session ledger, so the same
+ * person keeps the same alias number across process restarts.
+ *
+ * ⛔ The problem this fixes predates D-213. `nextCounter` numbers by ALLOCATION
+ * ORDER, and the session ledger is RAM (it dies with the process, C3′). After a
+ * restart the ledger is rebuilt from whichever packet happens to run next — so
+ * `pii.Person1` could mean Alice before the restart and Danny after it. Live
+ * turns stay internally consistent (durable rows are pre-alias and the tail is
+ * real-valued), but `chat_egress` then holds two epochs of one session that use
+ * the SAME token for different people, with nothing marking the boundary — which
+ * silently falsifies the "align the two texts to recover the mapping" property
+ * (D-213 §3.6).
+ *
+ * ⛔ Ordering alone is NOT sufficient, which is why this takes the SESSION's
+ * durable values rather than the current packet's. The ledger accrues across
+ * turns from whatever each packet contained; a rebuild triggered by turn 9 sees
+ * only turn 9's packet, so traversing it deterministically still yields a
+ * different assignment. The invariant is therefore: **the numbering is a pure
+ * function of the session's durable rows.** `ordered` must be produced by a walk
+ * that is stable as the session grows — OLDEST-first, so a budget-truncated
+ * prefix stays the same prefix when rows are appended. (Newest-first would drift
+ * every turn, restart or not.)
+ *
+ * 🔑 The numbering is derived by replaying `ordered` through the REAL
+ * `aliasIdentifierField` against a throwaway ledger, then reading the insertion
+ * order of its forward index. That is deliberate: email composites
+ * (`m<N>@d<M>.invalid`), the domain namespace shared with `url`, phone/address
+ * surfaces and any future kind get their slots from the same code that allocates
+ * them, so this cannot drift from the live path the way a hand-mirrored kind
+ * table would. Casing siblings are skipped — they share their canonical's number
+ * and consume no slot (P7).
+ *
+ * Idempotent per ledger: a non-empty reservation map means an earlier epoch
+ * already fixed the ordering and it wins. Values already allocated live, and
+ * slots already taken, are skipped rather than reassigned.
+ */
+export const reserveAliasSlotOrdering = (
+  ledger: Ledger,
+  ordered: readonly AliasSlotSeed[],
+): void => {
+  if (ledger.slotReservations.size > 0 || ordered.length === 0) return;
+  const probe = createLedger(ledger.scope_id);
+  for (const seed of ordered) {
+    if (typeof seed?.value !== 'string' || seed.value.length === 0) continue;
+    aliasIdentifierField(probe, seed.kind, seed.value);
+  }
+  const perKind = new Map<LedgerKind, number>();
+  for (const [key, entry] of probe.byKindRealValue) {
+    // A casing sibling shares the canonical identity number (`cap_` / `capN_`)
+    // and never advanced the probe's counter, so it must not advance ours.
+    if (entry.relationship_refs !== undefined) continue;
+    const n = (perKind.get(entry.kind) ?? 0) + 1;
+    perKind.set(entry.kind, n);
+    if (ledger.byKindRealValue.has(key)) continue;
+    if (
+      ledger.byKindBaseAlias.has(
+        kindKey(entry.kind, defaultBaseAlias(entry.kind, n)),
+      )
+    ) {
+      continue;
+    }
+    ledger.slotReservations.set(key, n);
+    ledger.reservedSlotKeys.add(slotKey(entry.kind, n));
   }
 };
 
@@ -1437,12 +1738,112 @@ export const ledgerKindForAlias = (token: string): LedgerKind | undefined => {
 const ALIAS_TOKEN_PATTERN =
   /\b(?:cap\d*_)?m\d+@d\d+\.invalid\b|\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b|\b(?:cap\d*_)?d\d+\.invalid\b/gi;
 
+/** The exposure scan also admits an alias after JSON-key separators such as
+ * `_`, `.`, or `-`. The key-aware egress pass deliberately emits
+ * `owner_pii.Person1`; `\b` would miss it because `_` is a regex word
+ * character, leaving a shown alias outside the request restore authority. */
+const EXPOSED_ALIAS_TOKEN_PATTERN =
+  /(?<![A-Za-z0-9])(?:cap\d*_)?m\d+@d\d+\.invalid(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?d\d+\.invalid(?![A-Za-z0-9])/gi;
+
+/** Cheap conservative gate before a caller pays for a whole-value walk. False
+ * positives are harmless; false negatives would skip literal collision
+ * protection. */
+const POTENTIAL_PII_ALIAS_LITERAL =
+  /pii\.|(?:cap\d*_)?(?:m\d+@d\d+\.invalid|d\d+\.invalid)/i;
+export const containsPotentialPiiAliasLiteral = (text: string): boolean =>
+  typeof text === 'string' && POTENTIAL_PII_ALIAS_LITERAL.test(text);
+
+const reverseKeyForAliasToken = (
+  ledger: Ledger,
+  token: string,
+): string | undefined => {
+  const keyForSurface = (surface: string): string | undefined => {
+    const base = stripAliasSuffix(surface);
+    const kind = kindFromBase(base);
+    return kind === undefined ? undefined : kindKey(kind, base);
+  };
+  const direct = keyForSurface(token.split('@')[0] ?? token);
+  if (direct !== undefined && ledger.byKindBaseAlias.has(direct)) return direct;
+  const canonical = toCanonicalCasing(token);
+  if (canonical !== token) {
+    const recased = keyForSurface(canonical.split('@')[0] ?? canonical);
+    if (recased !== undefined && ledger.byKindBaseAlias.has(recased)) {
+      return recased;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Build the request-local reverse ledger from the exact serialized protected
+ * packet. A full email composite also admits its domain half: the model saw
+ * that token inside the composite and may echo it independently.
+ */
+export const derivePiiRestoreAuthority = (
+  ledger: Ledger,
+  serializedProtectedPacket: string,
+): PiiRestoreAuthority => {
+  const reverseKeys = new Set<string>();
+  if (serializedProtectedPacket.length > 0) {
+    for (const match of serializedProtectedPacket.matchAll(
+      EXPOSED_ALIAS_TOKEN_PATTERN,
+    )) {
+      const token = match[0];
+      const primary = reverseKeyForAliasToken(ledger, token);
+      if (primary !== undefined) reverseKeys.add(primary);
+      const at = token.indexOf('@');
+      if (at >= 0 && at < token.length - 1) {
+        const domain = reverseKeyForAliasToken(ledger, token.slice(at + 1));
+        if (domain !== undefined) reverseKeys.add(domain);
+      }
+    }
+  }
+
+  const byKindBaseAlias = new Map<string, RedactionAliasEntry>();
+  const allowedEntries = new Set<string>();
+  for (const key of reverseKeys) {
+    const entry = ledger.byKindBaseAlias.get(key);
+    if (entry === undefined) continue;
+    byKindBaseAlias.set(key, cloneAliasEntry(entry));
+    allowedEntries.add(
+      `${entry.kind}\u0000${entry.real_value}\u0000${entry.alias_value}`,
+    );
+  }
+  const byKindRealValue = new Map<string, RedactionAliasEntry>();
+  for (const [key, entry] of ledger.byKindRealValue) {
+    const identity =
+      `${entry.kind}\u0000${entry.real_value}\u0000${entry.alias_value}`;
+    if (allowedEntries.has(identity)) {
+      byKindRealValue.set(key, cloneAliasEntry(entry));
+    }
+  }
+
+  return Object.freeze({
+    ledger: {
+      scope_id: ledger.scope_id,
+      byKindRealValue,
+      byKindBaseAlias,
+      counters: new Map(),
+      siblingCounters: new Map(),
+      // A request-scoped restore authority is a READ view: it resolves aliases
+      // the packet exposed and allocates nothing, so it carries no reservations.
+      slotReservations: new Map<string, number>(),
+      reservedSlotKeys: new Set<string>(),
+      preScanLiterals: new Map(),
+    },
+  });
+};
+
 /**
  * Restore aliases in arbitrary text. Spec §"Runtime flow" step 6.
  *
- * ONE pass over `ALIAS_TOKEN_PATTERN`, trying an EXACT-case lookup first (the LLM
+ * ONE pass over `EXPOSED_ALIAS_TOKEN_PATTERN`, trying an EXACT-case lookup first
+ * (the LLM
  * almost always echoes the canonical `pii.Person1` shape) and falling back to a
  * canonicalized lookup for a case-mutated echo (`pii.person1` / `PII.PERSON1`).
+ * The broad alphanumeric boundary also restores a provider-visible alias copied
+ * from a JSON key after `_`, `.`, or `-`; the request pre-scan uses the same
+ * boundary, so a user-authored literal in that shape remains collision-safe.
  * Unknown aliases — and a bare un-prefixed `Person1` a user typed — pass through
  * unchanged.
  *
@@ -1458,7 +1859,7 @@ const ALIAS_TOKEN_PATTERN =
  */
 export const restoreInString = (ledger: Ledger, text: string): string => {
   if (typeof text !== 'string' || text.length === 0) return text;
-  return text.replace(ALIAS_TOKEN_PATTERN, (match) => {
+  return text.replace(EXPOSED_ALIAS_TOKEN_PATTERN, (match) => {
     const exact = lookupAliasReal(ledger, match);
     if (exact !== undefined) return exact;
     const canonical = toCanonicalCasing(match);
@@ -1469,6 +1870,11 @@ export const restoreInString = (ledger: Ledger, text: string): string => {
     return match;
   });
 };
+
+export const restoreInStringWithAuthority = (
+  authority: PiiRestoreAuthority,
+  text: string,
+): string => restoreInString(authority.ledger, text);
 
 const toCanonicalCasing = (alias: string): string => {
   // Try to re-case `pii.person1`/`PII.PERSON1` → `pii.Person1` etc. so the
@@ -1610,13 +2016,10 @@ export const decorateOverlapReveal = (
 /* ──────────────── Pre-scan reserve/escape (D-167 Slice 3) ──────────────── */
 
 /**
- * A `pii.<Word><N>` readable-family token (optional `cap_` casing-sibling prefix,
- * optional geo/iso suffix) a user may type as a LITERAL — the residual Slice 2
- * leaves (Slice 2 made a bare `Person1` no longer an alias; the PREFIXED
- * `pii.Person1` a user types still restores to whatever real value holds that
- * slot). Mirrors `ALIAS_TOKEN_PATTERN`'s readable-family arm (same `cap_` prefix +
- * alternation + suffix shape + `\b` boundaries), so the pre-scan covers EVERY
- * literal restore could un-alias.
+ * Value strings use the same prose boundaries as `restoreInString`. Object keys
+ * use the broader exposure boundaries as `restoreKeyString`, because `_`, `.`,
+ * and `-` are common machine-key separators and an alias copied after one of
+ * them is still provider-visible.
  *
  * CASE-INSENSITIVE (`/gi`) — DELIBERATELY symmetric with restore. Restore is
  * case-insensitive (an LLM case-mutates the alias it echoes), so a case-MUTATED
@@ -1627,9 +2030,9 @@ export const decorateOverlapReveal = (
  * / `pii.` PREFIX is case-mutated (`CAP_PII.Org1`) canonicalizes to nothing
  * `kindFromBase` recognizes, so it's skipped — but restore can't map it EITHER
  * (the same prefix-canonicalization is case-sensitive there), so it passes through
- * both unchanged: fail-safe, not a leak. The pre-scan now has NO leak residual. */
-const PRE_SCAN_PII_TOKEN =
-  /\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b/gi;
+ * both unchanged: fail-safe, not a leak. */
+const PRE_SCAN_VALUE_ALIAS_TOKEN = EXPOSED_ALIAS_TOKEN_PATTERN;
+const PRE_SCAN_KEY_ALIAS_TOKEN = EXPOSED_ALIAS_TOKEN_PATTERN;
 
 /** Register one reserve/escape entry: indexed by `baseAlias` for restore lookup
  *  (`byKindBaseAlias`) + by the literal for cross-occurrence / cross-turn REUSE
@@ -1658,7 +2061,89 @@ const registerPreScanEntry = (
 };
 
 /**
- * Pre-scan ONE string for user-typed `pii.*` literal tokens, reserving/escaping
+ * Reserve or escape one standalone `d<N>.invalid` literal. A free slot is
+ * self-mapped and therefore skipped by later real-domain allocation; an occupied
+ * or casing-sibling slot moves to the next free domain alias and restores to the
+ * exact typed token.
+ */
+const preScanDomainToken = (
+  ledger: Ledger,
+  token: string,
+): { token: string; escaped: boolean } | undefined => {
+  const base = stripAliasSuffix(toCanonicalCasing(token));
+  if (kindFromBase(base) !== 'domain') return undefined;
+
+  const prior = ledger.preScanLiterals.get(kindKey('domain', token));
+  if (prior !== undefined) {
+    return {
+      token: prior.alias_value,
+      escaped: prior.alias_value !== token,
+    };
+  }
+
+  const isCapSibling = /^cap\d*_/.test(base);
+  if (!isCapSibling && !ledger.byKindBaseAlias.has(kindKey('domain', base))) {
+    registerPreScanEntry(ledger, 'domain', token, base, token);
+    return { token, escaped: false };
+  }
+
+  const freshBase = defaultBaseAlias(
+    'domain',
+    nextCounter(ledger, 'domain'),
+  );
+  registerPreScanEntry(ledger, 'domain', token, freshBase, freshBase);
+  return { token: freshBase, escaped: true };
+};
+
+/**
+ * Reserve or escape one `m<N>@d<M>.invalid` literal as a composite. The local
+ * half owns whole-token restore, while the domain half gets its own reservation
+ * so a model that extracts just the host still round-trips the user's literal.
+ */
+const preScanEmailCompositeToken = (
+  ledger: Ledger,
+  token: string,
+): { token: string; escaped: boolean } | undefined => {
+  const at = token.indexOf('@');
+  if (at <= 0 || at >= token.length - 1) return undefined;
+  const localToken = token.slice(0, at);
+  const domainToken = token.slice(at + 1);
+  const localBase = stripAliasSuffix(toCanonicalCasing(localToken));
+  if (kindFromBase(localBase) !== 'email_local') return undefined;
+
+  const prior = ledger.preScanLiterals.get(kindKey('email_local', token));
+  if (prior !== undefined) {
+    return {
+      token: prior.alias_value,
+      escaped: prior.alias_value !== token,
+    };
+  }
+
+  const domain = preScanDomainToken(ledger, domainToken);
+  if (domain === undefined) return undefined;
+
+  const isCapSibling = /^cap\d*_/.test(localBase);
+  const safeLocal = !isCapSibling
+    && !ledger.byKindBaseAlias.has(kindKey('email_local', localBase))
+    ? localToken
+    : defaultBaseAlias(
+        'email_local',
+        nextCounter(ledger, 'email_local'),
+      );
+  const safeLocalBase = stripAliasSuffix(toCanonicalCasing(safeLocal));
+  const surface = `${safeLocal}@${domain.token}`;
+  registerPreScanEntry(
+    ledger,
+    'email_local',
+    token,
+    safeLocalBase,
+    surface,
+  );
+  return { token: surface, escaped: surface !== token };
+};
+
+/**
+ * Pre-scan ONE string for user-typed alias literal tokens, reserving/escaping
  * each so it round-trips through restore instead of colliding with an allocated
  * alias (D-167 Slice 3). Per token:
  *   - REUSE — the same literal token seen before (this packet OR a prior turn,
@@ -1683,12 +2168,26 @@ const registerPreScanEntry = (
 const preScanString = (
   ledger: Ledger,
   text: string,
+  pattern: RegExp,
 ): { text: string; escaped: boolean } => {
-  if (typeof text !== 'string' || text.length === 0 || !/pii\./i.test(text)) {
+  if (typeof text !== 'string' || text.length === 0) {
     return { text, escaped: false };
   }
   let escaped = false;
-  const out = text.replace(PRE_SCAN_PII_TOKEN, (token) => {
+  const out = text.replace(pattern, (token) => {
+    if (token.includes('@')) {
+      const composite = preScanEmailCompositeToken(ledger, token);
+      if (composite === undefined) return token;
+      if (composite.escaped) escaped = true;
+      return composite.token;
+    }
+
+    const domain = preScanDomainToken(ledger, token);
+    if (domain !== undefined) {
+      if (domain.escaped) escaped = true;
+      return domain.token;
+    }
+
     // Canonicalize first — the token may be case-mutated (`pii.person1`,
     // `PII.PERSON1`). The CANONICAL base keys `byKindBaseAlias` (slot identity,
     // shared with real aliases + the skip-aware counter); the AS-TYPED `token`
@@ -1722,13 +2221,14 @@ const preScanString = (
 };
 
 /**
- * Pre-scan a nested value (objects / arrays / strings) for user-typed `pii.*`
+ * Pre-scan a nested value (objects / arrays / strings) for user-typed alias
  * literal tokens and reserve/escape each against the ledger (D-167 Slice 3) —
  * the WHOLE-packet collision-proofing pass an egress orchestrator runs ONCE,
- * BEFORE the alias pass. Walks every string leaf; object KEYS are NOT pre-scanned
- * (a key is a machine identifier, not user prose — a `pii.*`-shaped key is a
- * vanishing edge left to restore's existing key-blindness). Returns a deep copy
- * with escapes applied + whether any token was escaped, so the caller keeps its
+ * BEFORE the alias pass. Walks every string leaf AND object key: chat egress is
+ * key-aware, and request-scoped restore authority is derived from the exact
+ * serialized packet shown to the provider, so an alias-shaped literal key must
+ * reserve/escape just like an alias-shaped string value. Returns a deep copy with
+ * escapes applied + whether any token was escaped, so the caller keeps its
  * byte-identity fast path when nothing was rewritten.
  *
  * MUST run EXACTLY ONCE per packet: a second pass would re-see an escaped token
@@ -1741,12 +2241,17 @@ export const preScanReservePii = <T>(
   value: T,
 ): { value: T; escaped: boolean } => {
   let escaped = false;
-  const mapString = (s: string): string => {
-    const res = preScanString(ledger, s);
+  const mapValue = (s: string): string => {
+    const res = preScanString(ledger, s, PRE_SCAN_VALUE_ALIAS_TOKEN);
     if (res.escaped) escaped = true;
     return res.text;
   };
-  return { value: walk(value, mapString) as T, escaped };
+  const mapKey = (s: string): string => {
+    const res = preScanString(ledger, s, PRE_SCAN_KEY_ALIAS_TOKEN);
+    if (res.escaped) escaped = true;
+    return res.text;
+  };
+  return { value: walk(value, mapValue, mapKey) as T, escaped };
 };
 
 /**
@@ -1767,6 +2272,11 @@ export const restoreArgs = <T>(ledger: Ledger, args: T): T => {
   // `restoreArgsAndKeys`, scoped at that one egress surface — see its doc.
   return walk(args, (s) => restoreInString(ledger, s)) as T;
 };
+
+export const restoreArgsWithAuthority = <T>(
+  authority: PiiRestoreAuthority,
+  args: T,
+): T => restoreArgs(authority.ledger, args);
 
 /**
  * KEY-AWARE restore — un-aliases both object KEYS and string values. Symmetric
@@ -1790,23 +2300,46 @@ export const restoreArgsAndKeys = <T>(ledger: Ledger, args: T): T => {
   return walk(args, mapValue, mapKey) as T;
 };
 
-/** Inverse of `aliasKeyString` — un-alias a JSON object KEY. Beyond the prose
- *  `restoreInString` pass it ALSO un-aliases a non-email alias embedded after an
- *  identifier separator (`owner_Id1` → `owner_CONTACT-77`), symmetric with the
- *  key-aware egress, using ALPHANUMERIC boundaries (so `_` / `.` / `-` are
- *  boundaries). Longest-alias-first. Emails restore via `restoreInString`'s
- *  composite handling. Best-effort: an unknown alias passes through unchanged. */
+export const restoreArgsAndKeysWithAuthority = <T>(
+  authority: PiiRestoreAuthority,
+  args: T,
+): T => restoreArgsAndKeys(authority.ledger, args);
+
+/** Inverse of `aliasKeyString` — un-alias a JSON object KEY in ONE regex pass.
+ *  Uses the broader exposure boundary so an alias embedded after an identifier
+ *  separator (`owner_pii.Id1` → `owner_CONTACT-77`) restores symmetrically with
+ *  key-aware egress. One pass is load-bearing for pre-scan escape entries: an
+ *  escaped `pii.Person2` may restore to the literal text `pii.Person1`, and that
+ *  emitted literal must not be scanned again into Person1's real value. Emails
+ *  remain whole-token-first. Unknown aliases pass through unchanged. */
 const restoreKeyString = (ledger: Ledger, key: string): string => {
-  let out = restoreInString(ledger, key);
-  const entries = Array.from(ledger.byKindRealValue.values())
-    .filter((e) => e.kind !== 'email_local' && e.kind !== 'domain' && e.alias_value.length > 0)
-    .sort((a, b) => b.alias_value.length - a.alias_value.length);
-  for (const entry of entries) {
-    const pattern = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(entry.alias_value)}(?![A-Za-z0-9])`, 'g');
-    out = out.replace(pattern, entry.real_value);
-  }
-  return out;
+  if (typeof key !== 'string' || key.length === 0) return key;
+  return key.replace(EXPOSED_ALIAS_TOKEN_PATTERN, (match) => {
+    const exact = lookupAliasReal(ledger, match);
+    if (exact !== undefined) return exact;
+    const canonical = toCanonicalCasing(match);
+    if (canonical !== match) {
+      const ci = lookupAliasReal(ledger, canonical);
+      if (ci !== undefined) return ci;
+    }
+    return match;
+  });
 };
+
+/**
+ * KEY-only restore for a payload whose string values have already passed
+ * through `restoreArgs`. Keeping the value mapper as identity is load-bearing:
+ * an escaped alias literal can restore from `pii.Person2` to `pii.Person1` in
+ * the first value pass, and a second value pass would then leak Person1's real
+ * mapping. Keys still need their one symmetric restore pass.
+ */
+export const restoreArgKeys = <T>(ledger: Ledger, args: T): T =>
+  walk(args, (value) => value, (key) => restoreKeyString(ledger, key)) as T;
+
+export const restoreArgKeysWithAuthority = <T>(
+  authority: PiiRestoreAuthority,
+  args: T,
+): T => restoreArgKeys(authority.ledger, args);
 
 /**
  * Forward mirror of `restoreArgs` — re-alias nested args (objects / arrays /
@@ -1920,9 +2453,10 @@ const aliasKeyString = (
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** `mapKey` (optional) maps object KEYS too — the egress (`aliasArgs`) direction
- *  passes it so ledger-known PII in a key is aliased; the restore direction omits
- *  it (keys are not un-aliased — see `aliasArgs`). */
+/** `mapKey` (optional) maps object KEYS too — egress pre-scan and `aliasArgs`
+ *  pass it because model-visible keys participate in collision-proofing and
+ *  aliasing; the broad restore direction omits it (keys are not un-aliased —
+ *  see `aliasArgs`). */
 const walk = (
   value: unknown,
   mapString: (s: string) => string,

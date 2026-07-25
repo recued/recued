@@ -6,7 +6,7 @@
  *  table entry would silently regress (no scheduler registration), so
  *  the directory walk + cross-check is the safety net.
  *
- *  Spec: `docs/d-134-spec.md` §A.3 / §A.4. */
+ *  Spec: D-134 §A.3 / §A.4. */
 
 import { describe, expect, it } from 'vitest';
 import { readdirSync } from 'node:fs';
@@ -21,12 +21,13 @@ import {
   ENRICHMENT_REGISTRY,
   isEnrichmentTopic,
 } from '@recued/contracts';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 const PRODUCERS_DIR = join(__dirname, '..', 'housekeeping', 'producers');
 const TASKS_DIR = join(__dirname, '..', 'housekeeping', 'tasks');
 
 const listSourceFiles = (dir: string): string[] =>
-  readdirSync(dir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.startsWith('_'));
+  readdirSync(dir).filter((f) => isTypeScriptSource(f) && !f.endsWith('.test.ts') && !f.startsWith('_'));
 
 describe('D-134 P2 — STANDALONE_TASKS', () => {
   it('contains both core tasks and standalone enrichment tasks', () => {

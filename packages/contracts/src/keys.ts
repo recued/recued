@@ -167,6 +167,17 @@ export const HIGH_ASSURANCE_AUDIT_KINDS: ReadonlySet<string> = new Set([
   // initiated CLI recovery; signed with `server_identity_key` so
   // the recovery action is non-repudiable.
   'exposure_reset_via_cli',
+  // D-212 follow-on — the keyfile's sealing changed (`rotate-passphrase` /
+  // `recover-keyfile`). Signed so the LEDGER ENTRY is non-repudiable: an
+  // attacker who rotated a keyfile and then wanted the record gone has to
+  // forge a signature rather than delete a row.
+  //
+  // ⚠ What the signature attests is bounded, and the row says so. The event
+  // happens with the server stopped, so this is signed at the next boot over a
+  // line read from an UNAUTHENTICATED file on disk — it means "this server
+  // recorded this claim", never "this server witnessed the rotation". The
+  // `recorded_at_boot` field in the row's detail is what keeps the two apart.
+  'keyfile_sealing_changed',
   // D-148 follow-up #5 — `pro_acme.unbind` rpc tears down a Pro
   // `<handle>.recued.cloud` DDNS subdomain + removes the auto-managed
   // cert in one transaction. The audit row is the non-repudiable

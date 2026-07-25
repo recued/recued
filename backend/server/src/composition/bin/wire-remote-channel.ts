@@ -26,7 +26,7 @@
  *  same field — the probe's `hasAdapter(name)` and the credential read
  *  cannot diverge by construction.
  *
- *  Spec: docs/d-163-spec.md § N.5 / A.1; outbound transport contract:
+ *  Spec: D-163 § N.5 / A.1; outbound transport contract:
  *  D-160 P0 (`@recued/transport`). */
 
 import { resolveMessengerSendToken } from '@recued/contracts';

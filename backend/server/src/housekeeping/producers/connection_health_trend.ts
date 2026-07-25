@@ -57,7 +57,7 @@
  *  Idle-eligible by virtue of `is_ai_surface: false` + the registry's
  *  resolver returning `'auto'` for non-AI topics.
  *
- *  Spec: `docs/launch-sequence-2026-04-30.md` line 58 +
+ *  Spec: internal design notes line 58 +
  *        `ENRICHMENT_REGISTRY.connection_health_trend`. */
 
 import {

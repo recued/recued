@@ -24,7 +24,7 @@
  *    - Source-pin: `exposure.` is in `MCP_RESERVED_RPC_PREFIXES` so
  *      MCP-channel agents cannot drive these mutators.
  *
- *  Spec: docs/d-148-spec.md § A.7 + Amendment 2026-05-11. */
+ *  Spec: D-148 § A.7 + Amendment 2026-05-11. */
 
 import { describe, expect, it } from 'vitest';
 import {

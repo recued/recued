@@ -10,7 +10,7 @@
  *  bounce_detail, body-state machine with mail-twin branch) stays in
  *  `email-engagement-reconciler.ts`.
  *
- *  Spec: `docs/d-139-spec.md` § A.3, § A.3.2, § A.3.3, § A.3.6, § A.3.7. */
+ *  Spec: D-139 § A.3, § A.3.2, § A.3.3, § A.3.6, § A.3.7. */
 
 import { composePlatformRecordTargetId } from '@recued/contracts';
 import type {
@@ -620,7 +620,7 @@ export interface FetchEngagementAssociationsResult {
  *  paginated engagement doesn't monopolize the daily budget. The
  *  unwalked tail surfaces via `next_cursors` so callers can resume.
  *
- *  Spec: `docs/d-139-spec.md` § A.4, § A.6.2, § A.6.3. */
+ *  Spec: D-139 § A.4, § A.6.2, § A.6.3. */
 export const fetchHubSpotEngagementAssociations = async (
   input: FetchEngagementAssociationsInput,
 ): Promise<FetchEngagementAssociationsResult> => {

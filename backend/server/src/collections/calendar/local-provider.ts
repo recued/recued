@@ -60,9 +60,9 @@
  *  recurring local event — so a series edit is meaningless here rather than
  *  merely unimplemented.
  *
- *  Spec: docs/d-173-spec.md § D7 (amended — scheduling materializes a
- *  local calendar event) + docs/agenda-fusion-design-note.md;
- *  handovers/calendar-reservation-landing-zone-audit.md § 3a (BLOCKER-1). */
+ *  Spec: D-173 § D7 (amended — scheduling materializes a
+ *  local calendar event) + internal design notes;
+ *  internal design notes § 3a (BLOCKER-1). */
 
 import { randomUUID } from 'node:crypto';
 import { CalendarAdapterError, type CanonicalEvent } from '@recued/contracts';

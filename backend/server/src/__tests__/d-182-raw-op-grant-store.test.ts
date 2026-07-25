@@ -85,6 +85,7 @@ const recipeLessCtx = (
   operation_id: 'task.create',
   connection_name: 'myconn',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   ...overrides,
@@ -101,6 +102,7 @@ const rawOpMintCtx = (
   operation_id: 'task.create',
   connection_name: 'myconn',
   risk_tier: 'write',
+  pre_lift_approval: 'ask',
   arg_shape_hash: 'arg-shape-hash',
   canonical_payload_hash: 'payload-hash',
   approved_action_ref: 'run-raw-1',
@@ -185,6 +187,7 @@ describe('mintRawOpGrant', () => {
       ingredient_slug: 'task-pack-catalog',
       operation_id: 'task.create',
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: 'arg-shape-hash',
       canonical_payload_hash: 'payload-hash',
     };
@@ -227,10 +230,6 @@ describe('mintRawOpGrant', () => {
         input: rawOpInput({
           scope: rawOpScope({ connection_names: ['a', 'b'] }),
         }),
-      },
-      {
-        name: 'non-grantable risk_tier read',
-        input: rawOpInput({ risk_tier: 'read' }),
       },
       {
         name: 'non-grantable risk_tier destructive',
@@ -398,7 +397,7 @@ describe('createSessionGrantResolver.mintRawOp', () => {
     expect(row.scope.connection_names).toBeUndefined();
   });
 
-  it('refuses a non-grantable tier without throwing, minting, auditing, or broadcasting', () => {
+  it('refuses destructive without throwing, minting, auditing, or broadcasting', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const log = auditLogStub();
     const broadcast = vi.fn();
@@ -409,13 +408,20 @@ describe('createSessionGrantResolver.mintRawOp', () => {
       broadcast,
     });
 
-    for (const risk_tier of ['read', 'destructive'] as const) {
-      expect(resolver.mintRawOp(rawOpMintCtx({ risk_tier }))).toBeUndefined();
-    }
+    expect(resolver.mintRawOp(rawOpMintCtx({ risk_tier: 'destructive' })))
+      .toBeUndefined();
     expect(defStore.listSessionGrants('s')).toEqual([]);
     expect(log.logActivity).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('D-211 mints a read-tier raw-op session grant', () => {
+    const resolver = createSessionGrantResolver({ definitionStore: defStore, now: () => NOW });
+
+    expect(resolver.mintRawOp(rawOpMintCtx({ risk_tier: 'read' })))
+      .toBe('ct_1');
+    expect(defStore.listSessionGrants('s')[0]?.risk_tier).toBe('read');
   });
 
   it('never throws when the store mint refuses — degrades to undefined + a warn', () => {

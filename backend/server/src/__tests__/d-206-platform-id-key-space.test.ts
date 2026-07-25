@@ -20,7 +20,7 @@
  *  That is this family's signature failure mode (a confident absence rendered as fact), so
  *  the invariant is pinned against the REAL store rather than asserted in prose.
  *
- *  Spec: `docs/d-206-spec.md` §2.4. */
+ *  Spec: D-206 §2.4. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

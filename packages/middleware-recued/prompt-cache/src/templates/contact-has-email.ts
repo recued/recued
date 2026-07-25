@@ -75,10 +75,18 @@
  *  — warehouse read in the probe + body interpolation, no `ai-*`, no
  *  mutations. `{{name}}` / `{{email}}` come from the probe snapshot.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 3. */
+ *  See: D-164 § 3. */
 
 import type { TemplateMatcher } from '../gate/index.js';
 import type { RenderTemplate } from '../types.js';
+import {
+  escapeTemplateRegExp,
+  hasMutationIntent,
+  LOCALIZED_TAIL,
+  normaliseTemplateText,
+  resolveTemplateLocale,
+  type SupportedLocale,
+} from './locales.js';
 
 /** The affirmative render template for the contact has-email class — the one
  *  the MATCHER returns. Keyed on one `entity.name` slot; the body affirms the
@@ -116,6 +124,75 @@ export const CONTACT_HAS_NO_EMAIL_TEMPLATE: RenderTemplate = {
   body: "No, there's no email address on file for {{name}}.",
 };
 
+const localizedHasEmailTemplate = (
+  locale: Exclude<SupportedLocale, 'en'>,
+  answer: 'yes' | 'no',
+  body: string,
+): RenderTemplate => ({
+  ...(answer === 'yes' ? CONTACT_HAS_EMAIL_TEMPLATE : CONTACT_HAS_NO_EMAIL_TEMPLATE),
+  template_hash: `recued/contact-has-${answer === 'yes' ? '' : 'no-'}email-by-name-${locale}@v1`,
+  body,
+});
+
+export const CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE: Readonly<
+  Record<SupportedLocale, RenderTemplate>
+> = {
+  en: CONTACT_HAS_EMAIL_TEMPLATE,
+  de: localizedHasEmailTemplate('de', 'yes', 'Ja, die E-Mail-Adresse von {{name}} ist {{email}}.'),
+  es: localizedHasEmailTemplate('es', 'yes', 'Sí, el correo electrónico de {{name}} es {{email}}.'),
+  fr: localizedHasEmailTemplate('fr', 'yes', 'Oui, l’adresse e-mail de {{name}} est {{email}}.'),
+  ja: localizedHasEmailTemplate('ja', 'yes', 'はい、{{name}}のメールアドレスは{{email}}です。'),
+  pt: localizedHasEmailTemplate('pt', 'yes', 'Sim, o e-mail de {{name}} é {{email}}.'),
+  zh: localizedHasEmailTemplate('zh', 'yes', '有，{{name}}的电子邮件地址是{{email}}。'),
+};
+
+export const CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE: Readonly<
+  Record<SupportedLocale, RenderTemplate>
+> = {
+  en: CONTACT_HAS_NO_EMAIL_TEMPLATE,
+  de: localizedHasEmailTemplate('de', 'no', 'Nein, für {{name}} ist keine E-Mail-Adresse gespeichert.'),
+  es: localizedHasEmailTemplate('es', 'no', 'No, no hay ningún correo electrónico guardado para {{name}}.'),
+  fr: localizedHasEmailTemplate('fr', 'no', 'Non, aucune adresse e-mail n’est enregistrée pour {{name}}.'),
+  ja: localizedHasEmailTemplate('ja', 'no', 'いいえ、{{name}}のメールアドレスは登録されていません。'),
+  pt: localizedHasEmailTemplate('pt', 'no', 'Não, não há nenhum e-mail salvo para {{name}}.'),
+  zh: localizedHasEmailTemplate('zh', 'no', '没有为{{name}}保存电子邮件地址。'),
+};
+
+const NO_EMAIL_BY_YES_HASH = new Map(
+  (Object.keys(CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE) as SupportedLocale[]).map((locale) => [
+    CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE[locale].template_hash,
+    CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE[locale],
+  ]),
+);
+
+/** Resolve the data-dependent negative sibling in the same response locale
+ * as the matcher-selected affirmative template. */
+export const resolveContactHasNoEmailTemplate = (
+  matchedTemplate: { readonly template_hash: string },
+): RenderTemplate | null => NO_EMAIL_BY_YES_HASH.get(matchedTemplate.template_hash) ?? null;
+
+const matchesLocalizedHasEmail = (
+  locale: SupportedLocale,
+  haystack: string,
+  name: string,
+): boolean => {
+  if (locale === 'en') return false;
+  const n = escapeTemplateRegExp(name);
+  const t = LOCALIZED_TAIL;
+  const pattern = locale === 'de'
+    ? `^(?:habe ich|haben wir)\\s+(?:die\\s+)?e-?mail-?adresse\\s+von\\s+${n}${t}`
+    : locale === 'es'
+      ? `^[¿¡]?\\s*(?:tengo|tenemos)\\s+(?:el\\s+)?(?:correo electr[oó]nico|correo|e-?mail)\\s+de\\s+${n}${t}`
+      : locale === 'fr'
+        ? `^(?:ai-je|avons-nous)\\s+(?:l['’]adresse e-?mail|le courriel)\\s+de\\s+${n}${t}`
+        : locale === 'pt'
+          ? `^(?:tenho|temos)\\s+(?:o\\s+)?e-?mail\\s+d[eo]\\s+${n}${t}`
+          : locale === 'ja'
+            ? `^${n}のメール(?:アドレス)?(?:は|が)?ありますか${t}`
+            : `^(?:有|有没有)${n}的(?:邮箱|电子邮件地址?)(?:吗|么)?${t}`;
+  return new RegExp(pattern, 'u').test(haystack);
+};
+
 /** Mutation / imperative verbs that turn a presence prompt into a WRITE
  *  ("add / set / change `<Name>`'s email …"). Any match → pass through (a
  *  write reaches the executor — gateway / approval / audit, D-157). The
@@ -142,10 +219,17 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\
  *  Handles both the straight (`'`) and curly (`’`) possessive apostrophe. */
 const contactHasEmailCoreStart = (haystack: string, name: string): number | null => {
   const esc = escapeRegExp(name);
-  const possessive = new RegExp(`\\b${esc}['’]s\\s+${ATTR}${ON_FILE}${TAIL}`).exec(haystack);
+  // JavaScript `\b` is ASCII-only, so it has no boundary between a space and
+  // a CJK/leading-accent name. Use a Unicode entity boundary instead.
+  const entityStart = String.raw`(?<![\p{L}\p{M}\p{N}])`;
+  const possessive = new RegExp(
+    `${entityStart}${esc}['’]s\\s+${ATTR}${ON_FILE}${TAIL}`,
+    'u',
+  ).exec(haystack);
   if (possessive !== null) return possessive.index;
   const forForm = new RegExp(
     `(?:\\ban?\\s+|\\bthe\\s+)?\\b${ATTR}\\s+for\\s+${esc}${ON_FILE}${TAIL}`,
+    'u',
   ).exec(haystack);
   if (forForm !== null) return forForm.index;
   return null;
@@ -203,16 +287,21 @@ const leadIsPresence = (prefix: string): boolean => {
  *  Anything else → `null` (pass through). Whitespace is collapsed + lower-cased
  *  on both sides; the match is purely lexical (the warehouse read is the
  *  probe's job). */
-export const matchContactHasEmailTemplate: TemplateMatcher = ({ text, slots }) => {
+export const matchContactHasEmailTemplate: TemplateMatcher = ({ text, slots, locale }) => {
   if (slots.length !== 1) return null;
   const name = slots[0]!;
   if (name.kind !== 'entity.name') return null;
-  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
-  if (MUTATION_RE.test(haystack)) return null;
-  const needleName = name.value.toLowerCase().replace(/\s+/g, ' ');
+  const templateLocale = resolveTemplateLocale(locale);
+  const haystack = normaliseTemplateText(text);
+  if (hasMutationIntent(haystack) || MUTATION_RE.test(haystack)) return null;
+  const needleName = normaliseTemplateText(name.raw);
   if (needleName.length === 0) return null;
   const coreStart = contactHasEmailCoreStart(haystack, needleName);
-  if (coreStart === null) return null;
-  if (!leadIsPresence(haystack.slice(0, coreStart))) return null;
-  return CONTACT_HAS_EMAIL_TEMPLATE;
+  if (coreStart !== null && leadIsPresence(haystack.slice(0, coreStart))) {
+    return CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  if (matchesLocalizedHasEmail(templateLocale, haystack, needleName)) {
+    return CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  return null;
 };

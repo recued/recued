@@ -57,8 +57,8 @@
  *
  *  Token cost: 0. Pure SQL aggregation.
  *
- *  Spec: `docs/d-129-spec.md` §A.6 + §Phase 6 + load-bearing decision §3;
- *  `docs/d-130-spec.md` §A.6 cross-vendor widening. */
+ *  Spec: D-129 §A.6 + §Phase 6 + load-bearing decision §3;
+ *  D-130 §A.6 cross-vendor widening. */
 
 import {
   CONNECTION_VENDOR_ENTITIES,

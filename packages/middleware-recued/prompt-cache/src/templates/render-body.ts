@@ -36,7 +36,7 @@
  *  the user gets a correct answer one turn later instead of a wrong one
  *  immediately.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates / § 3 Invariant 6 (render-snapshot freeze) / § 3
  *  Invariant 7 (safe small gains). */
 

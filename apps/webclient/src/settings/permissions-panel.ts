@@ -120,7 +120,7 @@
  *  so missed the trailing bare `revokeContract` of a prior limit. The Privacy →
  *  Contracts inspector keys its own live re-list off the same contract kind.
  *
- *  Spec: docs/d-166-spec.md + docs/d-171-spec.md; the override rpc shapes +
+ *  Spec: D-166 + D-171; the override rpc shapes +
  *  row value live in `packages/contracts/src/contract-override.ts`; the
  *  inbound-token shapes in `packages/contracts/src/chat.ts`. */
 

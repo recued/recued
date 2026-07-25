@@ -28,7 +28,7 @@
  *  BEFORE the fire (F1's both-halves-up-first discipline): a hard dispatch
  *  failure releases the claim so the next cycle re-proposes.
  *
- *  Spec: `docs/d-192-spec.md` § the email flagship funnel (E3) +
+ *  Spec: D-192 § the email flagship funnel (E3) +
  *  § counterparty resolution (E1). */
 
 import {

@@ -54,7 +54,7 @@
  *  fans a broadcast on it — the page shell just re-fires
  *  `reception.endpoint.preview_draft` when the user re-opens the panel.
  *
- *  Spec: docs/d-149-spec.md § A.20.2 (View-As-Visitor Preview) + § N.7
+ *  Spec: D-149 § A.20.2 (View-As-Visitor Preview) + § N.7
  *  (MUST-invariant list the panel surfaces) + § A.18.3 (token mode) +
  *  § A.16.5 (audit-mode split). */
 

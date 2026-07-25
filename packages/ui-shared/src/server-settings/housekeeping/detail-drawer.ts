@@ -17,8 +17,8 @@
  *  (`data-action="housekeeping-pool-policy-pick"`); everything else is
  *  read-only.
  *
- *  Spec: `docs/d-132-spec.md` §A.7 + §A.11 +
- *  `handovers/webclient-ia-treemap.md` §R25 (LOCKED). */
+ *  Spec: D-132 §A.7 + §A.11 +
+ *  internal design notes §R25 (LOCKED). */
 
 import {
   ALL_ENRICHMENT_POOL_POLICIES,

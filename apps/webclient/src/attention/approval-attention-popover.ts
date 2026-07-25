@@ -2,7 +2,8 @@
  *
  *  The shared top-bar attention slot is a pure string renderer. This
  *  adapter gives the webclient a small persistent DOM host and wires
- *  the blocking attention union: approval.* plus notification.pending_asks.
+ *  the blocking attention union: approval gates, gateway asks, and durable
+ *  pending Chat plans.
  *  Reception INBOX awaiting_approval holds surface here through their
  *  gateway.preflight ask rows in notification.pending_asks.
  *  reception_approval_intent is intentionally excluded: it is a
@@ -25,7 +26,13 @@ import type {
   AsksListCaller,
   AsksSubmitAnswerCaller,
 } from '../approvals/asks-panel.js';
-import type { PendingChatPlan } from '../approvals/pending-chat-plans-store.js';
+import {
+  pendingChatPlanHref,
+  pendingChatPlanResolutionCopy,
+  type PendingChatPlan,
+  type PendingChatPlanResolution,
+  type PendingChatPlansStoreState,
+} from '../approvals/pending-chat-plans-store.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 import {
@@ -42,6 +49,12 @@ export const ATTENTION_SEE_ALL_LINK_ATTR =
 export const ATTENTION_ERROR_ATTR = 'data-recued-attention-error';
 export const ATTENTION_GATEWAY_ASK_ROW_ATTR =
   'data-recued-attention-gateway-ask';
+export const ATTENTION_CHAT_PLAN_LINK_ATTR =
+  'data-recued-attention-chat-plan-link';
+export const ATTENTION_CHAT_PLAN_RESOLUTION_ATTR =
+  'data-recued-attention-chat-plan-resolution';
+export const ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR =
+  'data-recued-attention-chat-plan-resolution-announcer';
 
 export const ATTENTION_TOPBAR_STYLES = `
 [${ATTENTION_TOPBAR_HOST_ATTR}] {
@@ -222,10 +235,15 @@ export const ATTENTION_TOPBAR_STYLES = `
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  justify-content: flex-end;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 30px;
   border: 1px solid var(--border-strong, #d4d4d8);
   border-radius: 8px;
@@ -234,7 +252,12 @@ export const ATTENTION_TOPBAR_STYLES = `
   color: var(--fg, #27272a);
   font: inherit;
   font-size: 12px;
+  line-height: 1.2;
+  text-decoration: none;
   cursor: pointer;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action--link {
+  color: var(--accent, #0e7490);
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action--approve {
   border-color: var(--accent, #0e7490);
@@ -253,6 +276,10 @@ export const ATTENTION_TOPBAR_STYLES = `
   cursor: wait;
   opacity: 0.72;
 }
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[disabled]:not([aria-busy="true"]) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-empty,
 [${ATTENTION_TOPBAR_HOST_ATTR}] .webclient-attention-error {
   padding: 14px;
@@ -266,6 +293,46 @@ export const ATTENTION_TOPBAR_STYLES = `
   display: flex;
   gap: 8px;
   align-items: center;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--border, #e4e4e7);
+  border-left: 3px solid var(--accent, #0e7490);
+  border-radius: 8px;
+  background: var(--surface-sunk, #f4f6f8);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-copy {
+  display: grid;
+  gap: 3px;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-title {
+  color: var(--fg, #27272a);
+  font-size: 13px;
+  font-weight: 650;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-detail {
+  color: var(--fg-muted, #71717a);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+[${ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR}] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .webclient-attention-error {
   margin: 12px 12px 0;
@@ -315,12 +382,19 @@ export interface MountApprovalAttentionPopoverOptions {
    *  one-shot `approval.subscribe` so a restarted server re-registers this
    *  client + any stale `liveError` clears, and refreshes the queues. */
   reconnect?: WebclientReconnectSubscriber;
-  /** R20 (Option A) — live chat-plan aggregator (the bootstrap-scoped store
-   *  fed by chat.plan_proposed/resolved). The popover reads it + re-renders off
-   *  its change feed, surfacing pending plans in the unified peek beside gates
-   *  + asks. Absent → no plans shown. */
+  /** Bootstrap-scoped durable Chat approval inbox. The popover reads its
+   * all-session snapshot plus reconciled live state. Absent → no plans shown. */
   chatPlans?: {
     list(): ReadonlyArray<PendingChatPlan>;
+    latestResolution?(): PendingChatPlanResolution | null;
+    state?(): PendingChatPlansStoreState;
+    refresh?(): Promise<void>;
+    whenLoaded?(): Promise<void>;
+    recordResolution?(
+      plan: PendingChatPlan,
+      decision: 'approve' | 'reject',
+    ): void;
+    dismissResolution?(plan_id: string): void;
     subscribe(listener: () => void): () => void;
   };
   /** R20 — resolve a chat plan: approve → chat.plan.approve, reject →
@@ -346,9 +420,8 @@ type ActionElement = {
   getAttribute(name: string): string | null;
 };
 
-/** One row in the unified attention peek — gates + asks + chat plans, merged
- *  newest-first (R20). `sortAt` is an epoch-ms timestamp every kind carries
- *  (gate/ask `created_at`, plan client `proposed_at`). */
+/** One row in the unified attention peek, newest-first by durable server
+ * proposal/create time. */
 type AttentionRow =
   | { kind: 'approval'; sortAt: number; id: string; approval: ServerPendingApproval }
   | { kind: 'ask'; sortAt: number; id: string; ask: ServerPendingAsk }
@@ -574,18 +647,43 @@ const renderChatPlanRow = (
   resolving: ReadonlySet<string>,
 ): string => {
   const busy = resolving.has(plan.plan_id);
+  const freshReview = plan.retry_of_plan_id !== undefined;
+  const payloadAvailable = plan.payload_available !== false;
   const busyAttrs = busy ? ' disabled aria-busy="true"' : '';
+  const approveAttrs =
+    busyAttrs
+    || (
+      payloadAvailable
+        ? ''
+        : ' disabled title="Exact reviewed details are required before approval."'
+    );
   const busyClass = busy ? ' is-busy' : '';
   const idAttr = escapeHtml(plan.plan_id);
+  const chatHref = escapeHtml(pendingChatPlanHref(plan));
+  const retryAttr = freshReview
+    ? ` data-retry-of-plan-id="${escapeHtml(plan.retry_of_plan_id!)}"`
+    : '';
+  const reason = !payloadAvailable
+    ? 'Exact reviewed details are unavailable after recovery. You can safely reject this plan, but it cannot be approved.'
+    : freshReview
+      ? 'Earlier permission was used; review this action again before approving.'
+      : '';
   return `
     <li class="attention-row attention-row--chat-plan"
       data-attention-kind="chat-plan"
-      data-plan-id="${idAttr}">
+      data-plan-id="${idAttr}"${retryAttr}>
       <div class="attention-row-body">
-        <span class="attention-row-title">Run ${escapeHtml(plan.tool)}</span>
-        <span class="attention-row-meta">chat plan - tier ${plan.tier}</span>
+        <span class="attention-row-title">${freshReview ? 'Fresh review: ' : 'Run '}${escapeHtml(plan.tool)}</span>
+        <span class="attention-row-meta">${freshReview ? 'new permission after uncertain outcome' : 'chat plan'} - tier ${plan.tier}</span>
+        ${reason === '' ? '' : `<span class="attention-row-reason">${escapeHtml(reason)}</span>`}
       </div>
       <div class="attention-row-actions">
+        <a class="attention-row-action attention-row-action--link"
+          href="${chatHref}"
+          data-action="open-chat-plan"
+          ${ATTENTION_CHAT_PLAN_LINK_ATTR}>
+          Review in Chat
+        </a>
         <button type="button"
           class="attention-row-action attention-row-action--reject${busyClass}"
           data-action="chat-plan-decide"
@@ -597,7 +695,7 @@ const renderChatPlanRow = (
           class="attention-row-action attention-row-action--approve${busyClass}"
           data-action="chat-plan-decide"
           data-decision="approve"
-          data-plan-id="${idAttr}"${busyAttrs}>
+          data-plan-id="${idAttr}"${approveAttrs}>
           Approve
         </button>
       </div>
@@ -609,11 +707,14 @@ const renderUnifiedPopover = (state: {
   open: boolean;
   tab: AttentionTab;
   blockingCount: number;
+  loading: boolean;
+  verified: boolean;
   rows: ReadonlyArray<AttentionRow>;
   resolvingApprovals: ReadonlySet<string>;
   resolvingAsks: ReadonlySet<string>;
   resolvingPlans: ReadonlySet<string>;
   armedApprovals: ReadonlySet<string>;
+  planResolution: PendingChatPlanResolution | null;
 }): string => {
   if (!state.open) return '';
   const renderAllClear = (): string => `
@@ -622,11 +723,58 @@ const renderUnifiedPopover = (state: {
       <span class="attention-empty-text">All clear</span>
     </div>
   `;
+  const renderLoading = (): string => `
+    <div class="attention-empty" role="status">
+      <span class="attention-empty-text">Checking pending decisions...</span>
+    </div>
+  `;
+  const renderUnverified = (): string => `
+    <div class="attention-empty" role="status">
+      <span class="attention-empty-text">Pending decisions couldn't be verified.</span>
+    </div>
+  `;
+  const renderPlanResolution = (
+    resolution: PendingChatPlanResolution,
+  ): string => {
+    const copy = pendingChatPlanResolutionCopy(resolution);
+    return `
+      <div class="attention-plan-resolution"
+        data-outcome="${escapeHtml(resolution.outcome)}"
+        ${ATTENTION_CHAT_PLAN_RESOLUTION_ATTR}="${escapeHtml(resolution.plan_id)}">
+        <div class="attention-plan-resolution-copy">
+          <span class="attention-plan-resolution-title">${escapeHtml(copy.title)}</span>
+          <span class="attention-plan-resolution-detail">${escapeHtml(copy.detail)}</span>
+        </div>
+        <div class="attention-plan-resolution-actions">
+          <a class="attention-row-action attention-row-action--approve"
+            href="${escapeHtml(pendingChatPlanHref(resolution))}"
+            data-action="open-chat-plan"
+            ${ATTENTION_CHAT_PLAN_LINK_ATTR}>
+            ${escapeHtml(copy.linkLabel)}
+          </a>
+          <button type="button"
+            class="attention-row-action"
+            data-action="dismiss-chat-plan-resolution"
+            data-plan-id="${escapeHtml(resolution.plan_id)}">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    `;
+  };
   // R20 — ONE unified list (gates + asks + chat plans, newest-first); no
   // per-kind section headers. The notifications tab stays informational-only.
-  const body =
-    state.tab === 'notifications' || state.rows.length === 0
-      ? renderAllClear()
+  const pendingBody =
+    state.rows.length === 0
+      ? (
+          state.loading
+            ? renderLoading()
+            : state.verified
+              ? state.planResolution === null
+                ? renderAllClear()
+                : ''
+              : renderUnverified()
+        )
       : `
         <ul class="attention-list" role="list">
           ${state.rows
@@ -643,6 +791,13 @@ const renderUnifiedPopover = (state: {
             )
             .join('')}
         </ul>
+      `;
+  const body =
+    state.tab === 'notifications'
+      ? renderAllClear()
+      : `
+        ${state.planResolution === null ? '' : renderPlanResolution(state.planResolution)}
+        ${pendingBody}
       `;
   return `
     <div class="attention-popover" role="dialog" aria-label="Attention">
@@ -677,6 +832,19 @@ export const mountApprovalAttentionPopover = (
   topbar.setAttribute(ATTENTION_TOPBAR_HOST_ATTR, '');
   opts.host.appendChild(topbar);
 
+  // Persistent sibling live region. The popover itself is string-rebuilt, so
+  // placing role=status inside it would either miss the first announcement or
+  // repeat it on every queue refresh.
+  const planResolutionAnnouncer = doc.createElement('div');
+  planResolutionAnnouncer.setAttribute(
+    ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+    '',
+  );
+  planResolutionAnnouncer.setAttribute('role', 'status');
+  planResolutionAnnouncer.setAttribute('aria-live', 'polite');
+  planResolutionAnnouncer.setAttribute('aria-atomic', 'true');
+  opts.host.appendChild(planResolutionAnnouncer);
+
   let disposed = false;
   let open = false;
   let tab: AttentionTab = 'blocking';
@@ -708,10 +876,37 @@ export const mountApprovalAttentionPopover = (
   const armedApprovals = new Set<string>();
   const resolvingPlans = new Set<string>();
   let planResolveError: SurfaceErrorEntry | null = null;
+  let planResolveErrorPlanId: string | null = null;
+  let announcedPlanResolutionKey: string | null = null;
   const unsubscribers: Array<() => void> = [];
 
   const planList = (): ReadonlyArray<PendingChatPlan> =>
     opts.chatPlans?.list() ?? [];
+
+  const focusPlanResolutionHandoff = (planId: string): void => {
+    if (opts.chatPlans?.latestResolution?.()?.plan_id !== planId) return;
+    const queryable = topbar as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const receipt = queryable.querySelector?.(
+      `[${ATTENTION_CHAT_PLAN_RESOLUTION_ATTR}]`,
+    );
+    if (receipt?.getAttribute(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR) !== planId) {
+      return;
+    }
+    receipt
+      .querySelector<HTMLElement>(`[${ATTENTION_CHAT_PLAN_LINK_ATTR}]`)
+      ?.focus?.({ preventScroll: true });
+  };
+
+  const focusAttentionTrigger = (): void => {
+    const queryable = topbar as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    queryable
+      .querySelector?.('[data-action="open-attention"]')
+      ?.focus?.({ preventScroll: true });
+  };
 
   // R20 — the unified peek's rows: gates + asks + chat plans, newest-first.
   const mergedRows = (): AttentionRow[] => {
@@ -766,11 +961,36 @@ export const mountApprovalAttentionPopover = (
       }
     }
     const rows = mergedRows();
+    const chatPlanState = opts.chatPlans?.state?.();
+    const planResolution = opts.chatPlans?.latestResolution?.() ?? null;
+    if (open && tab === 'blocking' && planResolution !== null) {
+      const announcementKey =
+        `${planResolution.plan_id}:${planResolution.outcome}`;
+      if (announcedPlanResolutionKey !== announcementKey) {
+        announcedPlanResolutionKey = announcementKey;
+        const copy = pendingChatPlanResolutionCopy(planResolution);
+        planResolutionAnnouncer.textContent = `${copy.title}. ${copy.detail}`;
+      }
+    }
+    const chatPlanLoadError: SurfaceErrorEntry | null =
+      chatPlanState?.error == null
+        ? null
+        : {
+            error: classifyRpcError(chatPlanState.error),
+            label: "Couldn't refresh Chat approvals",
+          };
     // Tier 2 — connection-caused failures defer to the global offline banner
     // (keep the last-known counts; show nothing here) instead of stacking 3-5
     // raw rpc lines; only a real per-operation error shows inline, humanized.
     const errorDisplay = resolveSurfaceErrorDisplay(
-      [approvalListError, approvalLiveError, askListError, askSubmitError, planResolveError],
+      [
+        approvalListError,
+        approvalLiveError,
+        askListError,
+        askSubmitError,
+        chatPlanLoadError,
+        planResolveError,
+      ],
       { hasData: rows.length > 0 },
     );
     const popover = open
@@ -785,11 +1005,24 @@ export const mountApprovalAttentionPopover = (
             open: true,
             tab,
             blockingCount: blockingCount(),
+            loading:
+              approvalPhase === 'loading'
+              || askPhase === 'loading'
+              || chatPlanState?.phase === 'loading',
+            verified:
+              approvalPhase === 'ready'
+              && askPhase === 'ready'
+              && (chatPlanState?.phase ?? 'ready') === 'ready'
+              && approvalListError === null
+              && approvalLiveError === null
+              && askListError === null
+              && chatPlanLoadError === null,
             rows,
             resolvingApprovals: resolving,
             resolvingAsks,
             resolvingPlans,
             armedApprovals,
+            planResolution,
           })}
           <div class="webclient-attention-footer">
             <a href="#approvals" ${ATTENTION_SEE_ALL_LINK_ATTR}>See all</a>
@@ -945,16 +1178,32 @@ export const mountApprovalAttentionPopover = (
     if (resolvingPlans.has(plan_id)) return;
     resolvingPlans.add(plan_id);
     planResolveError = null;
+    planResolveErrorPlanId = null;
     render();
     try {
+      const plan = planList().find(
+        (candidate) => candidate.plan_id === plan_id,
+      );
       await opts.runChatPlanResolve({ plan_id, decision });
-      // SUCCESS — KEEP the guard so a second click can't re-fire approve before
-      // the chat.plan_resolved broadcast drops the plan from the store (Option A
-      // has no list rpc to re-fetch). Stale guards are pruned on store change.
+      if (plan !== undefined) {
+        // Preserve an explicit post-decision handoff even if the broadcast is
+        // lost immediately after the authoritative RPC succeeds.
+        opts.chatPlans?.recordResolution?.(plan, decision);
+      }
+      // Reconcile immediately so a missed resolving broadcast cannot strand
+      // the consumed plan after a transport drop.
+      await opts.chatPlans?.refresh?.();
+      focusPlanResolutionHandoff(plan_id);
     } catch (err) {
       resolvingPlans.delete(plan_id);
       planResolveError = { error: classifyRpcError(err), label: "Couldn't resolve plan", origin: 'action' };
+      planResolveErrorPlanId = plan_id;
       render();
+      // If another paired client resolved it first and the terminal event was
+      // missed, the authoritative snapshot clears this stale row/error and
+      // supplies the neutral Chat handoff.
+      await opts.chatPlans?.refresh?.();
+      focusPlanResolutionHandoff(plan_id);
     }
   };
 
@@ -967,6 +1216,12 @@ export const mountApprovalAttentionPopover = (
       open = !open;
       if (open && approvalPhase !== 'ready') void refreshApprovals();
       if (open && askPhase !== 'ready') void refreshAsks();
+      // Opening the inbox is a natural low-cost freshness boundary. Refresh
+      // even from `ready`: the Chat vault may have unlocked since a recovered
+      // shell was loaded, or a disconnect may have hidden an event.
+      if (open && opts.chatPlans?.state?.().phase !== 'loading') {
+        void opts.chatPlans?.refresh?.();
+      }
       render();
       return;
     }
@@ -1021,12 +1276,34 @@ export const mountApprovalAttentionPopover = (
       }
       return;
     }
+    if (action === 'open-chat-plan') {
+      // Do not prevent the anchor's default hash navigation. Closing the
+      // overlay on the next microtask leaves the activation target mounted
+      // through the browser's default action, then reveals the exact Chat card.
+      open = false;
+      void Promise.resolve().then(render);
+      return;
+    }
     if (action === 'chat-plan-decide') {
       event.preventDefault();
       const planId = actionEl.getAttribute('data-plan-id');
       const decision = actionEl.getAttribute('data-decision');
       if (planId !== null && (decision === 'approve' || decision === 'reject')) {
+        const plan = planList().find((candidate) => candidate.plan_id === planId);
+        if (decision === 'approve' && plan?.payload_available === false) return;
         void resolvePlan(planId, decision);
+      }
+      return;
+    }
+    if (action === 'dismiss-chat-plan-resolution') {
+      event.preventDefault();
+      const planId = actionEl.getAttribute('data-plan-id');
+      if (
+        planId !== null
+        && opts.chatPlans?.dismissResolution !== undefined
+      ) {
+        opts.chatPlans.dismissResolution(planId);
+        focusAttentionTrigger();
       }
     }
   };
@@ -1056,10 +1333,8 @@ export const mountApprovalAttentionPopover = (
       }),
     );
   }
-  // R20 — re-render when the live chat-plan store changes (a plan proposed or
-  // resolved on any surface). The store owns the bus subscriptions. Also prunes
-  // in-flight guards for plans the store has dropped so a kept-on-success guard
-  // doesn't linger past the row.
+  // Re-render for snapshot state and live-map changes. Prune resolve guards
+  // after authoritative reconciliation removes the row.
   if (opts.chatPlans !== undefined) {
     unsubscribers.push(
       opts.chatPlans.subscribe(() => {
@@ -1067,6 +1342,13 @@ export const mountApprovalAttentionPopover = (
         const live = new Set(planList().map((p) => p.plan_id));
         for (const id of [...resolvingPlans]) {
           if (!live.has(id)) resolvingPlans.delete(id);
+        }
+        if (
+          planResolveErrorPlanId !== null
+          && !live.has(planResolveErrorPlanId)
+        ) {
+          planResolveError = null;
+          planResolveErrorPlanId = null;
         }
         render();
       }),
@@ -1101,7 +1383,12 @@ export const mountApprovalAttentionPopover = (
     refreshApprovals,
     refreshAsks,
     whenLoaded: async () => {
-      await Promise.all([pendingApprovalLoad, pendingAskLoad, pendingSubscribe]);
+      await Promise.all([
+        pendingApprovalLoad,
+        pendingAskLoad,
+        pendingSubscribe,
+        opts.chatPlans?.whenLoaded?.() ?? Promise.resolve(),
+      ]);
     },
     dispose: () => {
       if (disposed) return;
@@ -1122,6 +1409,15 @@ export const mountApprovalAttentionPopover = (
           topbar.remove();
         } catch {
           // Detached fake DOMs can throw. The host is already inert.
+        }
+      }
+      try {
+        opts.host.removeChild(planResolutionAnnouncer);
+      } catch {
+        try {
+          planResolutionAnnouncer.remove();
+        } catch {
+          // Detached fake DOMs can throw. The announcer is already inert.
         }
       }
     },

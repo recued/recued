@@ -28,9 +28,9 @@
  *  OpenAPI/GraphQL document pin + connector `describe()` cross-checks,
  *  app-pack v2, and the marketplace publish path. Entity schemas already
  *  shipped (`entity-schema.ts`).
- *  See docs/d-165-spec.md § "Suggested phase shape" / § Operations / § Surfaces.
+ *  See D-165 § "Suggested phase shape" / § Operations / § Surfaces.
  *
- *  Spec: docs/d-165-spec.md § Operations (policy) / Operation groups /
+ *  Spec: D-165 § Operations (policy) / Operation groups /
  *  Default policy / Runtime flow / Invariants 1-5; § "P0 — Kernel +
  *  gateway (runtime first)".
  */
@@ -59,6 +59,16 @@ export type OperationRiskTier = RiskTier;
  *  Resolution is stricter-wins against the per-connection profile and the
  *  provider default policy — see `resolveCatalogOperationPolicy`. */
 export type OperationApproval = 'never' | 'ask' | 'always';
+
+/** D-209 §1.7 / D-211 Slice 3 — authorization posture captured after every
+ *  authorization layer, but before a later review/quality lift. Consumers use
+ *  this provenance instead of re-deriving authorization from risk: a live
+ *  session grant may absorb `never` / `ask`, but never `always`; a standing
+ *  delegation remains eligible. */
+export interface AuthorizationProvenance {
+  readonly pre_lift_approval: OperationApproval;
+  readonly lift_reason?: 'review_send' | 'review_commitment' | 'quality';
+}
 
 /** D-201 Slice 6B3 — the complete portable declaration for provider resource
  * operations that need the owner-selected webhook URL. Request construction is
@@ -952,7 +962,7 @@ export const isApiTransport = (v: unknown): v is ApiTransport =>
  *  stays in the trusted builders, so the open declaration is not an injection vector.
  *  Surface-level (every search op on a vendor speaks one dialect), authored once like
  *  `result_path`; absent → a canonical `search` fails closed. Design:
- *  `docs/unified-pack-exploration/connection-agnostic-op-contract.md`. */
+ *  internal design notes. */
 export type SearchStyle = 'hubspot_search' | 'soql' | 'pipedrive_filter';
 export const SEARCH_STYLES: readonly SearchStyle[] = ['hubspot_search', 'soql', 'pipedrive_filter'];
 export const isSearchStyle = (v: unknown): v is SearchStyle =>
@@ -980,7 +990,7 @@ export const isSearchStyle = (v: unknown): v is SearchStyle =>
  *  record selector, no body) needs no dialect. Surface-level, authored once like
  *  `search_style`; absent → a canonical `create`/`update` fails closed (other verbs
  *  unaffected). Design:
- *  `docs/unified-pack-exploration/connection-agnostic-op-contract.md` §C. */
+ *  internal design notes §C. */
 export type WriteStyle = 'hubspot_properties' | 'salesforce_sobject' | 'pipedrive_json';
 export const WRITE_STYLES: readonly WriteStyle[] = ['hubspot_properties', 'salesforce_sobject', 'pipedrive_json'];
 export const isWriteStyle = (v: unknown): v is WriteStyle =>
@@ -1015,7 +1025,7 @@ export const isWriteStyle = (v: unknown): v is WriteStyle =>
  *  (a vendor's collection endpoints all paginate the same way), authored once like
  *  `result_path` / `search_style`; absent → the gateway returns the single first
  *  page (no follow). Design:
- *  `docs/unified-pack-exploration/connection-agnostic-op-contract.md`. */
+ *  internal design notes. */
 export type PaginationStyle = 'hubspot_after' | 'soql_query_locator' | 'pipedrive_cursor';
 export const PAGINATION_STYLES: readonly PaginationStyle[] = ['hubspot_after', 'soql_query_locator', 'pipedrive_cursor'];
 export const isPaginationStyle = (v: unknown): v is PaginationStyle =>
@@ -1443,7 +1453,7 @@ export interface ProviderApiSurface {
    *  collection-returning ops; a per-op `OperationRow.result_path` overrides it.
    *  Absent (and no per-op override) → the response IS the array (bare array at
    *  root). Read by the install resolver to project op results to canonical
-   *  fields. Design: `docs/unified-pack-exploration/connection-agnostic-op-contract.md`. */
+   *  fields. Design: internal design notes. */
   result_path?: string;
   /** Connection-agnostic op dispatch (NEXT-1) — the search DIALECT a canonical
    *  `<crm_alias>.search` op-step's vendor-neutral args are translated to (HubSpot
@@ -2069,8 +2079,18 @@ export interface CatalogOperationResolution {
    *  it is the value computed before the deny short-circuit (or `never`
    *  for structural denies). */
   approval: OperationApproval;
+  /** D-209 §1.7 — approval after base, trust, source/profile, and legacy
+   *  owner tightening, with only later review/quality lifts stripped. */
+  authorization_provenance: AuthorizationProvenance;
   granted: boolean;
   deny_reason?: CatalogDenyReason;
+  /** D-211 §2 — set when a stored global owner-operation `approval` was BELOW the
+   *  effective risk floor AT RESOLVE and the resolver clamped it fail-closed to
+   *  the floor (`clampToFloor`): carries the stored (below-floor) value so the
+   *  gateway can surface the clamp (audit `approval_clamped_from`). Fires for
+   *  a hand-stored / pre-validation row. The owner RPC rejects this state;
+   *  runtime clamping remains the fail-closed backstop. */
+  approval_clamped_from?: OperationApproval;
 }
 
 // The strictness rank is the CANONICAL `RISK_TIER_RANK` (ingredient.ts,
@@ -2093,11 +2113,23 @@ export const isRiskTierAtMost = (
   ceiling: OperationRiskTier,
 ): boolean => RISK_RANK[candidate] <= RISK_RANK[ceiling];
 
-const APPROVAL_RANK: Record<OperationApproval, number> = {
-  never: 0,
-  ask: 1,
-  always: 2,
-};
+/** The canonical closed `OperationApproval` vocabulary, ordered WEAKEST →
+ *  STRICTEST (rank = index). THE one source every consumer derives from —
+ *  `APPROVAL_RANK` below, the D-211 write gate (`contract-handler.ts`), and
+ *  the global owner-operation reader (`readOwnerOperationOverride`) — so the
+ *  vocabulary can never rot by hand-copy
+ *  (a subset typechecks; a derived list cannot drift). */
+export const OPERATION_APPROVALS = ['never', 'ask', 'always'] as const satisfies
+  readonly OperationApproval[];
+
+/** Membership guard for the canonical approval vocabulary. */
+export const isOperationApproval = (v: unknown): v is OperationApproval =>
+  typeof v === 'string' && (OPERATION_APPROVALS as readonly string[]).includes(v);
+
+// Rank derived from the canonical order (never a second hand-written table).
+const APPROVAL_RANK: Record<OperationApproval, number> = Object.fromEntries(
+  OPERATION_APPROVALS.map((approval, rank) => [approval, rank]),
+) as Record<OperationApproval, number>;
 
 /** Stricter (higher-rank) of two approval intents — profile
  *  `approval_defaults` can only escalate, never weaken. */
@@ -2128,13 +2160,41 @@ export const approvalFloorForRisk = (risk: OperationRiskTier): OperationApproval
     ? RISK_APPROVAL_FLOOR[risk]
     : 'always';
 
-/** True when a declared `approval` is LOOSER than the risk floor — i.e. it would
- *  need clamping at runtime and is a D-209 §1.3 authoring violation. The predicate
- *  the composition + universal manifest validators reject on. */
+/** True when an `approval` is LOOSER than the risk floor — i.e. it would need
+ *  clamping at runtime. D-211 Slice 1 gives this its first consumers: the
+ *  owner-operation WRITE-GATE (`contract-handler.ts` rejects a below-floor
+ *  global approval with `owner_operation_below_floor`) and the
+ *  RESOLVE-time fail-closed clamp (`resolveOperationPolicyAgainstSource` — a
+ *  hand-stored below-floor value resolves AT the floor and surfaces via
+ *  `CatalogOperationResolution.approval_clamped_from`). The AUTHORING validators
+ *  (composition + universal manifest) do NOT call it until D-211 Slice 4. */
 export const isApprovalBelowRiskFloor = (
   approval: OperationApproval,
   risk: OperationRiskTier,
 ): boolean => APPROVAL_RANK[approval] < APPROVAL_RANK[approvalFloorForRisk(risk)];
+
+/** D-211 §2 — clamp an approval to the risk floor:
+ *  `stricter(approval, floor(risk))`. The owner override's `approval` resolves
+ *  through this (write-gated AND fail-closed at resolve), so a stored value can
+ *  never take an op below `[floor(effective_risk)]`; values at/above the floor
+ *  pass through unchanged. Fail-closed like its inputs: an unranked approval
+ *  loses the comparison and yields the floor; an unrecognized risk floors at
+ *  `always` (`approvalFloorForRisk`). */
+export const clampToFloor = (
+  approval: OperationApproval,
+  risk: OperationRiskTier,
+): OperationApproval => stricterApproval(approval, approvalFloorForRisk(risk));
+
+/** D-211 §2 — the owner's global REPLACE-IF-PRESENT ruling fields for one
+ *  exact operation, read from the actorless `(ingredient, operation)` row and
+ *  handed to the resolvers BEFORE the legacy flow. `risk` and `approval`
+ *  replace the corresponding pack-operation fields; source-profile risk and
+ *  approval escalation, access, trust, and actor-scoped tightening then run
+ *  unchanged. */
+export interface OwnerOverridePolicy {
+  risk?: OperationRiskTier;
+  approval?: OperationApproval;
+}
 
 /** Base approval for an operation BEFORE the per-connection profile
  *  override: the operation's own `approval` if declared — CLAMPED UP to the risk
@@ -2191,16 +2251,20 @@ interface OperationAuthorizationSource {
  *  Resolution order:
  *    1. Operation must be declared in `operations` (Inv 4) — else
  *       `operation_not_declared`.
- *    2. Effective risk = stricter(catalog `op.risk_tier`,
- *       source `risk_overrides[op]`). Derived from the CATALOG, never the
- *       wrapper manifest's static `risk_tier` (Invariant 1).
+ *    2. Read the operation defaults as pack values overlaid by the owner's
+ *       global exact-operation fields. Then run the unchanged source-profile
+ *       risk escalation: `stricter(owner.risk ?? op.risk_tier,
+ *       source.risk_overrides[op])`.
  *    3. Grant: a source must exist (`missing_deny_reason`, fail-closed) and the
  *       operation must be in `allowed_operations` (`operation_not_granted`).
  *       Operations default OFF (Inv 3).
- *    4. Approval = stricter(base approval, source `approval_defaults[op]`),
- *       where base = op.approval ?? default-policy(effective risk). A
- *       `deny`-class default policy short-circuits to `policy_denied`.
- *    5. Verdict: `never` → admit; `ask` / `always` → ask. */
+ *    4. Approval base runs unchanged over the overlaid operation:
+ *       `owner.approval ?? op.approval` is the explicit op value (clamped to
+ *       the risk floor); the provider default is consulted only when neither
+ *       pack nor owner supplies an explicit approval.
+ *    5. Trust-ceiling relax, then source `approval_defaults[op]` stricter-wins
+ *       — both UNCHANGED by D-211, applied after the base.
+ *    6. Verdict: `never` → admit; `ask` / `always` → ask. */
 const resolveOperationPolicyAgainstSource = (args: {
   operations: Record<string, OperationSpec>;
   operation_id: string;
@@ -2213,6 +2277,14 @@ const resolveOperationPolicyAgainstSource = (args: {
    *  effective risk is at/below it to a silent admit, BEFORE the owner tighten.
    *  Absent ⇒ no relax (fail-closed). */
   ceiling?: TrustCeiling;
+  /** D-211 §2 — the owner's global replace-if-present ruling for this exact
+   *  operation. The two fields replace the pack operation's defaults before
+   *  the existing source-profile and trust flow. Approval remains clamped to
+   *  `[floor(effective_risk), always]` (fail-closed — a
+   *  below-floor stored value resolves AT the floor and surfaces via
+   *  `approval_clamped_from`). Absent ⇒ authored defaults, byte-identical to
+   *  pre-D-211 behavior. */
+  owner_override?: OwnerOverridePolicy;
 }): CatalogOperationResolution => {
   const op = args.operations[args.operation_id];
   if (!op) {
@@ -2222,16 +2294,26 @@ const resolveOperationPolicyAgainstSource = (args: {
       effective_risk_tier: 'read',
       operation_group: null,
       approval: 'never',
+      authorization_provenance: { pre_lift_approval: 'never' },
       granted: false,
       deny_reason: 'operation_not_declared',
     };
   }
 
-  // INVARIANT 1 — effective risk is catalog-derived (+ source escalation).
-  const override = args.source?.risk_overrides?.[args.operation_id];
-  const effective_risk_tier = override
-    ? stricterRisk(op.risk_tier, override)
-    : op.risk_tier;
+  // D-211 — overlay the actorless owner pair onto the pack operation FIRST.
+  // Everything after this read is the pre-D-211 flow: a connection profile can
+  // still escalate risk, access still gates independently, trust can relax, and
+  // later tightening survives. Invalid hand-stored values are dropped so they
+  // cannot weaken the pack operation.
+  const ownerRisk = args.owner_override?.risk;
+  const operationRisk =
+    ownerRisk !== undefined && Object.prototype.hasOwnProperty.call(RISK_RANK, ownerRisk)
+      ? ownerRisk
+      : op.risk_tier;
+  const sourceRisk = args.source?.risk_overrides?.[args.operation_id];
+  const effective_risk_tier = sourceRisk
+    ? stricterRisk(operationRisk, sourceRisk)
+    : operationRisk;
   const operation_group =
     op.groups && op.groups.length > 0 ? op.groups[0] : null;
 
@@ -2243,6 +2325,7 @@ const resolveOperationPolicyAgainstSource = (args: {
       effective_risk_tier,
       operation_group,
       approval: 'never',
+      authorization_provenance: { pre_lift_approval: 'never' },
       granted: false,
       deny_reason: args.missing_deny_reason,
     };
@@ -2262,6 +2345,7 @@ const resolveOperationPolicyAgainstSource = (args: {
       effective_risk_tier,
       operation_group,
       approval: 'never',
+      authorization_provenance: { pre_lift_approval: 'never' },
       granted: false,
       deny_reason: 'catalog_mismatch',
     };
@@ -2273,18 +2357,40 @@ const resolveOperationPolicyAgainstSource = (args: {
       effective_risk_tier,
       operation_group,
       approval: 'never',
+      authorization_provenance: { pre_lift_approval: 'never' },
       granted: false,
       deny_reason: 'operation_not_granted',
     };
   }
 
-  // Approval resolution — the pinned D-209 §1.4 order (stricter-wins):
-  //   base (op-risk FLOOR, §1.2 clamp inside baseApprovalOrDeny)
+  // Approval resolution — overlay the owner value into the pack operation,
+  // then run the pinned D-209 §1.4 order unchanged:
+  //     base = explicit operation approval (owner ?? pack), clamped to floor
+  //            ?? provider default for effective risk
   //     → source-trust CEILING relax (Slice B, §1.4)
   //     → owner TIGHTEN (approval_defaults).
+  // As before, an explicit operation approval takes precedence over the
+  // provider fallback; an owner approval occupies exactly that pack-op slot.
   // Owner-tightening is LAST so a permissive ceiling can never walk back an
-  // owner's `always` (an owner escalation always survives the relax).
-  const base = baseApprovalOrDeny(op, effective_risk_tier, args.default_policy);
+  // escalation (an escalation always survives the relax).
+  // When the stored owner approval is BELOW the floor, the clamp resolves AT
+  // the floor fail-closed and `approval_clamped_from` carries the stored value
+  // so the gateway can surface the clamp. An unranked owner value is dropped
+  // (falls back to the authored/default path).
+  const rawOwnerApproval = args.owner_override?.approval;
+  const ownerApproval =
+    rawOwnerApproval !== undefined
+    && Object.prototype.hasOwnProperty.call(APPROVAL_RANK, rawOwnerApproval)
+      ? rawOwnerApproval
+      : undefined;
+  const operationWithOwnerDefaults: OperationSpec = ownerApproval === undefined
+    ? op
+    : { ...op, approval: ownerApproval };
+  const base = baseApprovalOrDeny(
+    operationWithOwnerDefaults,
+    effective_risk_tier,
+    args.default_policy,
+  );
   if (base === 'deny') {
     return {
       verdict: 'deny',
@@ -2292,17 +2398,27 @@ const resolveOperationPolicyAgainstSource = (args: {
       effective_risk_tier,
       operation_group,
       approval: 'never',
+      authorization_provenance: { pre_lift_approval: 'never' },
       granted: true,
       deny_reason: 'policy_denied',
     };
   }
+  const approvalClampedFrom =
+    ownerApproval !== undefined
+    && isApprovalBelowRiskFloor(ownerApproval, effective_risk_tier)
+      ? ownerApproval
+      : undefined;
   const baseResolution: CatalogOperationResolution = {
     verdict: base === 'never' ? 'admit' : 'ask',
     operation_id: op.operation_id,
     effective_risk_tier,
     operation_group,
     approval: base,
+    authorization_provenance: { pre_lift_approval: base },
     granted: true,
+    ...(approvalClampedFrom !== undefined
+      ? { approval_clamped_from: approvalClampedFrom }
+      : {}),
   };
   // Slice B (§1.4) — apply the dispatch's trust ceiling ONCE, here, so catalog /
   // cli / simple-form all relax UNIFORMLY (pre-D-209 only the simple-form path
@@ -2322,6 +2438,7 @@ const resolveOperationPolicyAgainstSource = (args: {
   return {
     ...relaxed,
     approval,
+    authorization_provenance: { pre_lift_approval: approval },
     verdict: approval === 'never' ? 'admit' : 'ask',
   };
 };
@@ -2351,6 +2468,11 @@ export const resolveCatalogOperationPolicy = (args: {
   /** D-209 Slice B — the dispatch's stage-trust ceiling (§1.4). Threaded to the
    *  shared resolver so a catalog `ask`-op relaxes on the owner's own trust. */
   ceiling?: TrustCeiling;
+  /** D-211 §2 — the owner's global exact-operation replacement
+   *  (`{risk?, approval?}`), read by the gateway.
+   *  Threaded to the shared resolver's replace step; absent ⇒ authored
+   *  defaults, behavior byte-identical to pre-D-211. */
+  owner_override?: OwnerOverridePolicy;
 }): CatalogOperationResolution =>
   resolveOperationPolicyAgainstSource({
     operations: args.operations,
@@ -2360,6 +2482,7 @@ export const resolveCatalogOperationPolicy = (args: {
     ...(args.default_policy ? { default_policy: args.default_policy } : {}),
     ...(args.catalog_slug ? { catalog_slug: args.catalog_slug } : {}),
     ...(args.ceiling !== undefined ? { ceiling: args.ceiling } : {}),
+    ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
   });
 
 /** D-182 §7.2 — resolve one `cli` catalog operation against the per-contract
@@ -2392,6 +2515,11 @@ export const resolveCliReachabilityPolicy = (args: {
    *  anonymous door. This is what makes the 82 write-`ask`-floor cli ops silent
    *  on the owner's own automation instead of over-holding everywhere. */
   ceiling?: TrustCeiling;
+  /** D-211 §2 — the owner's global exact-operation replacement
+   *  (`{risk?, approval?}`); same replace semantics as the catalog resolver.
+   *  Reachability (the grant plane) is untouched by it — an override row has
+   *  ZERO effect on admission, only on risk/approval resolution. */
+  owner_override?: OwnerOverridePolicy;
 }): CatalogOperationResolution =>
   resolveOperationPolicyAgainstSource({
     operations: args.operations,
@@ -2405,6 +2533,7 @@ export const resolveCliReachabilityPolicy = (args: {
     missing_deny_reason: 'cli_reachability_disabled',
     ...(args.default_policy ? { default_policy: args.default_policy } : {}),
     ...(args.ceiling !== undefined ? { ceiling: args.ceiling } : {}),
+    ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
   });
 
 /** D-187 policy-matrix retirement (slice 3) — the op-risk APPROVAL base for a
@@ -2444,6 +2573,12 @@ export const resolveSimpleFormOperationPolicy = (args: {
    *  the shared resolver now (`op-risk-admission` no longer re-applies it — that
    *  double-apply is removed), so every op shape relaxes through one code path. */
   ceiling?: TrustCeiling;
+  /** D-211 §2 — the owner's global exact-operation replacement
+   *  (`{risk?, approval?}`); same replace semantics as the catalog resolver
+   *  (a simple-form ingredient is its own single op, so the ruling keys on the
+   *  slug). No live simple-form dispatch host passes it yet — threaded so all
+   *  three resolvers share one replace step. */
+  owner_override?: OwnerOverridePolicy;
 }): CatalogOperationResolution =>
   resolveOperationPolicyAgainstSource({
     // The ingredient AS a degenerate single-operation catalog: op-risk = manifest
@@ -2459,6 +2594,7 @@ export const resolveSimpleFormOperationPolicy = (args: {
     missing_deny_reason: 'operation_not_declared',
     ...(args.default_policy ? { default_policy: args.default_policy } : {}),
     ...(args.ceiling !== undefined ? { ceiling: args.ceiling } : {}),
+    ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
   });
 
 /** The no-approval STAGE-TRUST ceiling — the highest op-risk tier that runs WITHOUT
@@ -2536,7 +2672,12 @@ export const applyTrustCeiling = (
   // Above the trust ceiling — keep the base `ask`. (No mutation.)
   if (riskExceedsTrustCeiling(base.effective_risk_tier, ceiling)) return base;
   // At or below the trust ceiling — pre-trusted, no per-call approval.
-  return { ...base, approval: 'never', verdict: 'admit' };
+  return {
+    ...base,
+    approval: 'never',
+    authorization_provenance: { pre_lift_approval: 'never' },
+    verdict: 'admit',
+  };
 };
 
 /** Per-call gateway audit payload (D-165 P0, Invariant 5). The engine
@@ -2558,6 +2699,12 @@ export interface GatewayCallAudit {
    *  transport kind today. */
   surface_kind?: string;
   approval: OperationApproval;
+  /** D-211 §2 — set when a stored global owner-operation `approval` was
+   *  below-floor at resolve (a hand-stored row)
+   *  and resolved fail-closed AT the floor: carries the stored (below-floor)
+   *  value verbatim from `CatalogOperationResolution.approval_clamped_from` so
+   *  the durable `connection_gateway` row surfaces the clamp. */
+  approval_clamped_from?: OperationApproval;
   /** Set when the call paused for and received preflight approval. */
   approval_id?: string;
   outcome: 'success' | 'failed';

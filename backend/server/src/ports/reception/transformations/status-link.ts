@@ -17,7 +17,7 @@
  *    - `buildStatusLinkPacketRawInput` (P2 surface; preserved as-is) —
  *      thin pass-through to the substrate.
  *
- *  Spec: docs/d-149-spec.md § A.5.6. */
+ *  Spec: D-149 § A.5.6. */
 
 import {
   STATUS_PROJECTION_FIELDS_VISIBLE,

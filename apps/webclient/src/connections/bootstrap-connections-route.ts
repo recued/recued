@@ -1,13 +1,14 @@
 /** Connections — top-level route (treemap §6, review-log R13–R16, D-201).
  *
- *  A `[Mail · Calendar · Files · Others · Webhooks]` surface over the
+ *  A `[Mail · Calendar · Files · Apps & APIs · Webhooks]` surface over the
  *  foundational account lanes, generic outbound connections, and inbound
  *  webhook control plane, backed by three substrates:
  *    - Mail / Calendar / Files = FOUNDATIONAL account lanes bound through
  *      the coded `collection.{mail,calendar,file}.*` adapters
  *      (`accounts-lane-panel.ts` + the pure `renderAccountsPanel`).
- *    - Others = the generic `connection.*` REACH lane (api / mcp /
- *      notification) — the existing enrollment panel, rehosted here.
+ *    - Apps & APIs (`others` in the stable route id) = the generic
+ *      `connection.*` REACH lane (api / mcp / notification) — the existing
+ *      enrollment panel, rehosted here.
  *    - Webhooks = the owner-only `webhook.ingress.*` inbound lifecycle.
  *
  *  The unified tab bar lives in THIS route (it spans all three substrates).
@@ -50,6 +51,7 @@ import {
   type ConnectionsSetMatchPatternsCaller,
 } from '../settings/connections-enroll-panel.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { serializeChatConnectedSource } from '../chat/connected-source-handoff.js';
 import {
   mountWebhooksPanel,
   WEBHOOKS_PANEL_STYLES,
@@ -83,6 +85,8 @@ export const CONNECTIONS_ROUTE_STYLES_MARKER =
 export const CONNECTIONS_ROUTE_HOST_ATTR = 'data-recued-connections-route';
 export const CONNECTIONS_ROUTE_HEADING_ATTR =
   'data-recued-connections-route-heading';
+export const CONNECTIONS_ROUTE_DESCRIPTION_ATTR =
+  'data-recued-connections-route-description';
 export const CONNECTIONS_ROUTE_TABS_ATTR =
   'data-recued-connections-route-tabs';
 export const CONNECTIONS_ROUTE_CONTENT_ATTR =
@@ -90,13 +94,14 @@ export const CONNECTIONS_ROUTE_CONTENT_ATTR =
 export const CONNECTIONS_ROUTE_UNAVAILABLE_ATTR =
   'data-recued-connections-route-unavailable';
 
-/** The five top-level lanes. `'others'` is the
- *  generic `connection.*` REACH lane; the rest are foundational. */
+/** The five top-level lanes. `'others'` remains the stable deep-link id for
+ *  the user-facing Apps & APIs lane; the other non-webhook tabs are
+ *  foundational account lanes. */
 const CONNECTIONS_TABS = [
   { id: 'mail', label: 'Mail' },
   { id: 'calendar', label: 'Calendar' },
   { id: 'file', label: 'Files' },
-  { id: 'others', label: 'Others' },
+  { id: 'others', label: 'Apps & APIs' },
   { id: 'webhooks', label: 'Webhooks' },
 ] as const;
 
@@ -114,45 +119,63 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 [${CONNECTIONS_ROUTE_HOST_ATTR}] {
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
-  padding: 16px;
+  padding: 22px 16px 36px;
   color: var(--fg);
 }
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 14px;
+  display: grid;
+  gap: 7px;
+  max-width: 720px;
+  margin-bottom: 20px;
 }
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 650;
+  color: var(--fg-strong, var(--fg));
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+[${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] {
   display: flex;
   gap: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab {
+  flex: 0 0 auto;
   appearance: none;
   text-decoration: none;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  padding: 8px 14px;
+  padding: 9px 14px 10px;
   font-weight: 600;
   font-size: 14px;
+  white-space: nowrap;
   color: var(--muted);
   cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab:hover {
   color: var(--fg);
+  background: var(--surface-sunk);
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab--active {
   color: var(--fg);
   border-bottom-color: var(--accent);
 }
+[${CONNECTIONS_ROUTE_CONTENT_ATTR}] { min-width: 0; }
 [${CONNECTIONS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -177,8 +200,19 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   opacity: 1;
 }
 @media (max-width: 720px) {
+  [${CONNECTIONS_ROUTE_HOST_ATTR}] {
+    padding: 18px 14px 28px;
+  }
   [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-header {
-    display: grid;
+    margin-bottom: 16px;
+  }
+  [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-title {
+    font-size: 25px;
+  }
+  [${CONNECTIONS_ROUTE_TABS_ATTR}] {
+    margin-right: -14px;
+    padding-right: 14px;
+    margin-bottom: 18px;
   }
 }
 `;
@@ -194,6 +228,10 @@ export const CONNECTIONS_ROUTE_STYLES = [
 export interface BootstrapConnectionsRouteOptions {
   root: HTMLElement;
   document?: Document;
+  /** Hash navigation seam used by post-connect next actions. The webclient
+   *  bootstrap supplies its hash-source-aware navigator; direct mounts fall
+   *  back to the document's location. */
+  navigate?: (hash: string) => void;
   /** Deep-link segment 0 — the active lane tab (`#connections/<tab>`).
    *  Defaults to `mail`. */
   initialTab?: string;
@@ -204,10 +242,10 @@ export interface BootstrapConnectionsRouteOptions {
   initialDetailSlug?: string;
   /** Packs "Set up" deep link — `#connections/others/enroll/<vendor>`
    *  (segment 1 = the `enroll` verb, segment 2 = the vendor). Forwarded to
-   *  the Others enroll panel as its `initialVendor` so the enroll form opens
-   *  pre-selected for that vendor. Ignored on foundational lanes. */
+   *  the Apps & APIs enroll panel as its `initialVendor` so the enroll form
+   *  opens pre-selected for that vendor. Ignored on foundational lanes. */
   initialEnrollVendor?: string;
-  // ── Others (generic connection.*) enroll callers ──
+  // ── Apps & APIs (`others` route id; generic connection.*) callers ──
   connectionsEnrollListCaller?: ConnectionsEnrollListCaller;
   /** Fork 1 B — `packs.list` caller; lights up the editable vendor-scope
    *  pre-fill in the enroll dialog. Optional + soft (absent → server unions). */
@@ -263,7 +301,7 @@ export interface ConnectionsRoute {
   /** The foundational account panel (mounted only on the Mail / Calendar
    *  / Files tabs), else null. */
   accountsPanel(): AccountsLanePanelMount | null;
-  /** The generic connection.* enroll panel (mounted only on the Others
+  /** The generic connection.* enroll panel (mounted only on the Apps & APIs
    *  tab), else null. */
   connectionsEnrollPanel(): ConnectionsEnrollPanelMount | null;
   /** Inbound webhook setup panel (mounted only on the Webhooks tab). */
@@ -313,11 +351,18 @@ export const bootstrapConnectionsRoute = (
   heading.setAttribute(CONNECTIONS_ROUTE_HEADING_ATTR, '');
   heading.textContent = 'Connections';
   header.appendChild(heading);
+  const description = doc.createElement('p');
+  description.className = 'connections-route-description';
+  description.setAttribute(CONNECTIONS_ROUTE_DESCRIPTION_ATTR, '');
+  description.textContent =
+    'Bring your mail, calendars, files, and everyday services into Recued.';
+  header.appendChild(description);
   routeRoot.appendChild(header);
 
   // ── Tab bar (anchors → hash → shell remount) ──
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(CONNECTIONS_ROUTE_TABS_ATTR, '');
+  tabBar.setAttribute('aria-label', 'Connection types');
   for (const tab of CONNECTIONS_TABS) {
     const link = doc.createElement('a');
     link.className =
@@ -338,11 +383,22 @@ export const bootstrapConnectionsRoute = (
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
 
+  const navigate = (hash: string): void => {
+    if (opts.navigate !== undefined) {
+      opts.navigate(hash);
+      return;
+    }
+    const location = doc.defaultView?.location;
+    if (location !== undefined) location.hash = hash;
+  };
+
   if (isFoundationalLane(activeTab)) {
     accountsPanel = mountAccountsLanePanel({
       host: content,
       document: doc,
       initialLane: activeTab,
+      onGoToChat: (source) => navigate(serializeChatConnectedSource(source)),
+      onOpenLane: (lane) => navigate(serializeShellRoute('connections', lane)),
       ...(opts.initialDetailSlug !== undefined
         ? { initialDetailSlug: opts.initialDetailSlug }
         : {}),

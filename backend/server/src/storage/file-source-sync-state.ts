@@ -9,9 +9,10 @@
  *  `source_freshness_degradation` producer reads for a file Source
  *  (`last_success_at` → `last_seen_at`; `degraded` → a coverage reason).
  *
- *  Thinner than the work-entity row: a file Source is ALWAYS a read-only meta
- *  mirror (bytes never fetched — North star), so there is no `sync_mode` /
- *  `sync_depth` (both would be constant) and no declaration-hash column. A
+ *  Thinner than the work-entity row: file Source SYNC is always a read-only
+ *  metadata mirror, so there is no `sync_mode` / `sync_depth` (both would be
+ *  constant) and no declaration-hash column. Explicit reads are a separate,
+ *  policy-gated path and do not change sync posture. A
  *  delta-capable vendor (Dropbox `list.mode: 'full_then_delta'`) rides
  *  `cursor_blob` — the opaque watermark the leaf's `next_cursor` advances — and
  *  re-baselines with a full walk whenever `last_full_walk_at` ages past
@@ -23,7 +24,7 @@
  *  Lifecycle mirrors the work-entity store: seeded (`upsert`) at task
  *  registration, `markStarted` / `markCompleted` per cycle, `deleteForSource` on
  *  unregister (runtime state, not preserved history). Design:
- *  `docs/d-192-file-source-family.md`. */
+ *  D-192. */
 
 import type Database from 'better-sqlite3';
 

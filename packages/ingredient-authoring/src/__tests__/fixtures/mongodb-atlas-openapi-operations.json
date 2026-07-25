@@ -3,14 +3,14 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://www.mongodb.com/docs/api/doc/atlas-admin-api-v2.json",
-      "bytes": 4666017,
-      "sha256": "840850b1a4ef50a2e74b78afa5f72f24c3cada246a6a50ee59fa1bc2c81091f1",
+      "bytes": 4590007,
+      "sha256": "5040b0d3973e891f9e9048f6c305ed54977d0d69153ad073b232a39d90a50c77",
       "openapi": "3.0.1",
       "title": "MongoDB Atlas Administration API",
       "api_version": "2.0",
-      "x_xgen_sha": "e8318e5988fd75d4bdc61330330cecc7e9b59a3b",
-      "official_path_count": 315,
-      "retrieved_on": "2026-07-15",
+      "x_xgen_sha": "89206a87add1aa585b794d67231df3ad3d651d27",
+      "official_path_count": 306,
+      "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -18,14 +18,14 @@
         }
       ]
     },
-    "official_operation_count": 500,
+    "official_operation_count": 487,
     "admitted_operation_count": 429,
-    "deprecated_operation_count": 71,
+    "deprecated_operation_count": 58,
     "official_method_counts": {
-      "DELETE": 74,
-      "GET": 247,
-      "PATCH": 63,
-      "POST": 107,
+      "DELETE": 72,
+      "GET": 241,
+      "PATCH": 62,
+      "POST": 103,
       "PUT": 9
     },
     "admitted_method_counts": {
@@ -53,7 +53,6 @@
       "Collection Level Metrics": 9,
       "Custom Database Roles": 5,
       "Data Federation": 14,
-      "Data Lake Pipelines": 13,
       "Database Users": 5,
       "Encryption at Rest using Customer Key Management": 6,
       "Events": 5,
@@ -197,7 +196,8 @@
       "read": 220
     },
     "approval_counts": {
-      "always": 429
+      "always": 209,
+      "never": 220
     },
     "idempotency_counts": {
       "idempotent": 124,
@@ -463,7 +463,7 @@
         "op": "root.get_system_status",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-inventory-mongodb-atlas",
@@ -473,7 +473,7 @@
         "op": "organizations.list_orgs",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "project-inventory-mongodb-atlas",
@@ -483,7 +483,7 @@
         "op": "projects.list_groups",
         "required_args": [],
         "supplied_args": [],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-project-inventory-mongodb-atlas",
@@ -497,7 +497,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-user-inventory-mongodb-atlas",
@@ -511,7 +511,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-team-inventory-mongodb-atlas",
@@ -525,7 +525,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "invoice-inventory-mongodb-atlas",
@@ -539,7 +539,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "project-service-account-inventory-mongodb-atlas",
@@ -553,7 +553,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "organization-api-key-inventory-mongodb-atlas",
@@ -567,7 +567,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "ai-model-api-key-inventory-mongodb-atlas",
@@ -581,7 +581,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "identity-provider-inventory-mongodb-atlas",
@@ -595,7 +595,7 @@
         "supplied_args": [
           "federationSettingsId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "database-user-inventory-mongodb-atlas",
@@ -609,7 +609,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "resource-policy-inventory-mongodb-atlas",
@@ -623,7 +623,7 @@
         "supplied_args": [
           "orgId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "cluster-inventory-mongodb-atlas",
@@ -637,7 +637,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "flex-cluster-inventory-mongodb-atlas",
@@ -651,7 +651,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "cloud-region-inventory-mongodb-atlas",
@@ -665,7 +665,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "network-peer-inventory-mongodb-atlas",
@@ -679,7 +679,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "ip-access-list-inventory-mongodb-atlas",
@@ -693,7 +693,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "private-endpoint-service-inventory-mongodb-atlas",
@@ -709,7 +709,7 @@
           "groupId",
           "cloudProvider"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "backup-snapshot-inventory-mongodb-atlas",
@@ -725,7 +725,7 @@
           "groupId",
           "clusterName"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "backup-restore-job-inventory-mongodb-atlas",
@@ -741,7 +741,7 @@
           "groupId",
           "clusterName"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "backup-export-bucket-inventory-mongodb-atlas",
@@ -755,7 +755,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "online-archive-inventory-mongodb-atlas",
@@ -771,7 +771,7 @@
           "groupId",
           "clusterName"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "alert-inventory-mongodb-atlas",
@@ -785,7 +785,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "event-inventory-mongodb-atlas",
@@ -799,7 +799,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "process-inventory-mongodb-atlas",
@@ -813,7 +813,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "performance-index-advice-mongodb-atlas",
@@ -829,7 +829,7 @@
           "groupId",
           "clusterName"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "search-index-inventory-mongodb-atlas",
@@ -845,7 +845,7 @@
           "groupId",
           "clusterName"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "data-federation-inventory-mongodb-atlas",
@@ -859,7 +859,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "stream-workspace-inventory-mongodb-atlas",
@@ -873,7 +873,7 @@
         "supplied_args": [
           "groupId"
         ],
-        "approval": "always"
+        "approval": "never"
       },
       {
         "recipe_id": "stream-processor-inventory-mongodb-atlas",
@@ -889,7 +889,7 @@
           "groupId",
           "tenantName"
         ],
-        "approval": "always"
+        "approval": "never"
       }
     ],
     "operation_ids_sha256": "1915456ab4da33cfb341a1ba450d031ebbc48da0d96af4357239ae270262d10a"
@@ -9378,395 +9378,6 @@
       "exclusion_reason": null,
       "pack": "mongodb-atlas-networking-integrations",
       "op": "network_peering.delete_group_peer"
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines",
-      "operation_id": "listGroupPipelines",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return All Data Lake Pipelines in One Project",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /api/atlas/v2/groups/{groupId}/pipelines",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines",
-      "operation_id": "createGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Create One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "operation_id": "getGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "PATCH /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "method": "PATCH",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "operation_id": "updateGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Update One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "DELETE /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "method": "DELETE",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}",
-      "operation_id": "deleteGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Remove One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/availableSchedules",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/availableSchedules",
-      "operation_id": "getGroupPipelineAvailableSchedules",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return All Ingestion Schedules for One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/availableSnapshots",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/availableSnapshots",
-      "operation_id": "getGroupPipelineAvailableSnapshots",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return All Backup Snapshots for One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/pause",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/pause",
-      "operation_id": "pauseGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Pause One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/resume",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/resume",
-      "operation_id": "resumeGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Resume One Data Lake Pipeline",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs",
-      "operation_id": "listGroupPipelineRuns",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return All Data Lake Pipeline Runs in One Project",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs/{pipelineRunId}",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs/{pipelineRunId}",
-      "operation_id": "getGroupPipelineRun",
-      "tag": "Data Lake Pipelines",
-      "summary": "Return One Data Lake Pipeline Run",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "DELETE /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs/{pipelineRunId}",
-      "method": "DELETE",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/runs/{pipelineRunId}",
-      "operation_id": "deleteGroupPipelineRun",
-      "tag": "Data Lake Pipelines",
-      "summary": "Delete One Pipeline Run Dataset",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "202",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/trigger",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/pipelines/{pipelineName}/trigger",
-      "operation_id": "triggerGroupPipeline",
-      "tag": "Data Lake Pipelines",
-      "summary": "Trigger On-Demand Snapshot Ingestion",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
     },
     {
       "key": "POST /api/atlas/v2/groups/{groupId}/privateEndpoint/endpointService",
@@ -22373,7 +21984,7 @@
       "wire_path": "/api/atlas/v2",
       "tag": "Root",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22439,7 +22050,7 @@
       "wire_path": "/api/atlas/v2/alertConfigs/matchers/fieldNames",
       "tag": "Alert Configurations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22505,7 +22116,7 @@
       "wire_path": "/api/atlas/v2/clusters",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22630,7 +22241,7 @@
       "wire_path": "/api/atlas/v2/eventTypes",
       "tag": "Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22755,7 +22366,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/connectedOrgConfigs",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22865,7 +22476,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/connectedOrgConfigs/{orgId}",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22946,7 +22557,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/connectedOrgConfigs/{orgId}/roleMappings",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23027,7 +22638,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/connectedOrgConfigs/{orgId}/roleMappings/{id}",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23123,7 +22734,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/identityProviders",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23263,7 +22874,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/identityProviders/{identityProviderId}",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23344,7 +22955,7 @@
       "wire_path": "/api/atlas/v2/federationSettings/{federationSettingsId}/identityProviders/{identityProviderId}/metadata.xml",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23410,7 +23021,7 @@
       "wire_path": "/api/atlas/v2/groups",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23535,7 +23146,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23616,7 +23227,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/accessList",
       "tag": "Project IP Access List",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23756,7 +23367,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/accessList/{entryValue}",
       "tag": "Project IP Access List",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23852,7 +23463,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/accessList/{entryValue}/status",
       "tag": "Project IP Access List",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23948,7 +23559,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/activityFeed",
       "tag": "Activity Feed",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24074,7 +23685,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/aiModelApiClouds/{cloud}/geographies/{geography}/modelGroupNames/{modelGroupName}/rateLimits",
       "tag": "AI Model Rate Limits",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24200,7 +23811,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/aiModelApiKeys",
       "tag": "AI Model API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24325,7 +23936,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/aiModelApiKeys/{apiKeyId}",
       "tag": "AI Model API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24421,7 +24032,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/aiModelApiRateLimits",
       "tag": "AI Model Rate Limits",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24546,7 +24157,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alertConfigs",
       "tag": "Alert Configurations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24686,7 +24297,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alertConfigs/{alertConfigId}",
       "tag": "Alert Configurations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24782,7 +24393,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alertConfigs/{alertConfigId}/alerts",
       "tag": "Alerts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24937,7 +24548,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alerts",
       "tag": "Alerts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25092,7 +24703,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alerts/{alertId}",
       "tag": "Alerts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25188,7 +24799,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/alerts/{alertId}/alertConfigs",
       "tag": "Alert Configurations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25343,7 +24954,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/apiKeys",
       "tag": "Programmatic API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25483,7 +25094,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/auditLog",
       "tag": "Auditing",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25564,7 +25175,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/awsCustomDNS",
       "tag": "AWS Clusters DNS",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25645,7 +25256,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/backup/{cloudProvider}/privateEndpoints",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25800,7 +25411,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/backup/{cloudProvider}/privateEndpoints/{endpointId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25911,7 +25522,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/backup/exportBuckets",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26051,7 +25662,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/backup/exportBuckets/{exportBucketId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26132,7 +25743,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/backupCompliancePolicy",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26213,7 +25824,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/cloudProviderAccess",
       "tag": "Cloud Provider Access",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26294,7 +25905,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/cloudProviderAccess/{roleId}",
       "tag": "Cloud Provider Access",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26390,7 +26001,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26560,7 +26171,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26686,7 +26297,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/{clusterView}/{databaseName}/{collectionName}/collStats/measurements",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26872,7 +26483,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/{clusterView}/collStats/namespaces",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27013,7 +26624,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/exports",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27168,7 +26779,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/exports/{exportId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27264,7 +26875,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/restoreJobs",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27419,7 +27030,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/restoreJobs/{restoreJobId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27530,7 +27141,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/schedule",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27626,7 +27237,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27826,7 +27437,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/{snapshotId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27937,7 +27548,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/{snapshotId}/databases",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28107,7 +27718,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/{snapshotId}/databases/{databaseName}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28233,7 +27844,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/{snapshotId}/databases/{databaseName}/collections",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28418,7 +28029,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/{snapshotId}/databases/{databaseName}/collections/{collectionName}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28559,7 +28170,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/shardedCluster/{snapshotId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28670,7 +28281,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots/shardedClusters",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28766,7 +28377,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28906,7 +28517,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs/{jobId}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29017,7 +28628,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs/{jobId}/collections",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29217,7 +28828,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs/{jobId}/collections/{sourceNamespace}",
       "tag": "Cloud Backups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29343,7 +28954,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collStats/pinned",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29424,7 +29035,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/globalWrites",
       "tag": "Global Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29520,7 +29131,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/onlineArchives",
       "tag": "Online Archive",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29675,7 +29286,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/onlineArchives/{archiveId}",
       "tag": "Online Archive",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29786,7 +29397,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/onlineArchives/queryLogs.gz",
       "tag": "Online Archive",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29919,7 +29530,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/outageSimulation",
       "tag": "Cluster Outage Simulation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30015,7 +29626,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/performanceAdvisor/dropIndexSuggestions",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30081,7 +29692,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/performanceAdvisor/schemaAdvice",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30147,7 +29758,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/performanceAdvisor/suggestedIndexes",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30273,7 +29884,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/processArgs",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30369,7 +29980,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapeInsights/{queryShapeHash}/details",
       "tag": "Query Shape Insights",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30525,7 +30136,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapeInsights/summaries",
       "tag": "Query Shape Insights",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30741,7 +30352,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapes",
       "tag": "Query Shape Insights",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30911,7 +30522,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapes/{queryShapeHash}",
       "tag": "Query Shape Insights",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31022,7 +30633,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/deployment",
       "tag": "Atlas Search",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31118,7 +30729,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/indexes",
       "tag": "Atlas Search",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31214,7 +30825,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/indexes/{databaseName}/{collectionName}",
       "tag": "Atlas Search",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31340,7 +30951,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/indexes/{databaseName}/{collectionName}/{indexName}",
       "tag": "Atlas Search",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31481,7 +31092,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/indexes/{indexId}",
       "tag": "Atlas Search",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31592,7 +31203,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/status",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31688,7 +31299,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{hostName}/logs/{logName}.gz",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31821,7 +31432,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/provider/regions",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31991,7 +31602,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/collStats/metrics",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32057,7 +31668,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/containers",
       "tag": "Network Peering",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32212,7 +31823,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/containers/{containerId}",
       "tag": "Network Peering",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32308,7 +31919,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/containers/all",
       "tag": "Network Peering",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32448,7 +32059,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/customDBRoles/roles",
       "tag": "Custom Database Roles",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32529,7 +32140,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/customDBRoles/roles/{roleName}",
       "tag": "Custom Database Roles",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32625,7 +32236,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/databaseUsers",
       "tag": "Database Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32765,7 +32376,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/databaseUsers/{databaseName}/{username}",
       "tag": "Database Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32876,7 +32487,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/databaseUsers/{username}/certs",
       "tag": "X.509 Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33031,7 +32642,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dataFederation",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33127,7 +32738,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dataFederation/{tenantName}",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33208,7 +32819,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dataFederation/{tenantName}/limits",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33304,7 +32915,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dataFederation/{tenantName}/limits/{limitName}",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33415,7 +33026,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dataFederation/{tenantName}/queryLogs.gz",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33518,7 +33129,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dbAccessHistory/clusters/{clusterName}",
       "tag": "Access Tracking",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33689,7 +33300,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/dbAccessHistory/processes/{hostname}",
       "tag": "Access Tracking",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33860,7 +33471,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/encryptionAtRest",
       "tag": "Encryption at Rest using Customer Key Management",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33941,7 +33552,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/encryptionAtRest/{cloudProvider}/privateEndpoints",
       "tag": "Encryption at Rest using Customer Key Management",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34096,7 +33707,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/encryptionAtRest/{cloudProvider}/privateEndpoints/{endpointId}",
       "tag": "Encryption at Rest using Customer Key Management",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34207,7 +33818,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/events",
       "tag": "Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34437,7 +34048,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/events/{eventId}",
       "tag": "Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34548,7 +34159,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters",
       "tag": "Flex Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34688,7 +34299,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}",
       "tag": "Flex Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34784,7 +34395,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/restoreJobs",
       "tag": "Flex Restore Jobs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34939,7 +34550,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/restoreJobs/{restoreJobId}",
       "tag": "Flex Restore Jobs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35050,7 +34661,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/snapshots",
       "tag": "Flex Snapshots",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35205,7 +34816,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/snapshots/{snapshotId}",
       "tag": "Flex Snapshots",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35301,7 +34912,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35382,7 +34993,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/indexes/{databaseName}/{collectionName}/{indexName}/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35583,7 +35194,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/indexes/{databaseName}/{collectionName}/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35769,7 +35380,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35925,7 +35536,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/integrations",
       "tag": "Third-Party Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36065,7 +35676,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/integrations/{integrationType}",
       "tag": "Third-Party Integrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36161,7 +35772,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/ipAddresses",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36242,7 +35853,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/limits",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36323,7 +35934,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/limits/{limitName}",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36419,7 +36030,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/liveMigrations/{liveMigrationId}",
       "tag": "Cloud Migration Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36515,7 +36126,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/liveMigrations/validate/{validationId}",
       "tag": "Cloud Migration Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36596,7 +36207,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/logIntegrations",
       "tag": "Push-Based Log Export",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36751,7 +36362,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/logIntegrations/{id}",
       "tag": "Push-Based Log Export",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36847,7 +36458,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/maintenanceWindow",
       "tag": "Maintenance Windows",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36928,7 +36539,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/managedSlowMs",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37009,7 +36620,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/mongoDBVersions",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37178,7 +36789,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/peers",
       "tag": "Network Peering",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37333,7 +36944,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/peers/{peerId}",
       "tag": "Network Peering",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37429,7 +37040,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateEndpoint/{cloudProvider}/endpointService",
       "tag": "Private Endpoint Services",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37525,7 +37136,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateEndpoint/{cloudProvider}/endpointService/{endpointServiceId}",
       "tag": "Private Endpoint Services",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37636,7 +37247,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateEndpoint/{cloudProvider}/endpointService/{endpointServiceId}/endpoint/{endpointId}",
       "tag": "Private Endpoint Services",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37762,7 +37373,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateEndpoint/regionalMode",
       "tag": "Private Endpoint Services",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37843,7 +37454,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateNetworkSettings/endpointIds",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37983,7 +37594,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/privateNetworkSettings/endpointIds/{endpointId}",
       "tag": "Data Federation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38079,7 +37690,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38219,7 +37830,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38315,7 +37926,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/{databaseName}/{collectionName}/collStats/measurements",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38486,7 +38097,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/collStats/namespaces",
       "tag": "Collection Level Metrics",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38612,7 +38223,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/databases",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38767,7 +38378,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/databases/{databaseName}",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38878,7 +38489,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/databases/{databaseName}/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39064,7 +38675,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/disks",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39219,7 +38830,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/disks/{partitionName}",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39315,7 +38926,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/disks/{partitionName}/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39501,7 +39112,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/measurements",
       "tag": "Monitoring and Logs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39672,7 +39283,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/namespaces",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39798,7 +39409,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/slowQueryLogs",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39999,7 +39610,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/suggestedIndexes",
       "tag": "Performance Advisor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40223,7 +39834,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/sampleDatasetLoad/{sampleDatasetId}",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40304,7 +39915,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/serviceAccounts",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40444,7 +40055,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/serviceAccounts/{clientId}",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40540,7 +40151,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/serviceAccounts/{clientId}/accessList",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40695,7 +40306,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/settings",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40776,7 +40387,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40901,7 +40512,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40997,7 +40608,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}:downloadOperationalLogs",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41130,7 +40741,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/auditLogs",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41263,7 +40874,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/connections",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41403,7 +41014,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/connections/{connectionName}",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41499,7 +41110,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/connections/{connectionName}/failoverConnections",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41654,7 +41265,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/connections/{connectionName}/failoverConnections/{failoverConnectionId}",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41780,7 +41391,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/processor/{processorName}",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41891,7 +41502,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/{tenantName}/processors",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42046,7 +41657,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/accountDetails",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42142,7 +41753,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/activeVpcPeeringConnections",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42267,7 +41878,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/privateLinkConnections",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42392,7 +42003,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/privateLinkConnections/{connectionId}",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42473,7 +42084,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/streams/vpcPeeringConnections",
       "tag": "Streams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42613,7 +42224,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/teams",
       "tag": "Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42753,7 +42364,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/teams/{teamId}",
       "tag": "Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42849,7 +42460,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/users",
       "tag": "MongoDB Cloud Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43064,7 +42675,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/users/{userId}",
       "tag": "MongoDB Cloud Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43175,7 +42786,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/userSecurity",
       "tag": "LDAP Configuration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43256,7 +42867,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/userSecurity/ldap/verify/{requestId}",
       "tag": "LDAP Configuration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43352,7 +42963,7 @@
       "wire_path": "/api/atlas/v2/groups/byName/{groupName}",
       "tag": "Projects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43433,7 +43044,7 @@
       "wire_path": "/api/atlas/v2/orgs",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43573,7 +43184,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43654,7 +43265,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/activityFeed",
       "tag": "Activity Feed",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43765,7 +43376,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/aiModelApiClouds/{cloud}/geographies/{geography}/modelGroupNames/{modelGroupName}/rateLimits",
       "tag": "AI Model Rate Limits",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43891,7 +43502,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/aiModelApiKeys",
       "tag": "AI Model API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44016,7 +43627,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/aiModelApiKeys/{apiKeyId}",
       "tag": "AI Model API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44112,7 +43723,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/aiModelApiRateLimits",
       "tag": "AI Model Rate Limits",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44237,7 +43848,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/apiKeys",
       "tag": "Programmatic API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44377,7 +43988,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/apiKeys/{apiUserId}",
       "tag": "Programmatic API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44473,7 +44084,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/apiKeys/{apiUserId}/accessList",
       "tag": "Programmatic API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44628,7 +44239,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/apiKeys/{apiUserId}/accessList/{ipAddress}",
       "tag": "Programmatic API Keys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44739,7 +44350,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage/{token}",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44821,7 +44432,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/delegationSettings",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44902,7 +44513,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/events",
       "tag": "Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45102,7 +44713,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/events/{eventId}",
       "tag": "Events",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45213,7 +44824,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/federationSettings",
       "tag": "Federated Authentication",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45294,7 +44905,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/groups",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45449,7 +45060,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45679,7 +45290,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45776,7 +45387,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/csv",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45879,7 +45490,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/lineItems:search",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46008,7 +45619,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/pending",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46089,7 +45700,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/liveMigrations/availableProjects",
       "tag": "Cloud Migration Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46170,7 +45781,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/nonCompliantResources",
       "tag": "Resource Policies",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46251,7 +45862,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/resourcePolicies",
       "tag": "Resource Policies",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46332,7 +45943,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/resourcePolicies/{resourcePolicyId}",
       "tag": "Resource Policies",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46428,7 +46039,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/serviceAccounts",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46568,7 +46179,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46664,7 +46275,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/accessList",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46819,7 +46430,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/groups",
       "tag": "Service Accounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46959,7 +46570,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/settings",
       "tag": "Organizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47040,7 +46651,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/teams",
       "tag": "Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47180,7 +46791,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/teams/{teamId}",
       "tag": "Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47276,7 +46887,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/teams/{teamId}/users",
       "tag": "MongoDB Cloud Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47476,7 +47087,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/teams/byName/{teamName}",
       "tag": "Teams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47572,7 +47183,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/users",
       "tag": "MongoDB Cloud Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47757,7 +47368,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/users/{userId}",
       "tag": "MongoDB Cloud Users",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47868,7 +47479,7 @@
       "wire_path": "/api/atlas/v2/rateLimits",
       "tag": "Rate Limiting",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48068,7 +47679,7 @@
       "wire_path": "/api/atlas/v2/rateLimits/{endpointSetId}",
       "tag": "Rate Limiting",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48209,7 +47820,7 @@
       "wire_path": "/api/atlas/v2/skus",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48334,7 +47945,7 @@
       "wire_path": "/api/atlas/v2/skus/{skuId}",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48415,7 +48026,7 @@
       "wire_path": "/api/atlas/v2/unauth/controlPlaneIPAddresses",
       "tag": "Root",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -54991,7 +54602,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
       "tag": "Clusters",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -57574,7 +57185,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/download",
       "tag": "Flex Snapshots",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "non_idempotent",
       "parameters": [
         {
@@ -58004,7 +57615,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/liveMigrations/validate",
       "tag": "Cloud Migration Service",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -60711,7 +60322,7 @@
       "wire_path": "/api/atlas/v2/groups/{groupId}/userSecurity/ldap/verify",
       "tag": "LDAP Configuration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -61096,7 +60707,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage",
       "tag": "Invoices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "non_idempotent",
       "parameters": [
         {
@@ -61336,7 +60947,7 @@
       "wire_path": "/api/atlas/v2/orgs/{orgId}/resourcePolicies:validate",
       "tag": "Resource Policies",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {

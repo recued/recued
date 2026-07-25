@@ -22,7 +22,7 @@
  *     The schema layer captures this only as descriptive help text;
  *     no introspection URL appears on the provider entry.
  *
- *  Spec: `docs/d-130-spec.md` § A.1. */
+ *  Spec: D-130 § A.1. */
 
 import {
   CONNECTION_SANDBOX_FLAG_VALUES,

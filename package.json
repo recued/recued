@@ -1,6 +1,6 @@
 {
   "name": "recued",
-  "version": "26.7.3",
+  "version": "26.7.25",
   "private": true,
   "description": "Self-hosted Recued server and webclient",
   "license": "AGPL-3.0-only",

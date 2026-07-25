@@ -7,9 +7,9 @@
  *  `suggest_directive`.
  *
  *  Section description is the verbatim bench-validated short label per
- *  `recued-enrichment-benchmark/enrichment-farm/harness/compose-agent.ts:128-131`.
+ *  internal benchmarks:128-131`.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4 + § 5. */
+ *  See: D-164 § 4 + § 5. */
 
 import type {
   CatalogAssemblyInput,

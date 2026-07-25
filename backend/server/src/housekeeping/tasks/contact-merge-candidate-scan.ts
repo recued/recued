@@ -41,7 +41,7 @@
  *  the same registered task instance keeps serving the background
  *  delta cycle.
  *
- *  Spec: `docs/d-138-spec.md` § A.4 path 2 + § P3. */
+ *  Spec: D-138 § A.4 path 2 + § P3. */
 
 import { randomUUID } from 'node:crypto';
 

@@ -96,20 +96,28 @@ const storedCheckMatches = async (
 ): Promise<boolean> => {
   const decoded = decodeStoredCheck(storedBlob);
   if (!decoded) return false;
-  let kek: Uint8Array;
+  // `entropy` is the CALLER's buffer (they wipe it). The KEK derived from it and
+  // the decrypted sentinel are OURS — wipe them on every exit so recovery-key
+  // material does not linger in the heap (the D-212 zeroization posture).
+  let kek: Uint8Array | undefined;
+  let plaintextBytes: Uint8Array | undefined;
   try {
-    kek = deriveKEKFromRecoveryKey(entropy, decoded.salt);
-  } catch {
-    return false;
+    try {
+      kek = deriveKEKFromRecoveryKey(entropy, decoded.salt);
+    } catch {
+      return false;
+    }
+    const ciphertext = decodeCiphertext(decoded.ciphertext);
+    try {
+      plaintextBytes = await decrypt(kek, ciphertext);
+    } catch {
+      return false;
+    }
+    return new TextDecoder().decode(plaintextBytes) === RECOVERY_SENTINEL;
+  } finally {
+    kek?.fill(0);
+    plaintextBytes?.fill(0);
   }
-  const ciphertext = decodeCiphertext(decoded.ciphertext);
-  let plaintextBytes: Uint8Array;
-  try {
-    plaintextBytes = await decrypt(kek, ciphertext);
-  } catch {
-    return false;
-  }
-  return new TextDecoder().decode(plaintextBytes) === RECOVERY_SENTINEL;
 };
 
 /** Read-only check of `recoveryKey` against the realm's stored sentinel.
@@ -129,7 +137,11 @@ export const verifyRecoveryKeyAgainstRealm = async (
   } catch {
     return 'mismatch';
   }
-  return (await storedCheckMatches(stored, entropy)) ? 'match' : 'mismatch';
+  try {
+    return (await storedCheckMatches(stored, entropy)) ? 'match' : 'mismatch';
+  } finally {
+    entropy.fill(0); // wipe our copy of the recovery-key entropy
+  }
 };
 
 /** Enroll-or-verify the realm against `recoveryKey`. The store is
@@ -151,29 +163,38 @@ export const processRecoveryKey = async (
     };
   }
 
-  const stored = store.read();
+  // Wipe our copy of the recovery-key entropy on every exit below.
+  try {
+    const stored = store.read();
 
-  // Stage 2 (no prior check): enroll.
-  if (stored === null) {
-    const salt = randomBytes(SALT_LEN);
-    const kek = deriveKEKFromRecoveryKey(entropy, salt);
-    const ciphertext = await encrypt(kek, new TextEncoder().encode(RECOVERY_SENTINEL));
-    const blob = encodeStoredCheck(salt, encodeCiphertext(ciphertext));
-    store.write(blob);
-    return { ok: true, outcome: 'enrolled' };
-  }
+    // Stage 2 (no prior check): enroll.
+    if (stored === null) {
+      const salt = randomBytes(SALT_LEN);
+      const kek = deriveKEKFromRecoveryKey(entropy, salt);
+      try {
+        const ciphertext = await encrypt(kek, new TextEncoder().encode(RECOVERY_SENTINEL));
+        const blob = encodeStoredCheck(salt, encodeCiphertext(ciphertext));
+        store.write(blob);
+        return { ok: true, outcome: 'enrolled' };
+      } finally {
+        kek.fill(0); // the derived KEK is secret; the salt is public (stored)
+      }
+    }
 
-  // Stage 2 (prior check exists): verify (read-only — never rewrites).
-  // A corrupt blob / KDF / AEAD / sentinel failure all collapse to the same
-  // client-facing `mismatch` so we don't leak server-state shape.
-  if (await storedCheckMatches(stored, entropy)) {
-    return { ok: true, outcome: 'verified' };
+    // Stage 2 (prior check exists): verify (read-only — never rewrites).
+    // A corrupt blob / KDF / AEAD / sentinel failure all collapse to the same
+    // client-facing `mismatch` so we don't leak server-state shape.
+    if (await storedCheckMatches(stored, entropy)) {
+      return { ok: true, outcome: 'verified' };
+    }
+    return {
+      ok: false,
+      code: 'mismatch',
+      message: 'Recovery key does not match this server\'s account.',
+    };
+  } finally {
+    entropy.fill(0);
   }
-  return {
-    ok: false,
-    code: 'mismatch',
-    message: 'Recovery key does not match this server\'s account.',
-  };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -182,8 +203,23 @@ export const processRecoveryKey = async (
 
 export type RecoveryMethods = 'pair.registerRecoveryKey';
 
+/** Encryption handles for the WS enrollment door. Mirrors what
+ *  `compose-listeners` forwards to the HTTP `/auth/pair` twin — without
+ *  them this door wrote the sentinel alone, opening the enrollment gate
+ *  while SQLite stayed plaintext (and the server's own
+ *  `server_not_encrypted` error still told clients to call it). */
+export interface RecoveryVaultDeps {
+  keys: import('./key-manager.js').KeyManager;
+  database: import('better-sqlite3').Database;
+  getServerKeyStore: () => Pick<
+    import('./keys/index.js').ServerKeyStore,
+    'saveServerVaultKey' | 'flush' | 'loadServerVaultKey'
+  > | undefined;
+}
+
 export const makeRecoveryHandlers = (
   store: RecoveryKeyCheckStore | undefined,
+  vault?: RecoveryVaultDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, RecoveryMethods, WsClient> | undefined => {
   if (!store) return undefined;
   return {
@@ -193,15 +229,32 @@ export const makeRecoveryHandlers = (
         if (typeof args.recoveryKey !== 'string' || args.recoveryKey.length === 0) {
           throw new RpcError('bad_request', 'recoveryKey is required', 400);
         }
-        const result = await processRecoveryKey(store, args.recoveryKey);
+        // Same door as `/auth/pair` — verify against the realm, turn
+        // encryption on, open the gate last. Shared so the two cannot drift.
+        const { enrollRealmRecoveryKey } = await import('./server-vault-enrollment.js');
+        const result = await enrollRealmRecoveryKey({
+          recoveryKeyCheck: store,
+          recoveryKey: args.recoveryKey,
+          keys: vault?.keys,
+          keyStore: vault?.getServerKeyStore(),
+          database: vault?.database,
+        });
         if (!result.ok) {
           // `mismatch` → 401 (different account); `invalid` → 400
-          // (malformed mnemonic). Both are user-actionable on the ext
-          // side — different copy per code.
+          // (malformed mnemonic); `not_configured` → 503 (server wiring);
+          // `realm_conflict` → 409 (this data directory already hosts a realm —
+          // the key is fine, the location is not). All are user-actionable on
+          // the client side — different copy per code.
           throw new RpcError(
             result.code,
             result.message,
-            result.code === 'mismatch' ? 401 : 400,
+            result.code === 'mismatch'
+              ? 401
+              : result.code === 'not_configured' || result.code === 'busy'
+                ? 503
+                : result.code === 'realm_conflict'
+                  ? 409
+                  : 400,
           );
         }
         return { outcome: result.outcome };

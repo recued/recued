@@ -1,78 +1,93 @@
-/** Server vault bundle persistence — wraps the `server_config` SQLite
- *  table, mirroring `bundle-store.ts`.
+/** Server vault bundle persistence — a filesystem sidecar beside the realm db.
  *
- *  The server stores ONE `server_vault_bundle` blob per realm: the
- *  Master DEK dual-wrapped under the server key (keyfile) and the
- *  recovery key (`@recued/crypto`'s `ServerBundle`). First-boot
- *  enrollment writes it; every subsequent boot auto-unlocks the Master
- *  DEK from it using the keyfile-held server key.
+ *  The server stores ONE dual-wrapped `ServerBundle` per realm: the Master DEK
+ *  wrapped under both the keyfile-held server key and the user's recovery key.
+ *  First-boot enrollment writes it; every subsequent boot can read it BEFORE
+ *  opening SQLite and auto-unlock the same Master DEK.
  *
- *  Deliberately SEPARATE from the keyfile: the bundle lives in the db
- *  (captured by a db backup) while the server key lives in the `0600`
- *  keyfile. A backup of the db alone therefore stays encrypted — only
- *  the recovery key opens it. This module is pure I/O; all crypto lives
- *  in `@recued/crypto`.
+ *  D-212 deliberately keeps this separate from BOTH the database and the
+ *  keyfile. The database cannot contain the material needed to decrypt itself,
+ *  and keying the database directly from the keyfile would make a lost keyfile
+ *  unrecoverable. A backup containing the database + this sidecar, but not the
+ *  keyfile, remains recoverable with the 24-word recovery key.
+ *
+ *  The sidecar is atomically replaced (fsync temp -> rename) and mode 0600.
+ *  The bundle is wrapped rather than plaintext key material, but keeping the
+ *  file owner-only avoids widening access to recovery-critical metadata.
  */
 
-import type Database from 'better-sqlite3';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   serverBundleToJSON,
   serverBundleFromJSON,
   type ServerBundle,
 } from '@recued/crypto';
+import { writeFileAtomicSync } from './durable-fs.js';
 
-const SERVER_BUNDLE_KEY = 'server_vault_bundle';
+/** Kept as a suffix (rather than one fixed filename) so two explicitly named
+ *  realm dbs in the same directory cannot share encryption state by accident. */
+export const SERVER_BUNDLE_SIDECAR_SUFFIX = '.server-vault-bundle.json';
+
+/** Resolve the canonical bundle sidecar for one realm db. */
+export const resolveServerBundlePath = (dbPath: string): string =>
+  `${resolve(dbPath)}${SERVER_BUNDLE_SIDECAR_SUFFIX}`;
 
 export interface ServerBundleStore {
+  /** Absolute path of this realm's bundle sidecar. */
+  readonly path: string;
   /** Read the stored server bundle, or null when encryption is not yet
-   *  enrolled on this realm. */
+   *  enrolled on this realm. A present-but-malformed file throws: corrupt
+   *  encryption state must never be mistaken for a fresh realm. */
   load(): ServerBundle | null;
   /** Persist the server bundle (overwrites — used only at first-boot
-   *  enrollment + future recovery-key rotation; auto-unlock is
-   *  read-only). */
+   *  enrollment + future recovery-key rotation; auto-unlock is read-only). */
   save(bundle: ServerBundle): void;
   /** Clear the stored bundle. Operator-side factory-reset only; never a
    *  remote client. */
   clear(): void;
-  /** True when a server bundle is enrolled on this realm. Drives the
-   *  KeyManager's startup state pick. */
+  /** True when a server bundle sidecar exists for this realm. */
   exists(): boolean;
 }
 
-export const createServerBundleStore = (
-  db: Database.Database,
-): ServerBundleStore => {
-  // Idempotent — the bundle store + recovery-key store create the same
-  // table; doing it here keeps this module independently constructable.
-  db.exec(`CREATE TABLE IF NOT EXISTS server_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+// This store's copy of the pattern was the correct one; it now lives in
+// `durable-fs.ts` so the keyfile writer cannot drift from it again.
+const writeAtomic = (path: string, body: string): void => {
+  writeFileAtomicSync(path, body);
+};
+
+export const createServerBundleStore = (dbPath: string): ServerBundleStore => {
+  const path = resolveServerBundlePath(dbPath);
 
   return {
+    path,
+
     load() {
-      const row = db.prepare(`SELECT value FROM server_config WHERE key = ?`).get(SERVER_BUNDLE_KEY) as
-        | { value: string }
-        | undefined;
-      if (!row) return null;
+      if (!existsSync(path)) return null;
+      const raw = readFileSync(path, 'utf8');
       try {
-        return serverBundleFromJSON(row.value);
-      } catch {
-        // Corrupt bundle — surface as "no bundle" so the server doesn't
-        // hang on bad state. Operator must wipe + re-enrol.
-        return null;
+        return serverBundleFromJSON(raw);
+      } catch (err) {
+        throw new Error(
+          `server-bundle-store: ${path} is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     },
 
     save(bundle) {
-      db.prepare(`INSERT OR REPLACE INTO server_config (key, value) VALUES (?, ?)`)
-        .run(SERVER_BUNDLE_KEY, serverBundleToJSON(bundle));
+      writeAtomic(path, serverBundleToJSON(bundle));
     },
 
     clear() {
-      db.prepare(`DELETE FROM server_config WHERE key = ?`).run(SERVER_BUNDLE_KEY);
+      try {
+        unlinkSync(path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
     },
 
     exists() {
-      const row = db.prepare(`SELECT 1 FROM server_config WHERE key = ?`).get(SERVER_BUNDLE_KEY);
-      return row !== undefined;
+      return existsSync(path);
     },
   };
 };

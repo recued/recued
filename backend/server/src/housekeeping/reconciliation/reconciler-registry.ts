@@ -12,7 +12,7 @@
  *  `(hubspot, company)` and D-130 (Salesforce) adds Opportunity /
  *  Contact / Account / Lead.
  *
- *  Spec: `docs/d-128-spec.md` §A.3. */
+ *  Spec: D-128 §A.3. */
 
 import {
   composeVendorEntityScope,

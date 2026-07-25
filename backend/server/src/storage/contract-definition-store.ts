@@ -36,7 +36,7 @@
  *
  *  Local-only — the contract store never syncs cloud (D-090/D-097/D-168).
  *
- *  Spec: `docs/d-166-spec.md` §"contract_definition (new — contract_id lifecycle)". */
+ *  Spec: D-166 §"contract_definition (new — contract_id lifecycle)". */
 
 import { randomUUID } from 'node:crypto';
 
@@ -863,12 +863,12 @@ export const createContractDefinitionStore = (
         throw new SessionGrantMintError('arg_shape_hash must be non-empty');
       }
       // codex HIGH fold (P3) — the row pins the approved tier and only the
-      // grantable tiers are representable (D7): `read` never asks-for-grants,
+      // grantable tiers are representable (D7): read/write/admin may grant,
       // `destructive` never grants. The matcher requires tier equality, so a
       // row outside this vocabulary would be inert anyway — refuse it loudly.
       if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(input.risk_tier)) {
         throw new SessionGrantMintError(
-          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — write|admin only)`,
+          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — read|write|admin only)`,
         );
       }
       // codex HIGH fold (N.3) — the ingredient axis is never a wildcard for
@@ -1317,7 +1317,7 @@ export const createContractDefinitionStore = (
       }
       if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(input.risk_tier)) {
         throw new ScopedGrantMintError(
-          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — write|admin only)`,
+          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — read|write|admin only)`,
         );
       }
       if (!(SCOPED_GRANT_SOURCES as readonly string[]).includes(input.scoped_source)) {
@@ -1413,7 +1413,7 @@ export const createContractDefinitionStore = (
       }
       if (!(SESSION_GRANT_RISK_TIERS as readonly string[]).includes(input.risk_tier)) {
         throw new RawOpGrantMintError(
-          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — write|admin only)`,
+          `risk_tier '${input.risk_tier}' is not session-grantable (D7 — read|write|admin only)`,
         );
       }
       // Recipe-less EXACT (§8): unlike a scoped grant, a raw-op grant has a

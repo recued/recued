@@ -7,7 +7,7 @@
  *  semantics; the driver owns retry / backoff / state-transition
  *  bookkeeping.
  *
- *  Spec: `docs/d-138-spec.md` § A.7 + § Phase 5. */
+ *  Spec: D-138 § A.7 + § Phase 5. */
 
 import type {
   ConnectionRecord,

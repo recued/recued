@@ -15,7 +15,7 @@
  *  indexes) carry every per-source filter; the merge is the only
  *  in-memory work.
  *
- *  Spec: docs/d-120-spec.md (`data.timeline()` MCP primitive +
+ *  Spec: D-120 (`data.timeline()` MCP primitive +
  *  Phase 5 deliverables).
  */
 

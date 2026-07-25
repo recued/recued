@@ -197,6 +197,11 @@ export interface ExecutionContext {
   executorConfig: ServerExecutorConfig;
   executeDeps: ExecuteHandlerDeps;
   notificationBlock: NotificationBlock | undefined;
+  /** Narrow LIVE batch-membership read — see `ExecuteDepsBundle.getBatch`. The
+   *  `/ask` landing gates its detail rendering on the CURRENT member count. */
+  getBatch:
+    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | undefined;
   /** D-210 Phase C — the DECORATED preflight resumer, surfaced so the Reception
    *  inbox can release a hold that carries no durable ask (notify-mode fanout,
    *  and the pre-existing raise-failed accident). Same instance every other
@@ -359,15 +364,14 @@ export const composeExecutionContext = async (
     receptionProjectionContactDeps: app.contactStoreRef
       ? { store: app.contactStoreRef }
       : undefined,
-    // D-173 P4.3 — pair with `calendarStack` to build the calendar-event
-    // create seam (a scheduling booking materializes a local calendar event).
+    // D-173 P4.3 — pair with `calendarStack` to build the intake-only local
+    // calendar-event create seam.
     // D-210 A.8 slice 4b-ii — the merged store; a booking is a
     // `reception_form_submission` row with a slot.
     receptionProjectionBookingStore: storage.intakeFormSubmissionStoreRef,
-    // D-210 slice 3 — the booking-entity mint that runs beside a reservation's
-    // calendar event. Same underlying store as the projection above, threaded
-    // SEPARATELY because a booking is not a projection destination: it is a
-    // companion row, and the projection's Pick says so by omitting it.
+    // D-210 — the canonical scheduling booking mint. Same sealed submission
+    // store as the projection above, threaded separately because it also opens
+    // the reservation's protected slot and visitor provenance.
     receptionBookingMintStore: storage.workEntityStoreRef,
     receptionEndpointRegistryStore: storage.publicEndpointRegistryStoreRef,
     // D-210 WS3 — the `contact` branch's sealed-email resolver. An intake
@@ -672,6 +676,7 @@ export const composeExecutionContext = async (
     executorConfig,
     executeDeps,
     notificationBlock: executeDepsBundle.notificationBlock,
+    getBatch: executeDepsBundle.getBatch,
     preflightResumer: executeDepsBundle.preflightResumer,
     // D-207 slice 1c — the contract substrate a reception door is minted into. Surfaced
     // from the SAME bundle the Gateway's verdict path was built from, so the mint's grant

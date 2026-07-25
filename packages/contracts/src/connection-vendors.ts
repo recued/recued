@@ -28,7 +28,7 @@
  *  validator constants are declared above the registry for the same
  *  reason.
  *
- *  Spec: `docs/d-128-spec.md` §A.6, `docs/d-129-spec.md` §A.2. */
+ *  Spec: D-128 §A.6, D-129 §A.2. */
 
 import type { EnrichmentScope } from './enrichment-registry.js';
 import {
@@ -225,7 +225,7 @@ const ACCT_ALIAS_SET: ReadonlySet<string> = new Set(ACCT_ALIAS_VALUES);
  *  task/event/email_message). `probe_gated` = surfaced only after a per-connection
  *  capability probe (Salesforce `describeSObjects`) confirms the SObject/stream
  *  exists — hidden until the probe lands, so the UI never shows a row that can
- *  never have `last_pulled_at`. Design: `docs/d-192-engagement-facet.md`. */
+ *  never have `last_pulled_at`. Design: D-192. */
 export const ENGAGEMENT_CAPABILITY_VALUES = ['always', 'probe_gated'] as const;
 export type EngagementCapability = (typeof ENGAGEMENT_CAPABILITY_VALUES)[number];
 const ENGAGEMENT_CAPABILITY_SET: ReadonlySet<string> = new Set(ENGAGEMENT_CAPABILITY_VALUES);
@@ -249,7 +249,7 @@ const ENGAGEMENT_SYNC_KIND_SET: ReadonlySet<string> = new Set(ENGAGEMENT_SYNC_KI
  *  pack-declared CRM's engagement plane light up (reconcile / health / coverage /
  *  score) with no code edit: shared logic reads `liveVendorRegistry.filter(e =>
  *  e.engagement)` instead of the closed `EngagementVendor` union. Design:
- *  `docs/d-192-engagement-facet.md`. */
+ *  D-192. */
 export interface EngagementEntityFacet {
   /** Always-present vs capability-probe-gated (Salesforce voice_call/call_history). */
   capability: EngagementCapability;
@@ -792,7 +792,7 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
   // (`'deal' | 'contact' | 'account'`); cross-vendor unification
   // happens at the topic layer (`engagement_velocity_signal`
   // valid_scopes), not the entity layer. See
-  // docs/d-139-spec.md § A.1 + § A.5.5 (Deal Identity Asymmetry
+  // D-139 § A.1 + § A.5.5 (Deal Identity Asymmetry
   // Invariant).
   buildConnectionVendorEntity({
     vendor: 'hubspot',
@@ -1585,7 +1585,7 @@ export const getVendorEntityByAcctAlias = (
 // D-192 engagement facet accessors — the registry replacements for the closed
 // EngagementVendor union + HUBSPOT/SALESFORCE_ENGAGEMENT_ENTITY_NAMES constants.
 // Pass a LIVE registry (liveVendorRegistry) to include pack-declared vendors;
-// the default reads the shipped builtins. Design: docs/d-192-engagement-facet.md.
+// the default reads the shipped builtins. Design: D-192.
 // ────────────────────────────────────────────────────────────────
 
 /** True when `(vendor, entity)` is a declared engagement/activity entity. */
@@ -1748,7 +1748,7 @@ export interface CanonicalCrmField {
    *  confident number over a truncated set, which the model states to the user as
    *  fact. See D-206 §2.2c.
    *
-   *  Spec: `docs/d-206-spec.md` §2. */
+   *  Spec: D-206 §2. */
   ref?: { entity: CrmAlias };
 }
 

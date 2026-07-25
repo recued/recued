@@ -8,7 +8,7 @@
 // threshold — `onStall` when the op should be killed (origin-dependent), or
 // `onFlag` when an attended op went no-progress (surfaced on the slice-4 active
 // list, not killed). The executor owns the actual kill (SIGKILL the child it
-// spawned). See `docs/d-181-spec.md` §6.
+// spawned). See D-181 §6.
 
 import { statSync } from 'node:fs';
 import {

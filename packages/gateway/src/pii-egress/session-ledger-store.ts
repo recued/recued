@@ -17,7 +17,7 @@
  *  the D-160 middleware pipeline; D-164 P6.0 (b)). The seam is ready for the
  *  wiring follow-on.
  *
- *  Spec: docs/d-167-spec.md §"Alias ledger", §"Runtime flow".
+ *  Spec: D-167 §"Alias ledger", §"Runtime flow".
  */
 
 import { createLedger, type Ledger } from '@recued/transforms';

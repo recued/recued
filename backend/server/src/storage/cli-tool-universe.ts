@@ -11,7 +11,7 @@
  *  id, not the tool (D-182 §7.2). Pure over the manifest snapshot; no I/O, no
  *  store.
  *
- *  Spec: docs/d-182-spec.md §7 / §7.2 (cli first-class + the reachability grid). */
+ *  Spec: D-182 §7 / §7.2 (cli first-class + the reachability grid). */
 
 import type {
   CliToolGridEntry,

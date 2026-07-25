@@ -61,9 +61,11 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+  AuthorizationProvenance,
   Checkpoint,
   ContractSnapshot,
   ExecutionSource,
+  OperationApproval,
   GatewayCallAudit,
   IngredientManifest,
   PreflightApprovedTarget,
@@ -328,15 +330,16 @@ export const dispatchRawOp = async (
       {
         reason: `requires the user's approval under the contract policy (${admission.detail})`,
         risk_tier: manifest.risk_tier,
+        authorization_provenance: admission.authorization_provenance,
       },
     );
   }
 
   // 6 — dispatch through the SAME Gateway every recipe op crosses (FRESH mode:
   //     `catalogSessionGrants` wired so a previously-minted `raw_op` grant
-  //     auto-admits the next identical call; reads never consult grants so the
-  //     read path is unchanged). The gate decides admit (reads proceed) / ask
-  //     (writes → `PreflightRequiredSignal`) / deny (throws) itself.
+  //     auto-admits the next identical call. Read/write/admin calls can consult
+  //     grants, but only pre-lift `never | ask` rulings may match one. The gate
+  //     decides admit / ask (`PreflightRequiredSignal`) / deny itself.
   const correlationId =
     executionSource.channel === 'mcp' ? executionSource.tool_call_id : undefined;
   const dispatch = await runRawOpThroughGateway(deps, {
@@ -372,6 +375,15 @@ export const dispatchRawOp = async (
         ...(sig.arg_shape_hash !== undefined ? { arg_shape_hash: sig.arg_shape_hash } : {}),
         ...(sig.canonical_payload_hash !== undefined
           ? { canonical_payload_hash: sig.canonical_payload_hash }
+          : {}),
+        ...(sig.owner_override_offer !== undefined
+          ? { owner_override_offer: sig.owner_override_offer }
+          : {}),
+        ...(sig.approval_clamped_from !== undefined
+          ? { approval_clamped_from: sig.approval_clamped_from }
+          : {}),
+        ...(sig.authorization_provenance !== undefined
+          ? { authorization_provenance: sig.authorization_provenance }
           : {}),
       },
     );
@@ -675,6 +687,7 @@ const buildRawOpCatalogGrants = (
           ? { connection_name: call.connection_name }
           : {}),
         risk_tier: call.risk_tier,
+        pre_lift_approval: call.pre_lift_approval,
         arg_shape_hash: call.arg_shape_hash,
         canonical_payload_hash: call.canonical_payload_hash,
       }),
@@ -702,7 +715,13 @@ const runRawOpThroughGateway = async (
   call: RawOpGatewayCall,
   resume?: boolean,
 ): Promise<
-  { kind: 'result'; result: unknown } | { kind: 'preflight'; signal: PreflightRequiredSignal }
+  | {
+      kind: 'result';
+      result: unknown;
+      /** Fresh post-authorization posture from this dispatch's gateway audit. */
+      pre_lift_approval?: OperationApproval;
+    }
+  | { kind: 'preflight'; signal: PreflightRequiredSignal }
 > => {
   const { catalogSlug, manifest, operation, opArgs, connectionName, executionSource } = call;
   const contractId = executionSourceContractId(executionSource);
@@ -830,7 +849,13 @@ const runRawOpThroughGateway = async (
       stepMeta,
     );
     meterIfDispatched();
-    return { kind: 'result', result };
+    return {
+      kind: 'result',
+      result,
+      ...(captured?.approval !== undefined
+        ? { pre_lift_approval: captured.approval }
+        : {}),
+    };
   } catch (e) {
     if (isPreflightRequiredSignal(e)) return { kind: 'preflight', signal: e };
     meterIfDispatched();
@@ -865,6 +890,7 @@ const resolveRawOpOffer = (
   risk_tier: string,
   argShapeHash: string | undefined,
   canonicalPayloadHash: string | undefined,
+  authorizationProvenance: AuthorizationProvenance | undefined,
 ): SessionGrantOffer | undefined => {
   // No mint path (no resolver) ⇒ make no offer — an `allow_session` answer
   // could mint nothing, so don't surface the option (codex LOW fold).
@@ -874,6 +900,7 @@ const resolveRawOpOffer = (
     channel: source.channel,
     actor: source.actor,
     risk_tier,
+    pre_lift_approval: authorizationProvenance?.pre_lift_approval,
   });
   return base !== undefined ? { ...base, grant_mode: 'raw_op' } : undefined;
 };
@@ -892,6 +919,9 @@ const buildRawOpHold = async (
     risk_tier: string;
     arg_shape_hash?: string;
     canonical_payload_hash?: string;
+    owner_override_offer?: PreflightRequiredSignal['owner_override_offer'];
+    approval_clamped_from?: PreflightRequiredSignal['approval_clamped_from'];
+    authorization_provenance?: AuthorizationProvenance;
   },
 ): Promise<RawOpDispatchOutcome> => {
   if (deps.checkpointStore === undefined || deps.preflightNotifier === undefined) {
@@ -904,6 +934,21 @@ const buildRawOpHold = async (
     checkpoint_id: newId(),
     run_id,
     step_state: {},
+    preflight_context: {
+      tool_slug: hold.operation,
+      connection_name: hold.connectionName,
+      risk_tier: ctx.risk_tier,
+      reason: ctx.reason,
+      ...(ctx.owner_override_offer !== undefined
+        ? { owner_override_offer: ctx.owner_override_offer }
+        : {}),
+      ...(ctx.approval_clamped_from !== undefined
+        ? { approval_clamped_from: ctx.approval_clamped_from }
+        : {}),
+      ...(ctx.authorization_provenance !== undefined
+        ? { authorization_provenance: ctx.authorization_provenance }
+        : {}),
+    },
     raw_op: {
       op_id: hold.opId,
       catalog_slug: hold.catalogSlug,
@@ -944,6 +989,7 @@ const buildRawOpHold = async (
     ctx.risk_tier,
     ctx.arg_shape_hash,
     ctx.canonical_payload_hash,
+    ctx.authorization_provenance,
   );
   const askContext: PreflightAskContext = {
     raw_op: { op_id: hold.opId },
@@ -951,6 +997,15 @@ const buildRawOpHold = async (
     risk_tier: ctx.risk_tier,
     reason: ctx.reason,
     ...(offer !== undefined ? { session_grant: offer } : {}),
+    ...(ctx.owner_override_offer !== undefined
+      ? { owner_override_offer: ctx.owner_override_offer }
+      : {}),
+    ...(ctx.approval_clamped_from !== undefined
+      ? { approval_clamped_from: ctx.approval_clamped_from }
+      : {}),
+    ...(ctx.authorization_provenance !== undefined
+      ? { authorization_provenance: ctx.authorization_provenance }
+      : {}),
   };
   try {
     await raisePreflightAsk(deps.preflightNotifier, { checkpoint, context: askContext });
@@ -1282,6 +1337,15 @@ const dispatchResumedRawOp = async (
     && raw.arg_shape_hash !== undefined
     && raw.canonical_payload_hash !== undefined
     && deps.sessionGrantResolver !== undefined
+    && checkpoint.preflight_context?.authorization_provenance !== undefined
+    && (
+      checkpoint.preflight_context.authorization_provenance.pre_lift_approval === 'never'
+      || checkpoint.preflight_context.authorization_provenance.pre_lift_approval === 'ask'
+    )
+    && (
+      dispatch.pre_lift_approval === 'never'
+      || dispatch.pre_lift_approval === 'ask'
+    )
   ) {
     // Bind the grant's operation axis to the RESOLVED operation id (the op's
     // declared `operation_id`, NOT the short `operations`-map key) — the value
@@ -1297,6 +1361,7 @@ const dispatchResumedRawOp = async (
       operation_id: resolvedOpId,
       ...(raw.connection_name !== '' ? { connection_name: raw.connection_name } : {}),
       risk_tier: raw.risk_tier as RiskTier,
+      pre_lift_approval: dispatch.pre_lift_approval,
       arg_shape_hash: raw.arg_shape_hash,
       canonical_payload_hash: raw.canonical_payload_hash,
       // D-177 N.14.6 — bind the grant to the door contract that governed the call

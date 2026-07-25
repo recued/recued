@@ -37,7 +37,7 @@
  *      tokens in `chat-orchestrator.ts` JSDoc + a few backend test
  *      files — retires in P6.8 (grep-negative acceptance).
  *
- *  Spec: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  Spec: D-164
  *  line 520 (P6.6 row). Prior slice: D-164 P6.5 commit `e8ddad90`.
  */
 
@@ -52,6 +52,7 @@ import {
   type ChatForceLayer,
   type ChatTailMessage,
 } from '../index.js';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 // ── Path resolution ─────────────────────────────────────────────────
 
@@ -206,7 +207,7 @@ const REPO_SCAN_SKIP_DIR = new Set([
 const REPO_SCAN_SKIP_FILE_SUFFIX = ['.d.ts', '.d.ts.map', '.js.map'];
 
 const isScannableFile = (filePath: string): boolean => {
-  if (!filePath.endsWith('.ts')) {
+  if (!isTypeScriptSource(filePath)) {
     return false;
   }
   for (const suffix of REPO_SCAN_SKIP_FILE_SUFFIX) {

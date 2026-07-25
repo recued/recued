@@ -21,7 +21,7 @@
  *  do not flow through this entry point. Wiring the dispatcher into
  *  any other channel requires a substrate D-spec change.
  *
- *  Spec: `docs/d-145-spec.md` § B.12.3 + § B.12.5. */
+ *  Spec: D-145 § B.12.3 + § B.12.5. */
 
 import {
   eventSkipReason,

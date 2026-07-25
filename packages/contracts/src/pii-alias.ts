@@ -5,7 +5,7 @@
  * owns alias allocation, ledger keying, suffix composition, restore policy,
  * and audit summary. Publisher burden is one annotation per PII-bearing field.
  *
- * Spec: docs/d-167-spec.md §Field declaration, §Alias vocabulary, §Alias ledger.
+ * Spec: D-167 §Field declaration, §Alias vocabulary, §Alias ledger.
  */
 
 /** 9-kind closed list. Publisher-facing surface. */
@@ -231,7 +231,7 @@ export interface PiiFieldTag {
 }
 
 /**
- * D-167 entity-marker privacy declaration (`docs/d-160-n10-part-pii-pending-design.md`
+ * D-167 entity-marker privacy declaration (D-160
  * §E.1). An **operation-free** privacy tag keyed on a record's inline
  * `__entity` marker: any object that carries `__entity: <entity_id>` has these
  * bare field templates applied — rooted at that object's path — wherever it

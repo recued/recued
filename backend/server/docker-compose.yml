@@ -8,7 +8,7 @@
 
 services:
   recued:
-    image: recued/server:26.7.3
+    image: recued/server:26.7.25
     container_name: recued
     restart: unless-stopped
     # D-105 exit-code contract. `on-failure` respects the supervisor's
@@ -31,6 +31,35 @@ services:
       # Optional: human-readable server name for the heartbeat
       # envelope and the extension pair UI.
       RECUED_SERVER_NAME: "home-server"
+      # ─── Sealing the key file (D-212) ───────────────────────────
+      # The server unwraps its own vault key from a key file in the
+      # data volume at every boot. On a desktop OS that file is
+      # sealed by a platform secret store (keychain / DPAPI /
+      # systemd-creds) whose secret lives OUTSIDE the volume.
+      #
+      # ⚠ In a container none of those rungs qualify — a host
+      # credential key either sits on the ephemeral layer (destroyed
+      # by `--force-recreate`) or inside the data volume (travels
+      # with a copy of it), and both are worse than not sealing. So
+      # a containerised server runs UNSEALED unless you set a
+      # passphrase here: the realm is still encrypted, but a copy of
+      # the whole volume carries the key that opens it.
+      #
+      # Set this BEFORE the first pair. The passphrase VALUE can be
+      # changed later for free (`recued rotate-passphrase` on a
+      # stopped server — same identity, nothing re-pairs), but WHICH
+      # factor seals the key file is recorded on the first boot that
+      # creates it and is permanent for that realm; changing that
+      # means re-creating the server identity with
+      # `recued recover-keyfile` and your 24-word recovery key,
+      # which re-pairs every device. Once set, the passphrase must be
+      # present at EVERY start — the server fails loudly rather than
+      # opening a sealed file without it.
+      #
+      # Prefer a secret manager or an env_file over a literal here;
+      # a passphrase committed beside the volume it protects is not
+      # protecting much.
+      # RECUED_IDENTITY_PASSPHRASE: "choose-a-long-random-passphrase"
       # Uncomment when the webhook port is publicly reachable
       # (Caddy / ngrok / Tailscale / Cloudflare Tunnel in front).
       # RECUED_PUBLIC_REACHABLE: "true"

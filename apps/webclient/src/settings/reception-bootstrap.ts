@@ -47,8 +47,8 @@
  *  — PWA-wide concerns (multiple Settings surfaces share one WS
  *  connection). The bootstrap takes them as inputs.
  *
- *  Spec: docs/d-149-spec.md § A.9; design record
- *  `recued-project/handovers/webclient-ia-treemap.md` §9 + R19 / R19.1. */
+ *  Spec: D-149 § A.9; design record
+ *  internal design notes §9 + R19 / R19.1. */
 
 import {
   PRIMITIVE_STYLES,

@@ -24,7 +24,7 @@
  *  `not-configured` and the step no-ops — this task is wired ahead of the
  *  signing identity, inert until the key is pinned.
  *
- *  Spec: `docs/d-178-spec.md` § Update machinery (Check + Apply + Quiesce). */
+ *  Spec: D-178 § Update machinery (Check + Apply + Quiesce). */
 
 import type {
   HousekeepingCursor,

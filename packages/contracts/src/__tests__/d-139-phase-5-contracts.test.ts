@@ -23,7 +23,7 @@
  *      rejects body-shaped strings (long key_phrases tokens,
  *      over-long rationale).
  *
- *  Spec: docs/d-139-spec.md § A.9.2 + § A.9.5 + § P5 acceptance. */
+ *  Spec: D-139 § A.9.2 + § A.9.5 + § P5 acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -1,0 +1,167 @@
+{
+  "recipe_id": "open-commitments",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Open commitments (D-145 PA10)",
+    "description": "Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["productivity", "commitment", "open-loop", "dashboard", "ai_surface", "reactive", "pack:personal-organizer"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "open_loop_limit": {
+      "label": "Max open-loop entries to surface",
+      "type": "number",
+      "default": 10
+    },
+    "start_hour": {
+      "label": "Window start hour (local TZ)",
+      "type": "number",
+      "default": 8
+    },
+    "end_hour": {
+      "label": "Window end hour (local TZ)",
+      "type": "number",
+      "default": 18
+    }
+  },
+  "requires": [],
+  "auto_run": {
+    "interval_ms": 600000
+  },
+  "trigger_steps": [
+    {
+      "id": "active_window",
+      "op": "core.watch.time",
+      "args": {
+        "weekdays": [1, 2, 3, 4, 5],
+        "start_hour": "{{config.start_hour}}",
+        "end_hour": "{{config.end_hour}}"
+      }
+    }
+  ],
+  "prefetch_steps": [
+    {
+      "id": "open_loops",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "open_loop_pressure",
+        "scope": "contact",
+        "limit": "{{config.open_loop_limit}}"
+      }
+    },
+    {
+      "id": "reliability_bands",
+      "op": "core.data.enrichment.list",
+      "args": {
+        "topic": "commitment_reliability_band",
+        "scope": "contact",
+        "limit": "{{config.open_loop_limit}}"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "open_loop_count",
+      "transform": "count",
+      "input": "{{step.open_loops.entries}}"
+    },
+    {
+      "id": "reliability_count",
+      "transform": "count",
+      "input": "{{step.reliability_bands.entries}}"
+    },
+    {
+      "id": "open_loop_targets",
+      "transform": "pluck",
+      "array": "{{step.open_loops.entries}}",
+      "field": "target_id"
+    },
+    {
+      "id": "open_loop_text",
+      "transform": "join",
+      "array": "{{step.open_loop_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "high_reliability",
+      "transform": "filter",
+      "array": "{{step.reliability_bands.entries}}",
+      "field": "value.band",
+      "operator": "equal",
+      "value": "high"
+    },
+    {
+      "id": "mid_reliability",
+      "transform": "filter",
+      "array": "{{step.reliability_bands.entries}}",
+      "field": "value.band",
+      "operator": "equal",
+      "value": "mid"
+    },
+    {
+      "id": "low_reliability",
+      "transform": "filter",
+      "array": "{{step.reliability_bands.entries}}",
+      "field": "value.band",
+      "operator": "equal",
+      "value": "low"
+    },
+    {
+      "id": "high_reliability_targets",
+      "transform": "pluck",
+      "array": "{{step.high_reliability}}",
+      "field": "target_id"
+    },
+    {
+      "id": "mid_reliability_targets",
+      "transform": "pluck",
+      "array": "{{step.mid_reliability}}",
+      "field": "target_id"
+    },
+    {
+      "id": "low_reliability_targets",
+      "transform": "pluck",
+      "array": "{{step.low_reliability}}",
+      "field": "target_id"
+    },
+    {
+      "id": "high_reliability_text",
+      "transform": "join",
+      "array": "{{step.high_reliability_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "mid_reliability_text",
+      "transform": "join",
+      "array": "{{step.mid_reliability_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "low_reliability_text",
+      "transform": "join",
+      "array": "{{step.low_reliability_targets}}",
+      "separator": ", "
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Open-loop contacts", "value": "{{step.open_loop_count:number}}" },
+        { "label": "Reliability rows scanned", "value": "{{step.reliability_count:number}}" },
+        { "label": "High-reliability follow-ups (chase first)", "value": "{{step.high_reliability_text}}" },
+        { "label": "Mid-reliability follow-ups (standard chase)", "value": "{{step.mid_reliability_text}}" },
+        { "label": "Low-reliability follow-ups (long-tail)", "value": "{{step.low_reliability_text}}" },
+        { "label": "All open-loop targets", "value": "{{step.open_loop_text}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

@@ -2,7 +2,7 @@
  *
  *  Covers: the Box provider is registered + shaped like the other plain OAuth
  *  vendors (OneDrive is the template), uses Box's OAuth 2.0 endpoints, requests
- *  the read-only `root_readonly` scope (metadata-only — bytes never fetched),
+ *  the read-only `root_readonly` scope (metadata sync + lazy byte reads),
  *  and — like OneDrive — carries NO `authorize_params`: Box returns a refresh
  *  token by default (and rotates it single-use), not via an authorize query
  *  param. The registry still passes the registry-level shape check with Box
@@ -45,7 +45,7 @@ describe('D-192 — Box vendor provider', () => {
     expect(BOX_OAUTH_TOKEN_URL).toBe('https://api.box.com/oauth2/token');
   });
 
-  it('requests the read-only root scope (bytes are never fetched)', () => {
+  it('requests the read-only root scope for metadata sync and lazy byte reads', () => {
     expect(box!.oauth.scopes).toEqual(BOX_OAUTH_SCOPES);
     expect([...BOX_OAUTH_SCOPES]).toEqual(['root_readonly']);
     // Read-only — no write scope.

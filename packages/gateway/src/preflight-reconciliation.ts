@@ -45,15 +45,22 @@
  *  implementations live in `backend/server` as the D-157 server-side
  *  slice.
  *
- *  Spec: docs/d-157-spec.md § N.3 / A.2 / I-1 / I-4 / I-5 / I-6 / I-10.
+ *  Spec: D-157 § N.3 / A.2 / I-1 / I-4 / I-5 / I-6 / I-10.
  */
 
-import { RISK_TIERS, renderBatchItemsBlock } from '@recued/contracts';
+import {
+  RISK_TIERS,
+  isOperationSpecHash,
+  renderBatchItemsBlock,
+} from '@recued/contracts';
 import type {
   BatchedApprovalItem,
   Checkpoint,
   OriginUnit,
   OriginUnitKind,
+  AuthorizationProvenance,
+  OperationApproval,
+  PreflightOverrideOffer,
   RiskTier,
 } from '@recued/contracts';
 import type {
@@ -102,6 +109,20 @@ export const ALLOW_SESSION_ASK_OPTION: AskOption = {
   id: 'allow_session',
   label: 'Allow this session',
 };
+
+export const NEVER_ASK_OPERATION_OPTION_ID = 'approve_never_ask_op';
+export const RELAX_OPERATION_TO_ASK_OPTION_ID = 'approve_relax_to_ask';
+
+const overrideAskOption = (offer: PreflightOverrideOffer): AskOption =>
+  offer.kind === 'never_ask'
+    ? {
+        id: NEVER_ASK_OPERATION_OPTION_ID,
+        label: 'Never ask for this op again',
+      }
+    : {
+        id: RELAX_OPERATION_TO_ASK_OPTION_ID,
+        label: 'Relax to ask (grantable)',
+      };
 
 /** D-177 P3 — the option list for an ask whose context carries a
  *  session-grant offer: Approve / Allow this session / Deny ("deny last" —
@@ -171,6 +192,12 @@ export interface PreflightAskContext {
    *  the ask body. Absent → the body falls back to the structured
    *  fields above. */
   reason?: string;
+  /** D-211 — optional standing owner-ruling action for this held op. */
+  owner_override_offer?: PreflightOverrideOffer;
+  /** D-211 — stored approval was below the effective risk floor. */
+  approval_clamped_from?: OperationApproval;
+  /** D-209 §1.7 — durable grant-eligibility provenance; not rendered. */
+  authorization_provenance?: AuthorizationProvenance;
   /** Unix-ms when the notification block durably recorded the affirmative
    * answer. Populated only on answer-time resume (never trusted from the
    * raise-time payload) so host pre-resume effects can retain the actual owner
@@ -460,6 +487,12 @@ export const buildPreflightAsk = (args: {
       ? `\n\nReason: ${context.reason}`
       : '';
 
+  const clampWarning = context.approval_clamped_from !== undefined
+    ? `\n\nWarning: stored approval '${context.approval_clamped_from}' is below `
+      + `the ${context.risk_tier ?? 'operation'} risk floor and was clamped. `
+      + "Review or reset it on the Contract's operation row."
+    : '';
+
   const itemsBlock =
     batch !== undefined ? `\n\n${renderBatchItemsBlock(batch.items)}` : '';
 
@@ -504,7 +537,7 @@ export const buildPreflightAsk = (args: {
   const message: NotificationMessage = {
     title,
     text:
-      `${opening}\n${held}${reasonLine}${itemsBlock}${openBlock}\n\n${question}`,
+      `${opening}\n${held}${reasonLine}${clampWarning}${itemsBlock}${openBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,
@@ -522,6 +555,12 @@ export const buildPreflightAsk = (args: {
       ...(context.tool_slug !== undefined ? { tool_slug: context.tool_slug } : {}),
       ...(context.risk_tier !== undefined ? { risk_tier: context.risk_tier } : {}),
       ...(context.reason !== undefined ? { reason: context.reason } : {}),
+      ...(context.owner_override_offer !== undefined
+        ? { owner_override_offer: context.owner_override_offer }
+        : {}),
+      ...(context.authorization_provenance !== undefined
+        ? { authorization_provenance: context.authorization_provenance }
+        : {}),
       ...(context.session_grant !== undefined
         ? { session_grant: context.session_grant }
         : {}),
@@ -534,12 +573,20 @@ export const buildPreflightAsk = (args: {
         : {}),
     },
   };
+  const options: readonly AskOption[] =
+    context.owner_override_offer === undefined
+      ? context.session_grant !== undefined
+        ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
+        : PREFLIGHT_ASK_OPTIONS
+      : [
+          PREFLIGHT_ASK_OPTIONS[0],
+          ...(context.session_grant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
+          overrideAskOption(context.owner_override_offer),
+          PREFLIGHT_ASK_OPTIONS[1],
+        ];
   return {
     message,
-    options:
-      context.session_grant !== undefined
-        ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
-        : PREFLIGHT_ASK_OPTIONS,
+    options,
     handler,
   };
 };
@@ -587,6 +634,60 @@ export const readSessionGrantPayload = (
   };
 };
 
+/** Narrow persisted D-209 provenance. Corruption drops this copied context;
+ *  grant enforcement still reads the authoritative checkpoint and the current
+ *  admission, so it remains fail-closed. */
+const readAuthorizationProvenance = (
+  value: unknown,
+): AuthorizationProvenance | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (
+    v.pre_lift_approval !== 'never'
+    && v.pre_lift_approval !== 'ask'
+    && v.pre_lift_approval !== 'always'
+  ) return undefined;
+  if (
+    v.lift_reason !== undefined
+    && v.lift_reason !== 'review_send'
+    && v.lift_reason !== 'review_commitment'
+    && v.lift_reason !== 'quality'
+  ) return undefined;
+  return {
+    pre_lift_approval: v.pre_lift_approval,
+    ...(v.lift_reason !== undefined ? { lift_reason: v.lift_reason } : {}),
+  };
+};
+
+/** Re-validate the persisted D-211 affordance before it reaches a standing
+ * policy write. Kind and approval are paired so payload tampering cannot turn
+ * one displayed action into another. */
+export const readPreflightOverrideOffer = (
+  value: unknown,
+): PreflightOverrideOffer | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.ingredient_id !== 'string' || v.ingredient_id.length === 0) {
+    return undefined;
+  }
+  if (typeof v.operation_id !== 'string' || v.operation_id.length === 0) {
+    return undefined;
+  }
+  if (!isOperationSpecHash(v.op_hash)) return undefined;
+  const base = {
+    ingredient_id: v.ingredient_id,
+    operation_id: v.operation_id,
+    op_hash: v.op_hash,
+  };
+  if (v.kind === 'never_ask' && v.approval === 'never') {
+    return { ...base, kind: 'never_ask', approval: 'never' };
+  }
+  if (v.kind === 'relax_to_ask' && v.approval === 'ask') {
+    return { ...base, kind: 'relax_to_ask', approval: 'ask' };
+  }
+  return undefined;
+};
+
 /** Build the durable `on_answer` handler for preflight-approval
  *  answers (A.2 step 4-5). When the user answers — any channel, now or
  *  after a restart — the handler resolves the checkpoint, dispatches
@@ -622,6 +723,7 @@ export const createPreflightAnswerHandler = (deps: {
    *  single-member v1 ask correctly and throws-to-retry on a
    *  multi-member payload — fail closed, never a partial resume). */
   batchApprovals?: PreflightBatchAnswerHooks;
+  upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
 }): AskHandlerFn => {
   return async (payload: Record<string, unknown>, answer: Answer) => {
     // D-177 P5a — batch-registered asks route through the batch flow.
@@ -643,9 +745,35 @@ export const createPreflightAnswerHandler = (deps: {
             + 'fail closed; retried at next boot',
         );
       }
+      // The batch coordinator owns standing-override persistence too. It
+      // applies the row's version guard BEFORE writing, so answering a
+      // superseded ask can never mutate the owner's policy as a side effect.
       const disposition = await deps.batchApprovals.handleAnswer(payload, answer);
       if (disposition === 'handled') return;
       // 'fallback' — continue into the legacy single-checkpoint path.
+    }
+    let effectiveAnswer = answer;
+    let overrideOffer: PreflightOverrideOffer | undefined;
+    const overrideOptionSelected =
+      answer.option === NEVER_ASK_OPERATION_OPTION_ID
+      || answer.option === RELAX_OPERATION_TO_ASK_OPTION_ID;
+    if (overrideOptionSelected) {
+      overrideOffer = readPreflightOverrideOffer(payload.owner_override_offer);
+      const expectedOverrideOption = overrideOffer?.kind === 'never_ask'
+        ? NEVER_ASK_OPERATION_OPTION_ID
+        : overrideOffer?.kind === 'relax_to_ask'
+          ? RELAX_OPERATION_TO_ASK_OPTION_ID
+          : undefined;
+      if (overrideOffer === undefined || answer.option !== expectedOverrideOption) {
+        throw new Error(
+          'gateway.preflight on_answer: standing override option does not match a valid offer',
+        );
+      }
+      if (deps.upsertOverride === undefined) {
+        throw new Error(
+          'gateway.preflight on_answer: standing override option selected but no writer is wired',
+        );
+      }
     }
     const checkpointId = payload.checkpoint_id;
     const runId = payload.run_id;
@@ -676,6 +804,9 @@ export const createPreflightAnswerHandler = (deps: {
           + 'gated_step_id: string } (recipe-bound) or a raw_op_id (raw-op)',
       );
     }
+    const authorizationProvenance = readAuthorizationProvenance(
+      payload.authorization_provenance,
+    );
     const context: PreflightAskContext = {
       ...(isRawOp
         ? { raw_op: { op_id: rawOpId as string } }
@@ -683,6 +814,9 @@ export const createPreflightAnswerHandler = (deps: {
       ...(typeof payload.tool_slug === 'string' ? { tool_slug: payload.tool_slug } : {}),
       ...(typeof payload.risk_tier === 'string' ? { risk_tier: payload.risk_tier } : {}),
       ...(typeof payload.reason === 'string' ? { reason: payload.reason } : {}),
+      ...(authorizationProvenance !== undefined
+        ? { authorization_provenance: authorizationProvenance }
+        : {}),
     };
     const checkpoint = await deps.checkpointStore.get(checkpointId);
     if (checkpoint === null) {
@@ -691,7 +825,14 @@ export const createPreflightAnswerHandler = (deps: {
       // answer arrived. Silent skip: nothing to resume or deny.
       return;
     }
-    if (answer.option === 'approve' || answer.option === 'allow_session') {
+    // Checkpoint existence is the single-ask stale guard: a consumed/deleted
+    // hold cannot mutate standing policy. Persist before resume so the resumed
+    // dispatch observes the ruling selected alongside its approval.
+    if (overrideOffer !== undefined) {
+      await deps.upsertOverride!(overrideOffer);
+      effectiveAnswer = { ...answer, option: 'approve' };
+    }
+    if (effectiveAnswer.option === 'approve' || effectiveAnswer.option === 'allow_session') {
       // D-177 P3 — `allow_session` is approve PLUS a mint instruction: the
       // resume context carries the bounds the ask offered (read back off the
       // persisted payload — the snapshot taken at raise time), and the
@@ -704,12 +845,12 @@ export const createPreflightAnswerHandler = (deps: {
       // plain approve — the human's "go ahead" is honored; the convenience
       // grant is dropped.
       const grant =
-        answer.option === 'allow_session'
+        effectiveAnswer.option === 'allow_session'
           ? readSessionGrantPayload(payload.session_grant)
           : undefined;
       await deps.resumer.resumeRun(checkpoint, {
         ...context,
-        approved_at: answer.answered_at,
+        approved_at: effectiveAnswer.answered_at,
         ...(grant !== undefined ? { session_grant: grant } : {}),
       });
     } else {
@@ -736,6 +877,7 @@ export const registerPreflightHandler = (
     checkpointStore: CheckpointStore;
     resumer: PreflightResumer;
     batchApprovals?: PreflightBatchAnswerHooks;
+    upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
   },
 ): void => {
   notifier.registerAskHandler(

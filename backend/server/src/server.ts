@@ -188,12 +188,19 @@ export interface ServerConfig {
    *  with a sealed sentinel; every subsequent call must supply the
    *  same recovery key. Without it, the rpc returns `not_configured`. */
   recoveryKeyCheck?: import('./recovery-key-store.js').RecoveryKeyCheckStore;
+  /** Encryption handles for the `pair.registerRecoveryKey` WS door, so it
+   *  turns at-rest encryption on exactly as `/auth/pair` does. Forwarded
+   *  straight through to the ws server. */
+  recoveryVaultDeps?: import('./recovery-key-processor.js').RecoveryVaultDeps;
   /** Slice 3b — the KeyManager, for first-boot server-vault enrollment at
    *  `/auth/pair`: turn on real at-rest encryption from the confirmed
    *  recovery key (dual-wrap Master DEK under the keyfile server key +
    *  the recovery key). Absent on db-less / test compositions ⇒
    *  enrollment is skipped (the legacy sentinel-only path). */
   keys?: import('./key-manager.js').KeyManager;
+  /** D-212 slice 3 — the live multiple-ciphers handle. First recovery-key
+   *  enrollment rekeys this exact connection before the realm gate opens. */
+  database?: import('better-sqlite3').Database;
   /** Slice 3b — live keyfile `ServerKeyStore` getter (read at call time;
    *  the signing identity boots lazily). Paired with `keys` to persist
    *  the server vault key during enrollment. */
@@ -788,46 +795,63 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'code is required for the first pair on this server' } });
           return;
         }
+        // Prove the pairing code BEFORE any recovery-key side effect. Every
+        // step below this line is durable and realm-binding — the sentinel,
+        // the vault bundle, the database rekey — so running them ahead of
+        // authentication handed an unauthenticated caller the realm: a bogus
+        // code still bound their recovery key, and a second, code-less
+        // request then paired against it for real. Checked non-consumingly
+        // so a mistyped recovery key rejects without burning the code;
+        // `pair()` below is still the authoritative check-and-consume.
+        //
+        // A code that expires in the window between the two leaves the realm
+        // enrolled but the pair refused. That residual is benign and must not
+        // be "fixed" by consuming earlier: passing this gate already proves
+        // the caller held a valid code, so the key that bound the realm is
+        // theirs, and their retry with a fresh code verifies against it.
+        if (code && !config.pairing.checkCode(code)) {
+          respond(res, { ok: false, status: 401, error: { code: 'invalid_code', message: 'Invalid, expired, or already-used pairing code' } });
+          return;
+        }
         if (recoveryKey) {
           if (!config.recoveryKeyCheck) {
             respond(res, { ok: false, status: 503, error: { code: 'server_not_configured', message: 'Server has no recovery-key check store.' } });
             return;
           }
-          // Slice 3b — first-boot: turn on real at-rest encryption from the
-          // confirmed recovery key BEFORE enrolling the sentinel gate, so a
-          // pairing completes (gate opens) only if encryption actually turned
-          // on. No-op on a re-pair (server already encrypted). A malformed
-          // recovery key throws here → the pair is rejected, nothing enrolled.
-          if (config.keys) {
-            const serverKeyStore = config.getServerKeyStore?.();
-            if (serverKeyStore) {
-              const { enrollServerVaultFromRecoveryKey } = await import('./server-vault-enrollment.js');
-              try {
-                await enrollServerVaultFromRecoveryKey({
-                  keys: config.keys,
-                  keyStore: serverKeyStore,
-                  recoveryKey,
-                });
-              } catch (err) {
-                respond(res, {
-                  ok: false,
-                  status: 400,
-                  error: {
-                    code: 'recovery_key_invalid',
-                    message: err instanceof Error ? err.message : 'recovery key rejected',
-                  },
-                });
-                return;
-              }
-            }
-          }
-          const { processRecoveryKey } = await import('./recovery-key-processor.js');
-          const verify = await processRecoveryKey(config.recoveryKeyCheck, recoveryKey);
+          // Slice 3b — verify against the realm, turn real at-rest encryption
+          // on, then open the sentinel gate LAST, so a pairing completes only
+          // if encryption actually turned on. Shared with the
+          // `pair.registerRecoveryKey` WS twin so the two cannot drift.
+          const { enrollRealmRecoveryKey } = await import('./server-vault-enrollment.js');
+          const verify = await enrollRealmRecoveryKey({
+            recoveryKeyCheck: config.recoveryKeyCheck,
+            recoveryKey,
+            keys: config.keys,
+            keyStore: config.keys ? config.getServerKeyStore?.() : undefined,
+            database: config.database,
+          });
           if (!verify.ok) {
             respond(res, {
               ok: false,
-              status: verify.code === 'mismatch' ? 401 : 400,
-              error: { code: 'recovery_key_invalid', message: verify.message },
+              status: verify.code === 'mismatch'
+                ? 401
+                : verify.code === 'not_configured' || verify.code === 'busy'
+                  ? 503
+                  : verify.code === 'realm_conflict'
+                    ? 409
+                    : 400,
+              error: {
+                code: verify.code === 'not_configured'
+                  ? 'database_encryption_not_configured'
+                  : verify.code === 'busy'
+                    ? 'encryption_enrollment_busy'
+                    // The realm is fine and so is the key — say so, rather than
+                    // letting this fall through to `recovery_key_invalid`.
+                    : verify.code === 'realm_conflict'
+                      ? 'realm_directory_conflict'
+                      : 'recovery_key_invalid',
+                message: verify.message,
+              },
             });
             return;
           }
@@ -1328,6 +1352,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
       : {}),
     ...(config.ddnsDeps ? { ddnsDeps: config.ddnsDeps } : {}),
     recoveryKeyCheck: config.recoveryKeyCheck,
+    ...(config.recoveryVaultDeps ? { recoveryVaultDeps: config.recoveryVaultDeps } : {}),
     ...(config.clientTokens ? { clientTokens: config.clientTokens } : {}),
     pressureDeps: config.pressureDeps,
     lifecycleHandlers: config.lifecycleHandlers,

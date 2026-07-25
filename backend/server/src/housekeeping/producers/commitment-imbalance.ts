@@ -52,7 +52,7 @@
  *  events also cascade per the declaration's
  *  `invalidation_triggers`.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.1 + A.7.3 + A.7.5 + line 285 +
+ *  Spec: D-145 §§ A.7.1 + A.7.3 + A.7.5 + line 285 +
  *        `ENRICHMENT_REGISTRY.commitment_imbalance` +
  *        `packages/contracts/src/enrichment-declarations/commitment-imbalance.ts`. */
 

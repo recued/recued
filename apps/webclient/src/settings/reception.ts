@@ -43,7 +43,7 @@
  *  `reception.emergency_disabled` broadcast DOES carry enough to apply
  *  optimistically — `reduceReceptionEmergencyDisabled` does so.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX) + § A.16.7 (access-log
+ *  Spec: D-149 § A.9 (Settings UX) + § A.16.7 (access-log
  *  truncation) + § A.20.4 (Share Cards) + § A.20.6 (Safety Labels). */
 
 import {
@@ -107,7 +107,7 @@ export const RECEPTION_KIND_COPY: Readonly<
     section_label: 'Scheduling links',
     singular: 'scheduling link',
     description:
-      'Anonymous visitors pick a slot from your free calendar windows. Each booking writes a request your engine turns into a calendar event.',
+      'Anonymous visitors pick a slot from your free calendar windows. Approval turns the request into a booking with its own time and history.',
     create_label: 'New scheduling link',
   },
   intake_form: {

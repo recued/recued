@@ -43,7 +43,6 @@ import {
 import {
   handleFileDelete,
   handleFileEnroll,
-  handleFileReauth,
   handleFileResync,
   handleFileUpdate,
   handleListInstances,
@@ -554,6 +553,16 @@ export const handleCollectionMailSend = async (
     recipe_id?: unknown;
     step_id?: unknown;
   },
+  /** D-210 audit finding 3b — TRUSTED, server-internal send options.
+   *
+   *  ⛔ DELIBERATELY A SEPARATE PARAMETER, NOT A FIELD ON `args`. `args` is
+   *  UNTRUSTED wire input: the `collection.mail.send` rpc, an MCP agent, a
+   *  recipe step. A caller able to set `redact_audit_recipients` there could
+   *  suppress the recipient list on its OWN audit row — an audit-evasion lever,
+   *  which is a worse defect than the leak this closes. Only a server-internal
+   *  seam that KNOWS its recipient is sealed visitor PII passes this, and the
+   *  rpc path never passes it at all. ⇒ [[separate_authorization_axes]] */
+  internal?: { readonly redact_audit_recipients?: boolean },
 ): Promise<{
   source_id: string;
   message_id: string;
@@ -597,6 +606,10 @@ export const handleCollectionMailSend = async (
     attachments: optionalStringArray(args.attachments, 'attachments'),
     recipe_id: optionalString(args.recipe_id, 'recipe_id'),
     step_id: optionalString(args.step_id, 'step_id'),
+    // Read ONLY from the trusted `internal` parameter — never from `args`.
+    ...(internal?.redact_audit_recipients === true
+      ? { redact_audit_recipients: true as const }
+      : {}),
   });
 };
 
@@ -790,7 +803,6 @@ export type CollectionMethods =
   | 'collection.file.update'
   | 'collection.file.delete'
   | 'collection.file.resync'
-  | 'collection.file.reauth'
   | 'collection.listInstances'
   | 'collection.calendar.enrollOAuth'
   | 'collection.calendar.enrollBasic'
@@ -888,7 +900,6 @@ export const makeCollectionHandlers = (
       'collection.file.update',
       'collection.file.delete',
       'collection.file.resync',
-      'collection.file.reauth',
       'collection.listInstances',
       'collection.calendar.enrollOAuth',
       'collection.calendar.enrollBasic',
@@ -949,8 +960,6 @@ export const makeCollectionHandlers = (
         handleFileDelete(requireFileEnroll(deps), args as Parameters<typeof handleFileDelete>[1]),
       'collection.file.resync': async (args) =>
         handleFileResync(requireFileEnroll(deps), args as Parameters<typeof handleFileResync>[1]),
-      'collection.file.reauth': async (args) =>
-        handleFileReauth(requireFileEnroll(deps), args as Parameters<typeof handleFileReauth>[1]),
       'collection.listInstances': async (args) =>
         handleListInstances(requireFileEnroll(deps), args as Parameters<typeof handleListInstances>[1]),
       'collection.calendar.enrollOAuth': async (args) =>

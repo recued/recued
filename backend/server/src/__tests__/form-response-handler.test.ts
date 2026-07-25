@@ -1,12 +1,14 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FORM_RESPONSE_LIFECYCLE_STATES } from '@recued/contracts';
+import { FORM_RESPONSE_LIFECYCLE_STATES, type FormResponse } from '@recued/contracts';
 
 import type { WsClient } from '../ws-server.js';
 import {
   handleFormResponseGet,
+  handleFormResponseExport,
   handleFormResponseSetState,
   handleFormResponseList,
+  handleFormResponseUpdate,
   makeFormResponseHandlers,
   type FormResponseRpcDeps,
 } from '../form-response-handler.js';
@@ -20,13 +22,32 @@ const input = (submission_id: string, offset: number, endpoint_id = 'ep-1') => (
   form_definition_id: offset % 2 === 0 ? 'form-a' : 'form-b',
   definition_snapshot: {
     form_definition_id: offset % 2 === 0 ? 'form-a' : 'form-b',
-    fields: [{ name: 'topic', label: 'What do you need?', type: 'textarea' }],
+    fields: [{ name: 'topic', label: 'What do you need?', type: 'textarea', required: true }],
   },
   values: { topic: `Request ${offset}` },
   visitor: { email: `visitor-${offset}@example.test` },
   submitted_at: BASE_TIME + offset,
   accepted_at: BASE_TIME + 100 + offset,
   metadata: { template_ref: 'foundation:intake/free-form' },
+});
+
+const formResponseForExport = (submission_id: string, accepted_at: number): FormResponse => ({
+  _id: submission_id,
+  _collection: 'form_response',
+  submission_id,
+  endpoint_id: 'ep-bulk',
+  form_definition_id: 'form-a',
+  definition_snapshot: { fields: [] },
+  values: {},
+  visitor: {},
+  submitted_at: accepted_at - 1,
+  accepted_at,
+  updated_at: accepted_at,
+  origin_actor: 'anonymous',
+  origin_surface: 'system',
+  lifecycle_state: 'received',
+  state_changed_at: 0,
+  metadata: {},
 });
 
 const client = (instance_id: string | null): WsClient =>
@@ -64,6 +85,9 @@ describe('form_response owner read RPC', () => {
       visitor: { email: 'visitor-4@example.test' },
       submitted_at: BASE_TIME + 4,
       accepted_at: BASE_TIME + 104,
+      updated_at: BASE_TIME + 104,
+      lifecycle_state: 'received',
+      state_changed_at: 0,
       template_ref: 'foundation:intake/free-form',
     });
     expect(first.responses[0]).not.toHaveProperty('values');
@@ -154,12 +178,14 @@ describe('form_response owner read RPC', () => {
     expect((listed as { responses: unknown[] }).responses).toHaveLength(1);
   });
 
-  it('drops cleanly when unwired and claims list/get/set_state when wired', () => {
+  it('drops cleanly when unwired and claims the complete owner RPC surface when wired', () => {
     expect(makeFormResponseHandlers(undefined)).toBeUndefined();
     expect(makeFormResponseHandlers(deps)?.methods).toEqual([
       'form_response.list',
       'form_response.get',
       'form_response.set_state',
+      'form_response.update',
+      'form_response.export',
     ]);
   });
 
@@ -258,5 +284,139 @@ describe('form_response owner read RPC', () => {
     // An unregistered client must not have moved anything.
     const row = await handleFormResponseGet(deps, { submission_id: 'sub-1' });
     expect(row.response!.lifecycle_state).toBe('received');
+  });
+
+  it('updates only validated working content and uses the server clock', async () => {
+    deps = { ...deps, now: () => BASE_TIME + 999 };
+    const before = (await handleFormResponseGet(deps, { submission_id: 'sub-1' })).response!;
+    const result = await handleFormResponseUpdate(deps, {
+      submission_id: 'sub-1',
+      values: { topic: 'Owner-corrected answer' },
+      visitor: { email: 'corrected@example.test' },
+    });
+
+    expect(result.response).toMatchObject({
+      values: { topic: 'Owner-corrected answer' },
+      visitor: { email: 'corrected@example.test' },
+      updated_at: BASE_TIME + 999,
+      submitted_at: before.submitted_at,
+      accepted_at: before.accepted_at,
+      definition_snapshot: before.definition_snapshot,
+      lifecycle_state: before.lifecycle_state,
+      state_changed_at: before.state_changed_at,
+      origin_actor: 'anonymous',
+      origin_surface: 'system',
+    });
+  });
+
+  it('rejects missing, unknown, wrong-type, and malformed-email working edits', async () => {
+    const attempts = [
+      { values: {}, visitor: {} },
+      { values: { topic: 'ok', forged: 'x' }, visitor: {} },
+      { values: { topic: 42 }, visitor: {} },
+      { values: { topic: 'ok' }, visitor: { email: 'not-an-email' } },
+      { values: { topic: 'ok' }, visitor: { email: 'ok@example.test', role: 'admin' } },
+    ];
+    for (const attempt of attempts) {
+      await expect(handleFormResponseUpdate(deps, {
+        submission_id: 'sub-1',
+        ...attempt,
+      } as never)).rejects.toMatchObject({ code: 'bad_request' });
+    }
+    expect((await handleFormResponseGet(deps, { submission_id: 'sub-1' })).response?.values)
+      .toEqual({ topic: 'Request 1' });
+  });
+
+  it('filters exports, neutralizes CSV formula cells, and returns JSON records', async () => {
+    deps.store.accept({
+      ...input('sub-csv', 20, 'ep-csv'),
+      visitor: { email: '+cmd@example.test' },
+    });
+    deps.store.setLifecycleState('sub-csv', 'accepted', BASE_TIME + 500);
+    deps = { ...deps, now: () => Date.UTC(2026, 6, 21) };
+
+    const csv = await handleFormResponseExport(deps, {
+      format: 'csv',
+      endpoint_id: 'ep-csv',
+      lifecycle_states: ['accepted'],
+    });
+    expect(csv).toMatchObject({
+      filename: 'form-responses-2026-07-21.csv',
+      mime_type: 'text/csv',
+      record_count: 1,
+    });
+    expect(csv.content).toContain("\"'+cmd@example.test\"");
+    expect(csv.content).not.toContain('\"+cmd@example.test\"');
+
+    const json = await handleFormResponseExport(deps, {
+      format: 'json',
+      endpoint_id: 'ep-csv',
+    });
+    expect(json.mime_type).toBe('application/json');
+    expect(JSON.parse(json.content)).toMatchObject([
+      { submission_id: 'sub-csv', lifecycle_state: 'accepted' },
+    ]);
+  });
+
+  it('hands back a resume cursor above the 10,000-record ceiling instead of refusing', async () => {
+    // ⛔ THIS REPLACES A REFUSAL, deliberately. The ceiling used to throw
+    // `result exceeds 10000 records; narrow the filters` — naming filters the
+    // responses tab does not expose, so an owner with 10,001 responses could
+    // never export anything at all. The ceiling bounds ONE rpc payload; it must
+    // not bound the owner's ability to get their own data out.
+    let call = 0;
+    const list = vi.fn(() => {
+      call += 1;
+      const count = call <= 20 ? 500 : 1;
+      return Array.from({ length: count }, (_, index) => formResponseForExport(
+        `bulk-${call}-${index}`,
+        BASE_TIME + 20_000 - call * 500 - index,
+      ));
+    });
+    const bulkDeps = { store: { list } } as unknown as FormResponseRpcDeps;
+    const first = await handleFormResponseExport(bulkDeps, { format: 'json' });
+    // PRESERVED from the refusal test: the ceiling is reached by a paged walk
+    // (20 pages of 500), and a 21st single-row probe decides whether more
+    // remains — not a load-everything-then-slice.
+    expect(list).toHaveBeenCalledTimes(21);
+    expect(first.record_count).toBe(10_000);
+    expect(first.next_cursor).toEqual({
+      accepted_at: expect.any(Number),
+      submission_id: expect.any(String),
+    });
+    // The chunk itself is COMPLETE and well-formed — never a truncated file
+    // presented as the whole export.
+    expect(JSON.parse(first.content)).toHaveLength(10_000);
+  });
+
+  it('omits the resume cursor — and the repeated CSV header — on a final chunk', async () => {
+    const exact = vi.fn(() => []);
+    const emptyDeps = { store: { list: exact } } as unknown as FormResponseRpcDeps;
+    const last = await handleFormResponseExport(emptyDeps, { format: 'json' });
+    expect(Object.hasOwn(last, 'next_cursor')).toBe(false);
+
+    // A continuation chunk (`before` supplied) must NOT re-emit the header, so
+    // a caller concatenating chunks gets one well-formed CSV.
+    const headed = await handleFormResponseExport(deps, {
+      format: 'csv',
+      endpoint_id: 'ep-csv',
+    });
+    expect(headed.content).toContain('submission_id');
+    const continued = await handleFormResponseExport(deps, {
+      format: 'csv',
+      endpoint_id: 'ep-csv',
+      before: { accepted_at: BASE_TIME + 90_000, submission_id: 'zzz' },
+    });
+    expect(continued.content).not.toContain('submission_id,');
+  });
+
+  it('requires registration before update and export', async () => {
+    const slice = makeFormResponseHandlers(deps)!;
+    await expect(slice.handlers['form_response.update']({
+      submission_id: 'sub-1', values: { topic: 'x' }, visitor: {},
+    }, client(null))).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(slice.handlers['form_response.export'](
+      { format: 'json' }, client(null),
+    )).rejects.toMatchObject({ code: 'unauthorized' });
   });
 });

@@ -67,7 +67,7 @@
  *  same feature, same vendor — already reads Stripe through this exact helper;
  *  this module mirrors its shape deliberately.
  *
- *  Spec: `docs/d-196-spec.md` §6.2 (the event table) + §6.3 (the reconciler). */
+ *  Spec: D-196 §6.2 (the event table) + §6.3 (the reconciler). */
 
 import type {
   IngredientManifest,

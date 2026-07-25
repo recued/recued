@@ -144,6 +144,8 @@ const RESTORE_SPLASH_STYLES = `
   line-height: 1.6;
 }
 .restore-splash-manifest li { margin: 0; }
+/* The count is a floor — say so quietly rather than not at all. */
+.restore-splash-caveat { color: var(--fg-muted); }
 .restore-splash-realm {
   margin: 0 0 8px;
   font-size: 12px;
@@ -421,11 +423,25 @@ const renderPreview = (s: RestoreOnboardingState, armed: boolean): string => {
 const renderManifest = (s: RestoreOnboardingState): string => {
   const m = s.manifest;
   if (m === null) return '';
-  const tableCount = Object.keys(m.tables).length;
+  // ⚠ `tables` holds only the tables that COULD be counted, so using its
+  // length alone renders "across 3 tables (1 could not be counted)" for a
+  // four-table archive — a number that reads as the archive's shape while
+  // being short by exactly the tables the caveat is about.
+  const uncountedTables = m.uncounted_tables ?? [];
+  const tableCount = Object.keys(m.tables).length + uncountedTables.length;
   const tableWord = tableCount === 1 ? 'table' : 'tables';
+  // ⚠ `record_count` is a FLOOR when the server reported tables it could not
+  // count, and this list is the last thing read before committing a restore.
+  // An absent field means the server does not report it — the wording then
+  // stays as it was rather than claiming a completeness it cannot know.
+  const uncounted = uncountedTables;
+  const recordLine = uncounted.length > 0
+    ? `at least ${e(m.record_count.toLocaleString())} records across ${tableCount} ${tableWord}`
+      + ` <span class="restore-splash-caveat">(${uncounted.length} could not be counted)</span>`
+    : `${e(m.record_count.toLocaleString())} records across ${tableCount} ${tableWord}`;
   return `
     <ul class="restore-splash-manifest" data-restore-manifest>
-      <li>${e(m.record_count.toLocaleString())} records across ${tableCount} ${tableWord}</li>
+      <li${uncounted.length > 0 ? ' data-restore-uncounted' : ''}>${recordLine}</li>
       <li>Backed up ${e(m.exported_at)}</li>
       <li>Includes files: ${m.includes_blobs ? 'yes' : 'no'}</li>
       <li>Includes identity passport: ${m.includes_passport ? 'yes' : 'no'}</li>

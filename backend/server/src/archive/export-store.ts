@@ -31,7 +31,7 @@ export const EXPORT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Fixed headroom added to the export-size estimate so the pre-flight
  *  leaves slack for AEAD per-record overhead, the manifest, WAL churn on
- *  the live db during `db.backup()`, and general filesystem slop. 64 MB. */
+ *  the live db during its consistent snapshot, and general filesystem slop. 64 MB. */
 export const EXPORT_HEADROOM_BYTES = 64 * 1024 * 1024;
 
 /** Suffix every export archive carries. */
@@ -241,11 +241,11 @@ export const pruneExpiredExports = (
 };
 
 /** Conservative peak-disk estimate for an export. Peak footprint is the
- *  temp `db.backup()` copy (~one db) PLUS the assembled archive (~one db +
+ *  temp consistent db copy (~one db) PLUS the assembled archive (~one db +
  *  the bundled blobs + per-record AEAD overhead), so we budget
  *  `2 × dbBytes + blobBytes + headroom`. `blobBytes` is the PLAINTEXT size of
  *  the REFERENCED blobs the export actually bundles (the caller sums
- *  `BlobStore.plaintextSizeOf` across the posture-split sources) — NOT the
+ *  `BlobStore.plaintextSizeOf` across the root-split sources) — NOT the
  *  whole CAS tree, so orphaned/stale objects (already counted against free
  *  space) don't inflate the estimate into a false `insufficient_storage`. The
  *  caller adds the transient decrypt-scratch peak separately (see

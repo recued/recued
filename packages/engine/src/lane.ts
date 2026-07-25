@@ -4,7 +4,7 @@
 // `invokeGoverned`: it classifies the call by ingredient kind, acquires a lane
 // slot from `ctx.laneGovernor` (or the no-op governor when none is wired), runs
 // the call **inline, awaited**, and releases the slot on settle (success OR
-// failure OR crash — the slot-leak correctness-must). See `docs/d-181-spec.md` §5.
+// failure OR crash — the slot-leak correctness-must). See D-181 §5.
 //
 // Scope (slice 2): this covers the dominant heavy case — `service`-kind
 // ingredients (docling/ffmpeg/whisper) on the `local-heavy` lane, dispatched via

@@ -21,6 +21,13 @@ import type {
   FormResponse,
   FormResponseGetRpcRequest,
   FormResponseGetRpcResponse,
+  FormResponseSetStateRpcRequest,
+  FormResponseSetStateRpcResponse,
+  FormResponseUpdateRpcRequest,
+  FormResponseUpdateRpcResponse,
+  FormResponseExportRpcRequest,
+  FormResponseExportRpcResponse,
+  FormResponseLifecycleState,
   FormResponseListCursor,
   FormResponseListItem,
   FormResponseListQuery,
@@ -58,6 +65,7 @@ import type {
   UploadFinalizeRpcResponse,
   UploadProbeRpcRequest,
   UploadProbeRpcResponse,
+  BookingLifecycleState,
   WorkEntity,
   WorkEntityDeleteRpcRequest,
   WorkEntityDeleteRpcResponse,
@@ -77,6 +85,8 @@ import {
   CONTACT_SOURCE_ID_MANUAL,
   FILE_VENDOR_DECLARATIONS,
   BOOKING_DEFAULT_LIFECYCLE_STATE,
+  BOOKING_LIFECYCLE_STATES,
+  FORM_RESPONSE_LIFECYCLE_STATES,
   WORK_ENTITY_KINDS,
   applySearchTransition,
   buildSourceDropdownOptions,
@@ -117,6 +127,8 @@ import {
   readFormValues,
   remainingMillis,
   renderEntityDetailPanel,
+  renderBookingDetail,
+  renderWorkEntityDialog,
   renderTimelineSection,
   renderMergeReviewDialog,
   renderWorkEntityPage,
@@ -129,7 +141,20 @@ import {
 } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
-import { serializeShellRoute } from '../shell/route.js';
+import {
+  serializeDataEntityVerificationAddress,
+  serializeChatAnswerAddress,
+  serializeChatPlanAddress,
+  serializeLogsRunAddress,
+  serializeShellRoute,
+  serializeSourceRecordAddress,
+  serializeSourceRecordVerificationAddress,
+  type ChatAnswerAddress,
+  type DataEntityVerificationTab,
+  type DataVerificationRelationship,
+  type LogsRunAddress,
+  type SourceRecordDataTab,
+} from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
@@ -167,6 +192,7 @@ import {
   COLLECTION_SELECT_INSTANCE_ACTION,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_DETAIL_CLOSE_ACTION,
+  COLLECTION_DETAIL_HEADING_ATTR,
   COLLECTION_INSTANCE_SLUG_ATTR,
   COLLECTION_RECORD_ID_ATTR,
   type CollectionExplorerDetailState,
@@ -190,6 +216,14 @@ import {
 export const DATA_ROUTE_STYLES_MARKER = 'data-recued-data-route-styles';
 export const DATA_ROUTE_HOST_ATTR = 'data-recued-data-route';
 export const DATA_ROUTE_HEADING_ATTR = 'data-recued-data-route-heading';
+export const DATA_ROUTE_CHAT_RETURN_ATTR =
+  'data-recued-data-route-chat-return';
+export const DATA_ROUTE_LOGS_RETURN_ATTR =
+  'data-recued-data-route-logs-return';
+export const DATA_ROUTE_VERIFICATION_ACTION_ATTR =
+  'data-recued-data-route-verification-action';
+export const DATA_ROUTE_VERIFICATION_NEXT_ATTR =
+  'data-recued-data-route-verification-next';
 export const DATA_ROUTE_TAB_ATTR = 'data-recued-data-route-tab';
 export const DATA_ROUTE_CONTACT_ROW_ATTR = 'data-recued-data-contact-row';
 export const DATA_ROUTE_FORM_RESPONSE_ROW_ATTR =
@@ -209,6 +243,12 @@ export const DATA_ROUTE_FORM_RESPONSE_RUN_RECIPE_ATTR =
   'data-recued-data-form-response-run-recipe';
 export const DATA_ROUTE_FORM_RESPONSE_LOAD_MORE_ATTR =
   'data-recued-data-form-response-load-more';
+export const DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR =
+  'data-recued-data-form-response-values';
+export const DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR =
+  'data-recued-data-form-response-email';
+export const DATA_ROUTE_FORM_RESPONSE_STATE_ATTR =
+  'data-recued-data-form-response-state';
 /** R18 load-more — the "Showing N of M" + Load more footer under the contact
  *  list (present only while `loaded < total`). */
 export const DATA_ROUTE_CONTACT_LOAD_MORE_ATTR = 'data-recued-data-contact-load-more';
@@ -317,21 +357,10 @@ export const DATA_MIRROR_TABS: readonly MirrorDataKind[] = [
   'files',
 ];
 
-/** ⏭ **D-210 §4c — this tab is SCHEDULED FOR REMOVAL, as one atomic change.**
- *  `form_response`'s surface now also lives at `#reception/records` (commit `d1e0a4f31`) on the
- *  owner's placement rule: Records is IMMUTABLE, `#data/*` is MUTABLE. Reception is the intended
- *  home; this is the duplicate.
- *
- *  ⛔ **Do NOT just empty this list.** Measured 2026-07-18: emptying it makes the tab unreachable
- *  (it drops out of `DATA_TABS`, so `isDataTab` stops resolving the deep link, and out of
- *  `DATA_RECEIVED_CLUSTER`, so no nav anchor renders) — and that is exactly what leaves the tree
- *  RED, because it strands **264 refs across 25 regions of this file** plus **12 tests** in
- *  `d-174-p5-data-route.test.ts` (8 pure form-response, ~4 needing expectation updates).
- *  Tab + code + tests have to land together or HEAD breaks for every peer.
- *
- *  ⚠ `openFormResponse` is on the route's PUBLIC handle and forces `activeTab='form_response'`;
- *  no production caller exists (tests only), so it goes with the sweep. `humanizeFieldName` is
- *  used only by this block — safe to delete with it. */
+/** D-210 final two-record model: Reception Records is the immutable, redacted
+ *  arrival ledger; Data → Form responses is the mutable owner working copy.
+ *  Keep this tab addressable because editing, lifecycle changes, exports, and
+ *  recipe continuation all belong on the working-copy surface. */
 export const DATA_RECEIVED_TABS: readonly DataReceivedTabId[] = [
   'form_response',
 ];
@@ -359,16 +388,8 @@ const DATA_TABS: readonly DataTabId[] = [
  *  which stays the `isReceivedTab` render-dispatch basis (form_response only);
  *  webhook renders via the explorer, so it must NOT make `isReceivedTab` true.
  *
- *  🔑 **When `form_response` leaves (D-210 §4c), `webhook` STAYS — that is a ruling, not an
- *  oversight.** The IMMUTABLE/MUTABLE placement rule is scoped to the reception lineage; the
- *  axis that decides Reception-vs-Data is WHO IS ON THE OTHER END, and mutability only orders
- *  things after that. Reception is a HUMAN VISITOR through a door you published; a webhook is a
- *  VENDOR SOURCE — a machine POSTing. Owner (2026-07-18): *"webhook is its own door in code, it
- *  just doesn't earn its place yet, so we temporarily put it in data where it is more relevant."*
- *
- *  ⏭ Open, deliberately not acted on: once `form_response` goes, `webhook` is this cluster's only
- *  member — and under the vendor-source framing it reads as MIRROR-family (beside mail / crm /
- *  files) rather than "Received". Re-clustering is a conscious call, not a tidy-up. */
+ *  Webhook stays here as a vendor-source working surface; unlike Reception's
+ *  human-visitor ledger, it does not belong in immutable Reception Records. */
 const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'webhook'];
 
 export type WorkEntitySourceListCaller = () => Promise<{
@@ -388,6 +409,13 @@ export type DataWorkEntityUpsertCaller = (
 export type DataWorkEntityDeleteCaller = (
   args: WorkEntityDeleteRpcRequest,
 ) => Promise<WorkEntityDeleteRpcResponse>;
+
+/** Owner-only mint of a short-lived, single-use manage link for one Reception
+ * booking. The host supplies an absolute URL because the WS RPC has no request
+ * Host from which to derive the paired server's origin. */
+export type DataManageRescheduleLinkCaller = (
+  input: { booking_id: string },
+) => Promise<{ url: string; expires_at: number }>;
 
 export type DataContactListCaller = (args: {
   name_contains?: string;
@@ -501,6 +529,15 @@ export type DataFormResponseListCaller = (
 export type DataFormResponseGetCaller = (
   args: FormResponseGetRpcRequest,
 ) => Promise<FormResponseGetRpcResponse>;
+export type DataFormResponseUpdateCaller = (
+  args: FormResponseUpdateRpcRequest,
+) => Promise<FormResponseUpdateRpcResponse>;
+export type DataFormResponseSetStateCaller = (
+  args: FormResponseSetStateRpcRequest,
+) => Promise<FormResponseSetStateRpcResponse>;
+export type DataFormResponseExportCaller = (
+  args: FormResponseExportRpcRequest,
+) => Promise<FormResponseExportRpcResponse>;
 export type DataRecipeListCaller = () => Promise<{
   recipes: ReadonlyArray<ServerRecipeListEntry>;
 }>;
@@ -590,6 +627,7 @@ export interface BootstrapDataRouteOptions {
   workEntityGetCaller?: DataWorkEntityGetCaller;
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
   workEntityDeleteCaller?: DataWorkEntityDeleteCaller;
+  manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
   contactGetCaller?: DataContactGetCaller;
   /** D-205 item 3 — the per-source value view on the contact detail page. Absent →
@@ -622,6 +660,12 @@ export interface BootstrapDataRouteOptions {
   contactImportFileApplyCaller?: DataContactImportFileApplyCaller;
   formResponseListCaller?: DataFormResponseListCaller;
   formResponseGetCaller?: DataFormResponseGetCaller;
+  formResponseUpdateCaller?: DataFormResponseUpdateCaller;
+  formResponseSetStateCaller?: DataFormResponseSetStateCaller;
+  formResponseExportCaller?: DataFormResponseExportCaller;
+  /** Browser download injection; tests and non-browser hosts can capture the
+   * bounded export without relying on Blob/ObjectURL globals. */
+  formResponseDownload?: (file: FormResponseExportRpcResponse) => void;
   /** Owner-only installed recipe discovery + manual execution for explicitly
    *  continuing one already accepted response. Both must be present for the
    *  detail affordance to render. */
@@ -674,7 +718,21 @@ export interface BootstrapDataRouteOptions {
    *  mirror tabs (work-entity tabs hydrate the tab only — their detail is a
    *  modal edit, not a timeline view yet). */
   initialTab?: string;
+  /** Exact collection instance for an explorer record deep link. Without this
+   * locator a multi-account Data tab cannot safely choose an instance. */
+  initialCollectionSlug?: string;
   initialEntityId?: string;
+  /** Originating assistant answer for citation drill-down continuity. */
+  chatReturn?: ChatAnswerAddress;
+  /** Exact run outcome that asked the owner to verify this item. The nested
+   * Chat return, when present, remains inside the Logs address. */
+  logsReturn?: LogsRunAddress;
+  /** Truthful relationship projected from persisted execution provenance.
+   * Used only to explain what Data can and cannot establish. */
+  verificationRelationship?: DataVerificationRelationship;
+  /** The inbound source record has no account slug. Resolve its record id
+   * across connected instances and only auto-open an unambiguous match. */
+  verifyInitialSourceRecord?: boolean;
   /** R18 — debounce window (ms) for the `warehouse`/`memory` live-update
    *  re-fetch; coalesces a write burst into one refresh. Default 400ms;
    *  `<= 0` refreshes immediately (tests). */
@@ -836,6 +894,8 @@ export interface DataRoute {
   discoverFormResponseAutomations(): Promise<void>;
   reviewFormResponseAutomation(recipe_id: string): void;
   confirmFormResponseAutomationRun(): Promise<void>;
+  saveFormResponse(): Promise<void>;
+  exportFormResponses(format: 'json' | 'csv'): Promise<void>;
   openTimelineDrilldown(kind: MirrorDataKind, entity_id: string): Promise<void>;
   /** D-205 #2 — open `#data/contact/<email>`: the projected record + its
    *  per-field provenance + the activity timeline. */
@@ -887,6 +947,104 @@ const DATA_ROUTE_STYLES = `
   margin: 0;
   font-size: 20px;
   font-weight: 650;
+}
+[${DATA_ROUTE_CHAT_RETURN_ATTR}],
+[${DATA_ROUTE_LOGS_RETURN_ATTR}],
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] {
+  min-height: 44px;
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[${DATA_ROUTE_CHAT_RETURN_ATTR}] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 16px;
+  align-items: center;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-copy,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-label,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-label {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-title,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-title {
+  color: var(--fg);
+  font-size: 13px;
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-detail,
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-boundary,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-detail {
+  margin: 0;
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-boundary {
+  color: var(--fg);
+}
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-actions,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+[${DATA_ROUTE_CHAT_RETURN_ATTR}] a,
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] a,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a {
+  box-sizing: border-box;
+  min-height: 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-weight: 680;
+  text-decoration: none;
+}
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a[data-kind="primary"] {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a[data-kind="primary"]:hover,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a[data-kind="primary"]:focus-visible {
+  background: var(--accent-hover, var(--accent));
+}
+[${DATA_ROUTE_CHAT_RETURN_ATTR}] a:hover,
+[${DATA_ROUTE_CHAT_RETURN_ATTR}] a:focus-visible,
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] a:hover,
+[${DATA_ROUTE_LOGS_RETURN_ATTR}] a:focus-visible,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a:hover,
+[${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] a:focus-visible {
+  background: var(--accent-weak);
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-inline-link {
   color: var(--accent);
@@ -1569,8 +1727,19 @@ const DATA_ROUTE_STYLES = `
   [${DATA_ROUTE_HOST_ATTR}] .data-input {
     width: 100%;
   }
+  [${DATA_ROUTE_LOGS_RETURN_ATTR}] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-actions {
+    justify-content: flex-start;
+  }
 }
 @media (max-width: 560px) {
+  [${DATA_ROUTE_LOGS_RETURN_ATTR}] .data-verification-actions a,
+  [${DATA_ROUTE_VERIFICATION_NEXT_ATTR}] .data-verification-actions a {
+    width: 100%;
+    justify-content: center;
+  }
   [${DATA_ROUTE_HOST_ATTR}] .data-contact-list li {
     flex-direction: column;
     align-items: stretch;
@@ -1588,6 +1757,37 @@ const DATA_ROUTE_STYLES = `
   }
 }
 `;
+
+const dataVerificationGuidance = (
+  relationship: DataVerificationRelationship | undefined,
+): { readonly title: string; readonly detail: string } => {
+  switch (relationship) {
+    case 'derived':
+      return {
+        title: 'Confirm the created or changed record',
+        detail:
+          'This record was written by the run. Check that the values shown here match what you expected.',
+      };
+    case 'involved':
+      return {
+        title: 'Check the item involved in the change',
+        detail:
+          'This item was involved in a side-effecting step. Compare the state shown here with what you intended; the recorded link alone does not prove it changed.',
+      };
+    case 'action':
+      return {
+        title: 'Review the record used by the action',
+        detail:
+          'This record was used by an external action. It can explain the action, but it cannot confirm that the destination changed.',
+      };
+    default:
+      return {
+        title: 'Review this recorded item',
+        detail:
+          'Check what Data currently shows before deciding whether the action needs another step.',
+      };
+  }
+};
 
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
@@ -1628,6 +1828,21 @@ const SINGLE_COLLECTION_TABS: readonly DataSingleCollectionTabId[] = [
 ];
 const isSingleCollectionTab = (tab: DataTabId): tab is DataSingleCollectionTabId =>
   (SINGLE_COLLECTION_TABS as readonly string[]).includes(tab);
+
+const RUN_ADDRESSABLE_DATA_TABS: readonly DataEntityVerificationTab[] = [
+  'contact',
+  'form_response',
+  'crm',
+  ...WORK_ENTITY_KINDS,
+  'annotation',
+  'link',
+  'shared',
+];
+
+const isRunAddressableDataTab = (
+  tab: DataTabId,
+): tab is DataEntityVerificationTab =>
+  (RUN_ADDRESSABLE_DATA_TABS as readonly string[]).includes(tab);
 
 /** D-198 Phase 2 — project a `CanonicalRecord`-shaped annotation / link into the
  *  `CollectionRecord` the explorer engine renders (mirrors calendar's snapshot
@@ -3435,6 +3650,9 @@ const renderFormResponseDetail = (
   response: FormResponse,
   automationState: FormResponseAutomationPickerState,
   canRunAutomation: boolean,
+  canEdit: boolean,
+  saving: boolean,
+  saveError: string | null,
 ): string => {
   const fields = formResponseFields(response);
   return `
@@ -3443,7 +3661,7 @@ const renderFormResponseDetail = (
         ${DATA_ROUTE_ACTION_ATTR}="close-form-response">← Back to form responses</button>
       <div class="data-response-header">
         <h2>${e(formResponseVisitorLabel(response))}</h2>
-        <span class="data-pill">Accepted</span>
+        <span class="data-pill">${e(response.lifecycle_state.replace('_', ' '))}</span>
       </div>
       <dl class="data-response-meta">
         <div><dt>Form</dt><dd>${e(formResponseSourceLabel(response))}</dd></div>
@@ -3451,6 +3669,7 @@ const renderFormResponseDetail = (
         <div><dt>Endpoint</dt><dd>${e(response.endpoint_id)}</dd></div>
         <div><dt>Submitted</dt><dd>${renderFormResponseTime(response.submitted_at)}</dd></div>
         <div><dt>Accepted</dt><dd>${renderFormResponseTime(response.accepted_at)}</dd></div>
+        <div><dt>Working record updated</dt><dd>${renderFormResponseTime(response.updated_at)}</dd></div>
         <div><dt>Reference</dt><dd>${e(response.submission_id)}</dd></div>
       </dl>
       <div class="data-response-automation">
@@ -3486,6 +3705,29 @@ const renderFormResponseDetail = (
               </div>
             `).join('')}
           </dl>`}
+      ${canEdit ? `
+        <section class="data-response-editor">
+          <h3 class="data-section-title">Edit working record</h3>
+          <p class="data-row-subtle">This changes the owner-facing destination. The sealed Reception submission remains the original evidence.</p>
+          <label>Email
+            <input type="email" class="data-input" ${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}
+              value="${e(response.visitor.email ?? '')}" />
+          </label>
+          <label>Lifecycle
+            <select class="data-input" ${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}>
+              ${FORM_RESPONSE_LIFECYCLE_STATES.map((state) =>
+                `<option value="${state}"${state === response.lifecycle_state ? ' selected' : ''}>${e(state.replace('_', ' '))}</option>`
+              ).join('')}
+            </select>
+          </label>
+          <label>Answers (JSON)
+            <textarea class="data-input" rows="12" ${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}>${e(JSON.stringify(response.values, null, 2))}</textarea>
+          </label>
+          <button type="button" class="data-button data-button--primary"
+            ${DATA_ROUTE_ACTION_ATTR}="save-form-response"${saving ? ' disabled' : ''}>${saving ? 'Saving…' : 'Save changes'}</button>
+          ${saveError === null ? '' : `<p role="alert">${e(saveError)}</p>`}
+        </section>
+      ` : ''}
     </section>
   `;
 };
@@ -3500,6 +3742,11 @@ const renderFormResponseSurface = (
   loadingDetail: boolean,
   automationState: FormResponseAutomationPickerState,
   canRunAutomation: boolean,
+  canEdit: boolean,
+  saving: boolean,
+  saveError: string | null,
+  canExport: boolean,
+  exporting: boolean,
 ): string => {
   if (detailId !== null) {
     if (loadingDetail) {
@@ -3518,12 +3765,27 @@ const renderFormResponseSurface = (
             ? 'This form response was not found.'
             : 'Could not load this form response. Return to the list and try again.'}</p>
         </section>`
-      : renderFormResponseDetail(detail, automationState, canRunAutomation);
+      : renderFormResponseDetail(
+          detail,
+          automationState,
+          canRunAutomation,
+          canEdit,
+          saving,
+          saveError,
+        );
   }
 
   return `
     <section>
-      <h2 class="data-section-title">Form responses <span class="data-pill">read-only</span></h2>
+      <div class="data-contact-toolbar">
+        <h2 class="data-section-title">Form responses</h2>
+        ${canExport ? `
+          <button type="button" class="data-button" data-format="json"
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exporting ? ' disabled' : ''}>Export JSON</button>
+          <button type="button" class="data-button" data-format="csv"
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exporting ? ' disabled' : ''}>Export CSV</button>
+        ` : ''}
+      </div>
       ${responses.length === 0
         ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No accepted form responses yet. New submissions stay in Reception Inbox until you approve them.</p>`
         : `<ul class="data-form-response-list" role="list">
@@ -3535,7 +3797,7 @@ const renderFormResponseSurface = (
                   <span class="data-row-title">${e(formResponseVisitorLabel(response))}</span>
                   <span class="data-row-meta">${e(formResponseSourceLabel(response))}</span>
                   <span class="data-row-subtle">Accepted ${e(formatFormResponseTime(response.accepted_at))}</span>
-                  <span class="data-pill">View</span>
+                  <span class="data-pill">${e(response.lifecycle_state.replace('_', ' '))}</span>
                 </button>
               </li>
             `).join('')}
@@ -3686,10 +3948,11 @@ const renderMirrorDrilldown = (
  *  metadata source from where the mirror is viewed — no bare deep link needed.
  *  Registry-driven: a third file vendor surfaces here with no edit to this route.
  *
- *  This is the `connection.api` META-mirror (bytes NEVER fetched) — deliberately
- *  distinct from BOTH the D-172 upload widget rendered above it (file BYTES into
- *  the CAS) and the accounts-lane byte-ingest S3; the label says "metadata only"
- *  so the two are not conflated. */
+ *  This is the `connection.api` metadata mirror (bytes resolve lazily for an
+ *  explicit read and are never eagerly copied) — deliberately distinct from
+ *  BOTH the D-172 upload widget rendered above it (file BYTES into the CAS) and
+ *  the accounts-lane mutable S3 adapter; the label says "metadata only" so the
+ *  two are not conflated. */
 const renderFileSourceCta = (): string => {
   const links = FILE_VENDOR_DECLARATIONS
     .map(
@@ -3754,6 +4017,14 @@ const renderWorkEntitySurface = (
   entities: readonly WorkEntity[],
   total: number,
   loadingMore: boolean,
+  bookingLifecycleFilter: BookingLifecycleState | 'all',
+  bookingDetailId: string | null,
+  bookingDetail: WorkEntityGetRpcResponse | null,
+  bookingDetailError: string | null,
+  loadingBookingDetail: boolean,
+  canMintManageLink: boolean,
+  manageLinkBusy: boolean,
+  manageLinkNotice: { kind: 'ok' | 'error'; text: string } | null,
 ): string => {
   const options = sourceOptionsForKind(sources, state.kind);
   const activeSourceId = state.dialog?.source_id ?? state.selected_source_id;
@@ -3763,7 +4034,54 @@ const renderWorkEntitySurface = (
         (source) => source.id === activeSourceId,
       );
   const definition = formDefinitionForKind(state.kind, activeSource);
-  const visible = filterAndSortEntities(state.kind, entities, state.search_query);
+  if (state.kind === 'booking' && bookingDetailId !== null) {
+    const dialogHtml = state.dialog === null
+      ? ''
+      : renderWorkEntityDialog({
+          kind: state.kind,
+          definition,
+          state: state.dialog,
+          sources: options,
+          ref_picker: true,
+        });
+    if (loadingBookingDetail) {
+      return `<section class="work-entity-booking-detail" aria-busy="true">
+        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+        <p>Loading booking…</p>
+      </section>${dialogHtml}`;
+    }
+    if (bookingDetailError !== null) {
+      return `<section class="work-entity-booking-detail">
+        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+        <p role="alert">${e(bookingDetailError)}</p>
+      </section>${dialogHtml}`;
+    }
+    const entity = bookingDetail?.entity;
+    if (entity !== null && entity !== undefined && entity._kind === 'booking') {
+      return `${renderBookingDetail({
+        booking: entity,
+        ...(bookingDetail?.booking_history !== undefined
+          ? { history: bookingDetail.booking_history }
+          : {}),
+        can_mint_manage_link: canMintManageLink,
+        manage_link_busy: manageLinkBusy,
+        ...(manageLinkNotice !== null ? { manage_link_notice: manageLinkNotice } : {}),
+      })}${dialogHtml}`;
+    }
+    return `<section class="work-entity-booking-detail">
+      <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+      <p role="alert">This booking no longer exists.</p>
+    </section>${dialogHtml}`;
+  }
+  // Booking search is already applied by SQL before pagination. Do not apply
+  // the generic client title/body predicate a second time: the server also
+  // searches booking id and opaque customer id, and a second narrower filter
+  // would hide valid matches it just returned.
+  const visible = filterAndSortEntities(
+    state.kind,
+    entities,
+    state.kind === 'booking' ? '' : state.search_query,
+  );
   const rows = joinRowsWithSources(visible, options);
   const canCreate =
     resolveCreateDialogSourceId(
@@ -3793,6 +4111,9 @@ const renderWorkEntitySurface = (
     // `data.contact` ref fields render as live name→id pickers; the route
     // wires them after each render via `mountWorkEntityRefPickers`.
     ref_picker: true,
+    ...(state.kind === 'booking'
+      ? { booking_lifecycle_filter: bookingLifecycleFilter }
+      : {}),
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
   });
 };
@@ -3885,6 +4206,33 @@ export const bootstrapDataRoute = (
     opts.initialTab !== undefined && isDataTab(opts.initialTab)
       ? opts.initialTab
       : 'contact';
+  // A run-verification handoff belongs to the exact item that was addressed.
+  // Retire it as soon as the owner navigates away so an in-memory route cannot
+  // accidentally carry "reviewed" choices onto a different tab or item after
+  // the canonical URL has already dropped the return context.
+  let activeLogsReturn = opts.logsReturn;
+  let activeVerificationRelationship = opts.verificationRelationship;
+  const runVerificationTargetTab = activeTab;
+  const runVerificationTargetEntityId = opts.initialEntityId ?? null;
+  let pendingInitialVerificationFocus =
+    activeLogsReturn !== undefined
+    && runVerificationTargetEntityId !== null;
+  const retireRunVerification = (): void => {
+    activeLogsReturn = undefined;
+    activeVerificationRelationship = undefined;
+    pendingInitialVerificationFocus = false;
+  };
+  const retireRunVerificationForDifferentItem = (
+    tab: DataTabId,
+    entityId: string,
+  ): void => {
+    if (
+      tab !== runVerificationTargetTab
+      || entityId !== runVerificationTargetEntityId
+    ) {
+      retireRunVerification();
+    }
+  };
   let workEntityState = initialWorkEntityPageState({
     kind: isWorkEntityTab(activeTab) ? activeTab : 'task',
   });
@@ -3894,6 +4242,19 @@ export const bootstrapDataRoute = (
   // Bumped on each work-entity edit-dialog open; a fetch that resolves after a
   // newer open (or a tab switch) drops rather than installing a stale dialog.
   let workEntityDialogOpenSeq = 0;
+  let bookingLifecycleFilter: BookingLifecycleState | 'all' = 'all';
+  let bookingDetailId: string | null = null;
+  let bookingDetail: WorkEntityGetRpcResponse | null = null;
+  let bookingDetailError: string | null = null;
+  let loadingBookingDetail = false;
+  let loadingWorkEntityDetail = false;
+  let bookingDetailSeq = 0;
+  let bookingManageLinkBusy = false;
+  let bookingManageLinkNotice: { kind: 'ok' | 'error'; text: string } | null = null;
+  const resetBookingManageLinkState = (): void => {
+    bookingManageLinkBusy = false;
+    bookingManageLinkNotice = null;
+  };
   // R18 load-more (work entities) — mirrors the contact pagination below.
   // `total` is the server count for the active kind + Source filters (NOT the
   // client-side search, which filters the loaded rows in `filterAndSortEntities`).
@@ -3913,6 +4274,9 @@ export const bootstrapDataRoute = (
   let formResponseDetail: FormResponse | null = null;
   let formResponseDetailError: string | null = null;
   let loadingFormResponseDetail = false;
+  let savingFormResponse = false;
+  let formResponseSaveError: string | null = null;
+  let exportingFormResponses = false;
   let formResponseAutomationState: FormResponseAutomationPickerState = {
     status: 'idle',
   };
@@ -3960,6 +4324,7 @@ export const bootstrapDataRoute = (
   let downloadingFile = false;
   let errors: DataLoadErrors = {};
   let loadGeneration = 0;
+  let navigationGeneration = 0;
   let pendingLoadPromise: Promise<void> = Promise.resolve();
 
   // ── work-entity `data.contact` ref-pickers ─────────────────────────
@@ -4059,6 +4424,22 @@ export const bootstrapDataRoute = (
   let explorerLoading = false;
   let explorerError: string | undefined;
   let explorerSeq = 0;
+  let initialExplorerSlug =
+    typeof opts.initialCollectionSlug === 'string'
+    && opts.initialCollectionSlug.trim().length > 0
+      ? opts.initialCollectionSlug
+      : null;
+  const pendingExplorerVerificationTab: SourceRecordDataTab | null =
+    opts.verifyInitialSourceRecord === true
+    && (activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files')
+      ? activeTab
+      : null;
+  let pendingExplorerVerificationRecordId =
+    pendingExplorerVerificationTab !== null
+    && typeof opts.initialEntityId === 'string'
+    && opts.initialEntityId.length > 0
+      ? opts.initialEntityId
+      : null;
 
   const resetExplorerState = (): void => {
     explorerCollection = null;
@@ -4171,18 +4552,9 @@ export const bootstrapDataRoute = (
     form: { value: string; submitting: boolean; error: string | null } | null,
   ): string => {
     if (form === null) {
-      // ⛔ D-210 A.2 (slice 3b) — the on-the-go "Copy reschedule link" affordance
-      // stood here and was REMOVED, not re-gated. It hands a VISITOR a page to
-      // move their own reservation, and `reception.manage.mint` now names a
-      // BOOKING and refuses anything without a `reception_record_id`. On a
-      // personal calendar event — the only record this control still serves —
-      // its one possible outcome is a 404, so keeping it behind a condition
-      // would have shipped a button that always errors.
-      //
-      // The rpc, its handler and the recipes are all intact and reachable; only
-      // this entry point is gone, because a booking has no detail surface to put
-      // it on (the explorer serves mail/calendar/files/webhook, and the
-      // work-entity page is a list + a dialog). See the 3b handover.
+      // Visitor manage links belong to Reception-origin booking detail. This
+      // calendar control edits a personal calendar event and intentionally has
+      // no `reception.manage.mint` action.
       return `<div class="data-reschedule-actions">
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-open">Reschedule</button>
       </div>`;
@@ -4284,6 +4656,89 @@ export const bootstrapDataRoute = (
     </section>`;
   };
 
+  const renderRunVerificationHandoff = (
+    returnToRun: LogsRunAddress,
+  ): string => {
+    const guidance = dataVerificationGuidance(
+      activeVerificationRelationship,
+    );
+    const returnToChat = returnToRun.returnToChat;
+    return `<aside ${DATA_ROUTE_LOGS_RETURN_ATTR} role="note" data-relationship="${e(activeVerificationRelationship ?? 'unknown')}">
+      <div class="data-verification-copy">
+        <span class="data-verification-label">Run verification</span>
+        <strong class="data-verification-title">${e(guidance.title)}</strong>
+        <p class="data-verification-detail">${e(guidance.detail)}</p>
+        <p class="data-verification-boundary">${
+          returnToChat === undefined
+            ? 'Review what Data shows below. Nothing can retry from this page.'
+            : 'Review what Data shows below. Safe next steps appear after the item; nothing retries from this page.'
+        }</p>
+      </div>
+      <div class="data-verification-actions" aria-label="Run navigation">
+        <a ${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="run" href="${e(serializeLogsRunAddress(returnToRun))}">Back to run outcome</a>
+      </div>
+    </aside>`;
+  };
+
+  const renderRunVerificationNextSteps = (
+    returnToRun: LogsRunAddress,
+    itemLoading: boolean,
+    itemReady: boolean,
+  ): string => {
+    const returnToChat = returnToRun.returnToChat;
+    if (returnToChat === undefined) return '';
+    const chatHref = (
+      result: 'reviewed' | 'needs_help',
+    ): string => serializeChatPlanAddress({
+      sessionId: returnToChat.sessionId,
+      planId: returnToChat.planId,
+      ...(returnToChat.messageId !== undefined
+        ? { messageId: returnToChat.messageId }
+        : {}),
+      dataVerification: {
+        runId: returnToRun.runId,
+        result,
+        ...(activeVerificationRelationship !== undefined
+          ? { relationship: activeVerificationRelationship }
+          : {}),
+      },
+    });
+    if (itemLoading) {
+      return `<section ${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="loading" aria-live="polite" aria-busy="true">
+        <div class="data-verification-copy">
+          <span class="data-verification-label">Next step</span>
+          <strong class="data-verification-title">Finish reviewing the item</strong>
+          <p class="data-verification-detail">Loading the linked item before next steps become available…</p>
+        </div>
+      </section>`;
+    }
+    if (!itemReady) {
+      return `<section ${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="unresolved" aria-labelledby="data-verification-next-title">
+        <div class="data-verification-copy">
+          <span class="data-verification-label">Next step</span>
+          <strong class="data-verification-title" id="data-verification-next-title">Open the linked item first</strong>
+          <p class="data-verification-detail">The exact item is not available to review yet. Choose a source or review the message above, or return to Chat for help. Nothing is marked reviewed.</p>
+        </div>
+        <div class="data-verification-actions" aria-label="Verification next steps">
+          <a ${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="needs-help" href="${e(chatHref('needs_help'))}">I need help finding this item</a>
+        </div>
+      </section>`;
+    }
+    const reviewedHref = chatHref('reviewed');
+    const needsHelpHref = chatHref('needs_help');
+    return `<section ${DATA_ROUTE_VERIFICATION_NEXT_ATTR} data-state="ready" aria-labelledby="data-verification-next-title">
+      <div class="data-verification-copy">
+        <span class="data-verification-label">Next step</span>
+        <strong class="data-verification-title" id="data-verification-next-title">What did Data show?</strong>
+        <p class="data-verification-detail">Your choice only returns to the exact Chat action. It does not mark the run successful or retry it.</p>
+      </div>
+      <div class="data-verification-actions" aria-label="Verification next steps">
+        <a ${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed" data-kind="primary" href="${e(reviewedHref)}">I reviewed it — continue in Chat</a>
+        <a ${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="needs-help" href="${e(needsHelpHref)}">I need help interpreting this</a>
+      </div>
+    </section>`;
+  };
+
   const render = (): void => {
     if (disposed) return;
     const body = activeTab === 'contact'
@@ -4316,6 +4771,12 @@ export const bootstrapDataRoute = (
             formResponseAutomationState,
             opts.recipeListCaller !== undefined
               && opts.recipeExecuteCaller !== undefined,
+            opts.formResponseUpdateCaller !== undefined
+              && opts.formResponseSetStateCaller !== undefined,
+            savingFormResponse,
+            formResponseSaveError,
+            opts.formResponseExportCaller !== undefined,
+            exportingFormResponses,
           )
       : isWorkEntityTab(activeTab)
         ? renderWorkEntitySurface(
@@ -4325,6 +4786,14 @@ export const bootstrapDataRoute = (
             workEntities,
             workEntityTotal,
             loadingMoreWorkEntities,
+            bookingLifecycleFilter,
+            bookingDetailId,
+            bookingDetail,
+            bookingDetailError,
+            loadingBookingDetail,
+            opts.manageRescheduleLinkCaller !== undefined,
+            bookingManageLinkBusy,
+            bookingManageLinkNotice,
           )
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
           ? renderExplorerTab(activeTab)
@@ -4366,21 +4835,117 @@ export const bootstrapDataRoute = (
         })
       : body;
 
+    const verificationItemReady = (
+      activeLogsReturn !== undefined
+      && activeLens === 'data'
+      && activeTab === runVerificationTargetTab
+      && runVerificationTargetEntityId !== null
+    )
+      ? activeTab === 'contact'
+        ? (
+            contactDetail?.email === runVerificationTargetEntityId
+            && contactDetail.contact !== null
+          )
+        : isReceivedTab(activeTab)
+          ? (
+              formResponseDetailId === runVerificationTargetEntityId
+              && formResponseDetail !== null
+            )
+          : activeTab === 'booking'
+            ? (
+                bookingDetailId === runVerificationTargetEntityId
+                && bookingDetail?.entity !== null
+                && bookingDetail?.entity !== undefined
+              )
+            : isWorkEntityTab(activeTab)
+              ? (
+                  workEntityState.dialog?.mode === 'edit'
+                  && workEntityState.dialog.entity_id
+                    === runVerificationTargetEntityId
+                )
+              : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
+                ? (
+                    explorerDetail?.record_id === runVerificationTargetEntityId
+                    && (
+                      isSingleCollectionTab(activeTab)
+                        ? explorerRecords.some(
+                            (record) =>
+                              record.record_id
+                                === runVerificationTargetEntityId,
+                          )
+                        : explorerDetail.record !== null
+                          && explorerDetail.record !== undefined
+                    )
+                  )
+                : activeTab === 'crm'
+                  ? timeline?.response !== null
+                    && timeline?.response !== undefined
+                  : false
+      : false;
+    const routeReturn = activeLogsReturn !== undefined
+      ? renderRunVerificationHandoff(activeLogsReturn)
+      : opts.chatReturn !== undefined
+        ? `<aside ${DATA_ROUTE_CHAT_RETURN_ATTR} role="note">
+            <span>You came here from a cited Chat answer.</span>
+            <a href="${e(serializeChatAnswerAddress(opts.chatReturn))}">Back to cited answer</a>
+          </aside>`
+        : '';
+    const verificationItemLoading =
+      loading
+      || loadingContactDetail
+      || loadingFormResponseDetail
+      || loadingTimeline
+      || loadingBookingDetail
+      || loadingWorkEntityDetail
+      || explorerLoading
+      || explorerDetail?.loading === true;
+    const verificationNext =
+      activeLogsReturn?.returnToChat === undefined
+        ? ''
+        : renderRunVerificationNextSteps(
+            activeLogsReturn,
+            verificationItemLoading,
+            verificationItemReady,
+          );
     routeRoot.innerHTML = `
       <header class="data-header">
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
       </header>
+      ${routeReturn}
       ${renderLensSwitcher(activeLens, DATA_ROUTE_ACTION_ATTR)}
       ${activeLens === 'memory' ? '' : renderTabs(activeTab)}
       ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
       ${lensBody}
+      ${verificationNext}
     `;
     // Attach live pickers to any `data.contact` ref shells the work-entity
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
     // Attach (or rewire) the Files-tab upload widget (no-op elsewhere).
     mountUploadWidget();
+  };
+
+  /** An exact run → Data address should land keyboard and screen-reader users
+   * on the record they came to verify, after every initial async paint (including
+   * the optional calendar timeline) has settled. */
+  const focusInitialVerificationTarget = (): void => {
+    if (
+      !pendingInitialVerificationFocus
+      || activeLogsReturn === undefined
+      || activeTab !== runVerificationTargetTab
+      || explorerDetail?.record_id !== runVerificationTargetEntityId
+      || explorerDetail.record === null
+      || explorerDetail.record === undefined
+    ) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selectors: string) => HTMLElement | null;
+    };
+    const heading =
+      queryable.querySelector?.(`[${COLLECTION_DETAIL_HEADING_ATTR}]`) ?? null;
+    if (heading === null) return;
+    pendingInitialVerificationFocus = false;
+    heading.focus?.({ preventScroll: true });
   };
 
   // The `generation` guard drops a stale response: a slow refresh (e.g. a
@@ -4411,8 +4976,9 @@ export const bootstrapDataRoute = (
   };
 
   // Shared request shape for the initial/replace fetch (offset 0) + the
-  // load-more append. The active kind + Source filter compose the server query;
-  // the client-side search is applied later in `filterAndSortEntities`.
+  // load-more append. Booking search/filter are server-side so matches beyond
+  // the first page are not stranded; older work-entity kinds retain their
+  // client-side search behavior.
   const workEntityListRequest = (offset: number): WorkEntityListRpcRequest => {
     const request: WorkEntityListRpcRequest = {
       kind: workEntityState.kind,
@@ -4421,6 +4987,13 @@ export const bootstrapDataRoute = (
     if (offset > 0) request.offset = offset;
     if (workEntityState.selected_source_id !== null) {
       request.source_id = workEntityState.selected_source_id;
+    }
+    if (workEntityState.kind === 'booking') {
+      const search = workEntityState.search_query.trim();
+      if (search.length > 0) request.search = search;
+      if (bookingLifecycleFilter !== 'all') {
+        request.booking_lifecycle_states = [bookingLifecycleFilter];
+      }
     }
     return request;
   };
@@ -4718,6 +5291,74 @@ export const bootstrapDataRoute = (
     }
   };
 
+  type ExplorerVerificationResolution =
+    | { readonly kind: 'match'; readonly slug: string }
+    | { readonly kind: 'choose'; readonly message: string }
+    | { readonly kind: 'missing'; readonly message: string };
+
+  /** Resolve a provenance record id across account instances without guessing.
+   * `collection.get` is the only exact read available for a source record. A
+   * partial probe failure or duplicate match deliberately falls back to the
+   * visible source picker instead of choosing a potentially wrong account. */
+  const resolveExplorerVerification = async (
+    platform: CollectionPlatform,
+    instances: ReadonlyArray<CollectionInstanceRow>,
+    recordId: string,
+  ): Promise<ExplorerVerificationResolution> => {
+    const caller = opts.collectionGetCaller;
+    if (caller === undefined) {
+      return {
+        kind: 'choose',
+        message:
+          'Choose the connected source that may contain this item to verify it.',
+      };
+    }
+    const probes = await Promise.all(instances.map(async (instance) => {
+      try {
+        const { record } = await caller({
+          platform,
+          slug: instance.slug,
+          record_id: recordId,
+        });
+        return {
+          slug: instance.slug,
+          matched: record !== null,
+          failed: false,
+        };
+      } catch {
+        return {
+          slug: instance.slug,
+          matched: false,
+          failed: true,
+        };
+      }
+    }));
+    const matches = probes.filter((probe) => probe.matched);
+    const hasFailure = probes.some((probe) => probe.failed);
+    if (matches.length === 1 && !hasFailure) {
+      return { kind: 'match', slug: matches[0]!.slug };
+    }
+    if (matches.length > 1) {
+      return {
+        kind: 'choose',
+        message:
+          'This record id appears in more than one connected source. Choose the source you want to verify.',
+      };
+    }
+    if (hasFailure) {
+      return {
+        kind: 'choose',
+        message:
+          'Recued could not check every connected source. Choose a source to verify this item.',
+      };
+    }
+    return {
+      kind: 'missing',
+      message:
+        'This affected item is not currently in connected Data. It may have been deleted or not synced yet.',
+    };
+  };
+
   /** Load an explorer tab: list its instances, auto-select the sole one (or wait
    *  for a pick), then fetch its records. Called from `refreshActive`; the outer
    *  generation guard there paints the result. */
@@ -4725,6 +5366,9 @@ export const bootstrapDataRoute = (
     if (isSingleCollectionTab(tab)) return loadSingleCollection(tab);
     const platform = EXPLORER_TAB_PLATFORM[tab];
     const seq = ++explorerSeq;
+    const requestedSlug = initialExplorerSlug;
+    initialExplorerSlug = null;
+    const previouslySelectedSlug = explorerSelectedSlug;
     // The display schema is keyed on the canonical collection name = the
     // CollectionPlatform (`file`), NOT the tab id (`files`). Using the tab id
     // would miss the schema (→ record_id titles). mail/calendar coincide, files
@@ -4748,9 +5392,43 @@ export const bootstrapDataRoute = (
       const { instances } = await caller();
       if (disposed || seq !== explorerSeq) return;
       explorerInstances = instances.filter((i) => i.platform === platform);
-      explorerSelectedSlug =
-        explorerInstances.length === 1 ? explorerInstances[0]!.slug : null;
+      const preferredSlug = requestedSlug ?? previouslySelectedSlug;
+      const verificationRecordId =
+        activeTab === pendingExplorerVerificationTab
+          ? pendingExplorerVerificationRecordId
+          : null;
+      if (
+        preferredSlug === null
+        && verificationRecordId !== null
+        && explorerInstances.length > 1
+      ) {
+        const resolution = await resolveExplorerVerification(
+          platform,
+          explorerInstances,
+          verificationRecordId,
+        );
+        if (disposed || seq !== explorerSeq) return;
+        explorerSelectedSlug =
+          resolution.kind === 'match' ? resolution.slug : null;
+        if (resolution.kind !== 'match') {
+          explorerError = resolution.message;
+        }
+      } else {
+        explorerSelectedSlug =
+          preferredSlug !== null
+          && explorerInstances.some((instance) => instance.slug === preferredSlug)
+            ? preferredSlug
+            : requestedSlug !== null
+              ? null
+              : explorerInstances.length === 1
+                ? explorerInstances[0]!.slug
+                : null;
+      }
       explorerRecords = [];
+      if (requestedSlug !== null && explorerSelectedSlug === null) {
+        explorerError =
+          'The connected source for this cited record is no longer available.';
+      }
       if (explorerSelectedSlug !== null) {
         await fetchExplorerRecords(platform, explorerSelectedSlug, seq);
       }
@@ -4778,11 +5456,19 @@ export const bootstrapDataRoute = (
     await fetchExplorerRecords(platform, slug, seq);
     if (disposed || seq !== explorerSeq) return;
     explorerLoading = false;
+    if (
+      activeTab === pendingExplorerVerificationTab
+      && pendingExplorerVerificationRecordId !== null
+    ) {
+      await openExplorerRecord(pendingExplorerVerificationRecordId);
+      return;
+    }
     render();
   };
 
   /** Open one record's detail (lazy `collection.get`). */
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    retireRunVerificationForDifferentItem(activeTab, record_id);
     if (isSingleCollectionTab(activeTab)) {
       // The single-collection list already holds full records — no `get` rpc.
       // Store ONLY the id; `renderExplorerTab` resolves it against the CURRENT
@@ -4815,6 +5501,17 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== explorerSeq) return;
       explorerDetail = { record_id, loading: false, record };
       loadedRecord = record;
+      // The verification handoff has found its exact item. From here on,
+      // switching accounts is ordinary browsing rather than repeatedly forcing
+      // this record id onto every source. A null result stays pending so the
+      // owner can try another source after an ambiguous/partial resolution.
+      if (
+        record !== null
+        && activeTab === pendingExplorerVerificationTab
+        && record_id === pendingExplorerVerificationRecordId
+      ) {
+        pendingExplorerVerificationRecordId = null;
+      }
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
       explorerDetail = { record_id, loading: false, error: humanizeRpcError(err) };
@@ -4846,6 +5543,7 @@ export const bootstrapDataRoute = (
   };
 
   const closeExplorerDetail = (): void => {
+    retireRunVerification();
     explorerDetail = null;
     explorerTimeline = null; // D-210 step 3 — drop the closed record's timeline
     rescheduleForm = null; // D-210 R-4 — drop the reschedule form on close
@@ -4947,6 +5645,9 @@ export const bootstrapDataRoute = (
     if (isMirrorTab(activeTab) && timelineEntityId.length > 0) {
       return timelineEntityId;
     }
+    if (activeTab === 'booking' && bookingDetailId !== null) {
+      return bookingDetailId;
+    }
     // Work-entity detail IS the edit dialog — the edited entity is the
     // addressable id, so an open edit dialog keeps `#data/<kind>/<id>` in the
     // URL (a refresh / shared link re-opens it, symmetric with the timeline
@@ -4961,9 +5662,65 @@ export const bootstrapDataRoute = (
     if (history?.replaceState === undefined) return;
     // D-198 Slice 1b — the Memory lens addresses as `#data/memory` (no entity
     // segment); the Data lens keeps `#data/<tab>/<entity>`.
-    const hash = activeLens === 'memory'
-      ? serializeShellRoute('data', 'memory')
-      : serializeShellRoute('data', activeTab, currentDeepLinkEntity());
+    const exactSourceRecordTab: SourceRecordDataTab | null =
+      activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files'
+        ? activeTab
+        : null;
+    const deepLinkEntity = currentDeepLinkEntity();
+    const hash =
+      activeLens === 'memory'
+        ? serializeShellRoute('data', 'memory')
+        : exactSourceRecordTab !== null
+          && explorerSelectedSlug !== null
+          && explorerDetail !== null
+          ? serializeSourceRecordAddress({
+              tab: exactSourceRecordTab,
+              collectionSlug: explorerSelectedSlug,
+              recordId: explorerDetail.record_id,
+              ...(activeLogsReturn !== undefined
+                ? {
+                    returnToRun: activeLogsReturn,
+                    ...(activeVerificationRelationship !== undefined
+                      ? {
+                          verificationRelationship:
+                            activeVerificationRelationship,
+                        }
+                      : {}),
+                  }
+                : opts.chatReturn !== undefined
+                  ? { returnToChat: opts.chatReturn }
+                  : {}),
+            })
+          : activeLogsReturn !== undefined
+            && pendingExplorerVerificationTab !== null
+            && activeTab === pendingExplorerVerificationTab
+            && pendingExplorerVerificationRecordId !== null
+            ? serializeSourceRecordVerificationAddress({
+                tab: pendingExplorerVerificationTab,
+                recordId: pendingExplorerVerificationRecordId,
+                returnToRun: activeLogsReturn,
+                ...(activeVerificationRelationship !== undefined
+                  ? {
+                      verificationRelationship:
+                        activeVerificationRelationship,
+                    }
+                  : {}),
+              })
+          : activeLogsReturn !== undefined
+            && deepLinkEntity !== undefined
+            && isRunAddressableDataTab(activeTab)
+            ? serializeDataEntityVerificationAddress({
+                tab: activeTab,
+                entityId: deepLinkEntity,
+                returnToRun: activeLogsReturn,
+                ...(activeVerificationRelationship !== undefined
+                  ? {
+                      verificationRelationship:
+                        activeVerificationRelationship,
+                    }
+                  : {}),
+              })
+            : serializeShellRoute('data', activeTab, deepLinkEntity);
     try {
       history.replaceState(null, '', hash);
     } catch {
@@ -4973,6 +5730,9 @@ export const bootstrapDataRoute = (
 
   const selectTab = async (tab: DataTabId): Promise<void> => {
     if (activeTab === tab) return;
+    navigationGeneration += 1;
+    retireRunVerification();
+    loadingWorkEntityDetail = false;
     activeTab = tab;
     contactDialog = null;
     resetFormResponseAutomation();
@@ -4981,6 +5741,12 @@ export const bootstrapDataRoute = (
     formResponseDetail = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = false;
+    bookingDetailSeq += 1;
+    bookingDetailId = null;
+    bookingDetail = null;
+    bookingDetailError = null;
+    loadingBookingDetail = false;
+    resetBookingManageLinkState();
     // An entity_id from one mirror kind doesn't apply to another (the
     // timeline display is kind-gated anyway) — start each tab fresh.
     timelineEntityId = '';
@@ -4999,6 +5765,9 @@ export const bootstrapDataRoute = (
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
     if (activeLens === lens) return;
+    navigationGeneration += 1;
+    retireRunVerification();
+    loadingWorkEntityDetail = false;
     if (lens === 'memory') closeFormResponseRunModal();
     activeLens = lens;
     syncDataHash();
@@ -5342,6 +6111,8 @@ export const bootstrapDataRoute = (
   };
 
   const openCreateWorkEntityDialog = (): void => {
+    retireRunVerification();
+    loadingWorkEntityDetail = false;
     const sourceId = resolveCreateDialogSourceId(
       workEntityState.kind,
       workEntityState.selected_source_id,
@@ -5365,7 +6136,18 @@ export const bootstrapDataRoute = (
     kind: WorkEntityKind,
     id: string,
   ): Promise<void> => {
+    retireRunVerificationForDifferentItem(kind, id);
     const seq = ++workEntityDialogOpenSeq;
+    loadingWorkEntityDetail = activeLogsReturn !== undefined;
+    if (loadingWorkEntityDetail) render();
+    if (kind !== 'booking') {
+      bookingDetailSeq += 1;
+      bookingDetailId = null;
+      bookingDetail = null;
+      bookingDetailError = null;
+      loadingBookingDetail = false;
+      resetBookingManageLinkState();
+    }
     if (activeTab !== kind) {
       activeTab = kind;
       workEntityState = selectKindTransition(workEntityState, kind);
@@ -5378,6 +6160,7 @@ export const bootstrapDataRoute = (
         entity = response.entity;
       } catch (err) {
         if (disposed || seq !== workEntityDialogOpenSeq) return;
+        loadingWorkEntityDetail = false;
         errors = { ...errors, work_entities: errMessage(err) };
         render();
         return;
@@ -5387,6 +6170,7 @@ export const bootstrapDataRoute = (
     // in flight → don't install this now-stale dialog / URL.
     if (disposed || seq !== workEntityDialogOpenSeq || activeTab !== kind) return;
     if (entity === null) {
+      loadingWorkEntityDetail = false;
       errors = { ...errors, work_entities: `No ${kind} was returned for ${id}.` };
       render();
       return;
@@ -5406,8 +6190,149 @@ export const bootstrapDataRoute = (
         ...extensionValues,
       });
     }
+    loadingWorkEntityDetail = false;
     syncDataHash(); // the edit dialog's entity is now the addressable id
     render();
+  };
+
+  const openBookingDetail = async (id: string): Promise<void> => {
+    retireRunVerificationForDifferentItem('booking', id);
+    const seq = ++bookingDetailSeq;
+    if (activeTab !== 'booking') {
+      activeTab = 'booking';
+      workEntityState = selectKindTransition(workEntityState, 'booking');
+    }
+    workEntityState = closeDialogTransition(workEntityState);
+    bookingDetailId = id;
+    bookingDetail = null;
+    bookingDetailError = null;
+    loadingBookingDetail = true;
+    resetBookingManageLinkState();
+    syncDataHash();
+    render();
+    try {
+      const response = opts.workEntityGetCaller !== undefined
+        ? await opts.workEntityGetCaller({ kind: 'booking', id })
+        : {
+            entity:
+              workEntities.find((entity) => entity._kind === 'booking' && entity.id === id)
+              ?? null,
+          };
+      if (
+        disposed
+        || seq !== bookingDetailSeq
+        || activeTab !== 'booking'
+        || bookingDetailId !== id
+      ) return;
+      bookingDetail = response;
+      bookingDetailError = null;
+    } catch (err) {
+      if (
+        disposed
+        || seq !== bookingDetailSeq
+        || activeTab !== 'booking'
+        || bookingDetailId !== id
+      ) return;
+      bookingDetail = null;
+      bookingDetailError = errMessage(err);
+    } finally {
+      if (
+        !disposed
+        && seq === bookingDetailSeq
+        && activeTab === 'booking'
+        && bookingDetailId === id
+      ) {
+        loadingBookingDetail = false;
+        syncDataHash();
+        render();
+      }
+    }
+  };
+
+  const closeBookingDetail = (): void => {
+    retireRunVerification();
+    bookingDetailSeq += 1;
+    bookingDetailId = null;
+    bookingDetail = null;
+    bookingDetailError = null;
+    loadingBookingDetail = false;
+    resetBookingManageLinkState();
+    workEntityState = closeDialogTransition(workEntityState);
+    syncDataHash();
+    render();
+  };
+
+  /** Mint and copy a visitor manage link for the open Reception-origin booking.
+   * A manual booking has no sealed Reception reservation and therefore cannot
+   * mint. Sequence + identity guards drop a completion after navigation. */
+  const copyBookingManageLink = async (): Promise<void> => {
+    const caller = opts.manageRescheduleLinkCaller;
+    if (caller === undefined || bookingManageLinkBusy) return;
+    const entity = bookingDetail?.entity;
+    if (
+      entity === null
+      || entity === undefined
+      || entity._kind !== 'booking'
+      || entity.id !== bookingDetailId
+      || typeof entity.reception_record_id !== 'string'
+      || entity.reception_record_id.length === 0
+    ) {
+      bookingManageLinkNotice = {
+        kind: 'error',
+        text: 'This booking cannot produce a visitor reschedule link.',
+      };
+      render();
+      return;
+    }
+
+    const seq = bookingDetailSeq;
+    const bookingId = entity.id;
+    bookingManageLinkBusy = true;
+    bookingManageLinkNotice = null;
+    render();
+    try {
+      const { url } = await caller({ booking_id: bookingId });
+      if (
+        disposed
+        || seq !== bookingDetailSeq
+        || activeTab !== 'booking'
+        || bookingDetailId !== bookingId
+      ) return;
+      const clipboard = doc.defaultView?.navigator?.clipboard;
+      let copied = false;
+      if (typeof clipboard?.writeText === 'function') {
+        try {
+          await clipboard.writeText(url);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      if (
+        disposed
+        || seq !== bookingDetailSeq
+        || activeTab !== 'booking'
+        || bookingDetailId !== bookingId
+      ) return;
+      bookingManageLinkBusy = false;
+      bookingManageLinkNotice = copied
+        ? {
+            kind: 'ok',
+            text: 'Reschedule link copied — it is single-use and expires soon.',
+          }
+        : { kind: 'ok', text: `Reschedule link: ${url}` };
+      render();
+    } catch (err) {
+      if (
+        disposed
+        || seq !== bookingDetailSeq
+        || activeTab !== 'booking'
+        || bookingDetailId !== bookingId
+      ) return;
+      bookingManageLinkBusy = false;
+      bookingManageLinkNotice = { kind: 'error', text: errMessage(err) };
+      render();
+    }
   };
 
   const setWorkEntityDialogValues = (
@@ -5508,6 +6433,9 @@ export const bootstrapDataRoute = (
       syncDataHash(); // dialog closed → drop the entity id from the URL
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
+      if (!disposed && request.kind === 'booking' && bookingDetailId !== null) {
+        await openBookingDetail(bookingDetailId);
+      }
     } catch (err) {
       if (disposed) return;
       workEntityState = setDialogSubmittingTransition(workEntityState, false);
@@ -5537,6 +6465,15 @@ export const bootstrapDataRoute = (
         && workEntityState.dialog.entity_id === id
       ) {
         workEntityState = closeDialogTransition(workEntityState);
+        syncDataHash();
+      }
+      if (kind === 'booking' && bookingDetailId === id) {
+        bookingDetailSeq += 1;
+        bookingDetailId = null;
+        bookingDetail = null;
+        bookingDetailError = null;
+        loadingBookingDetail = false;
+        resetBookingManageLinkState();
         syncDataHash();
       }
       pendingLoadPromise = refreshActive();
@@ -5782,6 +6719,7 @@ export const bootstrapDataRoute = (
 
   const openFormResponse = async (submission_id: string): Promise<void> => {
     if (submission_id.trim().length === 0) return;
+    retireRunVerificationForDifferentItem(activeTab, submission_id);
     resetFormResponseAutomation();
     const seq = ++formResponseDetailSeq;
     if (!isReceivedTab(activeTab)) activeTab = 'form_response';
@@ -5789,6 +6727,8 @@ export const bootstrapDataRoute = (
     formResponseDetail = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = true;
+    savingFormResponse = false;
+    formResponseSaveError = null;
     if (errors.form_responses !== undefined) {
       errors = { ...errors };
       delete errors.form_responses;
@@ -5823,12 +6763,15 @@ export const bootstrapDataRoute = (
   };
 
   const closeFormResponse = (): void => {
+    retireRunVerification();
     resetFormResponseAutomation();
     formResponseDetailSeq += 1;
     formResponseDetailId = null;
     formResponseDetail = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = false;
+    savingFormResponse = false;
+    formResponseSaveError = null;
     if (errors.form_responses !== undefined) {
       errors = { ...errors };
       delete errors.form_responses;
@@ -5837,10 +6780,176 @@ export const bootstrapDataRoute = (
     render();
   };
 
+  const saveFormResponse = async (): Promise<void> => {
+    const anchor = formResponseDetail;
+    if (
+      anchor === null
+      || opts.formResponseUpdateCaller === undefined
+      || opts.formResponseSetStateCaller === undefined
+      || savingFormResponse
+    ) return;
+    const valuesControl = routeRoot.querySelector(
+      `[${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}]`,
+    ) as HTMLTextAreaElement | null;
+    const emailControl = routeRoot.querySelector(
+      `[${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}]`,
+    ) as HTMLInputElement | null;
+    const stateControl = routeRoot.querySelector(
+      `[${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}]`,
+    ) as HTMLSelectElement | null;
+    if (valuesControl === null || emailControl === null || stateControl === null) return;
+    let values: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(valuesControl.value) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Answers must be a JSON object.');
+      }
+      values = parsed as Record<string, unknown>;
+    } catch (error) {
+      formResponseSaveError = error instanceof Error
+        ? error.message
+        : 'Answers must be valid JSON.';
+      render();
+      return;
+    }
+    if (!FORM_RESPONSE_LIFECYCLE_STATES.includes(stateControl.value as FormResponseLifecycleState)) {
+      formResponseSaveError = 'Choose a valid lifecycle state.';
+      render();
+      return;
+    }
+    const lifecycle = stateControl.value as FormResponseLifecycleState;
+    const email = emailControl.value.trim();
+    savingFormResponse = true;
+    formResponseSaveError = null;
+    render();
+    try {
+      const updated = await opts.formResponseUpdateCaller({
+        submission_id: anchor.submission_id,
+        values,
+        visitor: email.length > 0 ? { email } : {},
+      });
+      if (disposed || formResponseDetail !== anchor) return;
+      let response = updated.response;
+      if (response !== null && lifecycle !== response.lifecycle_state) {
+        const stateResult = await opts.formResponseSetStateCaller({
+          submission_id: anchor.submission_id,
+          lifecycle_state: lifecycle,
+        });
+        response = stateResult.response;
+      }
+      if (disposed || formResponseDetail !== anchor) return;
+      formResponseDetail = response;
+      if (response === null) formResponseSaveError = 'This form response no longer exists.';
+      pendingLoadPromise = refreshActive(true);
+      await pendingLoadPromise;
+    } catch (error) {
+      if (disposed || formResponseDetail !== anchor) return;
+      formResponseSaveError = errMessage(error);
+      // One of the two narrow mutations may have succeeded. Re-read so the
+      // page never pretends the pre-save snapshot is still authoritative.
+      await openFormResponse(anchor.submission_id);
+      if (!disposed) formResponseSaveError = errMessage(error);
+    } finally {
+      if (!disposed && formResponseDetailId === anchor.submission_id) {
+        savingFormResponse = false;
+        render();
+      }
+    }
+  };
+
+  const downloadFormResponseExport = (file: FormResponseExportRpcResponse): void => {
+    if (opts.formResponseDownload !== undefined) {
+      opts.formResponseDownload(file);
+      return;
+    }
+    const view = doc.defaultView;
+    if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
+      throw new Error('This host cannot download files.');
+    }
+    const blob = new view.Blob([file.content], { type: file.mime_type });
+    const url = view.URL.createObjectURL(blob);
+    try {
+      const link = doc.createElement('a');
+      link.href = url;
+      link.download = file.filename;
+      link.hidden = true;
+      (doc.body ?? opts.root).appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      view.URL.revokeObjectURL(url);
+    }
+  };
+
+  const exportFormResponses = async (format: 'json' | 'csv'): Promise<void> => {
+    if (opts.formResponseExportCaller === undefined || exportingFormResponses) return;
+    exportingFormResponses = true;
+    if (errors.form_responses !== undefined) {
+      errors = { ...errors };
+      delete errors.form_responses;
+    }
+    render();
+    try {
+      // The server bounds ONE rpc payload and hands back `next_cursor` when
+      // more remains. Loop it so the owner gets a COMPLETE file: the ceiling
+      // used to be a refusal naming filters this tab does not expose, which
+      // meant anyone past it could never export at all.
+      //
+      // ⛔ Never stop early and download what we have — a partial file that
+      // looks complete is worse than the refusal it replaced. The bound below
+      // is a runaway guard, and hitting it raises rather than saves.
+      const MAX_CHUNKS = 50;
+      const chunks: string[] = [];
+      let file = await opts.formResponseExportCaller({ format });
+      let records = file.record_count;
+      chunks.push(file.content);
+      let guard = 0;
+      while (file.next_cursor !== undefined) {
+        if (disposed) return;
+        guard += 1;
+        if (guard >= MAX_CHUNKS) {
+          throw new Error(
+            `Export is larger than ${MAX_CHUNKS} chunks (${records} records so far). `
+            + 'Nothing was downloaded — narrow the range and try again.',
+          );
+        }
+        file = await opts.formResponseExportCaller({
+          format,
+          before: file.next_cursor,
+        });
+        chunks.push(file.content);
+        records += file.record_count;
+      }
+      if (disposed) return;
+      downloadFormResponseExport({
+        ...file,
+        // JSON chunks are separate arrays; concatenating their text would not
+        // be valid JSON, so re-wrap into one document. CSV chunks concatenate
+        // directly — only the first carries a header.
+        content: format === 'csv'
+          ? chunks.filter((c) => c.length > 0).join('\r\n')
+          : JSON.stringify(
+            chunks.flatMap((c) => JSON.parse(c) as unknown[]),
+            null,
+            2,
+          ),
+        record_count: records,
+      });
+    } catch (error) {
+      if (!disposed) errors = { ...errors, form_responses: errMessage(error) };
+    } finally {
+      if (!disposed) {
+        exportingFormResponses = false;
+        render();
+      }
+    }
+  };
+
   const openTimelineDrilldown = async (
     kind: MirrorDataKind,
     entity_id: string,
   ): Promise<void> => {
+    retireRunVerificationForDifferentItem(kind, entity_id);
     activeTab = kind;
     timelineEntityId = entity_id;
     syncDataHash();
@@ -5900,6 +7009,7 @@ export const bootstrapDataRoute = (
   const openContactDetail = async (email: string): Promise<void> => {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
+    retireRunVerificationForDifferentItem('contact', trimmed);
     // Mutually exclusive with the scan page — see `openContactScan`.
     contactScan = null;
     contactScanSeq += 1;
@@ -6135,6 +7245,7 @@ export const bootstrapDataRoute = (
 
   const closeContactDetail = (): void => {
     if (contactDetail === null) return;
+    retireRunVerification();
     contactDetail = null;
     loadingContactDetail = false;
     // The detail's failures die with the detail — carrying them back would show
@@ -6713,6 +7824,15 @@ export const bootstrapDataRoute = (
       closeFormResponse();
       return;
     }
+    if (action === 'save-form-response') {
+      void saveFormResponse();
+      return;
+    }
+    if (action === 'export-form-responses') {
+      const format = target.getAttribute('data-format');
+      if (format === 'json' || format === 'csv') void exportFormResponses(format);
+      return;
+    }
     if (action === 'discover-form-response-automations') {
       // The open detail is already the discovery anchor, and the lookup has
       // its own response/sequence guards. Do not queue behind an unrelated
@@ -6863,7 +7983,28 @@ export const bootstrapDataRoute = (
       }
       return;
     }
+    if (action === 'open-work-entity-detail') {
+      const kind = target.getAttribute('data-kind');
+      const id = target.getAttribute('data-entity-id');
+      if (kind === 'booking' && id !== null) void openBookingDetail(id);
+      return;
+    }
+    if (action === 'close-booking-detail') {
+      closeBookingDetail();
+      return;
+    }
+    if (action === 'edit-booking-detail') {
+      const id = target.getAttribute('data-entity-id');
+      if (id !== null) void openEditWorkEntityDialog('booking', id);
+      return;
+    }
+    if (action === 'copy-booking-manage-link') {
+      void copyBookingManageLink();
+      return;
+    }
     if (action === 'close-work-entity-dialog') {
+      retireRunVerification();
+      loadingWorkEntityDetail = false;
       workEntityState = closeDialogTransition(workEntityState);
       syncDataHash(); // dialog closed → drop the entity id from the URL
       render();
@@ -6871,6 +8012,8 @@ export const bootstrapDataRoute = (
     }
     if (action === 'close-work-entity-dialog-on-backdrop') {
       if (ev.target === target) {
+        retireRunVerification();
+        loadingWorkEntityDetail = false;
         workEntityState = closeDialogTransition(workEntityState);
         syncDataHash();
         render();
@@ -6951,7 +8094,11 @@ export const bootstrapDataRoute = (
         const kind = target.getAttribute('data-kind');
         if (isWorkEntityTab(activeTab) && kind === workEntityState.kind) {
           workEntityState = applySearchTransition(workEntityState, target.value);
-          render();
+          if (workEntityState.kind === 'booking') {
+            pendingLoadPromise = refreshActive(true);
+          } else {
+            render();
+          }
         }
         return;
       }
@@ -7001,6 +8148,14 @@ export const bootstrapDataRoute = (
       startRefresh();
       return;
     }
+    if (action === 'filter-booking-lifecycle' && activeTab === 'booking') {
+      const next = target.value;
+      if (next === 'all' || BOOKING_LIFECYCLE_STATES.includes(next as BookingLifecycleState)) {
+        bookingLifecycleFilter = next as BookingLifecycleState | 'all';
+        pendingLoadPromise = refreshActive(true);
+      }
+      return;
+    }
     if (action === 'select-create-source') {
       workEntityState = setDialogSourceTransition(workEntityState, target.value);
       render();
@@ -7012,6 +8167,12 @@ export const bootstrapDataRoute = (
   routeRoot.addEventListener('change', onChange);
 
   startRefresh();
+  // Bind the queued open to the route the user actually requested. Ordinary
+  // same-tab refreshes may finish first, but a tab/lens navigation retires the
+  // old address instead of applying its record id to the new surface.
+  const initialDeepLinkNavigationGeneration = navigationGeneration;
+  const initialDeepLinkTab = activeTab;
+  const initialDeepLinkLens = activeLens;
 
   // R18 — deep-link hydration: after the initial tab's load settles, open the
   // addressed entity's timeline detail. Contact + mirror tabs have a timeline
@@ -7020,7 +8181,12 @@ export const bootstrapDataRoute = (
   const initialEntityId = opts.initialEntityId;
   if (initialEntityId !== undefined && initialEntityId.length > 0) {
     pendingLoadPromise = pendingLoadPromise.then(() => {
-      if (disposed) return undefined;
+      if (
+        disposed
+        || navigationGeneration !== initialDeepLinkNavigationGeneration
+        || activeTab !== initialDeepLinkTab
+        || activeLens !== initialDeepLinkLens
+      ) return undefined;
       // D-198 Slice 1b — the Memory lens has no per-entity deep link (v1); a
       // hand-crafted `#data/memory/<x>` must not open a Data-tab detail.
       if (activeLens === 'memory') return undefined;
@@ -7052,10 +8218,17 @@ export const bootstrapDataRoute = (
       // URL. A missing / unfetchable id surfaces an error there (not a false
       // selection), so the un-openable-id drop is no longer needed.
       if (isWorkEntityTab(activeTab)) {
-        return openEditWorkEntityDialog(activeTab, initialEntityId);
+        return activeTab === 'booking'
+          ? openBookingDetail(initialEntityId)
+          : openEditWorkEntityDialog(activeTab, initialEntityId);
       }
       syncDataHash();
       return undefined;
+    });
+  }
+  if (pendingInitialVerificationFocus) {
+    pendingLoadPromise = pendingLoadPromise.then(() => {
+      if (!disposed) focusInitialVerificationTarget();
     });
   }
 
@@ -7180,6 +8353,8 @@ export const bootstrapDataRoute = (
     discoverFormResponseAutomations,
     reviewFormResponseAutomation,
     confirmFormResponseAutomationRun,
+    saveFormResponse,
+    exportFormResponses,
     openTimelineDrilldown,
     openContactDetail,
     closeContactDetail,

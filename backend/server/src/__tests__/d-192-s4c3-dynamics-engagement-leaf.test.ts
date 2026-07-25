@@ -6,7 +6,7 @@
  *  generic engagement reconciler end-to-end over a fake Dataverse fetch (drain →
  *  project → `ingestEngagementWithEdges`).
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c3). */
+ *  Spec: D-192 (S4c3). */
 
 import { describe, expect, it } from 'vitest';
 

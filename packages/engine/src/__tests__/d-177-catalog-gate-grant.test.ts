@@ -247,6 +247,7 @@ describe('D-177 catalog-gate session-grant loop', () => {
       operation_id: OPERATION_ID,
       connection_name: CONNECTION,
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: expectedHashes.arg_shape_hash,
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
     } satisfies CatalogGrantCall);
@@ -321,6 +322,7 @@ describe('D-177 catalog-gate session-grant loop', () => {
       operation_id: OPERATION_ID,
       connection_name: CONNECTION,
       risk_tier: 'write',
+      pre_lift_approval: 'ask',
       arg_shape_hash: expectedHashes.arg_shape_hash,
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       ttl_ms: 60_000,
@@ -376,21 +378,30 @@ describe('D-177 catalog-gate session-grant loop', () => {
     expect(ingredientExecutor).toHaveBeenCalledTimes(1);
   });
 
-  it('Scenario 5 - a read-tier op that HOLDS is non-grantable and never consults grants', async () => {
-    const { sessionGrants, match, consume, mint } = makeGrantHooks();
+  it('Scenario 5 - a read+always hold carries provenance and re-holds when no delegation matches', async () => {
+    const { sessionGrants, match, consume, mint } = makeGrantHooks({
+      // The host resolver skips session rows for pre-lift `always`, but still
+      // checks standing delegation. This stub models neither row matching.
+      match: () => null,
+    });
     const { ctx, ingredientExecutor } = makeHarness({ catalogSessionGrants: sessionGrants });
-    // D-209 Slice B — force the read to HOLD via approval:'always' (an author-tightened
-    // read the ceiling never relaxes). A read declaring approval:'ask' would instead
-    // RELAX to admit at the contracted `read` ceiling (risk read ≤ read), so 'always' is
-    // the holding read under Slice B. The point stands: even when a read holds, it is
-    // NON-grantable — session grants gate write+ tiers, so match/consume/mint are never
-    // consulted for a read.
+    // D-211 Slice 3 — read is now session-grantable, but a pre-lift `always`
+    // ruling cannot be satisfied by a live session row. The combined host
+    // resolver must still be consulted because a standing delegation may
+    // satisfy it; with no such match, the gate raises the hold.
     const manifest = manifestFor(operation('read', { approval: 'always' }));
 
     const signal = await expectPreflightRequired(run(ctx, manifest));
 
     expect(signal.risk_tier).toBe('read');
-    expect(match).not.toHaveBeenCalled();
+    expect(signal.authorization_provenance).toEqual({
+      pre_lift_approval: 'always',
+    });
+    expect(match).toHaveBeenCalledTimes(1);
+    expect(match).toHaveBeenCalledWith(expect.objectContaining({
+      risk_tier: 'read',
+      pre_lift_approval: 'always',
+    }));
     expect(consume).not.toHaveBeenCalled();
     expect(mint).not.toHaveBeenCalled();
     expect(ingredientExecutor).not.toHaveBeenCalled();

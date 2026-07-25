@@ -44,10 +44,10 @@
  *  Omitting `deps` (db-less harness, or a server with no catalog) leaves all
  *  methods returning `not_configured` (the whole slice is absent).
  *
- *  Spec: `docs/d-166-spec.md` §"contract_definition lifecycle"; the use-resolution
+ *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
-import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, type DoorType } from '@recued/contracts';
+import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, type DoorType } from '@recued/contracts';
 import type {
   Actor,
   CatalogIngredientView,
@@ -63,6 +63,12 @@ import type {
   HandlerSlice,
   IngredientManifest,
   MintContractRequest,
+  OperationApproval,
+  OperationRiskTier,
+  OperationSpec,
+  OwnerOperationIngredientView,
+  OwnerOperationPolicyInput,
+  OwnerOperationView,
   OverridePolicyInput,
   OverrideView,
   ServerEvent,
@@ -103,6 +109,7 @@ import {
   type ScopedGrantSuggestionStore,
 } from './storage/scoped-grant-suggestion-store.js';
 import { listScopedConnectionCandidates } from './scoped-grant-binding.js';
+import { operationSpecHash } from './operation-spec-hash.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 
@@ -149,10 +156,10 @@ export interface ContractRpcDeps {
    *  absent). Emit failures are swallowed (observability-only — never abort the
    *  rpc), mirroring the chat-handler's `deps.broadcast` discipline. */
   broadcast?: (event: ContractBroadcastEvent) => void;
-  /** Resolve a catalog-form ingredient manifest by slug — the override's
-   *  `ingredient_id` must name one (and its `operation_id`, when present, a
-   *  declared operation). Returns null for unknown / simple-form ingredients.
-   *  Wired from the server's manifest registry (`executorConfig.manifests`). */
+  /** Resolve an ingredient manifest by slug — catalog overrides validate a
+   *  declared qualified operation; simple-form overrides validate their one
+   *  slug-keyed operation. Returns null only for unknown ingredients. Wired
+   *  from the server manifest registry (`executorConfig.manifests`). */
   getManifest: (slug: string) => IngredientManifest | null;
   /** Enumerate every loaded manifest — the source for `listCatalogOperations`
    *  (the picker inventory), which filters to catalog-form + projects. Wired
@@ -222,6 +229,30 @@ const ensureOptionalOperationId = (method: string, value: unknown): string | und
   return value;
 };
 
+const ensureOperationId = (method: string, value: unknown): string => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new RpcError('bad_request', `${method}: operation_id is required`);
+  }
+  return value;
+};
+
+const requireOverrideManifest = (
+  deps: ContractRpcDeps,
+  method: string,
+  ingredient_id: string,
+): IngredientManifest => {
+  const manifest = deps.getManifest(ingredient_id);
+  if (!manifest) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: '${ingredient_id}' is not a known ingredient`,
+    );
+  }
+  return manifest;
+};
+
+/** Legacy actor-scoped contract overrides are catalog-only and continue to
+ * tighten the existing operation admission flow. */
 const requireCatalogManifest = (
   deps: ContractRpcDeps,
   method: string,
@@ -237,16 +268,37 @@ const requireCatalogManifest = (
   return manifest;
 };
 
-/** Validate `operation_id` names a declared operation of the manifest. Operations
- *  are keyed in the manifest by short name but carry a fully-qualified
- *  `operation_id` (`<slug>.<op>`) — the override key uses the fully-qualified id
- *  (matching the 4d.4 gateway scan), so we match on `operation_id`. */
+/** Both manifest shapes expose one operation identity to owner rulings:
+ * catalog form uses its declared qualified id; simple form is keyed by slug. */
+const ensureOverrideOperation = (
+  manifest: IngredientManifest,
+  method: string,
+  operation_id: string,
+): OperationSpec => {
+  if (isCatalogForm(manifest)) {
+    return ensureDeclaredOperation(manifest, method, operation_id);
+  }
+  if (operation_id !== manifest.slug) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: simple-form ingredient '${manifest.slug}' has one operation, '${manifest.slug}'`,
+    );
+  }
+  return { operation_id: manifest.slug, risk_tier: manifest.risk_tier };
+};
+
+/** Validate `operation_id` names a declared operation of the manifest and
+ *  return its `OperationSpec` (the D-211 write-gate needs the declared
+ *  `risk_tier` + the spec for the `op_hash` stamp). Operations are keyed in the
+ *  manifest by short name but carry a fully-qualified `operation_id`
+ *  (`<slug>.<op>`) — the override key uses the fully-qualified id (matching the
+ *  4d.4 gateway scan), so we match on `operation_id`. */
 const ensureDeclaredOperation = (
   manifest: IngredientManifest,
   method: string,
   operation_id: string,
-): void => {
-  const declared = Object.values(manifest.operations ?? {}).some(
+): OperationSpec => {
+  const declared = Object.values(manifest.operations ?? {}).find(
     (op) => op.operation_id === operation_id,
   );
   if (!declared) {
@@ -255,6 +307,25 @@ const ensureDeclaredOperation = (
       `${method}: '${operation_id}' is not a declared operation of '${manifest.slug}'`,
     );
   }
+  return declared;
+};
+
+const ownerOperationViewFromRow = (row: ContractRow): OwnerOperationView => {
+  const value = row.value as Record<string, unknown>;
+  const risk = isRiskTier(value.risk) ? value.risk : undefined;
+  const approval = isOperationApproval(value.approval) ? value.approval : undefined;
+  return {
+    ingredient_id: row.segments[0],
+    operation_id: row.segments[1],
+    policy: {
+      ...(risk !== undefined ? { risk } : {}),
+      ...(approval !== undefined ? { approval } : {}),
+    },
+    ...(risk !== undefined ? { risk } : {}),
+    ...(approval !== undefined ? { approval } : {}),
+    ...(typeof value.op_hash === 'string' ? { op_hash: value.op_hash } : {}),
+    written_at: row.written_at,
+  };
 };
 
 const overrideViewFromRow = (row: ContractRow): OverrideView => ({
@@ -274,7 +345,35 @@ const overrideSegments = (
     ? [actor, ingredient_id, operation_id]
     : [actor, ingredient_id];
 
-const handleContractUpsertOverride = async (
+/** D-211 — reserve-class audit row for a global owner-operation write/delete, per the
+ *  `delegation_rule_minted` template: guard the optional `deps.auditLog`,
+ *  AWAIT (human-paced rpc — the response only returns once the reserve row
+ *  landed), and a failure NEVER unwinds the write (warn + proceed: the row
+ *  itself is the durable record and delete is the kill switch). */
+const emitOverrideAudit = async (
+  deps: ContractRpcDeps,
+  action: 'owner_operation_override_written' | 'owner_operation_override_deleted',
+  target: string,
+  detail: Record<string, unknown>,
+): Promise<void> => {
+  if (deps.auditLog === undefined) return;
+  try {
+    await deps.auditLog.logActivity({
+      activity_id: '',
+      timestamp: (deps.now ?? Date.now)(),
+      action,
+      target,
+      detail: JSON.stringify(detail),
+    });
+  } catch (err) {
+    console.warn(
+      `[contract-handler] ${action} audit failed for '${target}': `
+        + (err instanceof Error ? err.message : String(err)),
+    );
+  }
+};
+
+export const upsertContractOverride = async (
   deps: ContractRpcDeps,
   args: { actor: Actor; ingredient_id: string; operation_id?: string; policy: OverridePolicyInput },
 ): Promise<OverrideView> => {
@@ -328,6 +427,7 @@ const handleContractUpsertOverride = async (
     // Unreachable — `put` just succeeded against the same synchronous store.
     throw new RpcError('internal', `${method}: override row missing after write`);
   }
+
   return overrideViewFromRow(row);
 };
 
@@ -369,6 +469,201 @@ const handleContractListOverrides = async (
       : rows;
   return { overrides: filtered.map(overrideViewFromRow) };
 };
+
+// ════════════════════════════════════════════════════════════════
+// D-211 global owner operation defaults
+// ════════════════════════════════════════════════════════════════
+
+export const upsertOwnerOperationOverride = async (
+  deps: ContractRpcDeps,
+  args: {
+    ingredient_id: string;
+    operation_id: string;
+    policy: OwnerOperationPolicyInput;
+  },
+): Promise<OwnerOperationView> => {
+  const method = 'collection.operation.upsertOwnerOverride';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  const operation_id = ensureOperationId(method, a.operation_id);
+  if (!isRecord(a.policy)) {
+    throw new RpcError('bad_request', `${method}: policy must be an object`);
+  }
+  if (isEmptyOwnerOperationPolicy(a.policy)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: policy must set risk and/or approval — use deleteOwnerOverride to clear`,
+    );
+  }
+
+  const manifest = requireOverrideManifest(deps, method, ingredient_id);
+  const opSpec = ensureOverrideOperation(manifest, method, operation_id);
+  const rawRisk = a.policy.risk;
+  if (rawRisk !== undefined && rawRisk !== null && !isRiskTier(rawRisk)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: policy.risk must be one of read|write|admin|destructive`,
+    );
+  }
+  const risk = isRiskTier(rawRisk) ? rawRisk : undefined;
+  const rawApproval = a.policy.approval;
+  if (
+    rawApproval !== undefined
+    && rawApproval !== null
+    && !isOperationApproval(rawApproval)
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: policy.approval must be one of never|ask|always`,
+    );
+  }
+  const approval = isOperationApproval(rawApproval) ? rawApproval : undefined;
+  const effectiveRisk = risk ?? opSpec.risk_tier;
+  const segments = [ingredient_id, operation_id];
+  const priorRow = deps.store.get(OWNER_OPERATION_SCOPE, segments);
+  const priorValue = (priorRow?.value ?? {}) as Record<string, unknown>;
+  const priorRisk = isRiskTier(priorValue.risk)
+    ? priorValue.risk
+    : opSpec.risk_tier;
+
+  if (approval !== undefined && isApprovalBelowRiskFloor(approval, effectiveRisk)) {
+    throw new RpcError(
+      'owner_operation_below_floor',
+      `${method}: approval '${approval}' is below the '${effectiveRisk}' risk floor `
+        + `'${approvalFloorForRisk(effectiveRisk)}'`,
+      undefined,
+      method,
+      {
+        floor: approvalFloorForRisk(effectiveRisk),
+        effective_risk: effectiveRisk,
+        declared_risk: opSpec.risk_tier,
+      },
+    );
+  }
+
+  if (
+    risk !== undefined
+    && RISK_TIER_RANK[risk] < RISK_TIER_RANK[priorRisk]
+    && a.policy.confirm_risk_downgrade !== true
+  ) {
+    throw new RpcError(
+      'owner_operation_risk_downgrade_confirm',
+      `${method}: reclassifying '${operation_id}' risk '${priorRisk}' → '${risk}' `
+        + `moves its approval floor '${approvalFloorForRisk(priorRisk)}' → `
+        + `'${approvalFloorForRisk(risk)}'; pass confirm_risk_downgrade: true to acknowledge`,
+      undefined,
+      method,
+      {
+        declared_risk: opSpec.risk_tier,
+        previous_risk: priorRisk,
+        new_risk: risk,
+        floor_before: approvalFloorForRisk(priorRisk),
+        floor_after: approvalFloorForRisk(risk),
+        session_grantable_after: (SESSION_GRANT_RISK_TIERS as readonly string[]).includes(risk),
+        delegation_learnable_after: (DELEGATION_RULE_RISK_TIERS as readonly string[]).includes(risk),
+      },
+    );
+  }
+
+  const policy = ownerOperationRowValue(a.policy);
+  const op_hash = operationSpecHash(opSpec);
+  try {
+    deps.store.put(OWNER_OPERATION_SCOPE, segments, { ...policy, op_hash });
+  } catch (err) {
+    if (err instanceof ContractWriteInvalidError) {
+      throw new RpcError('bad_request', err.message, undefined, method, {
+        issues: err.issues,
+      });
+    }
+    throw err;
+  }
+  const row = deps.store.get(OWNER_OPERATION_SCOPE, segments);
+  if (row === null) {
+    throw new RpcError('internal', `${method}: owner operation row missing after write`);
+  }
+  await emitOverrideAudit(deps, 'owner_operation_override_written', operation_id, {
+    ingredient_id,
+    operation_id,
+    policy,
+    prior_policy: priorRow?.value ?? null,
+    declared_risk: opSpec.risk_tier,
+    previous_risk: priorRisk,
+    effective_risk: effectiveRisk,
+    floor_before: approvalFloorForRisk(priorRisk),
+    floor_after: approvalFloorForRisk(effectiveRisk),
+    op_hash,
+  });
+  return ownerOperationViewFromRow(row);
+};
+
+const handleOwnerOperationDelete = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string; operation_id: string },
+): Promise<{ deleted: boolean }> => {
+  const method = 'collection.operation.deleteOwnerOverride';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  const operation_id = ensureOperationId(method, a.operation_id);
+  const segments = [ingredient_id, operation_id];
+  const priorRow = deps.store.get(OWNER_OPERATION_SCOPE, segments);
+  const deleted = deps.store.delete(OWNER_OPERATION_SCOPE, segments);
+  if (deleted) {
+    await emitOverrideAudit(deps, 'owner_operation_override_deleted', operation_id, {
+      ingredient_id,
+      operation_id,
+      policy: null,
+      prior_policy: priorRow?.value ?? null,
+    });
+  }
+  return { deleted };
+};
+
+const handleOwnerOperationList = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id?: string } | void,
+): Promise<{ overrides: OwnerOperationView[] }> => {
+  const method = 'collection.operation.listOwnerOverrides';
+  const a = args === undefined || args === null ? {} : ensureRecordArgs(method, args);
+  const ingredient_id = a.ingredient_id;
+  if (
+    ingredient_id !== undefined
+    && (typeof ingredient_id !== 'string' || ingredient_id.trim() === '')
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: ingredient_id, when present, must be a non-empty string`,
+    );
+  }
+  const rows = deps.store.scan(
+    OWNER_OPERATION_SCOPE,
+    typeof ingredient_id === 'string' ? [ingredient_id] : undefined,
+  );
+  const overrides = rows.map((row) => {
+    const view = ownerOperationViewFromRow(row);
+    if (view.op_hash === undefined) return view;
+    const manifest = deps.getManifest(view.ingredient_id);
+    let current: OperationSpec | undefined;
+    if (manifest !== null) {
+      if (isCatalogForm(manifest)) {
+        current = Object.values(manifest.operations ?? {}).find(
+          (op) => op.operation_id === view.operation_id,
+        );
+      } else if (manifest.slug === view.operation_id) {
+        current = { operation_id: manifest.slug, risk_tier: manifest.risk_tier };
+      }
+    }
+    return current === undefined || operationSpecHash(current) !== view.op_hash
+      ? { ...view, stale: true }
+      : view;
+  });
+  return { overrides };
+};
+
+const handleOwnerOperationListOperations = async (
+  deps: ContractRpcDeps,
+): Promise<{ ingredients: OwnerOperationIngredientView[] }> => ({
+  ingredients: ownerOperationIngredientViews(deps.listManifests()),
+});
 
 const handleContractListCatalogOperations = async (
   deps: ContractRpcDeps,
@@ -1829,6 +2124,10 @@ type ContractMethods =
   | 'collection.contract.deleteOverride'
   | 'collection.contract.listOverrides'
   | 'collection.contract.listCatalogOperations'
+  | 'collection.operation.listOperations'
+  | 'collection.operation.upsertOwnerOverride'
+  | 'collection.operation.deleteOwnerOverride'
+  | 'collection.operation.listOwnerOverrides'
   | 'collection.contract.mintContract'
   | 'collection.contract.revokeContract'
   | 'collection.contract.setDoorTypes'
@@ -1876,6 +2175,10 @@ export const makeContractHandlers = (
       'collection.contract.deleteOverride',
       'collection.contract.listOverrides',
       'collection.contract.listCatalogOperations',
+      'collection.operation.listOperations',
+      'collection.operation.upsertOwnerOverride',
+      'collection.operation.deleteOwnerOverride',
+      'collection.operation.listOwnerOverrides',
       'collection.contract.mintContract',
       'collection.contract.revokeContract',
       'collection.contract.setDoorTypes',
@@ -1896,9 +2199,9 @@ export const makeContractHandlers = (
     ],
     handlers: {
       'collection.contract.upsertOverride': async (args) =>
-        handleContractUpsertOverride(
+        upsertContractOverride(
           deps,
-          args as Parameters<typeof handleContractUpsertOverride>[1],
+          args as Parameters<typeof upsertContractOverride>[1],
         ),
       'collection.contract.deleteOverride': async (args) =>
         handleContractDeleteOverride(
@@ -1912,6 +2215,23 @@ export const makeContractHandlers = (
         ),
       'collection.contract.listCatalogOperations': async () =>
         handleContractListCatalogOperations(deps),
+      'collection.operation.listOperations': async () =>
+        handleOwnerOperationListOperations(deps),
+      'collection.operation.upsertOwnerOverride': async (args) =>
+        upsertOwnerOperationOverride(
+          deps,
+          args as Parameters<typeof upsertOwnerOperationOverride>[1],
+        ),
+      'collection.operation.deleteOwnerOverride': async (args) =>
+        handleOwnerOperationDelete(
+          deps,
+          args as Parameters<typeof handleOwnerOperationDelete>[1],
+        ),
+      'collection.operation.listOwnerOverrides': async (args) =>
+        handleOwnerOperationList(
+          deps,
+          args as Parameters<typeof handleOwnerOperationList>[1],
+        ),
       // contract_id lifecycle. `mintContract` reads the authenticated client
       // (`ctx`) for `minted_by` provenance; revoke/list don't need it. Both
       // mutators emit `contract.contract_definition_changed` AFTER a successful

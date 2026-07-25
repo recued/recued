@@ -20,9 +20,9 @@
  *
  *  Platform note: `fs.watch({ recursive: true })` is supported on
  *  macOS 10.5+, Windows, and Linux (with inotify) via Node 20+.
- *  On platforms without recursive support, callers fall back to a
- *  polled scan (out-of-scope for Phase D; the adapter still runs
- *  without fs.watch, just without live updates).
+ *  On platforms without recursive support, callers can select one-shot
+ *  mode: the initial scan runs, but no background polling is scheduled.
+ *  An explicit `collection.file.resync` restarts that bounded scan.
  */
 
 import { stat, readdir } from 'node:fs/promises';
@@ -51,6 +51,13 @@ export interface FsWatcherOptions {
    *  Defaults to 500 ms — matches the Phase C config watcher. */
   debounceMs?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** `realtime` attaches recursive `fs.watch` after the initial scan.
+   *  `none` performs only the initial scan; it never starts a polling loop.
+   *  Defaults to `realtime` for the legacy Phase D caller. */
+  watchMode?: 'realtime' | 'none';
+  /** Called if a watcher that attached successfully later emits `error`.
+   *  This is a health signal only; no polling fallback is started. */
+  onUnavailable?: (error: FsWatchUnavailableError) => Promise<void> | void;
   /** Test hook — swapping in a fake `watch` lets unit tests drive
    *  synthetic events without touching the real filesystem. The
    *  factory delegates to `fs.watch` by default. */
@@ -65,6 +72,18 @@ export interface FsWatcher {
   /** Cancels debounce timers and closes the fs.watch handle.
    *  Idempotent. */
   stop(): Promise<void>;
+}
+
+/** Raised when realtime was promised by the capability probe but the live
+ *  watcher can no longer attach. Callers surface this as degraded health
+ *  rather than silently leaving a stale collection marked healthy. */
+export class FsWatchUnavailableError extends Error {
+  readonly code = 'FS_WATCH_UNAVAILABLE';
+
+  constructor(root: string, readonly cause: unknown) {
+    super(`fs.watch failed to attach for ${root}`);
+    this.name = 'FsWatchUnavailableError';
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -143,13 +162,49 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
   const root = resolve(opts.root);
   const ignoreRegexes = opts.ignore.map(globToRegExp);
   const debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const watchMode = opts.watchMode ?? 'realtime';
   const log = opts.log ?? (() => {});
   const watchFactory = opts.watchFactory ?? DEFAULT_WATCH_FACTORY;
 
   let started = false;
   let stopped = false;
   let watcher: FSWatcher | undefined;
+  let watcherErrorListener: ((error: Error) => void) | undefined;
+  let attaching = false;
+  let attachmentFailed = false;
+  let attachmentError: unknown;
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const closeWatchHandle = (): void => {
+    const active = watcher;
+    watcher = undefined;
+    if (!active) return;
+    if (watcherErrorListener) {
+      active.removeListener('error', watcherErrorListener);
+      watcherErrorListener = undefined;
+    }
+    try { active.close(); } catch { /* best-effort */ }
+  };
+
+  const notifyUnavailable = async (error: FsWatchUnavailableError): Promise<void> => {
+    try {
+      await opts.onUnavailable?.(error);
+    } catch (err) {
+      log('warn', `fs watcher degradation callback failed for ${root}`, { err });
+    }
+  };
+
+  const onWatcherError = (cause: Error): void => {
+    closeWatchHandle();
+    if (attaching) {
+      attachmentFailed = true;
+      attachmentError = cause;
+      return;
+    }
+    const error = new FsWatchUnavailableError(root, cause);
+    log('error', `fs.watch became unavailable for ${root}`, { err: cause });
+    void notifyUnavailable(error);
+  };
 
   const isIgnored = (absPath: string): boolean => {
     const rel = relative(root, absPath);
@@ -212,14 +267,32 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       if (started || stopped) return;
       started = true;
       await scanDir(root);
+      if (watchMode === 'none') {
+        log('info', `fs watcher for ${root} is one-shot; realtime unavailable`);
+        return;
+      }
       try {
+        attaching = true;
         watcher = watchFactory(root, (_event, filename) => {
           if (!filename) return;
           const abs = resolve(root, filename);
           scheduleEvent(abs);
         });
+        watcherErrorListener = onWatcherError;
+        watcher.on('error', watcherErrorListener);
+        // Catch watchers that return a handle and then fail on their first
+        // event-loop turn. Treat that as attachment failure, not healthy start.
+        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+        attaching = false;
+        if (attachmentFailed) {
+          throw new FsWatchUnavailableError(root, attachmentError);
+        }
       } catch (err) {
+        attaching = false;
+        closeWatchHandle();
         log('error', `fs.watch failed to attach for ${root}`, { err });
+        if (err instanceof FsWatchUnavailableError) throw err;
+        throw new FsWatchUnavailableError(root, err);
       }
     },
     async stop() {
@@ -227,10 +300,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       stopped = true;
       for (const timer of pending.values()) clearTimeout(timer);
       pending.clear();
-      if (watcher) {
-        try { watcher.close(); } catch { /* best-effort */ }
-        watcher = undefined;
-      }
+      closeWatchHandle();
     },
   };
 };

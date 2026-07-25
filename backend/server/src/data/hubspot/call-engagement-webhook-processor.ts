@@ -5,7 +5,7 @@
  *  ledger gate; resolves the call record via
  *  `/crm/v3/objects/calls/{id}` follow-up GET.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6. */
 
 import { HUBSPOT_CALL_PROPERTIES } from '@recued/contracts';
 

@@ -180,13 +180,19 @@ describe('owner-approved intake form response promotion', () => {
     verified_at: ACCEPTED_AT - 1,
   }));
 
-  it('writes nothing and decrypts nothing for an UNPAIRED approval (already logged at submit)', async () => {
+  it('writes the canonical row for an UNPAIRED form_response approval — approve is the door', async () => {
+    // ⚠ INVERTED 2026-07-20 (audit finding 3a). This asserted the opposite —
+    // "writes nothing and decrypts nothing for an UNPAIRED approval (already
+    // logged at submit)" — because WS2 had moved the write into the public
+    // visitor POST. That made the destination row exist, and be AI-queryable
+    // via its owner-default grant, before the owner had seen the submission.
+    //
+    // The decrypt this now performs is the deliberate price: the sealed
+    // submission row is stage-2 evidence and is never mutated, so nothing is
+    // lost by deferring, and A.1's "approve is the only door" holds.
     await seedSubmission();
     await auditLog.append(intakeAnchor());
     const onCreated = vi.fn();
-    // A key getter that FAILS the test if called. The point is not only that no
-    // row is written — it is that an unpaired approval never touches visitor
-    // PII at all, because the plaintext was consumed at submit.
     const piiKeyReads = vi.fn(() => FORM_KEY);
     const promote = createFormResponsePromotion({
       auditLog,
@@ -199,8 +205,150 @@ describe('owner-approved intake form response promotion', () => {
     await expect(promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT }))
       .resolves.toBeUndefined();
 
+    const rows = responseStore.list();
+    expect(rows).toHaveLength(1);
+    // The values come from the SEALED submission, not from the held projection —
+    // the reduced payload is never a substitute for what the visitor submitted.
+    expect(rows[0]).toMatchObject({
+      submission_id: 'sub-1',
+      endpoint_id: 'ep-1',
+      values: { project: 'Northwind', budget: 2500 },
+      visitor: { email: 'visitor@example.test' },
+    });
+    // It genuinely went through the decrypt path…
+    expect(piiKeyReads).toHaveBeenCalled();
+    // …and the first-create fan-out fires HERE now, at approve.
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomically applies validated owner edits while retaining sealed-source provenance', async () => {
+    await seedSubmission();
+    await auditLog.append(intakeAnchor());
+    const onCreated = vi.fn();
+    const promote = createFormResponsePromotion({
+      auditLog,
+      submissionStore,
+      formResponseStore: responseStore,
+      getFormSubmissionPiiKey: () => FORM_KEY,
+      onCreated,
+    });
+    const checkpoint = intakeCheckpoint({
+      arg_overrides: {
+        form_response_values: { project: 'Owner clarified', budget: 3000 },
+        form_response_visitor_email: 'corrected@example.test',
+      },
+    });
+
+    await promote(checkpoint, { approved_at: ACCEPTED_AT });
+    expect(responseStore.findById('sub-1')).toMatchObject({
+      submission_id: 'sub-1',
+      endpoint_id: 'ep-1',
+      form_definition_id: 'form-1',
+      values: { project: 'Owner clarified', budget: 3000 },
+      visitor: { email: 'corrected@example.test' },
+      submitted_at: SUBMITTED_AT,
+      accepted_at: ACCEPTED_AT,
+      origin_actor: 'anonymous',
+      origin_surface: 'system',
+    });
+    expect(onCreated).toHaveBeenCalledOnce();
+
+    // A resume retry carries the old approval overrides. It authenticates the
+    // same sealed source but must not overwrite a later working-copy edit.
+    responseStore.updateContent('sub-1', {
+      values: { project: 'Later edit', budget: 3500 },
+      visitor: {},
+    }, ACCEPTED_AT + 100);
+    await promote(checkpoint, { approved_at: ACCEPTED_AT + 1_000 });
+    expect(responseStore.findById('sub-1')).toMatchObject({
+      values: { project: 'Later edit', budget: 3500 },
+      visitor: {},
+      updated_at: ACCEPTED_AT + 100,
+    });
+    expect(onCreated).toHaveBeenCalledOnce();
+  });
+
+  it('treats an explicit null visitor email as a CLEAR, not an invalid value', async () => {
+    // ⛔ REGRESSION GUARD. `validateEditsAgainstSchema` documents `null` as the
+    // clearing value for a non-required field and forwards it verbatim, and the
+    // webclient sends exactly that (an `undefined` is dropped by
+    // `JSON.stringify` and would never arrive). Testing only `''`/`undefined`
+    // here carried `{ email: null }` into the working-content validator, which
+    // demands a non-empty string — turning a legitimate clear into
+    // `source_invalid` AFTER the overrides, audit row and resume are durable.
+    await seedSubmission();
+    await auditLog.append(intakeAnchor());
+    const promote = createFormResponsePromotion({
+      auditLog,
+      submissionStore,
+      formResponseStore: responseStore,
+      getFormSubmissionPiiKey: () => FORM_KEY,
+    });
+
+    await promote(
+      intakeCheckpoint({ arg_overrides: { form_response_visitor_email: null } }),
+      { approved_at: ACCEPTED_AT },
+    );
+    const row = responseStore.findById('sub-1');
+    // Cleared — NOT the sealed original silently promoted back.
+    expect(row?.visitor).toEqual({});
+    expect(JSON.stringify(row?.visitor)).not.toContain('@');
+  });
+
+  it('refuses invalid approve-time content before creating a working row', async () => {
+    await seedSubmission();
+    await auditLog.append(intakeAnchor());
+    const promote = createFormResponsePromotion({
+      auditLog,
+      submissionStore,
+      formResponseStore: responseStore,
+      getFormSubmissionPiiKey: () => FORM_KEY,
+    });
+    const checkpoint = intakeCheckpoint({
+      arg_overrides: {
+        form_response_values: { project: 42, attacker_field: 'x' },
+        form_response_visitor_email: 'not-an-email',
+      },
+    });
+
+    await expect(promote(checkpoint, { approved_at: ACCEPTED_AT }))
+      .rejects.toMatchObject({ code: 'source_invalid' });
+    expect(responseStore.findById('sub-1')).toBeNull();
+  });
+
+  it('writes NOTHING for an UNPAIRED approval whose destination is not form_response', async () => {
+    // Re-homed from `d-210-ws2-...` when the write moved. Without this the
+    // destination discrimination would be untested: at submit it is now
+    // trivially true (nothing is written there at all), so a gate that passed
+    // by doing less would look identical to a gate that works.
+    // ⇒ [[a_reduction_is_faked_by_doing_less]]
+    //
+    // It also pins the narrower property the old submit-side comment demanded:
+    // an intake landing on a task/contact/calendar destination gets its record
+    // from the entity it materializes, not a spurious `form_response` row.
+    await seedSubmission();
+    await auditLog.append(intakeAnchor());
+    const onCreated = vi.fn();
+    const piiKeyReads = vi.fn(() => FORM_KEY);
+    const promote = createFormResponsePromotion({
+      auditLog,
+      submissionStore,
+      formResponseStore: responseStore,
+      getFormSubmissionPiiKey: piiKeyReads,
+      onCreated,
+    });
+
+    const checkpoint = intakeCheckpoint();
+    // Same submission, same provenance — only the DESTINATION differs.
+    (checkpoint.step_state!.approved_operation as { input: Record<string, unknown> })
+      .input.top_tier_kind = 'task';
+
+    await expect(promote(checkpoint, { approved_at: ACCEPTED_AT }))
+      .resolves.toBeUndefined();
+
     expect(responseStore.list()).toEqual([]);
     expect(onCreated).not.toHaveBeenCalled();
+    // …and no visitor PII was opened for a row that was never going to exist.
     expect(piiKeyReads).not.toHaveBeenCalled();
   });
 
@@ -273,6 +421,7 @@ describe('owner-approved intake form response promotion', () => {
       visitor: { email: 'visitor@example.test' },
       submitted_at: SUBMITTED_AT,
       accepted_at: ACCEPTED_AT,
+      updated_at: ACCEPTED_AT,
       origin_actor: 'anonymous',
       origin_surface: 'system',
       // D-210 A.8 slice 2 — a promoted response is born in the default state

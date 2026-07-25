@@ -40,7 +40,7 @@
  *  keeps the library agnostic + lets tests supply synthetic pools
  *  without touching production wiring.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates (library / bundle / audit-grow folder layout) /
  *  § 3 the deterministic gate (template lookup is one of the four
  *  steps). */

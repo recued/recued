@@ -1,9 +1,9 @@
 /** D-192 — the file SOURCE family canonical projection.
  *
  *  The `file_meta_ref` posture (SourceRegistration.sync_posture) mirrors a
- *  remote vendor file META-ONLY — bytes are NEVER fetched (North star). A
- *  per-vendor adapter (declared in a pack, the §0 rule) lists the owner's
- *  Dropbox/Drive/Box/OneDrive/SharePoint/S3/Notion tree and projects each
+ *  remote vendor file's metadata without fetching its body. A compiled
+ *  per-vendor Source leaf lists the owner's Dropbox/Drive/Box/OneDrive/
+ *  SharePoint/S3/Notion tree and projects each
  *  object into THIS one canonical shape; the `file_meta_ref` meta-store
  *  stores it. The projection generalizes across document products AND
  *  object stores (S3: `key -> path`, `LastModified -> mtime`,
@@ -16,9 +16,9 @@
  *  storage postures) projects both consistently. The remote-only extras
  *  (`path` / `mtime` / `owner` / `revision`) have no CAS analogue.
  *
- *  `(provider, remote_id)` is the pointer; the share link is the vendor's
- *  own — Recued surfaces it, never the bytes. Design:
- *  `docs/d-192-file-source-family.md`; taxonomy §3b. */
+ *  `(provider, remote_id)` is the pointer; an explicit read may resolve bytes
+ *  lazily through that provider without adding them to the sync mirror. Design:
+ *  D-192; taxonomy §3b. */
 
 /** Cap on `filename` — code units, aligned with the D-172
  *  `FILENAME_MAX_BYTES` convention (same 255 bound). */

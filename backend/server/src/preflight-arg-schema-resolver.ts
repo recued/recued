@@ -18,11 +18,32 @@
  *                          ONLY these op args are user-editable; every
  *                          other arg is immutable (the authored/prefilled
  *                          value stands). Absent / empty ⇒ nothing editable.
- *    2. `request_schema` — the operation's request shape. Used to (a) gate
- *                          an `editable_args` key to one the operation
- *                          actually accepts and (b) lift `min` / `max` /
- *                          `pattern` validation where the schema typed them
- *                          and the field didn't.
+ *    2. `request_schema` — the operation's request shape. Used to lift
+ *                          `min` / `max` / `pattern` validation where the
+ *                          schema typed them and the field didn't.
+ *
+ *       ⛔ IT DOES NOT GATE. This line used to claim it also gated "an
+ *       `editable_args` key to one the operation actually accepts" — it never
+ *       did: `resolveSchemaProperty` returns no node for an unknown key and
+ *       the loop below pushes the field regardless. The claim was struck
+ *       rather than implemented, because implementing it as written is a
+ *       BREAKING change measured, not guessed: across `community/packs/`,
+ *       **513 of 5,553 declared editable keys** would stop resolving — and
+ *       the sample is dominated by dotted container paths (`query.status`,
+ *       `body.data`, `query.offset`) whose packs declare the container
+ *       without enumerating its properties. That is a schema-SHAPE mismatch,
+ *       not a pack naming args its operation rejects, so the gate would
+ *       remove legitimately-editable fields from ~190 packs.
+ *
+ *       The bound that actually holds is `editable_args` itself: a key absent
+ *       from it is refused at the inbox (`edit_not_allowed`), and no-
+ *       `editable_args` resolves to `{ fields: [] }` — fail-closed. The
+ *       missing narrowing is a SECOND fence, not the only one.
+ *
+ *       ⏭ If the gate is wanted, the schema-shape work comes first: audit the
+ *       190 packs that declare a `request_schema`, make container properties
+ *       enumerable, then land the gate with that census as the acceptance
+ *       test. ⇒ [[declared_is_not_backed]]
  *    3. entity-field     — the materialize target's `MetaField` for the
  *       type / privacy     same canonical key → carries the authoritative
  *                          `MetaFieldType` (string|number|boolean|datetime|
@@ -36,7 +57,7 @@
  *  is forced true for destination / connection keys (`calendar_id`,
  *  `source_id`) per N.5 §3 — editing one re-resolves `approved_target`.
  *
- *  Spec: docs/d-173-spec.md § N.6 + § N.5. */
+ *  Spec: D-173 § N.6 + § N.5. */
 
 import {
   isMetaFieldType,

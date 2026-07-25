@@ -18,6 +18,9 @@
  *   - reject → subview + frees the slot + answers `'deny'`. */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type {
   ArgEditSchema,
@@ -129,6 +132,7 @@ const makeSourceResolver =
   (
     attachment?: ResolvedInboxSource['attachment'],
     topTierKind: ReceptionInboxTopTierKind = 'commitment',
+    sourceKind: ResolvedInboxSource['source']['kind'] = 'intake_form',
   ) =>
   ({ checkpoint }: { anchor: AuditEntry; checkpoint: Checkpoint }): ResolvedInboxSource | null => {
     const gated =
@@ -139,7 +143,7 @@ const makeSourceResolver =
         : undefined;
     return {
       top_tier_kind: topTierKind,
-      source: { kind: 'intake_form', endpoint_id: 'ep-1', record_ref: checkpoint.checkpoint_id },
+      source: { kind: sourceKind, endpoint_id: 'ep-1', record_ref: checkpoint.checkpoint_id },
       args: gated?.input ?? {},
       preview: { title: 'Incoming request' },
       proposed_action: 'Create a commitment',
@@ -200,6 +204,9 @@ const makeHarness = (
     attachment?: ResolvedInboxSource['attachment'];
     resolver?: typeof resolverStub;
     topTierKind?: ReceptionInboxTopTierKind;
+    sourceKind?: ResolvedInboxSource['source']['kind'];
+    lookupBookingHistory?: ReceptionInboxDeps['lookupBookingHistory'];
+    resolveFormResponseEdit?: ReceptionInboxDeps['resolveFormResponseEdit'];
     /** D-177 N.14 — wire the allow-offer read (absent ⇒ no affordance +
      *  `allow: true` refuses, the fail-closed default). */
     allowOffer?: { ttl_ms: number; max_uses: number };
@@ -217,11 +224,17 @@ const makeHarness = (
     auditLog,
     checkpointStore,
     resolveArgEditSchema: (opts.resolver ?? resolverStub),
-    resolveSource: makeSourceResolver(opts.attachment, opts.topTierKind),
+    resolveSource: makeSourceResolver(opts.attachment, opts.topTierKind, opts.sourceKind),
     isReceptionOrigin: defaultIsReceptionOriginAnchor,
     submitAnswer,
     ...(opts.allowOffer !== undefined
       ? { readAskAllowOffer: async () => opts.allowOffer }
+      : {}),
+    ...(opts.lookupBookingHistory !== undefined
+      ? { lookupBookingHistory: opts.lookupBookingHistory }
+      : {}),
+    ...(opts.resolveFormResponseEdit !== undefined
+      ? { resolveFormResponseEdit: opts.resolveFormResponseEdit }
       : {}),
     subviewStore,
     broadcast: (e) => broadcasts.push(e),
@@ -315,6 +328,70 @@ describe('origin filter (N.1)', () => {
     expect(res.items[0]!.top_tier_kind).toBe('form_response');
     expect(res.items[0]!.arg_schema).toEqual({ fields: [] });
     expect(resolverStub).not.toHaveBeenCalled();
+  });
+
+  it('prefills only the dedicated form-response working fields on the owner inbox', async () => {
+    const resolveFormResponseEdit = vi.fn(async () => ({
+      values: { project: 'Original sealed answer' },
+      visitor_email: 'visitor@example.test',
+    }));
+    const h = makeHarness({ topTierKind: 'form_response', resolveFormResponseEdit });
+    await seedHeld(h);
+
+    const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+    expect(resolveFormResponseEdit).toHaveBeenCalledWith(
+      expect.objectContaining({ record_ref: 'cp-1' }),
+      expect.objectContaining({ title: 'Coffee chat' }),
+    );
+    expect(res.items[0]?.args).toMatchObject({
+      form_response_values: { project: 'Original sealed answer' },
+      form_response_visitor_email: 'visitor@example.test',
+    });
+    expect(res.items[0]?.arg_schema.fields.map((field) => field.key)).toEqual([
+      'form_response_values',
+      'form_response_visitor_email',
+    ]);
+  });
+
+  it('passes scheduling projection args to the owner-only history resolver', async () => {
+    const lookupBookingHistory = vi.fn(async (_source, args) => {
+      // History authority is the substrate-authored reservation id, never a
+      // source presentation ref supplied by a caller or test seam.
+      expect(args.booking_request_id).toBe('reservation-77');
+      return {
+        counterparty_contact_id: 'contact-opaque',
+        total: 1,
+        entries: [{
+          id: 'booking-old',
+          title: 'Earlier visit',
+          lifecycle_state: 'no_show' as const,
+          created_at: NOW - 2,
+          state_changed_at: NOW - 1,
+        }],
+      };
+    });
+    const h = makeHarness({
+      topTierKind: 'booking',
+      sourceKind: 'scheduling_link',
+      lookupBookingHistory,
+    });
+    await seedHeld(h, {}, {
+      step_state: {
+        materialize: { input: { booking_request_id: 'reservation-77', title: 'Booking' } },
+      },
+    });
+
+    const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+    expect(lookupBookingHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'scheduling_link', record_ref: 'cp-1' }),
+      expect.objectContaining({ booking_request_id: 'reservation-77' }),
+    );
+    expect(res.items[0]?.booking_history).toMatchObject({
+      counterparty_contact_id: 'contact-opaque',
+      total: 1,
+      entries: [{ id: 'booking-old', lifecycle_state: 'no_show' }],
+    });
+    expect(JSON.stringify(res.items[0]?.booking_history)).not.toContain('@');
   });
 
   it('queryReceptionInboxHeldOps skips a terminal (succeeded) run and one with no checkpoint', async () => {
@@ -551,6 +628,33 @@ describe('release + audit', () => {
     expect(row!.target).toBe('cp-1');
     expect(row!.detail).toContain('calendar_id');
     expect(row!.reserve).toBe(true);
+  });
+
+  it('redacts form-response values and email from the approval audit diff', async () => {
+    const h = makeHarness({
+      topTierKind: 'form_response',
+      resolveFormResponseEdit: async () => ({
+        values: { secret: 'original visitor words' },
+        visitor_email: 'original@example.test',
+      }),
+    });
+    await seedHeld(h);
+    await handleReceptionInboxApprove(h.deps, {
+      hold_id: 'cp-1',
+      edits: {
+        form_response_values: { secret: 'owner corrected words' },
+        form_response_visitor_email: 'corrected@example.test',
+      },
+    }, ADMIN);
+
+    const acts = await h.auditLog.listActivities(10);
+    const row = acts.find((entry) => (entry.action as string) === 'reception.inbox.approved');
+    expect(row?.detail).toContain('<redacted form response content>');
+    const serialized = JSON.stringify(row);
+    expect(serialized).not.toContain('original visitor words');
+    expect(serialized).not.toContain('owner corrected words');
+    expect(serialized).not.toContain('original@example.test');
+    expect(serialized).not.toContain('corrected@example.test');
   });
 
   it('approve on an unknown / consumed hold → hold_not_found', async () => {
@@ -842,18 +946,178 @@ describe('defaultResolveInboxSource (N.1)', () => {
   });
 
   it('surfaces the real materialize target (top_tier_kind) the drain stamped into the gated args', () => {
-    // A drop booking stamps `top_tier_kind: 'task'`; a scheduling booking
-    // stamps `'calendar.event'`. The inbox list must label WHAT it will
+    // A drop stamps `top_tier_kind: 'task'`; a scheduling reservation stamps
+    // `'booking'`. The inbox list must label WHAT it will
     // materialize into, not a generic `commitment` (which mislabels a
     // file-drop / a booking in the review queue).
     const anchor = mkAnchor();
-    for (const kind of ['task', 'calendar.event'] as const) {
+    for (const kind of ['task', 'booking'] as const) {
       const checkpoint = mkCheckpoint({
         step_state: { materialize: { input: { top_tier_kind: kind, id: 'reception_x', title: 'note.txt' } } },
       });
       const resolved = defaultResolveInboxSource({ anchor, checkpoint });
       expect(resolved!.top_tier_kind).toBe(kind);
     }
+  });
+
+  it('recognizes the managed reschedule door as a scheduling-link booking hold', () => {
+    // ⛔ THE SHAPE HERE IS PRODUCTION'S, and that is the whole point. This test
+    // previously fabricated `gated_step_id: 'materialize'` with
+    // `step_state.materialize.input = { top_tier_kind: 'booking', booking_id }`
+    // — a shape NOTHING writes on this path — so it passed while the real flow
+    // was broken in three ways at once. `reschedule-booking-managed.json` gates
+    // on the step `reschedule`, whose op is the KERNEL op
+    // `core.work-entity.booking.update`, whose args are `{ id, slot_start_at,
+    // slot_end_at }`: no `top_tier_kind`, no `booking_id`.
+    // ⇒ [[feedback_a_stub_predecides_the_thing_under_test]]
+    const anchor = mkAnchor({
+      recipe_id: 'reschedule-booking-managed',
+      execution_source: {
+        channel: 'reception',
+        actor: 'anonymous',
+        reception_id: '__manage__',
+        contract_id: 'contract-manage',
+      },
+    });
+    const checkpoint = mkCheckpoint({
+      recipe_id: 'reschedule-booking-managed',
+      gated_step_id: 'reschedule',
+      approved_target: {
+        ingredient_slug: 'recued/run-ingredient',
+        operation_id: 'core.work-entity.booking.update',
+        connection_name: '',
+      },
+      // The shape `reschedule-booking-managed` ACTUALLY produces: the pre-gate
+      // transform outputs, PLUS the gated kernel op's resolved input — the
+      // engine's simple-form branch now records that on a hold, same as the
+      // catalog branch always has.
+      step_state: {
+        ready: true,
+        manage_target_booking_id: 'booking-1',
+        reschedule: {
+          input: {
+            id: 'booking-1',
+            slot_start_at: NOW + 60_000,
+            slot_end_at: NOW + 120_000,
+          },
+        },
+      },
+    });
+
+    const resolved = defaultResolveInboxSource({ anchor, checkpoint });
+
+    expect(resolved).toMatchObject({
+      // Not `commitment` — the fallback mislabelled the item AND suppressed the
+      // prior-booking history panel, which `projectInboxItem` gates on this.
+      top_tier_kind: 'booking',
+      // Not the gate checkpoint id.
+      source: { kind: 'scheduling_link', record_ref: 'booking-1' },
+    });
+    expect(resolved!.source.record_ref).not.toBe('cp-1');
+    // 🔑 THE PROPOSED NEW TIME reaches the owner. This is the other half of the
+    // original complaint — the hold arrived labelled `commitment` with EMPTY
+    // args, so the owner was asked to approve a reschedule without being shown
+    // the time being proposed. `record_ref` comes from the pre-gate step and
+    // the slot comes from the gated step's captured input; the two are
+    // complementary, not redundant.
+    expect(resolved!.args).toMatchObject({
+      slot_start_at: NOW + 60_000,
+      slot_end_at: NOW + 120_000,
+    });
+  });
+
+  it('the managed recipe actually publishes the step the resolver reads', () => {
+    // ⛔ THE PAIR IS THE CONTRACT. The resolver reads a step id out of a
+    // checkpoint; the recipe is what puts it there. Either alone passes its own
+    // test while the flow stays broken — which is exactly how this defect
+    // survived: a resolver test fabricated a `step_state` shape no recipe wrote.
+    // ⇒ [[feedback_a_call_site_is_not_a_wired_seam]]
+    const recipe = JSON.parse(
+      readFileSync(
+        resolvePath(
+          fileURLToPath(import.meta.url),
+          '../../../../../community/recipes/reschedule-booking-managed.json',
+        ),
+        'utf8',
+      ),
+    ) as { steps: Array<{ id: string; op?: string }> };
+    const ids = recipe.steps.map((s) => s.id);
+    expect(ids).toContain('manage_target_booking_id');
+    // And it must come BEFORE the gated write, or its output is never captured.
+    expect(ids.indexOf('manage_target_booking_id'))
+      .toBeLessThan(ids.indexOf('reschedule'));
+    expect(recipe.steps.find((s) => s.id === 'reschedule')?.op)
+      .toBe('core.work-entity.booking.update');
+  });
+
+  it('a manage hold whose gated step recorded nothing still degrades honestly', () => {
+    // The capture is engine-side; a checkpoint predating it (or any custom hold
+    // with no Reception provenance) must fall back to the checkpoint id rather
+    // than invent a booking id.
+    const anchor = mkAnchor({
+      recipe_id: 'reschedule-booking-managed',
+      execution_source: {
+        channel: 'reception',
+        actor: 'anonymous',
+        reception_id: '__manage__',
+        contract_id: 'contract-manage',
+      },
+    });
+    const resolved = defaultResolveInboxSource({
+      anchor,
+      checkpoint: mkCheckpoint({ gated_step_id: 'reschedule', step_state: {} }),
+    });
+    expect(resolved!.source.record_ref).toBe('cp-1');
+  });
+
+  it('uses substrate-authored source ids as record_ref and falls back only when absent', () => {
+    const cases = [
+      {
+        anchor: mkAnchor(),
+        input: { metadata: { reception_form_submission_id: 'submission-1' } },
+        expected: 'submission-1',
+      },
+      {
+        anchor: mkAnchor({
+          recipe_id: 'recued-core/reception-scheduling-incoming',
+          execution_source: {
+            channel: 'reactive',
+            actor: 'system',
+            event_kind: 'reception.scheduling_link.submitted',
+            source_recipe: 'recued-core/reception-scheduling-incoming',
+          },
+        }),
+        input: { booking_request_id: 'request-1' },
+        expected: 'request-1',
+      },
+      {
+        anchor: mkAnchor({
+          recipe_id: 'recued-core/reception-drop-incoming',
+          execution_source: {
+            channel: 'reactive',
+            actor: 'system',
+            event_kind: 'reception.drop_link.submitted',
+            source_recipe: 'recued-core/reception-drop-incoming',
+          },
+        }),
+        input: { metadata: { reception_drop_blob_id: 'drop-1' } },
+        expected: 'drop-1',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const resolved = defaultResolveInboxSource({
+        anchor: testCase.anchor,
+        checkpoint: mkCheckpoint({
+          step_state: { materialize: { input: testCase.input } },
+        }),
+      });
+      expect(resolved?.source.record_ref).toBe(testCase.expected);
+    }
+    expect(defaultResolveInboxSource({
+      anchor: mkAnchor(),
+      checkpoint: mkCheckpoint(),
+    })?.source.record_ref).toBe('cp-1');
   });
 
   it('labels a store-only accepted response honestly', () => {

@@ -46,7 +46,7 @@ describe('D-192 — SharePoint vendor provider', () => {
     expect(sharepoint!.oauth.token_endpoint).toBe(MICROSOFT_TOKEN_URL);
   });
 
-  it('requests Sites.Read.All — the SharePoint document-library read scope (bytes never fetched)', () => {
+  it('requests Sites.Read.All for metadata sync and lazy file reads', () => {
     expect(sharepoint!.oauth.scopes).toEqual(SHAREPOINT_OAUTH_SCOPES);
     expect([...SHAREPOINT_OAUTH_SCOPES]).toEqual([
       GRAPH_SITES_READ_ALL_SCOPE,

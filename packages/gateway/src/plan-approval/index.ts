@@ -28,19 +28,17 @@
  *      `true` OR Mary's per-tool classification is `'write'`.
  *    - `buildPlanProposal(args)` — pure constructor that mints a
  *      proposal record with stable id + audit envelope.
- *    - `createPlanApprovalStore()` — in-memory pending-plan registry.
- *      Multi-client coherent (every paired client sees the proposed +
- *      resolved events via the D-121 broadcast bus); the underlying
- *      state is per-session-id + per-turn-id keyed so concurrent
- *      sessions never collide.
+ *    - `PlanApprovalStore` — sync-or-async seam for the production durable
+ *      store and narrow embeddings; `createPlanApprovalStore()` is the
+ *      synchronous in-memory implementation used by tests.
  *
  *  The chat orchestrator's `dispatchTool` consults the store before
  *  dispatching writes (precedence order):
  *
  *    - SAME-TURN cancelled plan → return `plan_cancelled` without
  *      dispatching or re-proposing.
- *    - Consumable approval (`findApprovedForDispatch` hit) →
- *      `markConsumed` + proceed to dispatch.
+ *    - Consumable approval (`findApprovedForDispatch` hit) → atomic
+ *      `consumeForDispatch` + proceed to dispatch.
  *    - Otherwise → mint a proposal (or re-emit the same turn's
  *      still-proposed one), persist, emit `chat.plan_proposed`,
  *      return `awaiting_approval`.
@@ -76,13 +74,17 @@
  *    - args_hash — unchanged from the Codex P3 fold; different args
  *      never inherit an approval.
  *
- *  Pure-ish: the store is process-local mutable state (no
- *  persistence). Each row carries `created_at` / `resolved_at` /
- *  `consumed_at` so callers can age-out abandoned plans without
- *  re-scanning every pending row. */
+ *  Each row carries `created_at` / `resolved_at` / `consumed_at` so callers
+ *  can age-out abandoned plans without re-scanning every pending row. */
 
 import { createHash } from 'node:crypto';
-import type { ChatPlanProposal, ChatPlanStatus, ToolEntry } from '@recued/contracts';
+import type {
+  ChatPlanExecutionReceipt,
+  ChatPlanProposal,
+  ChatPlanRecord,
+  ChatPlanStatus,
+  ToolEntry,
+} from '@recued/contracts';
 
 /** § A.11 — stable content hash of dispatch args. SHA-256 over a
  *  canonical-key JSON serialisation; first 16 hex chars (96-bit
@@ -189,6 +191,8 @@ export const requiresPlanApproval = (entry: ToolEntry): boolean => {
 export interface BuildPlanProposalArgs {
   session_id: string;
   turn_id: string;
+  /** Optional lineage for a user-sent verify-before-retry turn. */
+  retry_of_plan_id?: string;
   tool: string;
   tier: 1 | 2 | 3;
   classification: 'read' | 'write' | 'unknown';
@@ -207,6 +211,9 @@ export const buildPlanProposal = (
   plan_id: args.mintId(),
   session_id: args.session_id,
   turn_id: args.turn_id,
+  ...(args.retry_of_plan_id !== undefined
+    ? { retry_of_plan_id: args.retry_of_plan_id }
+    : {}),
   tool: args.tool,
   tier: args.tier,
   classification: args.classification,
@@ -219,17 +226,24 @@ export const buildPlanProposal = (
   created_at: args.now(),
 });
 
-/** § A.11 — in-memory pending-plan registry. The chat orchestrator
- *  reads + writes; rpc handlers flip status. Process-local; no
- *  persistence (plans are short-lived; a server restart fairly
- *  drops every pending plan + Mary re-asks). */
+/** § A.11 — storage seam shared by the chat orchestrator, approval RPCs, and
+ * session snapshot recovery. Production implements it over SQLite; the
+ * default factory below remains a synchronous in-memory test implementation. */
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface PlanApprovalStore {
   /** Lookup by `plan_id`. Returns the current state OR undefined. */
-  get(plan_id: string): ChatPlanProposal | undefined;
+  get(plan_id: string): MaybePromise<ChatPlanProposal | undefined>;
   /** List every pending plan for a session. Used by the renderer to
    *  paint the per-session "you have N writes awaiting approval"
    *  banner. Ordered by `created_at` ascending. */
-  listPending(session_id: string): ReadonlyArray<ChatPlanProposal>;
+  listPending(
+    session_id: string,
+  ): MaybePromise<ReadonlyArray<ChatPlanProposal>>;
+  /** Durable approval-inbox snapshot across every Chat session. Optional for
+   * narrow stores; production and the default store provide it. Pending rows
+   * with unavailable reviewed payloads remain as non-executable records. */
+  listPendingRecords?(): MaybePromise<ReadonlyArray<ChatPlanRecord>>;
   /** Look up the latest plan for `(session_id, turn_id, tool,
    *  args_hash)` — the SAME-TURN state machine: proposed re-emit
    *  coherence + cancelled terminality (both deliberately
@@ -246,7 +260,7 @@ export interface PlanApprovalStore {
     turn_id: string,
     tool: string,
     args_hash: string,
-  ): ChatPlanProposal | undefined;
+  ): MaybePromise<ChatPlanProposal | undefined>;
   /** § A.11 cross-turn consumption lookup — the latest plan that is
    *  `'approved'`, NOT yet consumed, and approved within
    *  `PLAN_APPROVAL_CONSUMPTION_TTL_MS` of `now`, matched on
@@ -254,14 +268,14 @@ export interface PlanApprovalStore {
    *  approval necessarily lands after the proposing turn ended and
    *  the re-issue carries a new turn_id. "Latest" = greatest
    *  `resolved_at` (most recent approval intent). The caller MUST
-   *  pair a hit with `markConsumed` at the dispatch decision —
+   *  pair a hit with atomic `consumeForDispatch` at the dispatch decision —
    *  matching alone does not spend the approval. */
   findApprovedForDispatch(
     session_id: string,
     tool: string,
     args_hash: string,
     now: number,
-  ): ChatPlanProposal | undefined;
+  ): MaybePromise<ChatPlanProposal | undefined>;
   /** Stamp `consumed_at` on an approved plan — the single-use spend.
    *  Returns the updated record; undefined when the plan is missing
    *  or not `'approved'`. Idempotent: an already-consumed plan keeps
@@ -269,10 +283,20 @@ export interface PlanApprovalStore {
   markConsumed(
     plan_id: string,
     consumed_at: number,
-  ): ChatPlanProposal | undefined;
-  /** Persist a proposed plan. Replaces any prior plan with the same
-   *  `plan_id` (idempotent). */
-  put(plan: ChatPlanProposal): void;
+    execution_turn_id?: string,
+  ): MaybePromise<ChatPlanProposal | undefined>;
+  /** Atomic dispatch spend. Unlike idempotent `markConsumed`, returns
+   * undefined when another caller already consumed the approval or it expired
+   * before this exact spend. Production uses this to prevent two concurrent
+   * dispatchers from sharing one grant. */
+  consumeForDispatch(
+    plan_id: string,
+    consumed_at: number,
+    execution_turn_id: string,
+  ): MaybePromise<ChatPlanProposal | undefined>;
+  /** Persist a proposed plan. An existing `plan_id` remains unchanged so an
+   * id collision cannot replace already-reviewed arguments. */
+  put(plan: ChatPlanProposal): MaybePromise<void>;
   /** Flip status to `approved` / `cancelled`. Returns the updated
    *  record OR `undefined` when no such plan exists. Subsequent
    *  status flips on a resolved plan are no-ops (resolved plans are
@@ -281,12 +305,79 @@ export interface PlanApprovalStore {
     plan_id: string,
     status: 'approved' | 'cancelled',
     resolved_at: number,
+  ): MaybePromise<ChatPlanProposal | undefined>;
+  /** Durable recovery list for `chat.session.get`. Optional for narrow test
+   * stores; production provides it. */
+  listForSession?(
+    session_id: string,
+  ): MaybePromise<ReadonlyArray<ChatPlanRecord>>;
+  /** Link every plan proposed by a completed turn to its assistant message. */
+  linkTurnToMessage?(
+    session_id: string,
+    turn_id: string,
+    message_id: string,
+  ): MaybePromise<void>;
+  /** Persist the post-consumption execution truth before broadcasting it.
+   * Implementations must refuse unknown/unconsumed plan ids and must not
+   * regress a terminal receipt to `running` or change the execution turn
+   * established by the atomic spend. */
+  recordExecution?(
+    plan_id: string,
+    execution: ChatPlanExecutionReceipt,
+  ): MaybePromise<ChatPlanExecutionReceipt | undefined>;
+}
+
+/** Concrete default store stays synchronous for unit tests and lightweight
+ * embeddings. Production wires the SQLite-backed implementation. */
+export interface SynchronousPlanApprovalStore extends PlanApprovalStore {
+  get(plan_id: string): ChatPlanProposal | undefined;
+  listPending(session_id: string): ReadonlyArray<ChatPlanProposal>;
+  listPendingRecords(): ReadonlyArray<ChatPlanRecord>;
+  findLatest(
+    session_id: string,
+    turn_id: string,
+    tool: string,
+    args_hash: string,
   ): ChatPlanProposal | undefined;
+  findApprovedForDispatch(
+    session_id: string,
+    tool: string,
+    args_hash: string,
+    now: number,
+  ): ChatPlanProposal | undefined;
+  markConsumed(
+    plan_id: string,
+    consumed_at: number,
+    execution_turn_id?: string,
+  ): ChatPlanProposal | undefined;
+  consumeForDispatch(
+    plan_id: string,
+    consumed_at: number,
+    execution_turn_id: string,
+  ): ChatPlanProposal | undefined;
+  put(plan: ChatPlanProposal): void;
+  resolve(
+    plan_id: string,
+    status: 'approved' | 'cancelled',
+    resolved_at: number,
+  ): ChatPlanProposal | undefined;
+  listForSession(session_id: string): ReadonlyArray<ChatPlanRecord>;
+  linkTurnToMessage(
+    session_id: string,
+    turn_id: string,
+    message_id: string,
+  ): void;
+  recordExecution(
+    plan_id: string,
+    execution: ChatPlanExecutionReceipt,
+  ): ChatPlanExecutionReceipt | undefined;
 }
 
 /** § A.11 — default in-memory store factory. */
-export const createPlanApprovalStore = (): PlanApprovalStore => {
+export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
   const byPlanId = new Map<string, ChatPlanProposal>();
+  const messageIdByPlanId = new Map<string, string>();
+  const executionByPlanId = new Map<string, ChatPlanExecutionReceipt>();
 
   const get = (plan_id: string): ChatPlanProposal | undefined =>
     byPlanId.get(plan_id);
@@ -363,6 +454,7 @@ export const createPlanApprovalStore = (): PlanApprovalStore => {
   const markConsumed = (
     plan_id: string,
     consumed_at: number,
+    execution_turn_id?: string,
   ): ChatPlanProposal | undefined => {
     const existing = byPlanId.get(plan_id);
     if (!existing) return undefined;
@@ -371,11 +463,51 @@ export const createPlanApprovalStore = (): PlanApprovalStore => {
     if (existing.consumed_at !== undefined) return existing;
     const next: ChatPlanProposal = { ...existing, consumed_at };
     byPlanId.set(plan_id, next);
+    if (execution_turn_id !== undefined) {
+      executionByPlanId.set(plan_id, {
+        status: 'running',
+        turn_id: execution_turn_id,
+      });
+    }
     return next;
   };
 
   const put = (plan: ChatPlanProposal): void => {
+    if (byPlanId.has(plan.plan_id)) return;
+    if (plan.retry_of_plan_id !== undefined) {
+      const origin = byPlanId.get(plan.retry_of_plan_id);
+      const execution = executionByPlanId.get(plan.retry_of_plan_id);
+      const retryableFailure =
+        execution?.status === 'failed'
+        && execution.reason !== 'run_cancelled';
+      if (
+        origin === undefined
+        || origin.session_id !== plan.session_id
+        || origin.status !== 'approved'
+        || origin.consumed_at === undefined
+        || (execution?.status !== 'unknown' && !retryableFailure)
+      ) {
+        throw new Error(
+          `plan-approval: invalid retry origin ${plan.retry_of_plan_id}`,
+        );
+      }
+    }
     byPlanId.set(plan.plan_id, plan);
+  };
+
+  const consumeForDispatch = (
+    plan_id: string,
+    consumed_at: number,
+    execution_turn_id: string,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing || existing.status !== 'approved') return undefined;
+    if (existing.consumed_at !== undefined) return undefined;
+    const approvedAt = existing.resolved_at ?? existing.created_at;
+    if (
+      consumed_at - approvedAt > PLAN_APPROVAL_CONSUMPTION_TTL_MS
+    ) return undefined;
+    return markConsumed(plan_id, consumed_at, execution_turn_id);
   };
 
   const resolve = (
@@ -396,13 +528,82 @@ export const createPlanApprovalStore = (): PlanApprovalStore => {
     return next;
   };
 
+  const listForSession = (
+    session_id: string,
+  ): ReadonlyArray<ChatPlanRecord> =>
+    Array.from(byPlanId.values())
+      .filter((plan) => plan.session_id === session_id)
+      .sort((left, right) => left.created_at - right.created_at)
+      .map((plan) => ({
+        plan,
+        ...(messageIdByPlanId.has(plan.plan_id)
+          ? { message_id: messageIdByPlanId.get(plan.plan_id)! }
+          : {}),
+        ...(executionByPlanId.has(plan.plan_id)
+          ? { execution: executionByPlanId.get(plan.plan_id)! }
+          : {}),
+        payload_available: true,
+      }));
+
+  const listPendingRecords = (): ReadonlyArray<ChatPlanRecord> =>
+    Array.from(byPlanId.values())
+      .filter((plan) => plan.status === 'proposed')
+      .sort((left, right) =>
+        left.created_at !== right.created_at
+          ? left.created_at - right.created_at
+          : left.plan_id.localeCompare(right.plan_id),
+      )
+      .map((plan) => ({
+        plan,
+        ...(messageIdByPlanId.has(plan.plan_id)
+          ? { message_id: messageIdByPlanId.get(plan.plan_id)! }
+          : {}),
+        payload_available: true,
+      }));
+
+  const linkTurnToMessage = (
+    session_id: string,
+    turn_id: string,
+    message_id: string,
+  ): void => {
+    for (const plan of byPlanId.values()) {
+      if (plan.session_id === session_id && plan.turn_id === turn_id) {
+        messageIdByPlanId.set(plan.plan_id, message_id);
+      }
+    }
+  };
+
+  const recordExecution = (
+    plan_id: string,
+    execution: ChatPlanExecutionReceipt,
+  ): ChatPlanExecutionReceipt | undefined => {
+    const plan = byPlanId.get(plan_id);
+    if (plan?.consumed_at === undefined) return undefined;
+    const current = executionByPlanId.get(plan_id);
+    if (
+      current !== undefined
+      && current.turn_id !== execution.turn_id
+    ) return undefined;
+    if (
+      current !== undefined
+      && current.status !== 'running'
+    ) return current;
+    executionByPlanId.set(plan_id, execution);
+    return execution;
+  };
+
   return {
     get,
     listPending,
     findLatest,
     findApprovedForDispatch,
     markConsumed,
+    consumeForDispatch,
     put,
     resolve,
+    listPendingRecords,
+    listForSession,
+    linkTurnToMessage,
+    recordExecution,
   };
 };

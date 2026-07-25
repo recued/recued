@@ -10,7 +10,7 @@
  *            D-148 P9 webhook port has already verified the
  *            `X-Telegram-Bot-Api-Secret-Token` header.
  *
- *  Spec: docs/d-160-spec.md § A.5; docs/d-158-spec.md § P2 / A.4.
+ *  Spec: D-160 § A.5; D-158 § P2 / A.4.
  */
 
 import { randomUUID } from 'node:crypto';

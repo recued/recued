@@ -18,7 +18,7 @@
  *      (defense-in-depth — host normally suppresses the dialog mount
  *      in this state; the substrate enforces independently).
  *
- *  Spec: docs/d-145-spec.md § A.5 (Email compose UI). */
+ *  Spec: D-145 § A.5 (Email compose UI). */
 
 import type {
   FormDefinition,

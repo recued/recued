@@ -13,7 +13,7 @@
  *  reverse lookup; the row-shape contract on `WorkEntity*` stays
  *  identical either way.
  *
- *  Spec: docs/d-145-spec.md § A.1 + § A.1.6 + § A.2.1. */
+ *  Spec: D-145 § A.1 + § A.1.6 + § A.2.1. */
 
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -51,6 +51,7 @@ import {
   BOOKING_LIFECYCLE_STATE_SET,
   BOOKING_TITLE_MAX,
   type Booking,
+  type BookingHistorySummary,
   type BookingLifecycleState,
   type Commitment,
   type CommitmentDirection,
@@ -171,7 +172,28 @@ const sourceRowIdentityIndexes = (kind: WorkEntityKind, table: string): string =
     WHERE deleted_at IS NOT NULL;
 `;
 
+/** Register `js_lower` on this CONNECTION.
+ *
+ *  ⛔ SQLite's built-in `LOWER()` folds ASCII ONLY (no ICU in better-sqlite3):
+ *  `LOWER('École')` is `'École'`, while JS `.toLowerCase()` folds the full
+ *  Unicode range. Building a search pattern in JS and comparing it against a
+ *  SQL-lowered column therefore matches NOTHING for any accented or non-Latin
+ *  term — and because the count query runs the same predicate, the empty page
+ *  reads as authoritative rather than broken.
+ *
+ *  Called from BOTH `ensureWorkEntitySchema` and `createWorkEntityStore`
+ *  (mirroring `phone_match_forms_json` in `contact-store.ts`, for the same
+ *  reason): a function is bound to a connection, not to a schema, so binding it
+ *  in only one of the two would make booking search depend on the order a
+ *  caller happened to use. Re-registration safely replaces in better-sqlite3,
+ *  so calling it twice is a no-op. */
+const registerWorkEntitySqlFunctions = (db: Database.Database): void => {
+  db.function('js_lower', { deterministic: true }, (value: unknown) =>
+    typeof value === 'string' ? value.toLowerCase() : '');
+};
+
 export const ensureWorkEntitySchema = (db: Database.Database): void => {
+  registerWorkEntitySqlFunctions(db);
   // Foreign-key enforcement matches existing stores' assumption.
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${SOURCE_REGISTRY_TABLE} (
@@ -408,6 +430,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       ON ${BOOKING_TABLE} (lifecycle_state, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_booking_counterparty_lifecycle
       ON ${BOOKING_TABLE} (counterparty_contact_id, lifecycle_state);
+    CREATE INDEX IF NOT EXISTS idx_booking_counterparty_history
+      ON ${BOOKING_TABLE} (counterparty_contact_id, lifecycle_state, state_changed_at DESC);
     -- UNIQUE, not a plain index: ONE booking per reception record is the
     -- rule, and booking-create mints a fresh uuid per call, so nothing else
     -- stops a retried / replayed approve from minting a SECOND booking for the
@@ -787,6 +811,10 @@ export interface WorkEntityListQuery {
   include_disabled?: boolean;
   limit?: number;
   offset?: number;
+  /** Booking-only search. Applied by SQL before pagination. */
+  search?: string;
+  /** Booking-only business lifecycle filter. */
+  booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
 
 const DEFAULT_LIST_LIMIT = 100;
@@ -804,6 +832,24 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
   }
   const limit = Math.min(Math.max(q?.limit ?? DEFAULT_LIST_LIMIT, 1), MAX_LIST_LIMIT);
   const offset = Math.max(q?.offset ?? 0, 0);
+  if (q?.search !== undefined && typeof q.search !== 'string') {
+    throw new WorkEntityValidationError('search must be a string', 'search');
+  }
+  const search = q?.search?.trim() ?? '';
+  if (search.length > 200) {
+    throw new WorkEntityValidationError('search is limited to 200 characters', 'search');
+  }
+  const booking_lifecycle_states = [
+    ...new Set(q?.booking_lifecycle_states ?? []),
+  ];
+  for (const state of booking_lifecycle_states) {
+    if (!BOOKING_LIFECYCLE_STATE_SET.has(state)) {
+      throw new WorkEntityValidationError(
+        `unknown booking lifecycle_state '${String(state)}'`,
+        'booking_lifecycle_states',
+      );
+    }
+  }
   return {
     sync_states,
     source_id: q?.source_id ?? '',
@@ -811,11 +857,16 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
     include_disabled: q?.include_disabled ?? false,
     limit,
     offset,
+    search,
+    booking_lifecycle_states,
   };
 };
 
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, '\\$&');
+
 const buildListWhere = (
   q: Required<WorkEntityListQuery>,
+  bookingFilters = false,
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
@@ -848,6 +899,30 @@ const buildListWhere = (
   }
   if (!q.include_deleted) {
     clauses.push('deleted_at IS NULL');
+  }
+  if (bookingFilters) {
+    if (q.search.length > 0) {
+      // `js_lower` (not SQL `LOWER`) on BOTH sides — see `ensureWorkEntitySchema`.
+      // The JS-built pattern folds the full Unicode range, so the column must
+      // fold the same way or `École` never matches the title it is stored under.
+      const pattern = `%${escapeLike(q.search.toLowerCase())}%`;
+      clauses.push(
+        `(js_lower(title) LIKE ? ESCAPE '\\' OR js_lower(id) LIKE ? ESCAPE '\\' `
+          + `OR js_lower(COALESCE(counterparty_contact_id, '')) LIKE ? ESCAPE '\\')`,
+      );
+      params.push(pattern, pattern, pattern);
+    }
+    if (q.booking_lifecycle_states.length > 0) {
+      clauses.push(
+        `lifecycle_state IN (${q.booking_lifecycle_states.map(() => '?').join(', ')})`,
+      );
+      params.push(...q.booking_lifecycle_states);
+    }
+  } else if (q.search.length > 0 || q.booking_lifecycle_states.length > 0) {
+    throw new WorkEntityValidationError(
+      'search and booking_lifecycle_states are booking-only filters',
+      q.search.length > 0 ? 'search' : 'booking_lifecycle_states',
+    );
   }
   return { sql: `WHERE ${clauses.join(' AND ')}`, params };
 };
@@ -1241,8 +1316,38 @@ const validateNoteInput = (input: NoteWriteInput): void => {
  *  test fixtures can populate any valid enum tuple; user-facing
  *  state moves go through the ingredient layer with transition
  *  validation on top. */
+/** A booking's counterparty must be an OPAQUE identifier, never the visitor's
+ *  address or name.
+ *
+ *  🔴 Booking-specific ON PURPOSE. `counterparty_contact_id` is shared across
+ *  work-entity kinds and `commitment` legitimately keys on an email — so this
+ *  cannot move to a column-wide fence. What makes booking different is
+ *  `getBookingHistory`: it echoes this value back and renders history to the
+ *  owner on the approval, managed-reschedule and detail surfaces, so whatever
+ *  lands here becomes part of a privacy-minimal response.
+ *
+ *  ⛔ The invariant already existed, enforced at ONE call site: the reception
+ *  mint deliberately refuses `projectContact`'s `?? email` fallback
+ *  (`reception-booking-mint.ts:75-83`). But the kernel `booking-create` /
+ *  `booking-update` ingredients pass a caller-supplied value straight through,
+ *  so a recipe or a granted agent could put an email in the column and every
+ *  later history response would carry it. Enforce at the column, not at the one
+ *  writer that happens to get it right. */
+const BOOKING_CONTACT_ID_REGEX = /^[A-Za-z0-9._:-]{1,256}$/;
+
 const validateBookingInput = (input: BookingWriteInput): void => {
   validateText('title', input.title, BOOKING_TITLE_MAX, true);
+  if (
+    input.counterparty_contact_id !== undefined
+    && !BOOKING_CONTACT_ID_REGEX.test(input.counterparty_contact_id)
+  ) {
+    throw new WorkEntityValidationError(
+      'counterparty_contact_id must be an opaque identifier '
+        + '([A-Za-z0-9._:-], 1-256 chars) — a booking counterparty is resolved '
+        + 'through the contact store, never carried as an address or a name',
+      'counterparty_contact_id',
+    );
+  }
   if (
     input.lifecycle_state !== undefined
     && !BOOKING_LIFECYCLE_STATE_SET.has(input.lifecycle_state)
@@ -1642,6 +1747,12 @@ export interface WorkEntityStore {
   ): Booking | null;
   deleteBooking(id: string, opts?: { tombstone?: boolean; now?: number }): boolean;
   countBookings(query?: WorkEntityListQuery): number;
+  /** Owner-only prior completed/no-show history for one opaque contact id. */
+  getBookingHistory(input: {
+    counterparty_contact_id: string;
+    exclude_booking_id?: string;
+    limit?: number;
+  }): BookingHistorySummary;
   // ── projects ───────────────────────────────────────────────────
   writeProject(input: ProjectWriteInput, now?: number): Project;
   readProject(id: string): Project | null;
@@ -1743,6 +1854,9 @@ export const createWorkEntityStore = (
   db: Database.Database,
   opts: CreateWorkEntityStoreOptions = {},
 ): WorkEntityStore => {
+  // A store may be built on a connection whose schema was ensured elsewhere (or
+  // by a test helper); the search predicate needs `js_lower` on THIS connection.
+  registerWorkEntitySqlFunctions(db);
   const newId = opts.newId ?? ((): string => randomUUID());
 
   // ── source registry helpers ─────────────────────────────────────
@@ -2830,11 +2944,15 @@ export const createWorkEntityStore = (
 
   const listBookings: WorkEntityStore['listBookings'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, true);
     const rows = db
       .prepare(
+        // `id DESC` is a TIEBREAK, not decoration: paging with LIMIT/OFFSET over
+        // a non-total order lets same-millisecond rows (seeded / imported in one
+        // batch) duplicate or skip across pages. `getBookingHistory` and the
+        // client-side sort both already tiebreak; this was the odd one out.
         `SELECT * FROM ${BOOKING_TABLE} ${where.sql}
-         ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .all(...where.params, norm.limit, norm.offset) as BookingRow[];
     return rows.map(rowToBooking);
@@ -2865,11 +2983,76 @@ export const createWorkEntityStore = (
 
   const countBookings: WorkEntityStore['countBookings'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${BOOKING_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };
     return row.n;
+  };
+
+  const getBookingHistory: WorkEntityStore['getBookingHistory'] = (input) => {
+    if (
+      typeof input.counterparty_contact_id !== 'string'
+      || input.counterparty_contact_id.trim().length === 0
+      || input.counterparty_contact_id.length > 256
+    ) {
+      throw new WorkEntityValidationError(
+        'counterparty_contact_id must be a non-empty string up to 256 characters',
+        'counterparty_contact_id',
+      );
+    }
+    if (
+      input.exclude_booking_id !== undefined
+      && (typeof input.exclude_booking_id !== 'string' || input.exclude_booking_id.length === 0)
+    ) {
+      throw new WorkEntityValidationError(
+        'exclude_booking_id must be a non-empty string when supplied',
+        'exclude_booking_id',
+      );
+    }
+    if (
+      input.limit !== undefined
+      && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50)
+    ) {
+      throw new WorkEntityValidationError(
+        'limit must be an integer between 1 and 50',
+        'limit',
+      );
+    }
+    const limit = input.limit ?? 10;
+    const extra = input.exclude_booking_id !== undefined ? ' AND id <> ?' : '';
+    const params = [
+      input.counterparty_contact_id,
+      ...(input.exclude_booking_id !== undefined ? [input.exclude_booking_id] : []),
+    ];
+    // History is an owner-side business lookup, not a live Source browse.
+    // Keep terminal rows even if their import Source is later disabled or
+    // unreachable; only explicit deletion removes a historical fact.
+    const where = `WHERE deleted_at IS NULL
+       AND lifecycle_state IN ('completed', 'no_show')
+       AND counterparty_contact_id = ?${extra}`;
+    const rows = db.prepare(
+      `SELECT * FROM ${BOOKING_TABLE} ${where}
+       ORDER BY state_changed_at DESC, id DESC LIMIT ?`,
+    ).all(...params, limit) as BookingRow[];
+    const count = db.prepare(
+      `SELECT COUNT(*) AS n FROM ${BOOKING_TABLE} ${where}`,
+    ).get(...params) as { n: number };
+    return {
+      counterparty_contact_id: input.counterparty_contact_id,
+      total: count.n,
+      entries: rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        // The SQL closed-list makes this narrowing true at the same boundary.
+        lifecycle_state: row.lifecycle_state as 'completed' | 'no_show',
+        created_at: row.created_at,
+        state_changed_at: row.state_changed_at,
+        ...(row.slot_start_at !== null && row.slot_end_at !== null
+          ? { slot_start_at: row.slot_start_at, slot_end_at: row.slot_end_at }
+          : {}),
+      })),
+    };
   };
 
   // ── projects ────────────────────────────────────────────────────
@@ -3126,6 +3309,7 @@ export const createWorkEntityStore = (
     findBooking,
     deleteBooking,
     countBookings,
+    getBookingHistory,
     writeProject,
     readProject,
     listProjects,

@@ -6,7 +6,7 @@
  *    - First-party middleware registry + D-164 P4 prompt-cache
  *      registration (the registry is a substrate hook today — no
  *      consumer reads it; D-164 P4 builds on it)
- *    - In-memory plan-approval store (D-137 P3 § A.11)
+ *    - SQLite-backed plan approvals + execution receipts
  *    - Tool-handler bundle (Tier 1 + Tier 2 dispatch over the
  *      `InternalToolRegistry`) with late-bound getters for every
  *      downstream store the chat surface dispatches against
@@ -70,6 +70,8 @@ import { createContactPrefetchSearch } from '../../chat-prefetch-search.js';
 import { createTrustStore } from '../../housekeeping/index.js';
 import { wrapRegistryWithEnrichmentTopicTools } from '../../chat-enrichment-topic-tools.js';
 import { wrapChatRegistryForCatalogModes } from '../../chat-tools-search.js';
+import { createRecallSearchBackend } from '../../chat-recall-search.js';
+import { wrapRegistryWithRecallSearch } from '../../chat-recall-search-tool.js';
 import { createPromptCacheGateDeps } from '../../chat-prompt-cache-gate.js';
 import { createContactKnownValueIndexBuilder } from '../../chat-recall-index.js';
 import {
@@ -77,9 +79,19 @@ import {
   type SessionForwardedSenderIndex,
 } from '../../chat-forwarded-sender-index.js';
 import type { ScopedGrantParseDeps } from '../../chat-scoped-grant-middleware.js';
+import { composeSpanAnchor } from './wire-span-anchor.js';
+import {
+  composeExecutionCases,
+  readExecutionCaseExperimentEnv,
+  type ComposedExecutionCases,
+} from './wire-execution-cases.js';
+import type {
+  ExecutionCaseLifecycle,
+} from '../../chat-execution-case-tools.js';
 import { createScopedGrantSuggestionStore } from '../../storage/scoped-grant-suggestion-store.js';
 import { createConnectionCatalogBindingStore } from '../../storage/connection-catalog-binding-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
+import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
 import type { WorkEntityTargetedReadDeps } from '../../work-entity-write-executor.js';
 import { createGatedReadGrantResolver } from '../../read-grant-checker.js';
@@ -93,7 +105,7 @@ import { createHousekeepingStateStore, type HousekeepingStateStore } from '../..
 import { reconciliationTaskId } from '../../housekeeping/reconciliation/vendor-reconciler.js';
 import { buildCanonicalPollDeps } from '../../watch/canonical-poll-deps.js';
 import { runCanonicalWatchPoll } from '../../watch/canonical-poll.js';
-import { planApproval, piiEgress } from '@recued/gateway';
+import { piiEgress } from '@recued/gateway';
 import type { AuditLogStore, Collection } from '@recued/storage';
 import type { AnnotationRpcDeps } from '../../annotation-handler.js';
 import {
@@ -101,6 +113,7 @@ import {
   ensureChatSchema,
   type ChatStore,
 } from '../../storage/chat-store.js';
+import { createSqliteChatPlanStore } from '../../storage/chat-plan-store.js';
 import {
   createChatToolCatalogStore,
   ensureChatToolCatalogSchema,
@@ -221,6 +234,11 @@ export interface ChatOrchestratorBundle {
   internalRegistry: InternalToolRegistry;
   orchestrator: ChatOrchestrator;
   chatDeps: ChatRpcDeps;
+  /** D-214 close/compile hook, retained for plan cancellation and the existing
+   * D-157 approval-staleness sweep. */
+  executionCaseLifecycle: ExecutionCaseLifecycle;
+  executionCaseVerificationRecorder:
+    ComposedExecutionCases['verificationRecorder'];
   /** D-177 N.11 rule 5 (5.d hot-path) — the per-session forwarded-sender
    *  candidate index; slice D threads `candidates()` into the gateway's
    *  scoped-grant match context. */
@@ -277,12 +295,12 @@ export const composeChatOrchestrator = (
   // consumer.
   const middlewareRegistry = createMiddlewareRegistry();
   registerFirstPartyMiddlewares(middlewareRegistry);
-  // Prefetch entity resolution (docs/prefetch-middleware-pending-design.md):
+  // Prefetch entity resolution (internal design notes):
   // wire the contact-backed search so the before-turn hook resolves entities
   // the user named and contributes them as labeled "verify" context — saving
   // a tool-call turn. Contributes nothing when no contact matches (zero-harm).
   // The fast-query FTS&RAM index that will replace this whole-warehouse scan is a
-  // prefetch concern (docs/d-167-prefetch-index-and-recall-collision-design.md §1.A).
+  // prefetch concern (D-167 §1.A).
   //
   // D-164 § 3 — also wire the REAL gate deps (contact-attribute template
   // matcher + warehouse data-presence probe + body renderer) so the
@@ -301,12 +319,6 @@ export const composeChatOrchestrator = (
     search: createContactPrefetchSearch(getContactStore),
   });
 
-  // D-137 P3 § A.11 — shared in-memory plan-approval store. Same
-  // instance threads into both the orchestrator (gate at `dispatchTool`)
-  // and the chat-handler (rpc resolves through the same store the gate
-  // consults). Process-local; no cross-cloud sync (D-097 / D-168).
-  const planApprovalStoreShared = planApproval.createPlanApprovalStore();
-
   // Codex P1 fold (D-137 P1.2 review) — always wire the chat sub-DEK
   // key provider when KeyManager exists, regardless of state. Provider
   // returns null while uninitialized/locked, which causes
@@ -320,6 +332,14 @@ export const composeChatOrchestrator = (
   ensureChatConnectionMcpAnnotationSchema(db);
   ensureChatInboundTokenSchema(db);
   const chatStore = createChatStore(db, chatKeyProvider, getLlmConfig);
+  const getSpanAnchorDeps = composeSpanAnchor({ db, chatKeyProvider });
+  // Same durable store threads into the dispatch gate, approval RPCs, and
+  // session snapshots. Construction never resumes work: a row left `running`
+  // by a prior process is reconciled to recovery-only `unknown`.
+  const planApprovalStoreShared = createSqliteChatPlanStore(
+    db,
+    chatKeyProvider,
+  );
   // D-174 R28 Slice A — onboarding default (model source). When a provider IS
   // configured but the user has never chosen a chat-model default, seed it to
   // the FIRST configured source (`slot_1` → `slot_2` → `free_pool`) so chat
@@ -697,15 +717,45 @@ export const composeChatOrchestrator = (
   // PRESENTATION (buildChatMainTurnTools keys on the per-turn projection.mode),
   // so a full turn stays byte-identical, and tools.search is read-only /
   // chat-only / never presented on full turns.
-  const chatRegistry = wrapChatRegistryForCatalogModes(
-    wrapRegistryWithEnrichmentTopicTools(internalRegistry, {
-      listTopicsWithRows: () => getEnrichmentStore()?.listTopicsWithRows() ?? null,
-      resolveTrustState: (topic) =>
-        isEnrichmentTopic(topic) ? readTrustState(topic) : 'off',
-    }),
-    CHAT_CATALOG_DELIVERY_MODES,
-    () => toolCatalogStore.getScope() ?? null,
+  const baseChatRegistry = wrapRegistryWithRecallSearch(
+    wrapChatRegistryForCatalogModes(
+      wrapRegistryWithEnrichmentTopicTools(internalRegistry, {
+        listTopicsWithRows: () =>
+          getEnrichmentStore()?.listTopicsWithRows() ?? null,
+        resolveTrustState: (topic) =>
+          isEnrichmentTopic(topic) ? readTrustState(topic) : 'off',
+      }),
+      CHAT_CATALOG_DELIVERY_MODES,
+      () => toolCatalogStore.getScope() ?? null,
+    ),
+    {
+      backend: createRecallSearchBackend(chatStore),
+      // The contract substrate boots after chat composition. Resolve the live
+      // store at dispatch time; the definition wrapper is stateless.
+      getContractDefinitionStore: () => {
+        const store = getContractStore?.();
+        return store ? createContractDefinitionStore(store) : undefined;
+      },
+    },
   );
+  const d214Experiment = readExecutionCaseExperimentEnv();
+  if (!getSpanAnchorDeps) {
+    throw new Error('D-214 span-anchor composition is unavailable');
+  }
+  const executionCases = composeExecutionCases({
+    db,
+    ...(chatKeyProvider ? { chatKeyProvider } : {}),
+    registry: baseChatRegistry,
+    getSpanAnchorDeps,
+    ...(d214Experiment ? { experiment: d214Experiment } : {}),
+    ...(process.env.RECUED_D214_EXPERIMENT_SECRET
+      ? {
+          experimentSecret:
+            process.env.RECUED_D214_EXPERIMENT_SECRET,
+        }
+      : {}),
+  });
+  const chatRegistry = executionCases.registry;
 
   const broadcast = broadcastEmitterFromBus(eventBus);
   const selfSignature = {
@@ -816,6 +866,21 @@ export const composeChatOrchestrator = (
     chatStore,
     forwardedSenderIndex,
     getScopedGrantParseDeps,
+    getSpanAnchorDeps,
+    getExecutionCaseLifecycle:
+      executionCases.getExecutionCaseLifecycle,
+    ...(executionCases.getExecutionCaseAugmentationDeps
+      ? {
+          getExecutionCaseAugmentationDeps:
+            executionCases.getExecutionCaseAugmentationDeps,
+        }
+      : {}),
+    ...(executionCases.getExecutionCaseProposalCritic
+      ? {
+          getExecutionCaseProposalCritic:
+            executionCases.getExecutionCaseProposalCritic,
+        }
+      : {}),
     registry: chatRegistry,
     // Lever-2 (2026-07-02) — prototype catalog-delivery knob. `full`
     // (default) is the launch baseline; `RECUED_CHAT_CATALOG_MODE=index`
@@ -898,10 +963,28 @@ export const composeChatOrchestrator = (
     selfSignature,
     planApprovalStore: planApprovalStoreShared,
     inboundTokenStore,
+    executionCaseFeedbackRecorder:
+      executionCases.feedbackRecorder,
+    executionCaseLifecycle: executionCases.lifecycle,
+    executionSpanAnchorStore: getSpanAnchorDeps().store,
+    deleteSessionExecutionCases: executionCases.deleteSession,
+    executionCaseDiagnostics: async () => ({
+      active_experiment:
+        executionCases.activeExperimentReport !== undefined,
+      compiler: await executionCases.compiler.diagnostics(),
+      ...(executionCases.activeExperimentReport
+        ? {
+            experiment:
+              await executionCases.activeExperimentReport(),
+          }
+        : {}),
+    }),
     // D-167 P5 S4 — purge the session's RAM-only PII alias ledger on
     // `chat.session.delete` (spec §"Alias ledger"). Same store the
     // orchestrator's bookend hooks allocate against.
-    dropSessionPiiLedger: (session_id) => sessionLedgerStore.drop(session_id),
+    dropSessionPiiLedger: (session_id) => {
+      sessionLedgerStore.drop(session_id);
+    },
     // D-171 slice 2c (+ slice-2c follow-on #1) — the Permissions → MCP door
     // per-tool grant checklist's catalog source: the tools an inbound MCP peer
     // using a door token can be granted + call. Read per-call so installs /
@@ -969,6 +1052,8 @@ export const composeChatOrchestrator = (
     internalRegistry,
     orchestrator,
     chatDeps,
+    executionCaseLifecycle: executionCases.lifecycle,
+    executionCaseVerificationRecorder: executionCases.verificationRecorder,
     forwardedSenderIndex,
   };
 };

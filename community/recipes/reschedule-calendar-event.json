@@ -1,0 +1,104 @@
+{
+  "recipe_id": "reschedule-calendar-event",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 60,
+  "requires": [],
+  "metadata": {
+    "name": "Reschedule a calendar event",
+    "description": "D-210 R-4 — the owner's reschedule ignition for a PERSONAL calendar event. Moves ONE calendar event to a new start/end time via a single calendar-update patch. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). ⚠ This does NOT move a booking. Since D-210 A.2 a booking is never in the calendar — it owns its own slot_start_at / slot_end_at — so a reservation is rescheduled with reschedule-booking instead, and only that path notifies the visitor. Triggered manually with config {calendar_slug, event_source_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a calendar record fills them from the event's own record, computing the new end from the current duration. calendar-update is idempotent and preserves the event's identity, so re-running the same move is safe.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": [
+      "calendar",
+      "reschedule",
+      "booking",
+      "reception",
+      "owner-action"
+    ],
+    "budget_ms": 20000
+  },
+  "variables": {
+    "calendar_slug": {
+      "label": "Calendar instance slug",
+      "type": "string",
+      "default": ""
+    },
+    "event_source_id": {
+      "label": "Event source id",
+      "type": "string",
+      "default": ""
+    },
+    "new_start_at": {
+      "label": "New start (unix ms)",
+      "type": "number",
+      "default": null
+    },
+    "new_end_at": {
+      "label": "New end (unix ms)",
+      "type": "number",
+      "default": null
+    }
+  },
+  "steps": [
+    {
+      "id": "ready",
+      "transform": "all",
+      "conditions": [
+        "{{config.calendar_slug}} is_not_empty",
+        "{{config.event_source_id}} is_not_empty",
+        "{{config.new_start_at}} is_not_null",
+        "{{config.new_end_at}} is_not_null"
+      ]
+    },
+    {
+      "id": "reschedule",
+      "skip_when": "{{step.ready}} not_equal true",
+      "op": "core.data.calendar.update",
+      "args": {
+        "slug": "{{config.calendar_slug}}",
+        "source_id": "{{config.event_source_id}}",
+        "patch": {
+          "start_at": "{{config.new_start_at}}",
+          "end_at": "{{config.new_end_at}}"
+        }
+      }
+    },
+    {
+      "id": "moved",
+      "transform": "compare",
+      "left": "{{step.reschedule.source_id}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Event",
+          "value": "{{config.event_source_id}}"
+        },
+        {
+          "label": "Rescheduled",
+          "value": "{{step.moved}}"
+        },
+        {
+          "label": "New start",
+          "value": "{{config.new_start_at:date}}"
+        },
+        {
+          "label": "New end",
+          "value": "{{config.new_end_at:date}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      }
+    ]
+  }
+}

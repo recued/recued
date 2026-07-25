@@ -112,6 +112,8 @@ export const ROTATION_ERROR_COPY: Record<RotationErrorCode, string> = {
   subscription_required:
     'A Pro subscription is required for the cloud ACME helper. Switch to BYO certbot/caddy or upgrade.',
   target_not_found: 'No client/vendor matched the rotation target. Refresh the panel + retry.',
+  database_rekey_unsupported:
+    'This build cannot rotate the master key: your realm database is encrypted from it, and rotating without re-keying the database would leave it unreadable by both your keyfile and your recovery key. Nothing was changed.',
   forbidden: 'You do not have permission to rotate this key. Sign in as the owning admin.',
   unsigned_notice:
     'A cert rotation notice arrived without a valid signature + was rejected. Review Settings → Server → Reachability for cert rotation status.',

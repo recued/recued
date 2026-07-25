@@ -8,7 +8,7 @@
  *  during the kernel/community separation. Kernel-side tests pin their
  *  presence and regen_policy blocks there.
  *
- *  Spec: `docs/d-136-spec.md` §A.4 + audit §27.2. */
+ *  Spec: D-136 §A.4 + audit §27.2. */
 
 import { describe, it, expect } from 'vitest';
 

@@ -7,7 +7,7 @@
  *    audit       → retention pruner (age-based, then size-based)
  *    cache       → orphan CAS sweep of the ENCRYPTED cache_blobs root
  *                  (keepset = cache ∪ collection references)
- *    shared_store → orphan CAS sweep of the KEYLESS blobs root
+ *    shared_store → orphan CAS sweep of the ENCRYPTED blobs root
  *                  (keepset = shared ∪ annotation references)
  *    vault       → no reclaim (per-publisher quota is the gate)
  *    account_store → no reclaim (user-writable; cleared by user or sync)
@@ -63,10 +63,10 @@ export interface EvictionCascadeDeps {
    *  body (mail / calendar / file) share it. Swept on `cache` pressure with a
    *  keepset of cache ∪ collection references. */
   cacheBlobs?: BlobStore;
-  /** The KEYLESS `blobs` CAS root — shared-store + annotation bodies. Swept on
+  /** The ENCRYPTED `blobs` CAS root — shared-store + annotation bodies. Swept on
    *  `shared_store` pressure with a keepset of shared ∪ annotation references.
-   *  A separate root from `cacheBlobs` (blob-encryption Phase 1) so a keyless
-   *  sweep can never reap an encrypted collection blob, and vice versa. */
+   *  A separate root from `cacheBlobs` so either sweep can never reap the other
+   *  content family's live blob. */
   sharedBlobs?: BlobStore;
   /** Reader for live cache blob-hash references — from
    *  `listReferencedBlobHashes(db)` against the SQLite cache table.
@@ -80,7 +80,7 @@ export interface EvictionCascadeDeps {
   /** Reader for live shared_store blob-hash references. */
   sharedBlobRefs?: () => Set<string>;
   /** Reader for live annotation blob-hash references. Annotations share the
-   *  keyless `blobs` root, so their live refs MUST join the shared-root keepset
+   *  `blobs` root, so their live refs MUST join the shared-root keepset
    *  or the sweep would reap live annotation bodies. */
   annotationBlobRefs?: () => Set<string>;
   /** Audit retention orchestrator (Commit 7). */
@@ -295,7 +295,7 @@ export const createEvictionCascade = (
         // No programmatic reclaim on user-writable shared_store — the
         // user deletes records explicitly. We still sweep orphan blobs
         // because a partial prior delete may have stranded CAS files.
-        // Sweep the KEYLESS blobs root; keepset is shared ∪ annotation refs
+        // Sweep the encrypted blobs root; keepset is shared ∪ annotation refs
         // (both write this root). Cache / collection refs do NOT belong here —
         // they live in the separate encrypted cache_blobs root.
         if (deps.sharedBlobs && deps.sharedBlobRefs) {
@@ -327,7 +327,7 @@ export const createEvictionCascade = (
           // reclaims the bytes synchronously so the gate recovers
           // without waiting for the next cache/shared_store event.
           // Collection bodies live in the encrypted cache_blobs root, so
-          // delete from there — NOT the keyless shared root.
+          // delete from there — NOT the separate shared root.
           if (deps.cacheBlobs && result.blob_hashes_freed.length > 0) {
             for (const hash of result.blob_hashes_freed) {
               try { await deps.cacheBlobs.delete(hash); } catch { /* best-effort */ }

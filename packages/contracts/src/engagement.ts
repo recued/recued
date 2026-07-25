@@ -12,7 +12,7 @@
  *  Edge UNIQUE composite is `(connection_id, engagement_target_id,
  *  edge_type, target_id)` — many-to-many supported by construction.
  *
- *  Spec: `docs/d-139-spec.md` § A.3, § A.4, § A.5.1, § A.9.5. */
+ *  Spec: D-139 § A.3, § A.4, § A.5.1, § A.9.5. */
 
 import type {
   AttachmentMeta,

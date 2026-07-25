@@ -44,7 +44,7 @@
  *  same shape whether `active` or not so callers can spread `seed`
  *  unconditionally if desired.
  *
- *  Spec: `docs/d-156-pair-substrate-retirement-pending-design.md`
+ *  Spec: D-156
  *  (Phase plan P4). Note: the spec draft mentions `?url=` pre-fill;
  *  Codex review 2026-05-18 P4 caught the exfiltration vector and we
  *  dropped that surface from the parser (spec is IDEA DRAFT, not

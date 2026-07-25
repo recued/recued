@@ -12,7 +12,7 @@
  *  passes. PA1 lays only the type system + storage tables; resolver +
  *  CRUD ingredients + reactive triggers come in PA2-PA4.
  *
- *  Spec: docs/d-145-spec.md § A.1. */
+ *  Spec: D-145 § A.1. */
 
 // ────────────────────────────────────────────────────────────────
 // Top-tier kinds
@@ -591,44 +591,31 @@ export interface Project extends SourceRowIdentity {
 }
 
 // ────────────────────────────────────────────────────────────────
-// booking (D-210) — the mutable business entity BESIDE the event
+// booking (D-210) — the canonical mutable reservation record
 // ────────────────────────────────────────────────────────────────
 //
-// A reservation is three rows, not one, and each answers a different
-// question:
+// An approved reservation has two records, each answering a different question:
 //
-//   `reception_booking_request` — what the VISITOR asked for. Sealed,
-//       write-once, the dispute record. Surfaced read-only at
-//       `#reception/records` (D-210 § 4c).
-//   `data.calendar` event      — WHEN it happens. Owns start / end /
-//       timezone / all-day, and R-4's reschedule + the reactive
-//       `notify-visitor-on-reschedule` already move it.
-//   `data.booking` (this)      — the BUSINESS fact: who the customer
-//       is, what it is worth, and how it ended.
+//   `reception_form_submission` — what the VISITOR asked for. Sealed,
+//       write-once evidence, surfaced redacted at `#reception/records`.
+//   `data.booking` (this)       — what the owner AGREED: its own start/end,
+//       customer, value, lifecycle, and bounded owner-side history.
 //
-// 🔑 DISJOINT FIELD OWNERSHIP is the whole design. No field is owned
-// twice, so nothing can drift, and no `event_source_id` re-key is
-// needed — the booking points AT the event rather than replacing it.
+// A booking is never mirrored into `data.calendar`; calendar availability is an
+// input to slot selection, not the destination of the business reservation.
 //
-// ⛔ Which is why `lifecycle_state` below is deliberately NOT the
-// calendar's `status`. `CalendarEvent.status` is already
-// `'confirmed' | 'cancelled' | 'tentative'` (`calendar.ts:94`), an
-// iCalendar protocol field about the EVENT. Re-spelling that
-// vocabulary here would own one field in two tables — the first
-// violation of the rule this entity exists to honour. The business
-// axis asks a question the protocol one cannot: a customer who never
-// showed up leaves the event `confirmed` forever.
+// `lifecycle_state` is therefore the sole reservation lifecycle. It includes
+// business outcomes such as `completed` and `no_show`, which do not belong to
+// an iCalendar protocol row.
 //
-// Spec: docs/d-210-spec.md Appendix A.
+// Spec: D-210 Appendix A.
 
-/** Business lifecycle — how the booking ENDED, orthogonal to the
- *  calendar event's protocol `status`. Follows `commitment`'s
- *  lifecycle-axis model (§ A.1.3) rather than inventing a third
- *  vocabulary.
+/** Business lifecycle — how the reservation progresses and ends. Follows
+ *  `commitment`'s lifecycle-axis model (§ A.1.3) rather than borrowing a
+ *  calendar protocol status.
  *
  *  `no_show` / `completed` are the two states that earn this entity:
- *  neither is expressible on a calendar row, and both are what an
- *  owner actually wants to count at the end of a month.
+ *  both are what an owner actually wants to count at the end of a month.
  *
  *  ⚠⚠ `pending` IS NOT THE DEFAULT, despite being first (owner-ruled
  *  2026-07-18). A Recued-minted booking is born `'confirmed'`: the
@@ -698,6 +685,26 @@ export interface Booking extends SourceRowIdentity {
    *  stops the owner minting one by hand). */
   reception_record_id?: string;
   source_extension_blob?: Record<string, unknown>;
+}
+
+/** Owner-only projection of a prior terminal booking. Deliberately excludes
+ *  visitor email and free-form reception values; identity remains the opaque
+ *  D-138 contact id on the enclosing summary. */
+export interface BookingHistoryEntry {
+  readonly id: string;
+  readonly title: string;
+  readonly lifecycle_state: Extract<BookingLifecycleState, 'completed' | 'no_show'>;
+  readonly created_at: number;
+  readonly state_changed_at: number;
+  readonly slot_start_at?: number;
+  readonly slot_end_at?: number;
+}
+
+export interface BookingHistorySummary {
+  readonly counterparty_contact_id: string;
+  readonly entries: readonly BookingHistoryEntry[];
+  /** All matching completed/no-show rows, independent of the response cap. */
+  readonly total: number;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -924,12 +931,38 @@ export interface ProjectArchiveInput {
   id: string;
 }
 
+// ── booking-* ───────────────────────────────────────────────────
+
+export interface BookingCreateInput extends SourceSelectInput {
+  title: string;
+  lifecycle_state?: BookingLifecycleState;
+  /** Reschedule tuple: both or neither. */
+  slot_start_at?: number;
+  slot_end_at?: number;
+  monetary_value?: MonetaryValue;
+  counterparty_contact_id?: string;
+  source_extension_blob?: Record<string, unknown>;
+}
+
+export interface BookingUpdateInput {
+  id: string;
+  title?: string;
+  lifecycle_state?: BookingLifecycleState;
+  /** Reschedule tuple: both or neither. */
+  slot_start_at?: number;
+  slot_end_at?: number;
+  monetary_value?: MonetaryValue;
+  counterparty_contact_id?: string;
+  source_extension_blob?: Record<string, unknown>;
+}
+
 // ── Output shapes — every write returns the canonical record. ────
 
 export interface TaskWriteOutput { task: Task; }
 export interface NoteWriteOutput { note: Note; }
 export interface CommitmentWriteOutput { commitment: Commitment; }
 export interface ProjectWriteOutput { project: Project; }
+export interface BookingWriteOutput { booking: Booking; }
 
 export interface WorkEntityDeleteOutput {
   ok: true;

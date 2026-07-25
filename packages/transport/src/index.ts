@@ -15,7 +15,7 @@
  *  P0 deliberately does not refactor that live code (the spec frames P0
  *  as standalone new leaf blocks).
  *
- *  Spec: docs/d-160-spec.md.
+ *  Spec: D-160.
  */
 
 export type {

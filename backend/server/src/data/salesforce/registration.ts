@@ -15,8 +15,8 @@
  *  `buildSalesforceReconcilers` still returns only Opportunity /
  *  Contact / Account.
  *
- *  Spec: `docs/d-130-spec.md` § A.5; `docs/d-139-spec.md` § P1b;
- *  `docs/d-184-engagement-sync-unification-pending-design.md`. */
+ *  Spec: D-130 § A.5; D-139 § P1b;
+ *  D-184. */
 
 import type {
   SalesforceEngagementEntityName,

@@ -20,7 +20,7 @@
  *  errors map matches the field names on `MailComposeValues` so the
  *  PA5 form-renderer's inline-error rendering picks them up directly.
  *
- *  Spec: docs/d-145-spec.md § A.5.3 (Send dispatch). */
+ *  Spec: D-145 § A.5.3 (Send dispatch). */
 
 import { MAIL_MESSAGE_SUBJECT_MAX } from '../mail.js';
 import type { MailComposeValues, MailSenderSourceOption } from './types.js';

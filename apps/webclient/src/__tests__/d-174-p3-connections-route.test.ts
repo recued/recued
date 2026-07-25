@@ -14,6 +14,7 @@ import {
 
 import {
   CONNECTIONS_ROUTE_CONTENT_ATTR,
+  CONNECTIONS_ROUTE_DESCRIPTION_ATTR,
   CONNECTIONS_ROUTE_HEADING_ATTR,
   CONNECTIONS_ROUTE_STYLES_MARKER,
   CONNECTIONS_ROUTE_TABS_ATTR,
@@ -428,15 +429,18 @@ describe('Connections route (R13–R16 restructure)', () => {
 
     expect(collectByAttr(root, CONNECTIONS_ROUTE_HEADING_ATTR)[0]?.textContent)
       .toBe('Connections');
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_DESCRIPTION_ATTR)[0]?.textContent)
+      .toBe('Bring your mail, calendars, files, and everyday services into Recued.');
     expect(doc.styleElements[0]?.attrs.has(CONNECTIONS_ROUTE_STYLES_MARKER)).toBe(true);
 
     const tabBar = collectByAttr(root, CONNECTIONS_ROUTE_TABS_ATTR)[0]!;
+    expect(tabBar.getAttribute('aria-label')).toBe('Connection types');
     const tabs = tabBar.children;
     expect(tabs.map((t) => t.textContent)).toEqual([
       'Mail',
       'Calendar',
       'Files',
-      'Others',
+      'Apps & APIs',
       'Webhooks',
     ]);
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual([

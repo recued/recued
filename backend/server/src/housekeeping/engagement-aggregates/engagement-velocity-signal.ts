@@ -37,7 +37,7 @@
  *  Producer never derives degradation itself — substrate is the
  *  authoritative source per § A.9.3.
  *
- *  Spec: `docs/d-139-spec.md` § A.9.1 + § A.9.3 + § P3 acceptance. */
+ *  Spec: D-139 § A.9.1 + § A.9.3 + § P3 acceptance. */
 
 import {
   type CoverageMetadata,

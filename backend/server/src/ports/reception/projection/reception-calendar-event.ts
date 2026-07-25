@@ -39,7 +39,7 @@
  *  calendar (`'local'` instance, `'local'` calendar_id) — a credential-free
  *  preset. Choosing a non-local destination is a follow-on.
  *
- *  Spec: docs/d-210-spec.md § A.2 + docs/d-173-spec.md § D7. */
+ *  Spec: D-210 § A.2 + D-173 § D7. */
 
 import type { CreateEventInput } from '../../../collections/calendar/provider.js';
 import {

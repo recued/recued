@@ -38,8 +38,8 @@
  *  mint (`mintQualityDelegation`), the gate wiring, the Switch A/B flag storage,
  *  and the #contracts surface are the backend slices that CALL these predicates.
  *
- *  Spec: `docs/d-202-spec.md` (ops-first — §§1–5 operations, §§6–10 foundation,
- *  §§11–16 honesty). Parent: `docs/d-177-spec.md`. */
+ *  Spec: D-202 (ops-first — §§1–5 operations, §§6–10 foundation,
+ *  §§11–16 honesty). Parent: D-177. */
 
 import type { BoundRecipeRef, ContractDefinition } from './contract-definition.js';
 import { isContractActive } from './contract-definition.js';

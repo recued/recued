@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   extract,
+  detectLanguages,
   type ExtractionResult,
   type ExtractOptions,
   gateExtraction,
@@ -60,13 +61,13 @@ const extractShape = (
   };
 };
 
-const STUB_LANGUAGE_RULES: ReadonlyArray<readonly [string, LanguageRules]> = [
-  ['de', DE_RULES],
-  ['es', ES_RULES],
-  ['fr', FR_RULES],
-  ['ja', JA_RULES],
-  ['pt', PT_RULES],
-  ['zh', ZH_RULES],
+const LATIN_LANGUAGE_CASES: ReadonlyArray<
+  readonly [string, LanguageRules, string, string]
+> = [
+  ['de', DE_RULES, 'Wie lautet die E-Mail-Adresse von Jörg Müller?', 'Jörg Müller'],
+  ['es', ES_RULES, '¿Cuál es el correo electrónico de María García?', 'María García'],
+  ['fr', FR_RULES, 'Quelle est l’adresse e-mail de François Dupont ?', 'François Dupont'],
+  ['pt', PT_RULES, 'Qual é o e-mail de João da Silva?', 'João da Silva'],
 ];
 
 describe('D-164 P4d slot vocabulary', () => {
@@ -316,6 +317,101 @@ describe('D-164 P4d EN_RULES name recall refinements', () => {
   });
 });
 
+describe('D-164 contextual known-name recovery', () => {
+  it.each([
+    ["what is alice bond's email?", 'Alice Bond', 'alice bond'],
+    ["what is Sarah's email?", 'Sarah', 'Sarah'],
+    ["what is Jean-Luc Picard's email?", 'Jean-Luc Picard', 'Jean-Luc Picard'],
+    ['what is O’Connor Smith’s email?', 'O’Connor Smith', 'O’Connor Smith'],
+    ["what is J. Robert Oppenheimer's email?", 'J. Robert Oppenheimer', 'J. Robert Oppenheimer'],
+  ])('recovers an exact stored Latin name in %s', (text, canonical, raw) => {
+    const result = extract(text, { knownNames: [canonical] });
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name')).toEqual([{
+      kind: 'entity.name',
+      value: canonical,
+      raw,
+      position: text.indexOf(raw),
+    }]);
+  });
+
+  it('uses the containing known name instead of a typography-derived partial name', () => {
+    const result = extract("what is J. Robert Oppenheimer's email?", {
+      knownNames: ['J. Robert Oppenheimer'],
+    });
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name').map((slot) => slot.value))
+      .toEqual(['J. Robert Oppenheimer']);
+    expect(result?.slots.map((slot) => slot.value)).not.toContain('Robert Oppenheimer');
+  });
+
+  it('drops an initialed-name suffix when no contextual candidate can prove the full span', () => {
+    expect(extract("what is J. Robert Oppenheimer's email?")).toBeNull();
+  });
+
+  it('carries the canonical warehouse spelling while preserving a decomposed prompt span', () => {
+    const decomposed = 'E\u0301lodie Martin';
+    const text = `What is ${decomposed}’s email?`;
+    const result = extract(text, { knownNames: ['Élodie Martin'] });
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name')).toEqual([{
+      kind: 'entity.name',
+      value: 'Élodie Martin',
+      raw: decomposed,
+      position: text.indexOf(decomposed),
+    }]);
+  });
+
+  it.each([
+    ['alice bondのメールアドレスは？', 'ja'],
+    ['请问alice bond的邮箱是什么？', 'zh'],
+  ])('recovers a Latin name adjacent to CJK grammar: %s', (text, locale) => {
+    const result = extract(text, { knownNames: ['Alice Bond'] });
+    expect(result?.locale).toBe(locale);
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name').map((slot) => slot.value))
+      .toEqual(['Alice Bond']);
+  });
+
+  it('preserves two distinct recovered names for the downstream ambiguity guard', () => {
+    const result = extract("what is alice bond's email and bob stone's phone?", {
+      knownNames: ['Alice Bond', 'Bob Stone'],
+    });
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name').map((slot) => slot.value))
+      .toEqual(['Alice Bond', 'Bob Stone']);
+  });
+
+  it.each([
+    ['what is Sarahson’s email?', 'Sarah'],
+    ['what is Jean-Sarah’s email?', 'Sarah'],
+    ["what is O'Sarah's email?", 'Sarah'],
+    ['what is ﬃ’s email?', 'Fi'],
+    ["what is alice bond's email?", 'Bond'],
+    ["what is alice bond smith's email?", 'Bond Smith'],
+    ["what is will sarah's email?", 'Sarah'],
+  ])('does not recover a known value from inside a longer Latin name atom: %s', (text, name) => {
+    expect(extract(text, { knownNames: [name] })).toBeNull();
+  });
+
+  it.each([
+    ["what is Sarah's email?", 'Sarah'],
+    ["what's Sarah's email?", 'Sarah'],
+    ['wo arbeitet Sarah?', 'Sarah'],
+    ['¿dónde trabaja Sarah?', 'Sarah'],
+    ['où travaille Sarah ?', 'Sarah'],
+    ['onde trabalha Sarah?', 'Sarah'],
+  ])('retains a single-token name in an anchored read context: %s', (text, name) => {
+    expect(extract(text, { knownNames: [name] })?.slots.map((slot) => slot.value))
+      .toEqual([name]);
+  });
+
+  it('does not widen compatibility lookalikes beyond canonical NFC/NFD equivalence', () => {
+    expect(extract('what is ﬃ’s email?', { knownNames: ['Ffi'] })).toBeNull();
+    expect(extract('what is Ａｌｉｃｅ’s email?', { knownNames: ['Alice'] })).toBeNull();
+  });
+
+  it('leaves unmatched and non-Latin proposals inert', () => {
+    expect(extract('what is alice bond’s email?', { knownNames: ['Bob Stone', '张伟'] }))
+      .toBeNull();
+  });
+});
+
 describe('D-164 P4d locale normalisation', () => {
   it.each([
     ['en-US'],
@@ -526,18 +622,74 @@ describe('D-164 P4d extract end-to-end shapes', () => {
   });
 });
 
-describe('D-164 P4d stub locales', () => {
-  it.each(STUB_LANGUAGE_RULES)('%s emits no locale-specific name slots but keeps universal slots', (locale, rules) => {
-    expect(rules.extract('near Mary Jane Watson')).toEqual([]);
-    expect(extractShape('near Mary Jane Watson at bob@example.com', { locale })).toEqual({
-      locale,
-      slots: [
-        {
-          kind: 'entity.email',
-          raw: 'bob@example.com',
-          value: 'bob@example.com',
-        },
-      ],
+describe('D-164 P4d multilingual extraction ladder', () => {
+  it.each(LATIN_LANGUAGE_CASES)(
+    '%s extracts a Unicode Latin name and reports that intent locale',
+    (locale, rules, text, name) => {
+      expect(rules.extract(text)).toContainEqual({
+        kind: 'entity.name',
+        raw: name,
+        position: text.indexOf(name),
+      });
+      expect(extractShape(text, { locale })).toEqual({
+        locale,
+        slots: [{ kind: 'entity.name', raw: name, value: name }],
+      });
+    },
+  );
+
+  it('extracts a Japanese name only in a deterministic intent context', () => {
+    expect(JA_RULES.extract('山田太郎のメールアドレスは？')).toEqual([
+      { kind: 'entity.name', raw: '山田太郎', position: 0 },
+    ]);
+    expect(JA_RULES.extract('山田太郎について教えて')).toEqual([]);
+  });
+
+  it('extracts a Chinese name only in a deterministic intent context', () => {
+    expect(ZH_RULES.extract('请问张伟的邮箱是什么？')).toEqual([
+      { kind: 'entity.name', raw: '张伟', position: 2 },
+    ]);
+    expect(ZH_RULES.extract('告诉我张伟的故事')).toEqual([]);
+  });
+
+  it('uses intent words for the primary locale and scripts for additional candidates', () => {
+    const text = "What's 山田太郎's email?";
+    expect(detectLanguages(text)).toEqual({
+      locale: 'en',
+      localeCandidates: ['en', 'ja', 'zh'],
     });
+    expect(extract(text)).toEqual({
+      locale: 'en',
+      localeCandidates: ['en', 'ja', 'zh'],
+      slots: [{
+        kind: 'entity.name',
+        raw: '山田太郎',
+        value: '山田太郎',
+        position: 7,
+      }],
+    });
+  });
+
+  it('keeps the longest cross-bundle span for a spaced Japanese name', () => {
+    const result = extract("What's 山田 太郎's email?");
+    expect(result?.locale).toBe('en');
+    expect(result?.slots.map((slot) => slot.value)).toEqual(['山田 太郎']);
+  });
+
+  it('keeps the request language when an accented foreign name appears in English', () => {
+    const result = extract('What is María García’s email address?');
+    expect(result?.locale).toBe('en');
+    expect(result?.localeCandidates).toEqual(expect.arrayContaining(['es', 'fr', 'pt']));
+    expect(result?.slots.map((slot) => slot.value)).toEqual(['María García']);
+  });
+
+  it('merges and deduplicates bundles instead of selecting only one language', () => {
+    const result = extract(
+      "¿Cuál es el correo electrónico de María García? What's 山田太郎's email?",
+    );
+    expect(result?.locale).toBe('es');
+    expect(result?.slots.filter((slot) => slot.kind === 'entity.name').map((slot) => slot.value))
+      .toEqual(['María García', '山田太郎']);
+    expect(result?.localeCandidates).toEqual(expect.arrayContaining(['es', 'ja', 'zh']));
   });
 });

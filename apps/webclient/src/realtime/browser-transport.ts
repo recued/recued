@@ -87,7 +87,7 @@
  *  re-open after a close — that would duplicate the ws-client's
  *  backoff loop. The transport only knows "currently open / not".
  *
- *  Spec: docs/d-148-spec.md § A.4 + the WS-server contract in
+ *  Spec: D-148 § A.4 + the WS-server contract in
  *  `backend/server/src/ws-server.ts`. */
 
 import {

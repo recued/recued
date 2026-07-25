@@ -31,7 +31,7 @@
  *  the event is gone and the booking, which owns `slot_start_at` /
  *  `slot_end_at`, is the whole record. No redundant commitment is written
  *  either (A.5) — the "what's on my plate" fusion is a READ-layer concern
- *  (docs/agenda-fusion-design-note.md).
+ *  (internal design notes).
  *
  *  ## D-210 R-2 — TWO paths, and the pack's is the DEFAULT
  *
@@ -83,7 +83,7 @@
  *  identical to the intake_form / approval_link drains so a boot-time
  *  fire-immediate sweep before unlock can't lose valid bookings.
  *
- *  Spec: docs/d-173-spec.md § D7 / N.3 / I-1 / I-6 / I-7; docs/d-149-spec.md
+ *  Spec: D-173 § D7 / N.3 / I-1 / I-6 / I-7; D-149
  *  § A.5.2 + § Must Hold I-12. */
 
 import {
@@ -102,6 +102,7 @@ import { buildPairedBookingRecord } from '../booking-record.js';
 import type { ReceptionSchedulingRecipePairResolution } from '../scheduling-recipe-pair.js';
 import { parseSchedulingLinkConfig } from '../transformations/scheduling-link.js';
 import type { ReceptionProjectionInput } from '../projection/reception-projection.js';
+import { mintReceptionBookingBinding } from '../projection/reception-booking-binding.js';
 import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
 import type {
   FormSubmissionStore,
@@ -460,11 +461,39 @@ export const createSchedulingLinkSubmissionProcessor = (
               budget -= 1;
               continue;
             }
-            const outcome = await plan.run({
-              endpoint_id: endpoint.endpoint_id,
-              request_id: row.submission_id,
-              record: built.record,
-            });
+            // ⛔ A THROW IS NOT A MODELLED OUTCOME, AND IT MUST NOT BECOME A TERMINAL ONE.
+            //
+            // `plan.run` reaches `handleExecute`, which THROWS rather than returning for a
+            // request-shape problem — `recipe_not_found`, `assertRunTargets`, or anything the
+            // engine's catch-all re-raises. Nothing between here and there converts that into
+            // `{kind:'failed'}`: the `runPairedBooking` wrapper has no try/catch and the runner
+            // awaits `handleExecute` bare. So a throw used to escape to the tick's outer catch,
+            // which marks the row `rejected` — and `markProcessed` REFUSES `pending`, so that
+            // is TERMINAL. The booking was never re-drained.
+            //
+            // That is the exact inverse of the branch immediately below, and of §3a.2's
+            // "DRIFT ⇒ HOLD, never the default" / "⚠ Never `rejected` on those paths". The
+            // DEFAULT arm already gets this right for the identical throw
+            // (`wire-reception-workflow-dispatch.ts`: "a throw here is a request-shape problem
+            // … Leave the row pending to retry rather than lose it"); the paired arm inverted it.
+            //
+            // Collapsing the throw into `failed` routes it through the SAME already-correct
+            // handling — left pending, retryable once the owner fixes the recipe — rather than
+            // adding a second policy that could drift from it. `unreadable` above keeps its
+            // explicit `rejected`: that is a MODELLED, provably unrecoverable poison row
+            // (a declared field's ciphertext will not open), not an owner-fixable bug.
+            //
+            // Found by the D-210 code audit 2026-07-20 (finding 2).
+            let outcome: PairedBookingRunOutcome;
+            try {
+              outcome = await plan.run({
+                endpoint_id: endpoint.endpoint_id,
+                request_id: row.submission_id,
+                record: built.record,
+              });
+            } catch (e) {
+              outcome = { kind: 'failed', errors: [e] };
+            }
             // `held` is the ordinary steady state, not an error: the D-209 ceiling pins an
             // anonymous reception actor to `read`, so the recipe's writes hold at the gate
             // and land in the Inbox. Both it and `completed` mean the row is HANDED OFF.
@@ -516,28 +545,34 @@ export const createSchedulingLinkSubmissionProcessor = (
           // personal). Through 3a this said `'calendar.event'` and the booking
           // was minted beside the event it created.
           //
-          // ⚠ `start_at` / `duration_minutes` / `timezone` are still carried,
-          // and are NOT what the booking's slot is written from — the seam
-          // reads the slot off the sealed reservation row itself. They remain
-          // because this payload is also what the INBOX renders for review, so
-          // the owner sees the time they are approving. Do not "tidy" them out:
-          // the review card would lose its time. `reject_if_slot_past`
-          // re-guards I-7 at the approve-time materialize.
+          // ⚠ `start_at` / `duration_minutes` are both review content and the
+          // agreed slot passed to the mint. They may be owner-edited at the gate;
+          // the sealed reservation keeps the visitor's original ask separately.
+          // `timezone` remains review-only. `reject_if_slot_past` re-guards I-7
+          // at the approve-time materialize.
           //
           // `id` is the DETERMINISTIC booking id and `booking_request_id` the
           // reservation it came from — together the I-4 anchor (the seam
           // pre-reads the row it would write). The visitor email is absent
           // (sealed).
+          const bookingId = receptionIdForBooking(row.submission_id);
           const bookingPayload: ReceptionProjectionInput = {
             top_tier_kind: 'booking',
-            id: receptionIdForBooking(row.submission_id),
-            // `title` → the event summary; `body` (Details) is left for the
-            // user to add at review (no description-duplicating the summary).
+            id: bookingId,
+            // `title` is review copy only; the booking mint resolves the
+            // owner-authored endpoint title server-side. `body` stays absent.
             title: statement,
             start_at: row.slot.start_at,
             duration_minutes: row.slot.duration_minutes,
             timezone: config?.available_window_definition?.tz ?? 'UTC',
             booking_request_id: row.submission_id,
+            // The drain is the authority that derives both ids. Bind the pair
+            // here so a direct/future caller of reception-materialize cannot
+            // select an unrelated sealed reservation and booking id.
+            booking_binding: mintReceptionBookingBinding(key, {
+              booking_request_id: row.submission_id,
+              booking_id: bookingId,
+            }),
             reject_if_slot_past: true,
           };
 
@@ -545,7 +580,7 @@ export const createSchedulingLinkSubmissionProcessor = (
           // I-7). Dispatch the compiled `review-then-approve` workflow so the
           // materialize op is HELD at the D-157 gate → inbox. The processor
           // does NOT materialize here (no ambient warehouse write — I-1); the
-          // calendar event materializes only on the user's explicit approve.
+            // booking materializes only on the user's explicit approve.
           if (!deps.fireReceptionWorkflow) {
             // No dispatch seam (boot phase / no reception core-pack). Leave
             // PENDING (budget unspent) — valid undispatched review work, not a

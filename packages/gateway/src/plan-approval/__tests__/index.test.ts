@@ -10,6 +10,7 @@ import {
   buildPlanProposal,
   computePlanArgsHash,
   createPlanApprovalStore,
+  PLAN_APPROVAL_CONSUMPTION_TTL_MS,
   PLAN_APPROVAL_WRITE_RISK_TIERS,
   requiresPlanApproval,
 } from '../index.js';
@@ -191,6 +192,52 @@ describe('D-137 P3 § A.11 — PlanApprovalStore lifecycle', () => {
     store.put(p);
     expect(store.get('p1')).toEqual(p);
     expect(store.get('nonexistent')).toBeUndefined();
+  });
+
+  it('does not replace reviewed arguments on a repeated plan_id', () => {
+    const store = createPlanApprovalStore();
+    const original = proposal({ args: { to: 'owner@example.com' } });
+    store.put(original);
+    store.put(proposal({
+      args: { to: 'attacker@example.com' },
+      args_hash: 'different-hash',
+    }));
+
+    expect(store.get('p1')).toEqual(original);
+  });
+
+  it('rechecks approval freshness at the atomic dispatch spend', () => {
+    const store = createPlanApprovalStore();
+    store.put(proposal());
+    store.resolve('p1', 'approved', 500);
+
+    expect(
+      store.consumeForDispatch(
+        'p1',
+        500 + PLAN_APPROVAL_CONSUMPTION_TTL_MS + 1,
+        'turn-execution',
+      ),
+    ).toBeUndefined();
+    expect(store.get('p1')?.consumed_at).toBeUndefined();
+  });
+
+  it('binds terminal receipts to the execution turn that spent approval', () => {
+    const store = createPlanApprovalStore();
+    store.put(proposal());
+    store.resolve('p1', 'approved', 500);
+    store.consumeForDispatch('p1', 600, 'turn-execution');
+
+    expect(
+      store.recordExecution('p1', {
+        status: 'completed',
+        turn_id: 'turn-other',
+        result_ref: 'result:other',
+      }),
+    ).toBeUndefined();
+    expect(store.listForSession('s1')[0]?.execution).toEqual({
+      status: 'running',
+      turn_id: 'turn-execution',
+    });
   });
 
   it('listPending filters by session + status: "proposed"', () => {

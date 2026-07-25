@@ -59,7 +59,7 @@
  *  cert source; nothing in the cascade engine causes an earlier cursor
  *  position to become stale.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import type {
   HousekeepingCursor,

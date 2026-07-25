@@ -28,7 +28,7 @@
  *  collapse onto the same row at insert time. Boot recovery picks up
  *  every recoverable row and replays the next state transition.
  *
- *  Spec: `docs/d-138-spec.md` § A.7 + § Phase 5. */
+ *  Spec: D-138 § A.7 + § Phase 5. */
 
 import type Database from 'better-sqlite3';
 import {

@@ -1,6 +1,6 @@
 /** Quality precheck — deterministic recipe quality checks.
  *
- *  JS port of recipe-research-dev/manual/quality_check.py's
+ *  JS port of internal benchmarks's
  *  quality_precheck(). Runs without I/O — pure function on a
  *  recipe JSON object. Used by:
  *    - Chat Tier 2 (show warnings in UI after AI generation)

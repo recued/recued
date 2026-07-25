@@ -20,7 +20,7 @@
  *  touches the gate hot path — the matcher / resolver / consume paths import
  *  nothing from this module.
  *
- *  Spec: docs/d-177-spec.md § N.13; landing order P6b. */
+ *  Spec: D-177 § N.13; landing order P6b. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import { sha256Hex } from '@recued/crypto/hash';

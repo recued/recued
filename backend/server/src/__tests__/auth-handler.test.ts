@@ -12,7 +12,8 @@ import {
 } from '../auth-handler.js';
 import { createKeyManager } from '../key-manager.js';
 import { createBundleStore } from '../bundle-store.js';
-import { createBlobStore, createSQLiteCacheStore } from '../storage/index.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore } from '../storage/index.js';
 import type { CacheEntry } from '@recued/cache';
 
 let workDir: string;

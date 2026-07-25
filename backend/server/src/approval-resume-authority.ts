@@ -20,6 +20,7 @@ import {
   type McpInboundTokenRecord,
 } from '@recued/contracts';
 
+import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import type { ClientTokenStore } from './pairing/client-tokens.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
@@ -162,12 +163,11 @@ const snapshot = (
   }
   const scopeRestrictions =
     deps.contractOverlay?.resolveContractScopeRestrictions?.(source) ?? [];
-  return Object.freeze({
+  return buildVersionedContractSnapshot({
     contract_id: contractId,
-    contract_version: '1',
-    allowed_tools: Object.freeze([...new Set(allowedTools)]),
-    approval_required: Object.freeze([]),
-    scope_restrictions: Object.freeze([...scopeRestrictions]),
+    allowed_tools: allowedTools,
+    approval_required: [],
+    scope_restrictions: scopeRestrictions,
     resolved_at: now,
   });
 };

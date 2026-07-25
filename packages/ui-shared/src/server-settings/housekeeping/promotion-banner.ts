@@ -23,7 +23,7 @@
  *  delivery. The component renders one banner per active suggestion
  *  in insertion order.
  *
- *  Spec: `docs/d-132-spec.md` §A.8. */
+ *  Spec: D-132 §A.8. */
 
 import { e } from '../../template.js';
 import { button } from '../../primitives/button.js';

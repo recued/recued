@@ -25,9 +25,11 @@ import {
 } from '@recued/engine';
 import {
   wrapWithCommitGateway,
+  PreflightDeniedError,
   deriveChannelSessionId,
   createCorrelationTracker,
   evaluatePreflightAdmission,
+  raiseOnAsk,
   raisePreflightAsk,
   raisePreflightNotify,
   detectTornSaga,
@@ -75,6 +77,8 @@ import {
   isContainerPickDetail,
   isCreatePlanDetail,
   collectOperationAuthorityPaths,
+  admitByOpRiskWithoutQualityLifts,
+  CONTRACTED_DEFAULT_TRUST_CEILING,
   operationPathTemplate,
   deriveDispatchScope,
   computeOpenProjection,
@@ -95,6 +99,7 @@ import {
   runAttentionForTriggerSource,
   resolveDeep,
   resolveSessionGrantOffer,
+  readOwnerOperationOverride,
   resolveValue,
   RpcError,
   SESSION_GRANT_RISK_TIERS,
@@ -124,6 +129,7 @@ import {
   type CheckpointStore,
   type CommitStore,
 } from '@recued/storage';
+import { stampExecuteResponseAuditRun } from './types.js';
 import type {
   ExecuteRequest,
   ExecuteResponse,
@@ -358,11 +364,61 @@ const buildRpcUserExecutionSource = (
  *  handlers' `buildExecuteRequest`, fourth P2.C slice). All four paths
  *  share one `(channel: 'mcp', actor: 'contracted_user')` cell.
  *
- *  Other contract-bearing channels (`chat` / `messenger` / `reception`
- *  / `user` with `contracted_*` actors) wire in follow-on slices once
- *  their producer sites resolve `ContractSnapshot`s. */
+ *  `reception` covers both D-207 door runners — `reception-recipe-runner.ts`
+ *  (the paired submit/drain dispatch) and `reception-manage-runner.ts` (the
+ *  on-the-go reschedule). Both already resolved a `ContractSnapshot` and
+ *  passed it on the `ExecuteRequest`; only this set entry was missing, so
+ *  `evaluateAdmission` resolved to `undefined` and the ONLY call site of
+ *  `evaluatePreflightAdmission` — i.e. the D-207 `allowed_tools` allowlist AND
+ *  the D-209 trust ceiling — never ran for a paired reception recipe's plain
+ *  `{ingredient: …}` steps. Catalog / `op:` steps were unaffected (they gate
+ *  unconditionally via `runCatalogOperation`), which is why the core packs
+ *  held and the hole stayed invisible: an owner-authored recipe calling a
+ *  kernel slug (`mail-send`, `shared-write`, `contact-upsert`) dispatched
+ *  ungated, on an anonymous visitor's request. Found by the D-210 code audit
+ *  2026-07-20 (finding 1) and proven A/B — the same ungranted `write` step was
+ *  refused on `mcp` and executed silently on `reception`.
+ *
+ *  ⛔ THE DEFERRAL BELOW IS WHAT MADE THIS A BYPASS RATHER THAN A TODO. This
+ *  comment used to name `reception` among the channels that "wire in follow-on
+ *  slices" — and D-207, D-209 and D-210 were each designed, ratified and built
+ *  on the assumption that follow-on had landed. A documented deferral reads as
+ *  *handled* to everyone downstream. Any channel named below is UNGATED TODAY;
+ *  treat the list as open findings, not as documentation.
+ *
+ *  `webhook` (D-209 #1 W3) is the SECOND door found in the same state, by
+ *  tracing the reception fix's own "who else?" question. `webhook-recipe-runner.ts`
+ *  already resolved a `ContractSnapshot` (`buildWebhookContractSnapshot`) and
+ *  passed it to `handleExecute`, under a comment asserting that "a contract-bearing
+ *  source with no snapshot THROWS at the policy/preflight gates" — behaviour that
+ *  never ran, because the channel was in no set. A vendor's POST could therefore
+ *  drive a plain `{ingredient: …}` step outside the door's `allowed_tools`, and a
+ *  REVOKED door denied nothing. Proven A/B before the fix: the same ungranted
+ *  `write` returned `success: true` with the step dispatched.
+ *
+ *  ⚠ Safe to turn on for a channel whose snapshot is CONDITIONAL: the runner
+ *  builds one only when the source carries a `contract_id`, and
+ *  `evaluatePreflightAdmission` throws only when `executionSourceHasContract`.
+ *  A door-less source (unstamped trigger row) therefore cannot be broken by the
+ *  gate switching on — and since the gate did not run AT ALL before, adding a
+ *  channel here is neutral-or-stricter by construction, never looser.
+ *
+ *  Still deferred: `chat` / `messenger` / `user` with `contracted_*` actors —
+ *  their producer sites do not resolve `ContractSnapshot`s yet. As with the
+ *  messenger slice, membership MUST land in the same change as the producer
+ *  flip: a contract-bearing source outside this set skips the gate entirely
+ *  (audited-but-ungated — the D-177 P2b failure shape), while one inside it
+ *  with no snapshot THROWS at `evaluatePreflightAdmission`.
+ *
+ *  ⏭ `bridge` needs nothing: it has NO producer minting a `bridge`-channel
+ *  `ExecutionSource`. `housekeeping` is handled by its own source-less branch
+ *  below and deliberately passes no `execution_source` at all. Those two were
+ *  checked when `webhook` was, so this list is now believed complete for
+ *  channels that actually produce contract-bearing dispatches. */
 const POLICY_GATED_CONTRACT_CHANNELS: ReadonlySet<Channel> = new Set([
   'mcp',
+  'reception',
+  'webhook',
 ]);
 
 /** D-172 P2 (review F2 finding A) — true iff a `mail-send` `attachments`
@@ -441,7 +497,7 @@ const correlationTracker = createCorrelationTracker();
  *  coherent on the coarse recipe-run row. `commit_kind` is NOT here —
  *  it is per-tool-call and stays undefined on the recipe-run row until
  *  the Gateway dispatch-outbox writes real per-call commits (a later
- *  slice); see docs/d-153-spec.md open question #23. */
+ *  slice); see D-153 open question #23. */
 type CommitSubstrateFields = {
   channel_session_id?: string;
   correlation_id?: string;
@@ -655,7 +711,7 @@ export interface ExecuteHandlerDeps {
    *  misses, matches the paused-worthy dispatch against live
    *  `grant_kind: 'quality_delegation'` rows for the run's `(recipe, op)` and, when
    *  one matches (un-paused + whole-document), composes the three-conjunct gate to
-   *  skip the per-artifact review — authorization stays re-derived every send
+   *  skip the per-artifact review — captured authorization stays checked every send
    *  (§12.1). The handler completes the Gateway's per-call envelope with the run's
    *  recipe identity (`recipe_id` + `hashRecipe`, reusing the session-grant memo).
    *  Absent ⇒ no quality check; every `ask` holds exactly as pre-D-202 (additive —
@@ -1114,7 +1170,7 @@ export const handleExecute = async (
     }
   }
 
-  // R2 dispatch (docs/unified-pack-exploration/recipe-identity-and-dependency-resolution.md
+  // R2 dispatch (internal design notes
   // §3) — a canonical op-step (e.g. `deal.search`) resolves to a concrete vendor binding
   // AT DISPATCH, from the connection the run supplies (its `type:'connection'` variable in
   // `config`), reusing the install-time resolver. This relocates the R1 install-bake to run
@@ -1384,7 +1440,7 @@ export const handleExecute = async (
   //     a durable checkpoint store.
   // Runs BEFORE store/provenance/lifecycle setup so a collapse leaves no
   // phantom run. Best-effort: a lookup failure proceeds with a normal run.
-  // Spec: docs/d-157-spec.md; docs/chat-prompt-optimization-log.md
+  // Spec: D-157; internal design notes
   // (2026-06-08).
   // The dedup identity, computed ONCE when eligible (undefined otherwise) so
   // the entry-time check AND the concurrent-TOCTOU claim at the hold-creation
@@ -1416,8 +1472,8 @@ export const handleExecute = async (
       : undefined;
   // Set when this run becomes the LEADER of an in-flight hold-creation (the
   // concurrent backstop in the awaiting block). `settle`d in the outer try's
-  // `finally` with `'durable'` iff the awaiting anchor was written (see
-  // `heldActionDurable`), else `'failed'` — releasing any follower awaiting it.
+  // `finally` with `status: 'durable'` iff the awaiting anchor was written (see
+  // `heldActionDurable`), else `status: 'failed'` — releasing any follower.
   let heldClaim: InflightHoldClaim | undefined;
   let heldActionDurable = false;
 
@@ -1716,7 +1772,7 @@ export const handleExecute = async (
   // channel-specific identifying fields stay recoverable. `commit_kind`
   // is deliberately NOT stamped: it is per-tool-call and stays
   // undefined on the recipe-run row until the Gateway dispatch-outbox
-  // writes real per-call commits (docs/d-153-spec.md open question
+  // writes real per-call commits (D-153 open question
   // #23). Absent `execution_source` (dispatch paths whose P2.C slice
   // has not landed) leaves the fields undefined — legacy rows, which
   // the P1.B queries already tolerate. The correlation tracker is hit
@@ -1851,7 +1907,11 @@ export const handleExecute = async (
   // run for this source (the same `POLICY_GATED_*` channel sets) so
   // per-call probing stays in lockstep with the static gate.
   const evaluateAdmission:
-    | ((slug: string, input: Record<string, unknown>) => AdmissionDecision | null)
+    | ((
+        slug: string,
+        input: Record<string, unknown>,
+        operationId?: string,
+      ) => AdmissionDecision | null)
     | undefined =
     executionSource !== undefined
       && (POLICY_GATED_SYSTEM_CHANNELS.has(executionSource.channel)
@@ -1926,6 +1986,13 @@ export const handleExecute = async (
                 { kind: manifest.kind, slug },
                 input,
               );
+              const ownerOverride = !isCatalogForm(manifest)
+                ? readOwnerOperationOverride({
+                    scan: deps.contractScan,
+                    ingredient_id: slug,
+                    operation_id: slug,
+                  })
+                : undefined;
               const preflightDecision = evaluatePreflightAdmission({
                 source: executionSource,
                 tool: {
@@ -1944,6 +2011,13 @@ export const handleExecute = async (
                 // Dispatch volume stays AUDITED (every dispatch writes a commit row),
                 // reconstructable from the commit log after the fact.
                 ...(scopePath !== null ? { scope_path: scopePath } : {}),
+                // D-211 §7.2 — simple-form ingredients are one operation keyed
+                // by their slug. Catalog-form dispatch is ruled later by the
+                // catalog gateway against the resolved operation id, so never
+                // apply an ingredient-level approximation here.
+                ...(ownerOverride !== undefined
+                  ? { owner_override: ownerOverride }
+                  : {}),
               });
               // D-187 AMENDMENT 3b — op-admission grant gate. Layer the unified grant
               // store's `op` entry ON TOP of the policy decision: if the dispatch's
@@ -2204,7 +2278,29 @@ export const handleExecute = async (
               return admitOne(slug, input, operationId);
             };
           })()
-        : undefined;
+        : executionSource === undefined
+          && request.trigger_source === 'housekeeping'
+          ? (slug: string): AdmissionDecision | null => {
+              const manifest = deps.executorConfig.manifests.get(slug);
+              // Catalog-form dispatch performs its operation-specific lookup in
+              // catalog-gateway. Preserve every pre-D-211 source-less simple
+              // dispatch unless a global exact-operation ruling exists.
+              if (!manifest || isCatalogForm(manifest)) return null;
+              const ownerOverride = readOwnerOperationOverride({
+                scan: deps.contractScan,
+                ingredient_id: slug,
+                operation_id: slug,
+              });
+              if (ownerOverride === undefined) return null;
+              return admitByOpRiskWithoutQualityLifts({
+                slug,
+                risk_tier: manifest.risk_tier,
+                ceiling: CONTRACTED_DEFAULT_TRUST_CEILING,
+                owner_override: ownerOverride,
+                offer_owner_override: true,
+              });
+            }
+          : undefined;
 
   // D-196 — reserve a deferred direct-MCP base +1 at the REAL post-approval
   // proceed point (idempotent with an outer reservation). If the dispatch is a
@@ -2619,6 +2715,7 @@ export const handleExecute = async (
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
               risk_tier: call.risk_tier,
+              pre_lift_approval: call.pre_lift_approval,
               arg_shape_hash: call.arg_shape_hash,
               canonical_payload_hash: call.canonical_payload_hash,
               ...(call.open_pinned_projection_hash !== undefined
@@ -2774,6 +2871,7 @@ export const handleExecute = async (
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
               risk_tier: call.risk_tier,
+              pre_lift_approval: call.pre_lift_approval,
               arg_shape_hash: call.arg_shape_hash,
               canonical_payload_hash: call.canonical_payload_hash,
               ttl_ms: call.ttl_ms,
@@ -2932,6 +3030,37 @@ export const handleExecute = async (
         }
       : ingredientExecutor;
 
+  /** The per-call policy boundary does not depend on commit persistence. The
+   * full Gateway owns it when commit wiring is live; this narrow twin keeps an
+   * ask/deny authoritative when the commit store or typed source is absent —
+   * notably source-less housekeeping consulting a `system` override. */
+  const admissionAwareFallbackExecutor: IngredientExecutor =
+    evaluateAdmission !== undefined && !commitGatewayActive
+      ? async (slug, input, output, stepOptions, stepMeta) => {
+          const authorityInput = stepMeta?.surface_dispatch === true
+            && stepMeta.surface_dispatch_authority_input !== undefined
+            ? stepMeta.surface_dispatch_authority_input as Record<string, unknown>
+            : input;
+          const decision = evaluateAdmission(
+            slug,
+            authorityInput,
+            stepMeta?.surface_dispatch === true
+              ? stepMeta.surface_operation_key
+              : undefined,
+          );
+          if (decision?.verdict === 'deny') {
+            throw new PreflightDeniedError(slug, decision.code, decision.detail);
+          }
+          if (decision?.verdict === 'ask') {
+            const resumeApproved =
+              stepMeta?.preflight_admitted === true
+              && stepMeta.preflight_approved_target?.ingredient_slug === slug;
+            if (!resumeApproved) raiseOnAsk(decision, { slug });
+          }
+          return usageAwareFallbackExecutor(slug, input, output, stepOptions, stepMeta);
+        }
+      : usageAwareFallbackExecutor;
+
   const engineExecutor: IngredientExecutor =
     commitGatewayActive
       ? wrapWithCommitGateway(cacheAwareGatewayInner(ingredientExecutor), {
@@ -3067,7 +3196,7 @@ export const handleExecute = async (
           ...(sessionGrants ? { sessionGrants } : {}),
           ...(qualityDelegations ? { qualityDelegations } : {}),
         })
-      : usageAwareFallbackExecutor;
+      : admissionAwareFallbackExecutor;
 
   // D-179 P1 — per-dish `context.recipe.*` continuity. Standing dishes
   // load their prior-run snapshot so `{{context.recipe.<step_id>}}`
@@ -3555,8 +3684,8 @@ export const handleExecute = async (
       // → sequential, so the entry check already covers it). Three steps, in a
       // loop so a follower whose leader FAILED re-attempts:
       //   (a) a concurrent leader is creating this hold → AWAIT its outcome:
-      //       `'durable'` ⇒ collapse, `'failed'` ⇒ the hold was not created ⇒
-      //       re-loop. Awaiting (not collapsing on bare presence) is what
+      //       `status: 'durable'` ⇒ collapse, `status: 'failed'` ⇒ the hold was
+      //       not created ⇒ re-loop. Awaiting (not collapsing on bare presence) is what
       //       prevents a false "queued" when the leader fails to persist.
       //   (b) no in-flight leader → a durable twin may have appeared during
       //       this run's engine pass (a leader that finished + released) ⇒
@@ -3566,13 +3695,16 @@ export const handleExecute = async (
       //       its claim in the outer `finally`.
       if (heldActionIdentity !== undefined && heldActionKey !== undefined) {
         let collapse = false;
+        let collapsedRunId: string | undefined;
         // Bounded by the in-flight set: each iteration either collapses,
         // becomes the leader, or awaits a distinct leader's settle.
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const leader = awaitInflightHold(heldActionKey); // (a)
           if (leader !== null) {
-            if ((await leader) === 'durable') {
+            const outcome = await leader;
+            if (outcome.status === 'durable') {
+              collapsedRunId = outcome.run_id;
               collapse = true;
               break;
             }
@@ -3588,6 +3720,7 @@ export const handleExecute = async (
             // Best-effort: a lookup failure proceeds to the atomic claim.
           }
           if (twin !== null) {
+            collapsedRunId = twin.run_id;
             collapse = true;
             break;
           }
@@ -3597,7 +3730,10 @@ export const handleExecute = async (
           break;
         }
         if (collapse) {
-          return buildHeldResponseForRecipe(recipe.recipe_id, result.recipe_hash);
+          return stampExecuteResponseAuditRun(
+            buildHeldResponseForRecipe(recipe.recipe_id, result.recipe_hash),
+            collapsedRunId,
+          );
         }
       }
       if (!deps.auditLog) {
@@ -3621,6 +3757,32 @@ export const handleExecute = async (
         );
       } else {
         try {
+          const preflightContext = {
+            ...(awaitingApproval.tool_slug !== undefined
+              ? { tool_slug: awaitingApproval.tool_slug }
+              : {}),
+            ...(awaitingApproval.connection_name !== undefined
+              ? { connection_name: awaitingApproval.connection_name }
+              : {}),
+            ...(awaitingApproval.risk_tier !== undefined
+              ? { risk_tier: awaitingApproval.risk_tier }
+              : {}),
+            ...(awaitingApproval.reason !== undefined
+              ? { reason: awaitingApproval.reason }
+              : {}),
+            ...(awaitingApproval.owner_override_offer !== undefined
+              ? { owner_override_offer: awaitingApproval.owner_override_offer }
+              : {}),
+            ...(awaitingApproval.approval_clamped_from !== undefined
+              ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
+              : {}),
+            ...(awaitingApproval.authorization_provenance !== undefined
+              ? {
+                  authorization_provenance:
+                    awaitingApproval.authorization_provenance,
+                }
+              : {}),
+          };
           const checkpoint: Checkpoint = {
             checkpoint_id: randomUUID(),
             run_id,
@@ -3643,6 +3805,9 @@ export const handleExecute = async (
                 ? { connection_name: awaitingApproval.connection_name }
                 : {}),
             },
+            ...(Object.keys(preflightContext).length > 0
+              ? { preflight_context: preflightContext }
+              : {}),
             step_state: awaitingApproval.step_state,
             // D-202 Slice 1b — persist the quality-relevance marker so the
             // answer-path resumer can record the owner's reject-driven quality
@@ -3705,7 +3870,7 @@ export const handleExecute = async (
                 // the owner cell's defaults — P4: read off the baseline
                 // `contract.policy_matrix` row via `deps.contractScan` (the
                 // in-code seed answers when no scan/row, e.g. the dbless
-                // harness) — and the hold's tier (write/admin only, D7). The
+                // harness) — and the hold's tier (read/write/admin, D7). The
                 // host-owned clauses here:
                 //  - a wired resolver + run identity — without them the resume
                 //    dispatch could neither mint nor a future dispatch match,
@@ -3731,6 +3896,9 @@ export const handleExecute = async (
                         channel: executionSource.channel,
                         actor: executionSource.actor,
                         risk_tier: awaitingApproval.risk_tier,
+                        pre_lift_approval:
+                          awaitingApproval.authorization_provenance
+                            ?.pre_lift_approval,
                       })
                     : undefined;
                 // D-177 P5b (N.11) — upgrade the offer to `grant_mode: 'open'`
@@ -3816,6 +3984,18 @@ export const handleExecute = async (
                       ...(awaitingApproval.reason !== undefined
                         ? { reason: awaitingApproval.reason }
                         : {}),
+                      ...(awaitingApproval.owner_override_offer !== undefined
+                        ? { owner_override_offer: awaitingApproval.owner_override_offer }
+                        : {}),
+                      ...(awaitingApproval.approval_clamped_from !== undefined
+                        ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
+                        : {}),
+                      ...(awaitingApproval.authorization_provenance !== undefined
+                        ? {
+                            authorization_provenance:
+                              awaitingApproval.authorization_provenance,
+                          }
+                        : {}),
                     },
                   });
                   // `askId` stays undefined — the anchor is deliberately
@@ -3832,6 +4012,11 @@ export const handleExecute = async (
                   && awaitingApproval.arg_shape_hash !== undefined
                   && awaitingApproval.canonical_payload_hash !== undefined
                   && awaitingApproval.risk_tier !== undefined
+                  && awaitingApproval.authorization_provenance !== undefined
+                  && (
+                    awaitingApproval.authorization_provenance.pre_lift_approval === 'never'
+                    || awaitingApproval.authorization_provenance.pre_lift_approval === 'ask'
+                  )
                   && (SESSION_GRANT_RISK_TIERS as readonly string[]).includes(
                     awaitingApproval.risk_tier,
                   )
@@ -3857,6 +4042,8 @@ export const handleExecute = async (
                     // Membership in SESSION_GRANT_RISK_TIERS ⊆ RiskTier was
                     // just checked — the narrowing is sound.
                     risk_tier: awaitingApproval.risk_tier as RiskTier,
+                    authorization_provenance:
+                      awaitingApproval.authorization_provenance,
                     recipe_id: recipe.recipe_id,
                     recipe_hash: result.recipe_hash,
                     arg_shape_hash: awaitingApproval.arg_shape_hash,
@@ -3880,6 +4067,18 @@ export const handleExecute = async (
                         : {}),
                       ...(awaitingApproval.reason !== undefined
                         ? { reason: awaitingApproval.reason }
+                        : {}),
+                      ...(awaitingApproval.owner_override_offer !== undefined
+                        ? { owner_override_offer: awaitingApproval.owner_override_offer }
+                        : {}),
+                      ...(awaitingApproval.approval_clamped_from !== undefined
+                        ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
+                        : {}),
+                      ...(awaitingApproval.authorization_provenance !== undefined
+                        ? {
+                            authorization_provenance:
+                              awaitingApproval.authorization_provenance,
+                          }
                         : {}),
                       // D-177 P5b — rendering context for the v1 (single-
                       // member) ask's open-grant block; the coordinator
@@ -3914,6 +4113,18 @@ export const handleExecute = async (
                       : {}),
                     ...(awaitingApproval.reason !== undefined
                       ? { reason: awaitingApproval.reason }
+                      : {}),
+                    ...(awaitingApproval.owner_override_offer !== undefined
+                      ? { owner_override_offer: awaitingApproval.owner_override_offer }
+                      : {}),
+                    ...(awaitingApproval.approval_clamped_from !== undefined
+                      ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
+                      : {}),
+                    ...(awaitingApproval.authorization_provenance !== undefined
+                      ? {
+                          authorization_provenance:
+                            awaitingApproval.authorization_provenance,
+                        }
                       : {}),
                     ...(sessionGrantOffer !== undefined
                       ? { session_grant: sessionGrantOffer }
@@ -4119,8 +4330,8 @@ export const handleExecute = async (
         auditAnchorWritten = true;
         // D-157 Part C — the awaiting anchor is now durable, so
         // `findLiveHeldTwin` will see it: a concurrent follower of this
-        // leader can safely collapse. (Settled `'durable'` in the outer
-        // `finally`; any earlier-exit path leaves this false → `'failed'`,
+        // leader can safely collapse. (Settled `status: 'durable'` in the outer
+        // `finally`; any earlier-exit path leaves this false → `status: 'failed'`,
         // so the follower re-attempts rather than reporting a phantom hold.)
         if (entry.commit_status === 'awaiting_approval') {
           heldActionDurable = true;
@@ -4384,7 +4595,7 @@ export const handleExecute = async (
       }
     }
 
-    return {
+    return stampExecuteResponseAuditRun({
       recipe_id: result.recipe_id,
       recipe_hash: result.recipe_hash,
       // D-157 P1 slice 4 — a pause-downgrade surfaces `success: false`
@@ -4429,7 +4640,7 @@ export const handleExecute = async (
       // returned an empty result because their convention's provider is not
       // connected (the recipe ran on empty data). Present only when ≥1 fired.
       ...(runnabilityWarnings.length > 0 ? { runnability_warnings: runnabilityWarnings } : {}),
-    };
+    }, auditAnchorWritten ? run_id : undefined);
   } catch (e) {
     // Preserve already-coded errors (shouldn't happen from the engine,
     // but keeps the abstraction honest if a deeper layer ever throws one).
@@ -4446,14 +4657,18 @@ export const handleExecute = async (
     );
   } finally {
     // D-157 Part C — settle this run's in-flight hold claim (if it led one),
-    // releasing any concurrent follower awaiting the outcome. `'durable'` iff
-    // the awaiting anchor was written (so `findLiveHeldTwin` now covers dedup
-    // → the follower collapses); otherwise `'failed'` — the hold did NOT
+    // releasing any concurrent follower awaiting the outcome. `status:
+    // 'durable'` iff the awaiting anchor was written (so the follower
+    // collapses); otherwise `status: 'failed'` — the hold did NOT
     // materialise (checkpoint-store error, an early-exit, or a throw), so the
     // follower re-attempts rather than reporting a phantom hold. A no-op when
     // this run never led (the common, uncontended path). `settle` is
     // idempotent + always removes the registry slot.
-    heldClaim?.settle(heldActionDurable ? 'durable' : 'failed');
+    heldClaim?.settle(
+      heldActionDurable
+        ? { status: 'durable', run_id }
+        : { status: 'failed' },
+    );
     // D-181 slice 4 — drop this run from the live active-list (idempotent;
     // also clears any unconsumed termination marker). The run's heavy-call
     // slots already released on settle via the governor's `finally`.
@@ -4480,7 +4695,7 @@ export const handleExecute = async (
  *  + UI render a normal failure message; the user re-runs from
  *  scratch.
  *
- *  Spec: docs/d-157-spec.md § A.2 / N.3 / I-4 (codex BLOCKER fold —
+ *  Spec: D-157 § A.2 / N.3 / I-4 (codex BLOCKER fold —
  *  the anchor MUST link its checkpoint when awaiting). */
 const buildPauseFailureError = (
   recipe_id: string,
@@ -4587,6 +4802,7 @@ const handlePolicyGateDenial = async (args: {
     });
   }
 
+  let auditAnchorWritten = false;
   if (deps.auditLog) {
     try {
       const entry = buildAuditEntry({
@@ -4622,13 +4838,14 @@ const handlePolicyGateDenial = async (args: {
         ...commitFields,
       });
       await deps.auditLog.append(entry);
+      auditAnchorWritten = true;
       emitMemoryAudit(deps.eventBus, entry.run_id);
     } catch {
       // Audit best-effort — never break the deny-response path.
     }
   }
 
-  return {
+  return stampExecuteResponseAuditRun({
     recipe_id: recipe.recipe_id,
     recipe_hash,
     success: false,
@@ -4636,7 +4853,7 @@ const handlePolicyGateDenial = async (args: {
     steps: [],
     errors: [policyDenyError],
     duration_ms: 0,
-  };
+  }, auditAnchorWritten ? run_id : undefined);
 };
 
 /** D-120 Phase 3 — resolve the surrogate `recipe_insights.id` for the

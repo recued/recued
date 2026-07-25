@@ -29,7 +29,7 @@
  *  may be shifted at all, what an absent boolean means, where a long value
  *  is cut. The leaf escapes and lays out; this side decides what is true.
  *
- *  Spec: docs/d-210-spec.md § A.8 slice 3d. */
+ *  Spec: D-210 § A.8 slice 3d. */
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
 import type { ArgEditField, InboxItem, MetaFieldType } from '@recued/contracts';
@@ -298,6 +298,21 @@ export interface AskLandingDetailResolverDeps {
    *  the original value lands. The composer binds this together with the
    *  approve closure, off the same bundle, so they cannot come apart. */
   readonly editable?: boolean;
+  /** LIVE member count for a batch-registered ask — `batchAskStore.get`.
+   *
+   *  🔑 Read at RENDER time, never stamped at ask-build time. A batch row in
+   *  `open` state ACCUMULATES members, so a count captured when the ask was
+   *  built goes stale in exactly the direction that matters: a batch that
+   *  starts at one member and gains a second would keep rendering member one's
+   *  values as though they were the whole approval — the precise failure the
+   *  suppression below exists to prevent.
+   *
+   *  ⛔ Absent ⇒ every batched ask suppresses its details, which is the
+   *  pre-fix behaviour. A composition that cannot count members must not start
+   *  rendering them. */
+  readonly getBatch?: (
+    batch_id: string,
+  ) => Promise<{ readonly members: readonly unknown[] } | null>;
 }
 
 const resolveDefaultTimeZone = (): string => {
@@ -314,19 +329,44 @@ const resolveDefaultTimeZone = (): string => {
  *  resolved, and each null is a distinct fact rather than a fallback:
  *
  *    - not a `gateway.preflight` ask: it holds no operation at all;
- *    - a BATCHED preflight ask: `buildPreflightAsk` stamps ONE
+ *    - a MULTI-MEMBER batched preflight ask: `buildPreflightAsk` stamps ONE
  *      `checkpoint_id` on a payload covering N members, so rendering "the"
  *      args would show one member's values as if they were the whole
  *      approval. The prose already enumerates a batch's items;
  *    - no `checkpoint_id`, or a hold that is unknown / consumed / not
- *      reception-origin. */
+ *      reception-origin.
+ *
+ *  ⛔ THE SECOND BULLET USED TO KEY ON `batch_id` PRESENCE, and that predicate
+ *  was far wider than its own reason. `buildPreflightAsk` stamps `batch_id` for
+ *  ANY batch including a SINGLE member, and `deriveOriginUnit` maps `reception`
+ *  to a run-scoped unit — so every reception hold is a degenerate one-member
+ *  batch and this returned null for all of them. The `/ask` page rendered no
+ *  details and no edit controls on its own main path (D-210 A.8 3d-2b/3d-2c),
+ *  while the messenger text for the same hold DID enumerate the args: the
+ *  richest surface showed least. "One member's values as if they were the whole
+ *  approval" is true for N>1 and vacuous for N=1, so the gate now counts
+ *  members instead of detecting a batch. */
 export const createAskLandingDetailResolver = (
   deps: AskLandingDetailResolverDeps,
 ): ((ask: PendingAsk) => Promise<AskLandingHeldOpDetails | null>) => {
   const timeZone = deps.timeZone ?? resolveDefaultTimeZone();
   return async (ask: PendingAsk): Promise<AskLandingHeldOpDetails | null> => {
     if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return null;
-    if (ask.handler_payload.batch_id !== undefined) return null;
+    const batch_id = ask.handler_payload.batch_id;
+    if (batch_id !== undefined) {
+      // Fail closed on every uncertainty: a non-string id, no reader wired, a
+      // throwing or missing row, or more than one member. Only a row we can
+      // read AND that holds exactly one member may render.
+      if (typeof batch_id !== 'string' || batch_id.length === 0) return null;
+      if (deps.getBatch === undefined) return null;
+      let row: { readonly members: readonly unknown[] } | null;
+      try {
+        row = await deps.getBatch(batch_id);
+      } catch {
+        return null;
+      }
+      if (row === null || row.members.length !== 1) return null;
+    }
     const hold_id = ask.handler_payload.checkpoint_id;
     if (typeof hold_id !== 'string' || hold_id.length === 0) return null;
     const item = await deps.findHoldItem(hold_id);

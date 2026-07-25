@@ -17,6 +17,7 @@ import {
   type Channel,
   type NotificationMessage,
 } from '../index.js';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 describe('D-163 I-4 — Bridge as a discrete channel adapter', () => {
   it('createBridgeChannel returns a Channel with name=bridge + capability=notify-only', () => {
@@ -86,7 +87,7 @@ describe('D-163 I-8 — no bridgeNotifier / BridgeOsNotifier symbol remains', ()
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         yield* walkSource(full);
-      } else if (entry.name.endsWith('.ts')) {
+      } else if (isTypeScriptSource(entry.name)) {
         yield full;
       }
     }

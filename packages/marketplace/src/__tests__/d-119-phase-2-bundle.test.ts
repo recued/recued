@@ -4,6 +4,8 @@
  *    - successful fetch returning a wrapped bundle
  *    - successful fetch falling through bare-recipe → auto-wrapped
  *    - finalUrl reflects redirect-followed URL (`response.url`)
+ *    - missing/invalid final URLs fail closed
+ *    - fetched finalUrl is load-bearing in remote install planning
  *    - HTTP error → BundleFetchError 'http'
  *    - non-JSON response → BundleFetchError 'parse'
  *    - validation failure → BundleFetchError 'validation'
@@ -14,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 
 import type { RecipeDefinition } from '@recued/contracts';
+import { planBundleInstall } from '@recued/recipes';
 import {
   BundleFetchError,
   assertPlainRecipeSubmission,
@@ -54,6 +57,19 @@ const mockFetch = (
 };
 
 describe('fetchBundleByUrl — happy paths', () => {
+  it('explicitly asks fetch to follow redirects', async () => {
+    let observedInit: RequestInit | undefined;
+    const delegate = mockFetch(validRecipe);
+    const fetchFn: typeof globalThis.fetch = async (input, init) => {
+      observedInit = init;
+      return delegate(input, init);
+    };
+
+    await fetchBundleByUrl('https://x.io/r', fetchFn);
+
+    expect(observedInit?.redirect).toBe('follow');
+  });
+
   it('returns a wrapped bundle and the final URL', async () => {
     const fetchFn = mockFetch({
       bundle_version: 1,
@@ -72,10 +88,35 @@ describe('fetchBundleByUrl — happy paths', () => {
     expect(result.bundle.ingredients).toBeUndefined();
   });
 
-  it('falls back to the request URL when response.url is empty', async () => {
+  it('fails closed when response.url is empty instead of reusing the request URL', async () => {
     const fetchFn = mockFetch(validRecipe, { finalUrl: '' });
-    const result = await fetchBundleByUrl('https://x.io/r', fetchFn);
-    expect(result.finalUrl).toBe('https://x.io/r');
+    await expect(fetchBundleByUrl('https://x.io/r', fetchFn))
+      .rejects.toMatchObject({ kind: 'redirect' } as Partial<BundleFetchError>);
+  });
+
+  it('fails closed when the final URL is not HTTP(S)', async () => {
+    const fetchFn = mockFetch(validRecipe, { finalUrl: 'file:///tmp/bundle.json' });
+    await expect(fetchBundleByUrl('https://x.io/r', fetchFn))
+      .rejects.toMatchObject({ kind: 'redirect' } as Partial<BundleFetchError>);
+  });
+
+  it('binds remote install vault scope to the redirected final URL', async () => {
+    const fetched = await fetchBundleByUrl(
+      'https://short.ly/r',
+      mockFetch(validRecipe, { finalUrl: 'https://Publisher.Example/recipes/r.json' }),
+    );
+    const plan = await planBundleInstall({
+      fetched,
+      source: { kind: 'bundle-remote', slug: 'r' },
+      contentHash: 'h',
+      lookupExisting: async () => null,
+    });
+
+    expect(plan.kind).toBe('ready');
+    if (plan.kind === 'ready') {
+      expect(plan.scopeKey).toBe('bundle:publisher.example/recipes/r.json/r');
+      expect(plan.scopeKey).not.toContain('short.ly');
+    }
   });
 });
 

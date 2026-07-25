@@ -5,7 +5,7 @@
  *  cross-run repeatability lets the housekeeping scan stay
  *  idempotent.
  *
- *  Spec: `docs/d-138-spec.md` § A.3, § Contract Tightening. */
+ *  Spec: D-138 § A.3, § Contract Tightening. */
 
 import {
   CONTACT_MATCH_FIELDS,

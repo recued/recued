@@ -68,7 +68,7 @@
  *  own address — a `connection.notification` email enrollment concern,
  *  surfaced by the wiring, not this leaf.
  *
- *  Spec: docs/d-158-spec.md § P2 / A.4 / N.4 / I-9.
+ *  Spec: D-158 § P2 / A.4 / N.4 / I-9.
  */
 
 import { htmlEscape, safeHttpUrl } from '../html.js';

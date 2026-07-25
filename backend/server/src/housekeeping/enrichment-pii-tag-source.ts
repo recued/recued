@@ -37,7 +37,7 @@
  *  the wrap, and producer LLM calls round-trip byte-identical (the comfort
  *  default). An empty `local_manifest` table → `[]` for every scope.
  *
- *  Spec: docs/d-167-spec.md §Integration/D-165 (enrichment egress is a
+ *  Spec: D-167 §Integration/D-165 (enrichment egress is a
  *  comfort-layer surface), §"Runtime flow", §"Scope". */
 
 import type { EnrichmentScope, EntitySchemaIngredientInput, PiiFieldTag } from '@recued/contracts';

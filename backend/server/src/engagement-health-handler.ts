@@ -23,7 +23,7 @@
  *      fresh capability list + `call_entity_changed` flag so the
  *      UI can surface "Switched to <entity>" toast.
  *
- *  Spec: `docs/d-139-spec.md` § A.8 + § P2. */
+ *  Spec: D-139 § A.8 + § P2. */
 
 import {
   RpcError,

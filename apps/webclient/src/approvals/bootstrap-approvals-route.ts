@@ -8,9 +8,8 @@
  *
  *  The asks sub-state (seed + live `notification.ask`/`ask_closed` refresh +
  *  first-answer-wins submit) is still managed by the proven `asks-panel` mount,
- *  run HEADLESS — it owns the IO, this route owns the unified rendering and
- *  interleaves ask cards with gate cards. (Chat plan-approvals join this list
- *  in a follow-on slice; the destructive real-confirm lands in the shared card.)
+ *  run HEADLESS. Durable Chat plans come from the bootstrap-scoped reconciled
+ *  inbox; this route owns one interleaved rendering for all three kinds.
  */
 
 import {
@@ -37,7 +36,13 @@ import {
   type AsksPanelState,
   type AsksSubmitAnswerCaller,
 } from './asks-panel.js';
-import type { PendingChatPlan } from './pending-chat-plans-store.js';
+import {
+  pendingChatPlanHref,
+  pendingChatPlanResolutionCopy,
+  type PendingChatPlan,
+  type PendingChatPlanResolution,
+  type PendingChatPlansStoreState,
+} from './pending-chat-plans-store.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 import {
@@ -76,6 +81,15 @@ export const APPROVALS_ROUTE_FOCUS_ATTR = 'data-recued-approvals-focus';
 export const APPROVALS_ROUTE_EMPTY_ATTR = 'data-recued-approvals-empty';
 export const APPROVALS_ROUTE_LOADING_ATTR = 'data-recued-approvals-loading';
 export const APPROVALS_ROUTE_ERROR_ATTR = 'data-recued-approvals-error';
+/** Ephemeral post-decision handoff; resolved history still belongs to Chat/Runs. */
+export const APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR =
+  'data-recued-approvals-plan-resolution';
+export const APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR =
+  'data-recued-approvals-plan-resolution-link';
+export const APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR =
+  'data-recued-approvals-plan-resolution-dismiss';
+export const APPROVALS_ROUTE_PLAN_RESOLUTION_ANNOUNCER_ATTR =
+  'data-recued-approvals-plan-resolution-announcer';
 
 const APPROVALS_ROUTE_CHROME_STYLES = `
 [${APPROVALS_ROUTE_HOST_ATTR}] {
@@ -102,6 +116,78 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   margin: 0 0 14px;
   font-size: 13px;
   color: var(--muted);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution[hidden] {
+  display: none;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-link,
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-dismiss {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-link {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-dismiss {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 /* R20 — ONE unified list; gate + ask cards interleaved newest-first. */
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-list {
@@ -144,6 +230,14 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   background: var(--surface-sunk);
   text-align: center;
   line-height: 1.5;
+}
+@media (max-width: 620px) {
+  [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution {
+    grid-template-columns: 1fr;
+  }
+  [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-actions {
+    justify-content: flex-start;
+  }
 }
 `;
 
@@ -226,11 +320,19 @@ export interface BootstrapApprovalsRouteOptions {
    *  screen. A non-matching / already-resolved id degrades silently to the
    *  whole queue with no highlight. */
   initialFocusId?: string;
-  /** R20 (Option A) — live chat-plan aggregation. The bootstrap-scoped store
-   *  (fed by chat.plan_proposed/resolved) the route reads + re-renders off.
-   *  Absent → the route shows only gates + asks (back-compat / test paths). */
+  /** Bootstrap-scoped durable Chat approval inbox. It owns all-session
+   * recovery plus live-event reconciliation across reconnects. */
   chatPlans?: {
     list(): ReadonlyArray<PendingChatPlan>;
+    latestResolution?(): PendingChatPlanResolution | null;
+    state?(): PendingChatPlansStoreState;
+    refresh?(): Promise<void>;
+    whenLoaded?(): Promise<void>;
+    recordResolution?(
+      plan: PendingChatPlan,
+      decision: ChatPlanCardDecision,
+    ): void;
+    dismissResolution?(plan_id: string): void;
     subscribe(listener: () => void): () => void;
   };
   /** R20 — resolve a chat plan: approve → `chat.plan.approve`, reject →
@@ -272,9 +374,8 @@ interface AskSnapshot {
   listError: string | null;
 }
 
-/** One row in the unified pending-decisions list. `sortAt` is an epoch-ms
- *  timestamp every kind carries — gates/asks use the server `created_at`, chat
- *  plans the client proposal-arrival stamp — so the list is newest-first. */
+/** One row in the unified pending-decisions list. `sortAt` is the server
+ * proposal/create time for every durable kind, so ordering survives reloads. */
 type DecisionRow =
   | { kind: 'gate'; sortAt: number; id: string; approval: ServerPendingApproval }
   | { kind: 'ask'; sortAt: number; id: string; ask: ServerPendingAsk }
@@ -372,6 +473,26 @@ export const bootstrapApprovalsRoute = (
   summary.setAttribute(APPROVALS_ROUTE_SUMMARY_ATTR, '');
   routeRoot.appendChild(summary);
 
+  // Persistent live region: mutating a node that is already mounted is
+  // reliably announced; rebuilding a role=status node with every render is
+  // not, and would also repeat the same outcome during snapshot refreshes.
+  const planResolutionAnnouncer = doc.createElement('div');
+  planResolutionAnnouncer.className = 'approvals-plan-resolution-announcer';
+  planResolutionAnnouncer.setAttribute(
+    APPROVALS_ROUTE_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+    '',
+  );
+  planResolutionAnnouncer.setAttribute('role', 'status');
+  planResolutionAnnouncer.setAttribute('aria-live', 'polite');
+  planResolutionAnnouncer.setAttribute('aria-atomic', 'true');
+  routeRoot.appendChild(planResolutionAnnouncer);
+
+  const planResolution = doc.createElement('div');
+  planResolution.className = 'approvals-plan-resolution';
+  planResolution.setAttribute(APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR, '');
+  planResolution.hidden = true;
+  routeRoot.appendChild(planResolution);
+
   // ONE unified list (R20) — gate + ask cards interleaved newest-first.
   const list = doc.createElement('div');
   list.className = 'approvals-list';
@@ -394,6 +515,76 @@ export const bootstrapApprovalsRoute = (
 
   const chatPlanList = (): ReadonlyArray<PendingChatPlan> =>
     opts.chatPlans?.list() ?? [];
+
+  const latestPlanResolution = (): PendingChatPlanResolution | null =>
+    opts.chatPlans?.latestResolution?.() ?? null;
+
+  let planResolutionPrimaryAction: HTMLElement | null = null;
+  let announcedPlanResolutionKey: string | null = null;
+  const renderPlanResolution = (): void => {
+    const resolution = latestPlanResolution();
+    clearChildren(planResolution);
+    planResolutionPrimaryAction = null;
+    planResolution.hidden = resolution === null;
+    if (resolution === null) return;
+    planResolution.setAttribute('data-outcome', resolution.outcome);
+
+    const copy = pendingChatPlanResolutionCopy(resolution);
+    const announcementKey = `${resolution.plan_id}:${resolution.outcome}`;
+    if (announcedPlanResolutionKey !== announcementKey) {
+      announcedPlanResolutionKey = announcementKey;
+      planResolutionAnnouncer.textContent = `${copy.title}. ${copy.detail}`;
+    }
+    const copyHost = doc.createElement('div');
+    copyHost.className = 'approvals-plan-resolution-copy';
+
+    const title = doc.createElement('span');
+    title.className = 'approvals-plan-resolution-title';
+    title.textContent = copy.title;
+    copyHost.appendChild(title);
+
+    const detail = doc.createElement('span');
+    detail.className = 'approvals-plan-resolution-detail';
+    detail.textContent = copy.detail;
+    copyHost.appendChild(detail);
+    planResolution.appendChild(copyHost);
+
+    const actions = doc.createElement('div');
+    actions.className = 'approvals-plan-resolution-actions';
+
+    const chatLink = doc.createElement('a');
+    chatLink.className = 'approvals-plan-resolution-link';
+    chatLink.setAttribute('href', pendingChatPlanHref(resolution));
+    chatLink.setAttribute(APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR, '');
+    chatLink.textContent = copy.linkLabel;
+    actions.appendChild(chatLink);
+    planResolutionPrimaryAction = chatLink;
+
+    const dismiss = doc.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'approvals-plan-resolution-dismiss';
+    dismiss.setAttribute(APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR, '');
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      if (opts.chatPlans?.dismissResolution === undefined) return;
+      opts.chatPlans.dismissResolution(resolution.plan_id);
+      heading.setAttribute('tabindex', '-1');
+      const focusableHeading = heading as unknown as {
+        focus?: (options?: FocusOptions) => void;
+      };
+      focusableHeading.focus?.({ preventScroll: true });
+    });
+    actions.appendChild(dismiss);
+    planResolution.appendChild(actions);
+  };
+
+  const focusPlanResolutionHandoff = (planId: string): void => {
+    if (latestPlanResolution()?.plan_id !== planId) return;
+    const focusable = planResolutionPrimaryAction as unknown as {
+      focus?: (options?: FocusOptions) => void;
+    } | null;
+    focusable?.focus?.({ preventScroll: true });
+  };
 
   const mergedRows = (): DecisionRow[] => {
     const rows: DecisionRow[] = [
@@ -483,9 +674,19 @@ export const bootstrapApprovalsRoute = (
   const renderPlanCard = (plan: PendingChatPlan): HTMLElement =>
     renderChatPlanCard(
       doc,
-      { plan_id: plan.plan_id, tool: plan.tool, tier: plan.tier, args: plan.args },
+      {
+        plan_id: plan.plan_id,
+        ...(plan.retry_of_plan_id !== undefined
+          ? { retry_of_plan_id: plan.retry_of_plan_id }
+          : {}),
+        tool: plan.tool,
+        tier: plan.tier,
+        args: plan.args,
+        payload_available: plan.payload_available,
+      },
       { onResolve: (decision) => resolvePlanFromCard(plan.plan_id, decision) },
       {
+        chatHref: pendingChatPlanHref(plan),
         disabled: resolvingPlans.has(plan.plan_id),
         errorMessage: planResolveErrors.get(plan.plan_id) ?? null,
       },
@@ -516,6 +717,7 @@ export const bootstrapApprovalsRoute = (
   const renderDecisions = (): void => {
     if (disposed) return;
     clearChildren(list);
+    renderPlanResolution();
 
     // Defensive — drop armed flags for gates no longer pending (e.g. resolved
     // on another paired device). A still-pending armed gate is KEPT: a benign
@@ -551,6 +753,28 @@ export const bootstrapApprovalsRoute = (
       err.textContent = errorDisplay.text;
       list.appendChild(err);
     }
+    const chatPlanState = opts.chatPlans?.state?.();
+    const chatPlanErrorDisplay = resolveSurfaceErrorDisplay(
+      [
+        chatPlanState?.error == null
+          ? null
+          : {
+              error: classifyRpcError(chatPlanState.error),
+              label: "Couldn't refresh Chat approvals",
+            },
+      ],
+      { hasData: planCount > 0 },
+    );
+    if (chatPlanErrorDisplay !== null) {
+      const planErr = doc.createElement('div');
+      planErr.className = 'approvals-error';
+      planErr.setAttribute(
+        APPROVALS_ROUTE_ERROR_ATTR,
+        chatPlanErrorDisplay.connectionCaused ? 'connection' : 'error',
+      );
+      planErr.textContent = chatPlanErrorDisplay.text;
+      list.appendChild(planErr);
+    }
     if (askSnapshot.listError !== null) {
       const askErr = doc.createElement('div');
       askErr.className = 'approvals-error';
@@ -561,7 +785,11 @@ export const bootstrapApprovalsRoute = (
 
     const stillLoading =
       total === 0
-      && (approvalState.phase === 'loading' || askSnapshot.phase === 'loading');
+      && (
+        approvalState.phase === 'loading'
+        || askSnapshot.phase === 'loading'
+        || chatPlanState?.phase === 'loading'
+      );
     if (stillLoading) {
       const loading = doc.createElement('div');
       loading.className = 'approvals-loading';
@@ -597,23 +825,40 @@ export const bootstrapApprovalsRoute = (
     const askCount = askSnapshot.asks.length;
     const planCount = chatPlanList().length;
     const total = approvalCount + askCount + planCount;
+    const chatPlanState = opts.chatPlans?.state?.();
+    const loading =
+      total === 0
+      && (
+        approvalState.phase === 'loading'
+        || askSnapshot.phase === 'loading'
+        || chatPlanState?.phase === 'loading'
+      );
+    const verified =
+      approvalState.phase === 'ready'
+      && askSnapshot.phase === 'ready'
+      && (chatPlanState?.phase ?? 'ready') === 'ready'
+      && approvalState.listError === null
+      && approvalState.liveError === null
+      && askSnapshot.listError === null
+      && (chatPlanState?.error ?? null) === null;
 
     summary.textContent =
       total === 0
-        ? 'No pending decisions.'
+        ? loading
+          ? 'Checking pending decisions...'
+          : verified
+          ? 'No pending decisions.'
+          : "Pending decisions couldn't be verified."
         : `${total} pending ${plural(total, 'decision')} waiting on you.`;
 
     const allClear =
-      approvalState.phase === 'ready'
-      && askSnapshot.phase === 'ready'
+      verified
       && total === 0
-      && approvalState.listError === null
-      && approvalState.liveError === null
-      && askSnapshot.listError === null;
+      && latestPlanResolution() === null;
     empty.hidden = !allClear;
     // When all-clear the dashed "All clear." panel is the whole message —
     // drop the redundant "No pending decisions." summary line above it.
-    summary.hidden = allClear;
+    summary.hidden = (verified && total === 0) || loading;
   };
 
   const doRefreshApprovals = (): Promise<void> => {
@@ -736,18 +981,30 @@ export const bootstrapApprovalsRoute = (
     planResolveErrors.delete(plan_id);
     renderDecisions();
     try {
+      const plan = chatPlanList().find(
+        (candidate) => candidate.plan_id === plan_id,
+      );
       await opts.runChatPlanResolve({ plan_id, decision });
-      // SUCCESS — KEEP the in-flight guard so the card stays disabled until the
-      // `chat.plan_resolved` broadcast drops the plan from the store (Option A
-      // has no list rpc to re-fetch, unlike the asks panel). Re-enabling here
-      // would open a double-fire window: the plan is still displayed but no
-      // longer guarded → a second click sends a second approve. Stale guards
-      // for plans the store has since dropped are pruned in the store listener.
+      if (plan !== undefined) {
+        // The RPC is authoritative. Apply its handoff immediately so a missed
+        // broadcast cannot jump from a disabled card straight to "All clear."
+        opts.chatPlans?.recordResolution?.(plan, decision);
+      }
+      // Keep the guard while the authoritative snapshot catches up. This also
+      // clears the row when the resolving broadcast was missed during a
+      // transport drop.
+      await opts.chatPlans?.refresh?.();
+      focusPlanResolutionHandoff(plan_id);
     } catch (err) {
       // FAILURE — re-enable for a retry + surface the error inline.
       resolvingPlans.delete(plan_id);
       planResolveErrors.set(plan_id, humanizeRpcError(err));
       renderDecisions();
+      // A paired client may have won the decision while this stale action was
+      // in flight. Reconcile once so a missed terminal broadcast replaces the
+      // obsolete error/card with the neutral no-longer-pending handoff.
+      await opts.chatPlans?.refresh?.();
+      focusPlanResolutionHandoff(plan_id);
       throw err;
     }
   };
@@ -778,11 +1035,8 @@ export const bootstrapApprovalsRoute = (
       }),
     );
   }
-  // R20 — re-render when the live chat-plan store changes (a plan proposed or
-  // resolved on any surface). The store owns the bus subscriptions; this is
-  // just the route's change listener. It also prunes in-flight/error state for
-  // plans the store has dropped (resolved away) so a kept-on-success guard
-  // doesn't linger past the row.
+  // Re-render for both snapshot-state and live-map changes. Also prune
+  // in-flight/error state after authoritative reconciliation removes a row.
   if (opts.chatPlans !== undefined) {
     unsubscribers.push(
       opts.chatPlans.subscribe(() => {
@@ -835,6 +1089,12 @@ export const bootstrapApprovalsRoute = (
   renderDecisions();
   startApprovalSubscription();
   void doRefreshApprovals();
+  // A bootstrap store may have loaded long before this route was opened.
+  // Reconcile on a later mount so missed events or a newly unlocked Chat vault
+  // can restore exact review details without requiring a page reload.
+  if (opts.chatPlans?.state?.().phase !== 'loading') {
+    void opts.chatPlans?.refresh?.();
+  }
   void loadRecipeNames();
   void loadDeviceLabels();
 
@@ -870,6 +1130,7 @@ export const bootstrapApprovalsRoute = (
         pendingApprovalLoad,
         pendingApprovalSubscribe,
         panel.whenLoaded(),
+        opts.chatPlans?.whenLoaded?.() ?? Promise.resolve(),
       ]);
     },
     dispose: () => {

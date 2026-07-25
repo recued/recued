@@ -34,7 +34,7 @@
  *  canonical lowercased token; equality downstream is over this
  *  extracted token, never raw bytes.
  *
- *  Spec: docs/d-177-spec.md § N.11 rule 5 (5.d / 5.e / 5.f). */
+ *  Spec: D-177 § N.11 rule 5 (5.d / 5.e / 5.f). */
 
 import { parseAddress } from '@recued/contracts';
 import type { ScopedSenderCandidate } from '@recued/contracts';

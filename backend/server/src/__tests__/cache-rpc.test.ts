@@ -11,7 +11,8 @@ import {
   handleCacheSince,
   type CacheRpcDeps,
 } from '../cache-rpc-handler.js';
-import { createBlobStore, createSQLiteCacheStore } from '../storage/index.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createSQLiteCacheStore } from '../storage/index.js';
 
 let workDir: string;
 let deps: CacheRpcDeps;

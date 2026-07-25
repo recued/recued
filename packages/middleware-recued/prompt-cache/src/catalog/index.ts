@@ -28,7 +28,7 @@
  *  so callers + tests can target individual sections without depending
  *  on the section file paths directly.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type { CatalogAssemblyInput, SectionedCatalog } from '../types.js';
 

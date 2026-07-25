@@ -16,7 +16,7 @@
  *  up with `collection.connection.enroll` once the user clicks Save,
  *  so a half-completed OAuth dance never leaves a phantom row behind.
  *
- *  Spec: `docs/d-129-spec.md` § A.1 + P1.1 close memo step 6. */
+ *  Spec: D-129 § A.1 + P1.1 close memo step 6. */
 
 import {
   resolveVendorOAuthEndpoints,

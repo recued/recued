@@ -35,6 +35,7 @@ import {
   type SetOAuthAppConfigArgs,
 } from '@recued/contracts';
 import {
+  canSubmitAccountForm,
   renderAccountsPanel,
   findAccountLane,
   findAccountProvider,
@@ -48,7 +49,10 @@ import {
   type AccountRow,
   type AccountsPanelState,
 } from '@recued/ui-shared';
-import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
+import {
+  createActionDispatcher,
+  type ActionHandlers,
+} from '@recued/ui-shared/action-dispatcher';
 import {
   runOAuthPopup,
   openOAuthPopup,
@@ -136,7 +140,19 @@ export interface FileLaneCallers {
   enroll: (args: Record<string, unknown>) => Promise<unknown>;
   delete: (args: { slug: string }) => Promise<{ ok: true }>;
   resync?: (args: { slug: string }) => Promise<unknown>;
-  reauth?: (args: { slug: string }) => Promise<unknown>;
+}
+
+/** One-shot scheduler used while a newly connected account is waiting for its
+ *  first successful sync. Returning a cancel function keeps route teardown and
+ *  explicit refreshes leak-free. */
+export interface AccountsFirstSyncPollScheduler {
+  schedule(handler: () => void, delayMs: number): () => void;
+}
+
+export interface AccountsChatHandoff {
+  readonly lane: AccountLaneId;
+  readonly providerId: string;
+  readonly slug: string;
 }
 
 export interface MountAccountsLanePanelOptions {
@@ -149,6 +165,10 @@ export interface MountAccountsLanePanelOptions {
    *  (`#connections/<lane>[/<slug>]`). Optional — navigation works
    *  internally without it. */
   onNavigate?: (lane: AccountLaneId, detailSlug: string | null) => void;
+  /** Post-connect next actions. The route supplies hash-aware callbacks so
+   *  these also work with injected/manual hash sources. */
+  onGoToChat?: (source: AccountsChatHandoff) => void;
+  onOpenLane?: (lane: AccountLaneId) => void;
   mail?: MailLaneCallers;
   calendar?: CalendarLaneCallers;
   file?: FileLaneCallers;
@@ -156,14 +176,24 @@ export interface MountAccountsLanePanelOptions {
    *  (Mail/Calendar sign-in). Absent → the Connect button errors. */
   getOAuthClientConfig?: () => Promise<OAuthClientConfigResult>;
   /** BYO OAuth-app config callers. Both optional — absent → the OAuth form
-   *  keeps the legacy Connect button + operator env-var error (no inline
-   *  credential fields). `getOAuthAppConfig` is fetched on the Mail / Calendar
-   *  lanes to pre-fill the inline client_id + reflect configured-status;
+   *  keeps the legacy optional-settings path. `getOAuthAppConfig` is fetched
+   *  on the Mail / Calendar lanes to pre-fill the client_id and choose between
+   *  the compact ready state and the one-time setup checklist;
    *  `setOAuthAppConfig` persists entered credentials as part of Connect. */
   getOAuthAppConfig?: () => Promise<OAuthAppConfigSnapshot>;
   setOAuthAppConfig?: (args: SetOAuthAppConfigArgs) => Promise<{ ok: true }>;
   /** Test seam for the OAuth popup; production uses the real browser env. */
   oauthEnv?: AccountsOAuthEnv;
+  /** Test seam for the callback-URI Copy action. Production uses the active
+   *  document's Clipboard API; absence degrades to manual selection. */
+  copyText?: (value: string) => Promise<void>;
+  /** First-sync status polling seam. Production uses the mounted document's
+   *  window timer; non-browser mounts do not poll unless this is injected. */
+  firstSyncPoll?: AccountsFirstSyncPollScheduler;
+  /** Defaults to 2500ms. */
+  firstSyncPollIntervalMs?: number;
+  /** Bounded by default to 24 checks (about one minute). */
+  firstSyncPollMaxAttempts?: number;
 }
 
 export interface AccountsLanePanelMount {
@@ -185,7 +215,12 @@ type AccountsAction =
   | 'accounts-back-to-list'
   | 'accounts-submit-form'
   | 'accounts-oauth-connect'
+  | 'accounts-copy-oauth-redirect'
   | 'accounts-oauth-dismiss'
+  | 'accounts-success-go-chat'
+  | 'accounts-success-open-lane'
+  | 'accounts-success-refresh'
+  | 'accounts-dismiss-success'
   | 'accounts-open-detail'
   | 'accounts-delete'
   | 'accounts-resync'
@@ -248,10 +283,104 @@ export const mountAccountsLanePanel = (
   // appears via refresh; failure → a lane-level error) instead of back to the
   // form. Reset at the start of each OAuth attempt.
   let oauthDismissed = false;
+  const timerWindow = doc.defaultView;
+  const firstSyncPoll = opts.firstSyncPoll
+    ?? (timerWindow === undefined || timerWindow === null
+      ? null
+      : {
+          schedule: (handler: () => void, delayMs: number): (() => void) => {
+            const handle = timerWindow.setTimeout(handler, delayMs);
+            return () => timerWindow.clearTimeout(handle);
+          },
+        });
+  const firstSyncPollIntervalMs = opts.firstSyncPollIntervalMs ?? 2_500;
+  const firstSyncPollMaxAttempts = opts.firstSyncPollMaxAttempts ?? 24;
+  let firstSyncPollAttempts = 0;
+  let firstSyncPollCancel: (() => void) | null = null;
+  let firstSyncBackgroundLoadGeneration: number | null = null;
 
-  const render = (): void => {
+  const cancelFirstSyncPoll = (): void => {
+    firstSyncPollCancel?.();
+    firstSyncPollCancel = null;
+  };
+
+  const clearConnectionSuccess = (): void => {
+    cancelFirstSyncPoll();
+    // A scheduled timer is cancellable; an rpc it already started is not.
+    // Retire only that quiet read's generation so it cannot re-render a form
+    // the user opened while the status request was in flight. Foreground
+    // refreshes remain live and can still settle the ordinary account list.
+    if (
+      firstSyncBackgroundLoadGeneration !== null
+      && firstSyncBackgroundLoadGeneration === loadGeneration
+    ) {
+      loadGeneration += 1;
+      firstSyncBackgroundLoadGeneration = null;
+    }
+    state.connectionSuccess = null;
+  };
+
+  interface PanelFocusSnapshot {
+    /** Full data-* identity of the active delegated action. */
+    actionDataset: Readonly<Record<string, string>> | null;
+    /** The active element lived inside the post-connect card. */
+    inConnectionSuccess: boolean;
+  }
+
+  const capturePanelFocus = (): PanelFocusSnapshot | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (
+      active === undefined
+      || active === null
+      || typeof active.closest !== 'function'
+      || !host.contains(active)
+    ) return null;
+    const action = active.closest('[data-action]') as HTMLElement | null;
+    return {
+      actionDataset: action === null
+        ? null
+        : Object.fromEntries(
+            Object.entries(action.dataset).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined,
+            ),
+          ),
+      inConnectionSuccess:
+        active.closest('[data-accounts-connection-success]') !== null,
+    };
+  };
+
+  const focusConnectionSuccess = (preventScroll = false): void => {
+    const card = host.querySelector(
+      '[data-accounts-connection-success]',
+    ) as HTMLElement | null;
+    card?.focus?.({ preventScroll });
+  };
+
+  const restorePanelFocus = (snapshot: PanelFocusSnapshot | null): void => {
+    if (snapshot === null) return;
+    if (snapshot.actionDataset !== null) {
+      const actions = host.querySelectorAll('[data-action]');
+      for (const candidate of Array.from(actions)) {
+        const element = candidate as HTMLElement;
+        const matches = Object.entries(snapshot.actionDataset).every(
+          ([key, value]) => element.dataset[key] === value,
+        );
+        if (matches) {
+          element.focus?.({ preventScroll: true });
+          return;
+        }
+      }
+    }
+    // A status transition can legitimately remove an action (for example the
+    // unknown-state Retry button). Keep focus at the card, not on <body>.
+    if (snapshot.inConnectionSuccess) focusConnectionSuccess(true);
+  };
+
+  const render = (preserveFocus = false): void => {
     if (disposed) return;
+    const focus = preserveFocus ? capturePanelFocus() : null;
     host.innerHTML = renderAccountsPanel({ state });
+    if (preserveFocus) restorePanelFocus(focus);
   };
 
   const laneCallers = (
@@ -280,9 +409,23 @@ export const mountAccountsLanePanel = (
         slug: c.slug,
         adapterType: c.adapter_type,
         authState: c.auth_state,
+        reauthAvailable:
+          lane === 'calendar' && (c.caps as { auth?: unknown }).auth === 'oauth',
         lastSyncedAt: c.last_synced_at,
       };
     });
+
+  /** Only the newly connected row + current load error can change the
+   *  post-connect presentation. Background polls deliberately ignore unrelated
+   *  row churn so an unchanged pending status does not repaint the panel. */
+  const firstSyncViewKey = (): string | null => {
+    const success = state.connectionSuccess;
+    if (success === null) return null;
+    return JSON.stringify({
+      error: state.error,
+      row: state.rows.find((candidate) => candidate.slug === success.slug) ?? null,
+    });
+  };
 
   // ── BYO OAuth-app config (snapshot fetch + load) ──────────────
   // Tolerant: absent caller OR a rejected fetch both resolve to null (leave
@@ -301,50 +444,108 @@ export const mountAccountsLanePanel = (
 
   // Load-path fetch — only the OAuth lanes carry app config; generation-guarded
   // like the list load so a lane switch overtaking it can't clobber the view.
-  const loadOAuthAppConfig = async (gen: number): Promise<void> => {
+  const loadOAuthAppConfig = async (
+    gen: number,
+    preserveFocus = false,
+  ): Promise<void> => {
     if (state.lane !== 'mail' && state.lane !== 'calendar') return;
     const snapshot = await fetchOAuthAppConfigSnapshot();
     if (snapshot === null) return;
     if (disposed || gen !== loadGeneration) return;
     state.oauthAppConfig = snapshot;
-    render();
+    render(preserveFocus);
   };
 
   // ── List load (generation-guarded) ────────────────────────────
-  const doRefresh = (): Promise<void> => {
+  const shouldPollFirstSync = (): boolean => {
+    const success = state.connectionSuccess;
+    if (
+      success === null
+      || state.stage !== 'list'
+      || state.loading
+      || firstSyncPoll === null
+      || firstSyncPollAttempts >= firstSyncPollMaxAttempts
+    ) return false;
+    // A foreground post-connect refresh may have left a stale pre-enroll row.
+    // Keep checking until one authoritative list read succeeds; the renderer
+    // likewise refuses to call that stale timestamp "ready" while error is set.
+    if (state.error !== null) return true;
+    const row = state.rows.find((candidate) => candidate.slug === success.slug);
+    return row === undefined
+      || (row.authState === 'healthy'
+        && (row.lastSyncedAt === undefined || row.lastSyncedAt === null));
+  };
+
+  const scheduleFirstSyncPoll = (): void => {
+    cancelFirstSyncPoll();
+    if (!shouldPollFirstSync()) return;
+    firstSyncPollCancel = firstSyncPoll!.schedule(() => {
+      firstSyncPollCancel = null;
+      if (disposed || !shouldPollFirstSync()) return;
+      firstSyncPollAttempts += 1;
+      void doRefresh(true);
+    }, firstSyncPollIntervalMs);
+  };
+
+  /** Refresh the active lane. First-sync polls are background reads: a brief
+   *  transport miss keeps the last truthful row/card instead of replacing it
+   *  with a flashing lane error. User-initiated refreshes retain the ordinary
+   *  loading + error treatment. */
+  const doRefresh = (
+    background = false,
+    preserveFocus = false,
+  ): Promise<void> => {
+    cancelFirstSyncPoll();
+    const previousFirstSyncView = background ? firstSyncViewKey() : null;
     const gen = ++loadGeneration;
+    if (background) firstSyncBackgroundLoadGeneration = gen;
     const lane = state.lane;
     const callers = laneCallers(lane);
-    state.loading = true;
-    state.error = null;
-    render();
+    if (!background) {
+      state.loading = true;
+      state.error = null;
+      render(preserveFocus);
+    }
     pendingLoad = (async () => {
-      // Fetch the OAuth-app config alongside the list (independent; failure
-      // never blocks the list). Awaited in `finally` so `whenLoaded()`
-      // resolves only once both have settled.
-      const configLoad = loadOAuthAppConfig(gen);
+      // Fetch OAuth-app status alongside the list. The lane stays in its
+      // loading state until both settle so a fast list response cannot expose
+      // Connect, then replace the active form (and its focus) when the slower
+      // status response chooses ready vs one-time setup.
+      const configLoad = background
+        ? Promise.resolve()
+        : loadOAuthAppConfig(gen, preserveFocus);
       try {
         if (callers === undefined) {
+          await configLoad;
           if (disposed || gen !== loadGeneration) return;
+          if (background) return;
           state.loading = false;
           state.rows = [];
           state.error = 'This lane is not available on this server yet.';
-          render();
+          render(preserveFocus);
           return;
         }
         const { instances } = await callers.list();
+        await configLoad;
         if (disposed || gen !== loadGeneration) return;
         state.rows = normalizeRows(lane, instances);
         state.loading = false;
         state.error = null;
-        render();
+        if (!background || previousFirstSyncView !== firstSyncViewKey()) {
+          render(background || preserveFocus);
+        }
       } catch (err) {
+        await configLoad;
         if (disposed || gen !== loadGeneration) return;
+        if (background) return;
         state.loading = false;
         state.error = errMessage(err);
-        render();
+        render(preserveFocus);
       } finally {
-        await configLoad;
+        if (firstSyncBackgroundLoadGeneration === gen) {
+          firstSyncBackgroundLoadGeneration = null;
+        }
+        if (!disposed && gen === loadGeneration) scheduleFirstSyncPoll();
       }
     })();
     return pendingLoad;
@@ -365,13 +566,14 @@ export const mountAccountsLanePanel = (
     if (provider === undefined) return;
     const btn = host.querySelector(SUBMIT_SELECTOR);
     if (btn === null) return;
-    const valid = validateAccountForm(provider, state.values) === null;
-    if (valid && !state.saving) btn.removeAttribute('disabled');
+    const ready = canSubmitAccountForm(provider, state);
+    if (ready && !state.saving) btn.removeAttribute('disabled');
     else btn.setAttribute('disabled', '');
   };
 
   // ── Add flow ──────────────────────────────────────────────────
   const openProvider = (provider: AccountProvider): void => {
+    clearConnectionSuccess();
     state.stage = 'form';
     state.providerId = provider.id;
     state.values = seedAccountFormValues(provider);
@@ -392,6 +594,7 @@ export const mountAccountsLanePanel = (
   const openAdd = (): void => {
     const lane = findAccountLane(state.lane);
     if (lane === undefined || lane.providers.length === 0) return;
+    clearConnectionSuccess();
     if (lane.providers.length === 1) {
       openProvider(lane.providers[0]!);
       return;
@@ -503,7 +706,9 @@ export const mountAccountsLanePanel = (
   // else (sync popup open, config fetch, byte-matched redirect, error +
   // dispose handling) is shared in `completeOAuth`.
   interface OAuthLaneSpec {
+    providerId: string;
     providerLabel: string;
+    slug: string;
     /** OAuth-app issuer (`google` covers gmail + gcal; `microsoft` covers
      *  graph mail + calendar) — the key for the inline BYO credentials. */
     issuer: OAuthAppIssuer;
@@ -518,7 +723,9 @@ export const mountAccountsLanePanel = (
     const slug = (state.values['name'] ?? '').trim();
     const sendEnabled = state.values['send_enabled'] === 'true';
     return {
+      providerId: provider.id,
       providerLabel: provider.label,
+      slug,
       issuer: oauthAppIssuerForProvider(p),
       clientId: (cfg) => (p === 'gmail' ? cfg.gmail : cfg.graph)?.client_id ?? null,
       authorizeUrl: (a) => buildMailAuthorizeUrl(p, { ...a, send_enabled: sendEnabled }),
@@ -537,7 +744,9 @@ export const mountAccountsLanePanel = (
     const adapter = provider.id as CalendarOAuthAdapter;
     const slug = (state.values['name'] ?? '').trim();
     return {
+      providerId: provider.id,
       providerLabel: provider.label,
+      slug,
       issuer: oauthAppIssuerForProvider(adapter),
       clientId: (cfg) => (adapter === 'gcal' ? cfg.gcal : cfg.graph)?.client_id ?? null,
       authorizeUrl: (a) => buildCalendarAuthorizeUrl(adapter, a),
@@ -590,7 +799,9 @@ export const mountAccountsLanePanel = (
     // exchange, so a blank-secret Connect must still demand the secret.
     const reusable = status !== null && status.source !== null && status.has_secret === true;
     const clientId = (state.oauthCredValues.client_id ?? '').trim();
-    const clientSecret = state.oauthCredValues.client_secret ?? '';
+    // Match the server's credential normalization so whitespace cannot make a
+    // disabled setup look complete and then fail only after the popup opens.
+    const clientSecret = (state.oauthCredValues.client_secret ?? '').trim();
     let saveArgs: SetOAuthAppConfigArgs | null = null;
     if (clientSecret.length > 0) {
       if (clientId.length === 0) {
@@ -604,9 +815,23 @@ export const mountAccountsLanePanel = (
         return;
       }
       saveArgs = { issuer: spec.issuer, client_id: clientId, client_secret: clientSecret };
+    } else if (
+      reusable
+      && clientId.length > 0
+      && clientId !== (status?.client_id?.trim() ?? '')
+    ) {
+      state.formError = 'Enter the matching Client secret to replace this sign-in app.';
+      render();
+      return;
     } else if (appConfigLoaded && !reusable) {
       // Blank secret + no usable saved/env app — nothing to reuse.
-      state.formError = "Enter your OAuth app's Client ID and secret to connect.";
+      state.formError = clientId.length > 0
+        ? 'Enter the Client secret to finish sign-in setup.'
+        : "Enter your OAuth app's Client ID and secret to connect.";
+      render();
+      return;
+    } else if (!appConfigLoaded && clientId.length > 0) {
+      state.formError = 'Enter the matching Client secret, or clear the Client ID to use server settings.';
       render();
       return;
     }
@@ -690,13 +915,24 @@ export const mountAccountsLanePanel = (
       if (disposed) return;
       await spec.enroll({ code: result.code, redirect_uri: redirectUri });
       if (disposed) return;
+      state.connectionSuccess = {
+        slug: spec.slug,
+        providerId: spec.providerId,
+      };
+      firstSyncPollAttempts = 0;
       state.oauthFinishing = false;
       state.stage = 'list';
       state.providerId = null;
       state.values = {};
       state.oauthCredValues = { client_id: '', client_secret: '' };
       state.saving = false;
-      await doRefresh();
+      const focusSuccess = !oauthDismissed;
+      // Paint + focus the confirmation immediately, then preserve that focus
+      // while the authoritative list read turns checking into pending/ready.
+      // A slow server should not leave keyboard focus on the removed form.
+      const refresh = doRefresh(false, true);
+      if (focusSuccess && !disposed) focusConnectionSuccess();
+      await refresh;
     } catch (err) {
       // Close the popup on any failure. For failures BEFORE runOAuthPopup
       // takes ownership (save / config fetch reject) this is the only cleanup;
@@ -725,6 +961,7 @@ export const mountAccountsLanePanel = (
 
   // ── Detail ────────────────────────────────────────────────────
   const openDetail = (slug: string): void => {
+    clearConnectionSuccess();
     state.stage = 'detail';
     state.detailSlug = slug;
     render();
@@ -802,19 +1039,59 @@ export const mountAccountsLanePanel = (
     const callers = laneCallers(state.lane);
     if (
       callers === undefined
-      || state.lane === 'mail'
-      || (callers as CalendarLaneCallers | FileLaneCallers).reauth === undefined
+      || state.lane !== 'calendar'
+      || (callers as CalendarLaneCallers).reauth === undefined
     ) {
       setRowError(slug, 'Re-authorize is not available for this account.');
       render();
       return;
     }
-    const reauth = (callers as CalendarLaneCallers | FileLaneCallers).reauth!;
+    const reauth = (callers as CalendarLaneCallers).reauth!;
     void runRowAction('reauth', slug, () => reauth({ slug }), 'reload-stay');
   };
 
+  /** Best-effort copy for the exact provider callback URI. The URI remains
+   *  visible beside the action, so unavailable/denied clipboard access never
+   *  blocks setup. */
+  const copyOAuthRedirect = (
+    value: string | undefined,
+    element: HTMLElement,
+  ): void => {
+    if (value === undefined || value === '') return;
+    element.setAttribute('aria-live', 'polite');
+    element.setAttribute('aria-atomic', 'true');
+    const feedback = (visible: string, accessible: string): void => {
+      element.textContent = visible;
+      // The rendered button starts with a contextual aria-label. Keep that
+      // accessible name in sync with the visible async outcome; otherwise the
+      // label masks the live-region text and a screen reader still hears Copy.
+      element.setAttribute('aria-label', accessible);
+    };
+    const copy = opts.copyText
+      ?? (doc.defaultView?.navigator.clipboard?.writeText === undefined
+        ? undefined
+        : (text: string) => doc.defaultView!.navigator.clipboard.writeText(text));
+    if (copy === undefined) {
+      feedback('Copy manually', 'Clipboard unavailable. Select and copy the callback URL manually.');
+      return;
+    }
+    try {
+      void copy(value)
+        .then(() => {
+          if (!disposed) feedback('Copied', 'Callback URL copied.');
+        })
+        .catch(() => {
+          if (!disposed) {
+            feedback('Copy manually', 'Copy failed. Select and copy the callback URL manually.');
+          }
+        });
+    } catch {
+      feedback('Copy manually', 'Copy failed. Select and copy the callback URL manually.');
+    }
+  };
+
   // ── Action handlers ───────────────────────────────────────────
-  const handlers: Record<AccountsAction, (dataset: DOMStringMap) => void> = {
+  const handlers: ActionHandlers<AccountsAction> = {
     'accounts-open-add': () => {
       openAdd();
     },
@@ -834,6 +1111,9 @@ export const mountAccountsLanePanel = (
     'accounts-oauth-connect': () => {
       driveOAuth();
     },
+    'accounts-copy-oauth-redirect': (dataset, _event, element) => {
+      copyOAuthRedirect(dataset.copyValue, element);
+    },
     'accounts-oauth-dismiss': () => {
       // Immediate escape from the "Signing in…" overlay. The in-flight connect
       // keeps running (submitInFlight still fences it); its result lands on the
@@ -849,6 +1129,29 @@ export const mountAccountsLanePanel = (
       state.detailSlug = null;
       render();
       opts.onNavigate?.(state.lane, null);
+    },
+    'accounts-success-go-chat': () => {
+      const success = state.connectionSuccess;
+      if (success === null) return;
+      opts.onGoToChat?.({
+        lane: state.lane,
+        providerId: success.providerId,
+        slug: success.slug,
+      });
+    },
+    'accounts-success-open-lane': (dataset) => {
+      if (dataset.lane === undefined) return;
+      const lane = findAccountLane(dataset.lane);
+      if (lane === undefined) return;
+      opts.onOpenLane?.(lane.id);
+    },
+    'accounts-success-refresh': () => {
+      firstSyncPollAttempts = 0;
+      void doRefresh(false, true);
+    },
+    'accounts-dismiss-success': () => {
+      clearConnectionSuccess();
+      render();
     },
     'accounts-open-detail': (dataset) => {
       if (dataset.slug === undefined) return;
@@ -895,6 +1198,8 @@ export const mountAccountsLanePanel = (
       if (state.formError !== null) {
         state.formError = null;
         render();
+      } else {
+        syncSubmitDisabled();
       }
       return;
     }
@@ -930,11 +1235,12 @@ export const mountAccountsLanePanel = (
 
   return {
     getState: () => state,
-    refresh: () => doRefresh(),
+    refresh: () => doRefresh(false, true),
     whenLoaded: () => pendingLoad,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      cancelFirstSyncPoll();
       detachActions();
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);

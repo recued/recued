@@ -1,0 +1,153 @@
+{
+  "recipe_id": "reschedule-booking",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 60,
+  "requires": [],
+  "metadata": {
+    "name": "Reschedule a booking",
+    "description": "D-210 R-4 / A.2 — the owner's reschedule ignition for a BOOKING. Moves one data.booking row to a new slot via a single booking-update patch carrying slot_start_at AND slot_end_at. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). A booking owns its own time and is never in the calendar (A.2), so this is how a reservation moves — there is no calendar event to update instead. The pair moves ATOMICALLY: booking-update refuses a half-supplied move, because keeping the old end against a new start would silently change the booking's duration. Triggered manually with config {booking_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a booking record fills them from the row's own slot, computing the new end from the current duration. Telling the visitor is an OWNER TICK on this run, not a trigger: set notify_visitor (and sender_mail_instance) and this recipe mails them that the booking moved. It is off unless the owner turns it on for this reschedule — a message to someone else is a judgement the owner makes per occasion. The address is never an argument and never reaches step state: notify-booking-visitor resolves it server-side from the booking's own reception_record_id, and does nothing (notified:false) when the booking did not come from a reception request. ⚠ This REPLACES a claim that a reactive notify-visitor-on-reschedule recipe did it on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). Re-running the same move is safe (the patch is idempotent and preserves the booking's identity, lifecycle_state and provenance).",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": [
+      "calendar",
+      "reschedule",
+      "booking",
+      "reception",
+      "notify"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "booking_id": {
+      "label": "Booking id",
+      "type": "string",
+      "default": ""
+    },
+    "new_start_at": {
+      "label": "New start (unix ms)",
+      "type": "number",
+      "default": null
+    },
+    "new_end_at": {
+      "label": "New end (unix ms)",
+      "type": "number",
+      "default": null
+    },
+    "notify_visitor": {
+      "label": "Tell the visitor their booking moved",
+      "type": "boolean",
+      "default": false
+    },
+    "sender_mail_instance": {
+      "label": "Send from (data.mail account)",
+      "type": "string",
+      "default": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "ready",
+      "transform": "all",
+      "conditions": [
+        "{{config.booking_id}} is_not_empty",
+        "{{config.new_start_at}} is_not_null",
+        "{{config.new_end_at}} is_not_null"
+      ]
+    },
+    {
+      "id": "reschedule",
+      "skip_when": "{{step.ready}} not_equal true",
+      "op": "core.work-entity.booking.update",
+      "args": {
+        "id": "{{config.booking_id}}",
+        "slot_start_at": "{{config.new_start_at}}",
+        "slot_end_at": "{{config.new_end_at}}"
+      }
+    },
+    {
+      "id": "moved",
+      "transform": "compare",
+      "left": "{{step.reschedule.booking.id}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "new_time",
+      "transform": "date_format",
+      "date": "{{config.new_start_at}}",
+      "format": "YYYY-MM-DD HH:mm"
+    },
+    {
+      "id": "notify_ready",
+      "transform": "all",
+      "conditions": [
+        "{{config.notify_visitor}} equal true",
+        "{{step.moved}} equal true",
+        "{{config.sender_mail_instance}} is_not_empty"
+      ]
+    },
+    {
+      "id": "subject",
+      "skip_when": "{{step.notify_ready}} not_equal true",
+      "transform": "template",
+      "template": "Your booking has moved to {{step.new_time}}"
+    },
+    {
+      "id": "body",
+      "skip_when": "{{step.notify_ready}} not_equal true",
+      "transform": "template",
+      "template": "Hi — the time for your booking has changed. It is now {{step.new_time}}. If the new time does not work for you, just reply to this message and we will sort it out."
+    },
+    {
+      "id": "notify",
+      "skip_when": "{{step.notify_ready}} not_equal true",
+      "op": "core.mail.notify-booking-visitor",
+      "args": {
+        "booking_id": "{{config.booking_id}}",
+        "sender_mail_instance": "{{config.sender_mail_instance}}",
+        "subject": "{{step.subject}}",
+        "body": "{{step.body}}"
+      }
+    },
+    {
+      "id": "visitor_told",
+      "transform": "default",
+      "value": "{{step.notify.notified}}",
+      "fallback": false
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Booking",
+          "value": "{{config.booking_id}}"
+        },
+        {
+          "label": "Rescheduled",
+          "value": "{{step.moved}}"
+        },
+        {
+          "label": "New start",
+          "value": "{{config.new_start_at:date}}"
+        },
+        {
+          "label": "New end",
+          "value": "{{config.new_end_at:date}}"
+        },
+        {
+          "label": "Visitor told",
+          "value": "{{step.visitor_told}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      }
+    ]
+  }
+}

@@ -60,7 +60,7 @@
  *  registry entry keeps the cascade walker on all four scopes; the
  *  harness stale-sweep re-derives within the next eligible cycle.
  *
- *  Spec: `docs/d-145-spec.md` §§ A.6.1 (line 18 — pack semantics) +
+ *  Spec: D-145 §§ A.6.1 (line 18 — pack semantics) +
  *        A.7.1 + A.7.5 +
  *        `ENRICHMENT_REGISTRY.project_stall_signal` +
  *        `packages/contracts/src/enrichment-declarations/project-stall-signal.ts`. */

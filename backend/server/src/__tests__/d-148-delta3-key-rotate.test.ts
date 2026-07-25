@@ -337,6 +337,9 @@ describe('R26.4 Delta 3 — Codex P2 fold: sub_dek escalation clears the stale f
     const engine = createRotationEngine({
       master_dek: { current: () => new Uint8Array(32), install: async () => {} },
       master_dek_reencryptor: {
+        // Stands in for a complete implementation: the substrate refuses to
+        // rotate unless the reencryptor declares it rekeys the realm database.
+        rekeysRealmDatabase: true,
         rotate: async ({ installNewMaster }) => {
           await installNewMaster();
           return { reencrypted_blob_count: 3 };

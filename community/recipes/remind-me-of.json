@@ -1,0 +1,76 @@
+{
+  "recipe_id": "remind-me-of",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Remind me",
+    "description": "Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remind_at as an absolute ISO 8601 timestamp with an explicit offset. The paired reminder-due-notifier recipe fans notification delivery through the user's configured channels.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["reminder", "task", "notify", "personal-organizer", "pack:personal-organizer"],
+    "budget_ms": 10000
+  },
+  "variables": {
+    "reminder_text": {
+      "label": "Reminder text",
+      "type": "string",
+      "help": "Bare reminder text to show when the reminder fires."
+    },
+    "remind_at": {
+      "label": "Remind at",
+      "type": "datetime",
+      "help": "When the reminder should fire, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected."
+    },
+    "container_names": {
+      "label": "Destination container",
+      "type": "object",
+      "optional": true,
+      "default": {},
+      "help": "Optional. File the reminder in a named vendor container, keyed by its dependency ref: { 'project': 'Roadmap' } (Asana) or { 'team': 'Core' } (Linear). Leave empty to use the Source's default destination."
+    }
+  },
+  "requires": [],
+  "steps": [
+    {
+      "id": "text",
+      "transform": "trim",
+      "input": "{{config.reminder_text}}"
+    },
+    {
+      "id": "due_at_ms",
+      "transform": "date_parse",
+      "input": "{{config.remind_at}}",
+      "require_offset": true,
+      "fail_on": "{{step.due_at_ms}} is_null"
+    },
+    {
+      "id": "create",
+      "op": "core.work-entity.task.create",
+      "args": {
+        "title": "Reminder: {{step.text}}",
+        "body": "{{step.text}}",
+        "due_at": "{{step.due_at_ms}}",
+        "state": "reminder_pending",
+        "source_extension_blob": {
+          "kind": "recued_reminder"
+        },
+        "container_names": "{{config.container_names}}"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Reminder", "value": "{{step.text}}" },
+        { "label": "Due at", "value": "{{config.remind_at}}" },
+        { "label": "Task ID", "value": "{{step.create.task._id}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

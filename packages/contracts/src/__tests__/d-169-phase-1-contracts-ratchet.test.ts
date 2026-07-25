@@ -4,7 +4,7 @@
  *  on the MCP side. A future change that drops one of these would fail
  *  the ratchet here rather than at a downstream caller.
  *
- *  Spec: docs/d-169-spec.md § N.5 / N.6 / A.6. */
+ *  Spec: D-169 § N.5 / N.6 / A.6. */
 
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
@@ -179,6 +179,7 @@ describe('D-169 P1 contracts ratchet', () => {
         pending_asks: 0,
         schedule_queue_depth: 2,
         recent_error_count: null,
+        keyfile_sealing: 'machine',
         snapshot_at: 1_700_000_001_000,
       };
       expect(status.ws_state).toBe('serving');
@@ -205,10 +206,38 @@ describe('D-169 P1 contracts ratchet', () => {
         pending_asks: null,
         schedule_queue_depth: null,
         recent_error_count: null,
+        keyfile_sealing: null,
         snapshot_at: 0,
       };
       expect(dbless.executions_last_hour).toBeNull();
       expect(dbless.pending_asks).toBeNull();
+    });
+
+    /** D-212 §7.10 — `keyfile_sealing` is REQUIRED, not optional, and that is
+     *  the point of it. §7.10 replaced the retracted §7.9 enrollment refusal
+     *  with a visibility floor: an operator may run an unsealed keyfile, but
+     *  not without knowing. An optional field lets a producer omit the posture
+     *  and a renderer skip it, neither having decided anything — so the type
+     *  forces every construction site to state one.
+     *
+     *  ⛔ `'none'` (known-UNSEALED: the key that opens the realm sits readable
+     *  beside it) must never be collapsed into `null` (not wired). They are the
+     *  same width on screen and opposite in meaning. */
+    it('keyfile_sealing is required, and `none` is distinct from `null`', () => {
+      expectTypeOf<ServerSystemStatus['keyfile_sealing']>().toEqualTypeOf<
+        'machine' | 'passphrase' | 'none' | null
+      >();
+      // Required: omitting it is a type error, so a producer cannot stay silent.
+      // @ts-expect-error — keyfile_sealing is mandatory on ServerSystemStatus
+      const silent: ServerSystemStatus = {
+        name: 'x', version: 'x', uptime_seconds: 0,
+        paired_client_count: 0, paired_client_connected: 0,
+        ws_state: 'offline', last_sync_at: null,
+        executions_last_hour: null, executions_last_24h: null,
+        pending_asks: null, schedule_queue_depth: null,
+        recent_error_count: null, snapshot_at: 0,
+      };
+      void silent;
     });
   });
 });

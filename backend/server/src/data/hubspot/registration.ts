@@ -10,7 +10,7 @@
  *  iterates the same list to register `buildVendorReconciliationTask`
  *  per `(reconciler, connection_name)` pair.
  *
- *  Spec: `docs/d-129-spec.md` § A.5. */
+ *  Spec: D-129 § A.5. */
 
 import type { VendorReconciler } from '../../housekeeping/reconciliation/vendor-reconciler.js';
 

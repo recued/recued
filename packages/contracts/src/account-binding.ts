@@ -1,6 +1,6 @@
 /** D-175 P5 — recued.com account ↔ server binding contract.
  *
- *  The binding flow (ratified session model, see `docs/d-175-spec.md`
+ *  The binding flow (ratified session model, see D-175
  *  "Account-binding protocol"):
  *
  *    1. The webclient (`app.recued.com`) detects the recued.com session

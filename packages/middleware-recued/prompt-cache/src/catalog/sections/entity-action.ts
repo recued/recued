@@ -28,7 +28,7 @@
  *  arm yet. TODO(P4-bench): validate framing once a mutation-bench arm
  *  exists.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 4. */
+ *  See: D-164 § 4. */
 
 import type {
   CatalogAssemblyInput,

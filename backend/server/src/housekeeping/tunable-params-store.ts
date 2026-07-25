@@ -30,7 +30,7 @@
  *  Mirrors `trust-store.ts` shape: factory function returning typed
  *  CRUD methods, narrow surface area, no global state.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.8. */
+ *  Spec: D-145 § A.7.8. */
 
 import type Database from 'better-sqlite3';
 

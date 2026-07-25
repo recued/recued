@@ -94,7 +94,7 @@
  *  succeeded; the result row shows what was actually cleared (Codex
  *  slice-109 P2 fold rewrote DD#7 + the error copy).
  *
- *  Spec: docs/d-148-spec.md § A.4.1 + invariant I-11. */
+ *  Spec: D-148 § A.4.1 + invariant I-11. */
 
 import {
   clearThisBrowser,

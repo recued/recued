@@ -30,7 +30,7 @@
  *
  *  Either way the caller falls through. It must never be read as success.
  *
- *  Spec: `docs/d-207-spec.md` §5.3. */
+ *  Spec: D-207 §5.3. */
 
 import type { IntakeFormConfig } from '@recued/contracts';
 

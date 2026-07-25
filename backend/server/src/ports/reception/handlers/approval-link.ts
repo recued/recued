@@ -50,11 +50,12 @@
  *  trigger fires the downstream effect (resolve proposal / create
  *  commitment / fire recipe) off-thread.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.5 + § Must Hold I-11 + I-12 + § N.6. */
+ *  Spec: D-149 § A.5.5 + § Must Hold I-11 + I-12 + § N.6. */
 
 import { randomBytes } from 'node:crypto';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
 import {
   APPROVAL_LINK_DEFAULT_SUBMIT_BUTTON_LABEL,
   APPROVAL_LINK_DEFAULT_SUCCESS_MESSAGE,
@@ -104,7 +105,6 @@ const MAX_BODY_BYTES = 16 * 1024;
  *  Mirrors the intake_form / drop_link nonce. */
 export const APPROVAL_LINK_NONCE_TTL_MS = 30 * 60 * 1000;
 
-const NONCE_BYTES = 24;
 
 // ────────────────────────────────────────────────────────────────
 // Form-nonce store (in-memory, per-process)
@@ -115,22 +115,15 @@ export interface ApprovalLinkNonceStore {
   consume(endpoint_id: string, nonce: string, now: number): boolean;
 }
 
+/** ⚠ NO `maxPerScope`: the scope is `endpoint_id`, shared by every concurrent
+ *  visitor to this door. A per-scope cap would let the Nth visitor evict the
+ *  first visitor's nonce. See `bounded-nonce-store.ts`. */
 export const createInMemoryApprovalLinkNonceStore = (): ApprovalLinkNonceStore => {
-  const inner = new Map<string, number>();
+  const store = createBoundedNonceStore<null>({ ttlMs: APPROVAL_LINK_NONCE_TTL_MS });
   return {
-    issue(endpoint_id, now) {
-      const nonce = randomBytes(NONCE_BYTES).toString('hex');
-      inner.set(`${endpoint_id}|${nonce}`, now);
-      return nonce;
-    },
-    consume(endpoint_id, nonce, now) {
-      const key = `${endpoint_id}|${nonce}`;
-      const stamp = inner.get(key);
-      if (stamp === undefined) return false;
-      inner.delete(key);
-      if (now - stamp > APPROVAL_LINK_NONCE_TTL_MS) return false;
-      return true;
-    },
+    issue: (endpoint_id, now) => store.issue(endpoint_id, now, null),
+    consume: (endpoint_id, nonce, now) =>
+      store.consume(endpoint_id, nonce, now) !== null,
   };
 };
 

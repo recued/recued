@@ -11,7 +11,7 @@
  *  run pre-verify; the `per_endpoint_daily_cap` bucket runs AFTER
  *  verify (endpoint-id is not known pre-verify).
  *
- *  Spec: docs/d-149-spec.md § Contract Tightening § Rate-limit substrate
+ *  Spec: D-149 § Contract Tightening § Rate-limit substrate
  *  + `reception_rate_limiter` schema. */
 
 import type Database from 'better-sqlite3';

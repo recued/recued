@@ -3,7 +3,7 @@
  *  The resolver I/O for the R1 install-time rewrite of a connection-agnostic
  *  canonical recipe (one whose steps carry `CanonicalOpStep`s) into a standard
  *  vendor-bound `RecipeDefinition`. Design:
- *  `docs/unified-pack-exploration/connection-agnostic-op-contract.md`.
+ *  internal design notes.
  *
  *  The resolver logic lives in `@recued/recipes`
  *  (`resolveConnectionAgnosticRecipe`); these types are the contract seam the

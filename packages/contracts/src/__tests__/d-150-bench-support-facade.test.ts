@@ -1,4 +1,4 @@
-/** D-150 — `recued-bench` extraction support facade ratchet.
+/** D-150 — internal benchmarks extraction support facade ratchet.
  *
  *  The facade intentionally duplicates a tiny support subset from
  *  `recued-plan.ts` + `contact-identity.ts` so the standalone benchmark

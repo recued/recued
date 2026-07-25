@@ -16,7 +16,7 @@
  *  I/O, no clock reads — callers pass `nowMs`); the impure half is the server-side
  *  store (`quality-delegation-suggestion-store.ts`).
  *
- *  Spec: docs/d-202-spec.md §5 / §12.4. */
+ *  Spec: D-202 §5 / §12.4. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import { sha256Hex } from '@recued/crypto/hash';

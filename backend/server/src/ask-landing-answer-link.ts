@@ -9,7 +9,7 @@
  *  presence is a boot-time decision, resolved here from the public base URL.
  *
  *  Public base URL source: `RECUED_PUBLIC_BASE_URL` — the explicit, documented
- *  public-base-URL env (`docs/launch-prep/env-gate-inventory.md`), the same
+ *  public-base-URL env (internal design notes), the same
  *  primary source reception's `getShareBaseUrl` reads first. A non-public
  *  deployment (env unset / local host) yields `null` → no `answerLink` → asks
  *  stay text-only, answerable on the always-on `ui` channel + by email reply.

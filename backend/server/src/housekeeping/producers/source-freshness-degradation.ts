@@ -65,7 +65,7 @@
  *  reactive harness lift. Spec § A.7.2 frames this as
  *  "housekeeping (hourly) + reactive (on connection state change)".
  *
- *  Spec: `docs/d-145-spec.md` §§ A.7.2 + A.7.5 + A.7.6 #6 +
+ *  Spec: D-145 §§ A.7.2 + A.7.5 + A.7.6 #6 +
  *        `ENRICHMENT_REGISTRY.source_freshness_degradation` +
  *        `packages/contracts/src/enrichment-declarations/source-freshness-degradation.ts`. */
 

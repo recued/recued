@@ -13,29 +13,46 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
+import {
+  createServerBundle,
+  deriveSubDEK,
+  generateRecoveryKey,
+  generateServerKey,
+  serverBundleToJSON,
+} from '@recued/crypto';
 
 import { exportArchive } from '../archive/archive-export.js';
 import type { ImportOptions } from '../archive/archive-import.js';
+import type { DisplacedBlob } from '../archive/archive-restore.js';
 import {
   applyRestore,
   commitStagedRestore,
   overlaySingleBlobFile,
+  reclaimDisplacedBlobs,
+  rollBackDisplacedBlobs,
+  selectParkToRestore,
   stageRestore,
 } from '../archive/archive-restore.js';
 import { restoreProvenanceMarkerPath } from '../archive/restore-provenance.js';
-import { createBlobStore } from '../storage/blob-store.js';
+import { createBlobStore, createEncryptedBlobStore } from '../storage/blob-store.js';
 import { cmdArchive } from '../commands/archive.js';
+import { resolveServerBundlePath } from '../server-bundle-store.js';
+import { prepareServerBundleSwap } from '../archive/server-bundle-swap.js';
+import { deriveDatabaseKey } from '../database-encryption.js';
+import { openDatabase } from '../open-database.js';
 
 const mkKey = (byte: number): Buffer => Buffer.alloc(32, byte);
 const FIXED_NOW = 1_700_000_000_000;
@@ -56,18 +73,42 @@ interface BuiltArchive {
   archivePath: string;
   key: Buffer;
   blobHashes: string[];
+  blobKey?: Buffer;
 }
 
 /** Seed a source data dir (db with a known row + optional config + blobs)
  *  and export it to a real `.recued.archive`. Returns the archive + key. */
 const buildArchive = async (
   byte: number,
-  opts: { withConfig?: boolean; blobs?: string[]; passportJson?: string } = {},
+  opts: {
+    withConfig?: boolean;
+    blobs?: string[];
+    passportJson?: string;
+    serverVaultBundleJson?: string;
+  } = {},
 ): Promise<BuiltArchive> => {
   const srcDir = newDir();
-  const key = mkKey(byte);
+  let key = mkKey(byte);
   const srcDbPath = join(srcDir, 'src.db');
-  const db = new Database(srcDbPath);
+  let blobKey: Buffer | undefined;
+  let serverVaultBundleJson = opts.serverVaultBundleJson;
+  let db: Database.Database;
+  if (opts.blobs?.length && serverVaultBundleJson === undefined) {
+    const recovery = generateRecoveryKey();
+    key = Buffer.from(recovery.entropy);
+    const { bundle, masterDEK } = await createServerBundle({
+      recoveryKey: recovery.mnemonic,
+      serverKey: generateServerKey(),
+    });
+    const databaseKey = deriveDatabaseKey(masterDEK);
+    blobKey = Buffer.from(deriveSubDEK(masterDEK, 'blob-store'));
+    masterDEK.fill(0);
+    db = await openDatabase(srcDbPath, { databaseKey });
+    databaseKey.fill(0);
+    serverVaultBundleJson = serverBundleToJSON(bundle);
+  } else {
+    db = new Database(srcDbPath);
+  }
   db.exec('CREATE TABLE example (k TEXT PRIMARY KEY, v TEXT)');
   db.prepare('INSERT INTO example VALUES (?, ?)').run('hello', 'world');
 
@@ -80,7 +121,8 @@ const buildArchive = async (
   let blobStore: ReturnType<typeof createBlobStore> | undefined;
   const blobHashes: string[] = [];
   if (opts.blobs?.length) {
-    blobStore = createBlobStore(join(srcDir, 'blobs'));
+    if (!blobKey) throw new Error('blob fixture requires a realm blob key');
+    blobStore = createEncryptedBlobStore(join(srcDir, 'blobs'), () => blobKey!);
     for (const payload of opts.blobs) {
       blobHashes.push(await blobStore.put(Buffer.from(payload)));
     }
@@ -96,9 +138,12 @@ const buildArchive = async (
     blobHashes,
     producerVersion: '0.2.0',
     ...(opts.passportJson !== undefined ? { passportJson: opts.passportJson } : {}),
+    ...(serverVaultBundleJson !== undefined
+      ? { serverVaultBundleJson }
+      : {}),
   });
   db.close();
-  return { archivePath, key, blobHashes };
+  return { archivePath, key, blobHashes, ...(blobKey ? { blobKey } : {}) };
 };
 
 /** The streaming-restore import options for a built archive. */
@@ -147,10 +192,20 @@ describe('applyRestore', () => {
 
     // db row round-trips
     expect(existsSync(dbPath)).toBe(true);
-    expect(readRow(dbPath, 'hello')).toBe('world');
+    const restoredDb = await openDatabase(dbPath, {
+      readonly: true,
+      fileMustExist: true,
+      keyEnvironment: {},
+    });
+    try {
+      expect(restoredDb.prepare('SELECT v FROM example WHERE k = ?').pluck().get('hello'))
+        .toBe('world');
+    } finally {
+      restoredDb.close();
+    }
 
     // blobs restored + content-address identity (get-by-hash returns source bytes)
-    const tgtBlobs = createBlobStore(join(tgt, 'blobs'));
+    const tgtBlobs = createEncryptedBlobStore(join(tgt, 'blobs'), () => built.blobKey!);
     expect(await tgtBlobs.has(built.blobHashes[0])).toBe(true);
     expect((await tgtBlobs.get(built.blobHashes[0]))?.toString('utf8')).toBe('blob-one');
     expect((await tgtBlobs.get(built.blobHashes[1]))?.toString('utf8')).toBe(
@@ -202,6 +257,226 @@ describe('applyRestore', () => {
     expect(existsSync(`${dbPath}-shm`)).toBe(false);
     expect(res.backups.some((b) => b.includes('recued-server.db-wal.bak-'))).toBe(true);
     expect(res.backups.some((b) => b.includes('recued-server.db-shm.bak-'))).toBe(true);
+  });
+
+  /** This case used to assert the OPPOSITE — that a keyless archive clears
+   *  the encrypted realm's sidecar and proceeds. That is the downgrade: the
+   *  live database ends up plaintext, silently, and the wire manifest carries
+   *  no encryption-posture field for a dry-run or the UI to warn on. Slice 4
+   *  refused the same thing for a BLOB-bearing archive; the db-only case slipped
+   *  through because the refusal sat behind a blob-only code path.
+   *
+   *  Keeping the sidecar instead of refusing is not the alternative — a
+   *  plaintext db paired with an encrypted realm's bundle fails closed at the
+   *  next open, so that would brick the install rather than save it. The
+   *  legitimate replace-and-back-up path (an ENCRYPTED archive onto an
+   *  encrypted realm) is covered in `server-vault-bundle-swap.test.ts`. */
+  it('refuses a keyless archive when the realm it would replace is encrypted', async () => {
+    const built = await buildArchive(0x21);
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+    const bundlePath = resolveServerBundlePath(dbPath);
+    writeFileSync(bundlePath, 'old-encrypted-realm-bundle');
+
+    await expect(
+      applyRestore(
+        { dbPath, dataPath: tgt, configPath: null },
+        impOpts(built),
+        { now: () => FIXED_NOW },
+      ),
+    ).rejects.toThrow(/D212_REALM_DOWNGRADE_REFUSED/);
+
+    // The realm is left exactly as it was — nothing swapped, nothing cleared.
+    expect(readFileSync(bundlePath, 'utf8')).toBe('old-encrypted-realm-bundle');
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  /** ⛔ …and it still refuses when the realm's sidecar is not at its live path.
+   *
+   *  The refusal above asks one question — does the bundle sidecar exist? — and
+   *  an interrupted swap can make the honest answer "no" about an encrypted
+   *  realm: `commitPreparedServerBundleSwap` moves the live bundle to its backup
+   *  name a beat before the db commit point, so a kill in between leaves the
+   *  realm encrypted with its sidecar parked. `applyRestore` used to stream the
+   *  whole archive and evaluate the gate BEFORE anything reconciled that
+   *  journal, so the gate saw a bare directory, passed, and the keyless archive
+   *  committed — leaving the realm plaintext. Reconciling first is the fix, and
+   *  it has to be first for a second reason too: once our own overlay has parked
+   *  blobs in the same CAS, an older transaction's rollback cannot be told apart
+   *  from ours. */
+  it('refuses a keyless archive when the encrypted realm is mid-swap, its bundle parked', async () => {
+    const built = await buildArchive(0x24);
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+    const bundlePath = resolveServerBundlePath(dbPath);
+
+    // Stage an interrupted swap, then kill it in the one window that parks the
+    // pair: old db + bundle moved aside, staged db not yet renamed on.
+    writeFileSync(dbPath, 'encrypted-realm-db');
+    writeFileSync(bundlePath, 'old-encrypted-realm-bundle');
+    const stagingPath = `${dbPath}.staging-${'b'.repeat(16)}`;
+    writeFileSync(stagingPath, 'interrupted-staged-db');
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: '2023-11-14T22-13-20-000Z-feedface',
+      nextBundle: Buffer.from('interrupted-next-bundle'),
+    });
+    renameSync(dbPath, prepared.dbBackupPath);
+    renameSync(bundlePath, prepared.bundleBackupPath);
+    // The state the gate used to be fooled by: no bundle at the live path.
+    expect(existsSync(bundlePath)).toBe(false);
+    expect(existsSync(prepared.bundleBackupPath)).toBe(true);
+
+    await expect(
+      applyRestore(
+        { dbPath, dataPath: tgt, configPath: null },
+        impOpts(built),
+        { now: () => FIXED_NOW },
+      ),
+    ).rejects.toThrow(/D212_REALM_DOWNGRADE_REFUSED/);
+
+    // Reconciled back to the pre-swap realm, and still encrypted.
+    expect(readFileSync(bundlePath, 'utf8')).toBe('old-encrypted-realm-bundle');
+    expect(readFileSync(dbPath, 'utf8')).toBe('encrypted-realm-db');
+    expect(existsSync(prepared.markerPath)).toBe(false);
+  });
+
+  /** ⛔ An unretired journal must STOP a new restore, not merely fail it late.
+   *
+   *  The journal keeps its marker when a park could not be resolved, so the next
+   *  boot can re-decide with the verdict still attached. But `reconcileServer-
+   *  BundleSwap` still reports `completed`/`rolled_back` — the REPAIR did
+   *  happen — and `applyRestore` read that as "settled" and streamed a whole
+   *  archive anyway. `prepareServerBundleSwap` then refused (correctly) on the
+   *  surviving marker, and the catch, seeing *a* marker, preserved the staging
+   *  as if it were our own recovery evidence. Net result: a leaked staging db
+   *  and, worse, this restore's blob overlay left in the CAS with its parks
+   *  un-rolled-back — under the OLD database, which still references them. */
+  it('refuses to start a restore while an earlier journal is unretired', async () => {
+    const built = await buildArchive(0x25);
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+    writeFileSync(dbPath, 'surviving-old-db');
+
+    // A park the reclaim cannot resolve: the shard directory is read-only, so
+    // both the unlink and the rename fail. This is what retains the marker.
+    const shard = join(tgt, 'blobs', 'objects', 'ab');
+    mkdirSync(shard, { recursive: true });
+    const objectPath = join(shard, 'cdef.bin');
+    writeFileSync(objectPath, 'archive-version-of-the-object');
+    writeFileSync(`${objectPath}.pre-restore-000000000-aaaaaa`, 'pre-restore-original');
+
+    // A committed-shape journal: marker present, staged db already gone.
+    const stagingPath = `${dbPath}.staging-${'c'.repeat(16)}`;
+    writeFileSync(stagingPath, 'staged');
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: '2023-11-14T22-13-20-000Z-0badcafe',
+    });
+    rmSync(stagingPath);
+
+    chmodSync(shard, 0o500);
+    try {
+      await expect(
+        applyRestore(
+          { dbPath, dataPath: tgt, configPath: null },
+          impOpts(built),
+          { now: () => FIXED_NOW },
+        ),
+        // ⚠ Matched on the REMEDY text, not just the code. `prepareServerBundle-
+        // Swap` raises the same code when it refuses the surviving marker AFTER
+        // the stream — so asserting the code alone passes either way and proves
+        // nothing about refusing early.
+      ).rejects.toThrow(/could not be resolved/);
+
+      // Refused BEFORE streaming: nothing of this restore exists on disk.
+      expect(readFileSync(dbPath, 'utf8')).toBe('surviving-old-db');
+      // The staged-db temps specifically — NOT `.restore-server-bundle-swap
+      // .json`, which is the surviving marker and is supposed to be here.
+      const leaked = readdirSync(tgt).filter((f) => /\.restore-[0-9a-f]{16}\.tmp$/.test(f));
+      expect(leaked).toEqual([]);
+      // The earlier journal is untouched — still there for the boot that can
+      // finish it, not silently consumed by a restore that had no business
+      // starting.
+      expect(existsSync(prepared.markerPath)).toBe(true);
+    } finally {
+      chmodSync(shard, 0o700);
+    }
+  });
+
+  /** Config is written BEFORE the journaled pair swap, because it is
+   *  independent of it. A swap that then FAILS left the archive's config live
+   *  over a database that was never replaced — a mismatched pair the operator
+   *  never asked for and gets no report of, since the call throws.
+   *
+   *  ⚠ Driven through the ONLINE pair, deliberately. Offline, every reachable
+   *  refusal fires inside `streamRestoreInto`, i.e. BEFORE `writeConfigRecord`
+   *  ever runs — a test written there passes without touching the code it
+   *  claims to cover. `commitStagedRestore` is where a refusal genuinely lands
+   *  after the config write: the posture gate ran back at stage time, so the
+   *  realm can acquire its sidecar in between. */
+  const stagedThenRefused = async (
+    tgt: string,
+    configPath: string,
+    byte: number,
+  ): Promise<void> => {
+    const built = await buildArchive(byte, { withConfig: true });
+    const dbPath = join(tgt, 'recued-server.db');
+    writeFileSync(dbPath, 'live-realm-db');
+
+    const staged = await stageRestore(
+      { dbPath, dataPath: tgt, configPath },
+      impOpts(built),
+    );
+    // The realm becomes encrypted after staging, so the commit's act-site
+    // invariant refuses a keyless swap that would drop the sidecar.
+    writeFileSync(resolveServerBundlePath(dbPath), 'sidecar-arrived-after-stage');
+
+    await expect(
+      commitStagedRestore({ dbPath, dataPath: tgt, configPath }, staged, {
+        now: () => FIXED_NOW,
+      }),
+    ).rejects.toThrow(/D212_REALM_DOWNGRADE_REFUSED/);
+  };
+
+  it('puts config.toml back when the swap is refused after it was written', async () => {
+    const tgt = newDir();
+    const configPath = join(tgt, 'config.toml');
+    writeFileSync(configPath, '[bootstrap]\nbind_port = 9999\n');
+
+    await stagedThenRefused(tgt, configPath, 0x26);
+
+    // The operator's config is theirs again — not the archive's.
+    expect(readFileSync(configPath, 'utf8')).toContain('bind_port = 9999');
+  });
+
+  it('removes a config the failed restore introduced where there was none', async () => {
+    const tgt = newDir();
+    const configPath = join(tgt, 'config.toml');
+    expect(existsSync(configPath)).toBe(false);
+
+    await stagedThenRefused(tgt, configPath, 0x27);
+
+    // Nothing was there before; nothing is there now. "Restore the backup" has
+    // to cover the no-backup case too, or the realm keeps a config it never had.
+    expect(existsSync(configPath)).toBe(false);
+  });
+
+  it('a keyless archive still restores onto a keyless realm', async () => {
+    const built = await buildArchive(0x21);
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+
+    const res = await applyRestore(
+      { dbPath, dataPath: tgt, configPath: null },
+      impOpts(built),
+      { now: () => FIXED_NOW },
+    );
+
+    expect(res.restored_at).toBe(FIXED_NOW);
+    expect(existsSync(resolveServerBundlePath(dbPath))).toBe(false);
   });
 
   it('backs up an existing config before overwriting it', async () => {
@@ -354,7 +629,7 @@ describe('applyRestore', () => {
       { now: () => FIXED_NOW },
     );
 
-    const store = createBlobStore(blobsRoot);
+    const store = createEncryptedBlobStore(blobsRoot, () => built.blobKey!);
     expect((await store.get(hash))?.toString('utf8')).toBe('authoritative-blob-bytes');
   });
 
@@ -411,6 +686,28 @@ describe('applyRestore', () => {
     expect(readdirSync(tgt).some((f) => f.includes('.bak-'))).toBe(false);
     expect(readdirSync(tgt).some((f) => f.includes('.restore-'))).toBe(false);
   });
+
+  it('rejects a malformed server-bundle record before swapping even with no blobs', async () => {
+    const built = await buildArchive(0x22, { serverVaultBundleJson: '{}' });
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+    const sentinel = new Database(dbPath);
+    sentinel.exec('CREATE TABLE example (k TEXT PRIMARY KEY, v TEXT)');
+    sentinel.prepare('INSERT INTO example VALUES (?, ?)').run('sentinel', 'survives');
+    sentinel.close();
+
+    await expect(
+      applyRestore(
+        { dbPath, dataPath: tgt, configPath: null },
+        impOpts(built),
+        { now: () => FIXED_NOW },
+      ),
+    ).rejects.toThrow(/server-bundle/);
+
+    expect(readRow(dbPath, 'sentinel')).toBe('survives');
+    expect(existsSync(resolveServerBundlePath(dbPath))).toBe(false);
+    expect(readdirSync(tgt).some((name) => name.includes('.restore-'))).toBe(false);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -436,6 +733,22 @@ describe('cmdArchive import', () => {
 
     expect(readFileSync(dbPath).equals(before)).toBe(true);
     expect(readdirSync(tgt).some((f) => f.includes('.bak-'))).toBe(false);
+  });
+
+  it('--dry-run rejects a malformed server-bundle record', async () => {
+    const built = await buildArchive(0x23, { serverVaultBundleJson: '{}' });
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+
+    await expect(
+      cmdArchive(
+        { dbPath, dataPath: tgt, configPath: null, serverVersion: '0.2.0' },
+        ['import', built.archivePath, `--key=${built.key.toString('hex')}`, '--dry-run'],
+      ),
+    ).rejects.toThrow(/server-bundle/);
+
+    expect(existsSync(dbPath)).toBe(false);
+    expect(readdirSync(tgt).some((name) => name.includes('.bak-'))).toBe(false);
   });
 
   it('non-dry-run restores into data_path and backs up the prior db', async () => {
@@ -640,5 +953,234 @@ describe('restore provenance marker wiring (M5 S1)', () => {
     ).rejects.toThrow();
 
     expect(existsSync(restoreProvenanceMarkerPath(tgt))).toBe(false);
+  });
+});
+
+describe('reclaimDisplacedBlobs — parks left by a killed restore', () => {
+  /** A park is made with `link(2)`, which updates ctime and NOT mtime, so it
+   *  inherits the mtime of the CAS object it aliases. An age-gated sweep
+   *  therefore treats any park of a blob stored longer ago than the window as
+   *  stale and deletes it — out from under the rollback that needs it. The CAS
+   *  sweep now leaves parks entirely alone and boot reclaims them instead,
+   *  where the swap journal says which way to go. */
+  const parkFixture = (): { dataPath: string; objectPath: string; asidePath: string } => {
+    const dataPath = newDir();
+    const shard = join(dataPath, 'blobs', 'objects', 'ab');
+    mkdirSync(shard, { recursive: true });
+    const objectPath = join(shard, 'cdef.bin');
+    const asidePath = `${objectPath}.pre-restore-0011223344`;
+    writeFileSync(objectPath, 'ARCHIVE VERSION');
+    writeFileSync(asidePath, 'PRE-RESTORE ORIGINAL');
+    return { dataPath, objectPath, asidePath };
+  };
+
+  it('puts the original back when the swap did NOT commit', () => {
+    const { dataPath, objectPath, asidePath } = parkFixture();
+
+    const result = reclaimDisplacedBlobs(dataPath, false);
+
+    expect(result).toEqual({ restored: 1, reaped: 0, complete: true });
+    expect(readFileSync(objectPath, 'utf8')).toBe('PRE-RESTORE ORIGINAL');
+    expect(existsSync(asidePath)).toBe(false);
+  });
+
+  it('drops the original once the swap HAS committed', () => {
+    const { dataPath, objectPath, asidePath } = parkFixture();
+
+    const result = reclaimDisplacedBlobs(dataPath, true);
+
+    expect(result).toEqual({ restored: 0, reaped: 1, complete: true });
+    expect(readFileSync(objectPath, 'utf8')).toBe('ARCHIVE VERSION');
+    expect(existsSync(asidePath)).toBe(false);
+  });
+
+  it('restores the OLDEST park when a kill left two for one object', () => {
+    // A malformed archive repeating a blob record parks twice: the first holds
+    // the true pre-restore original, the second holds what the first overlay
+    // wrote. After a kill only the filenames survive, so the sequence prefix is
+    // what tells them apart — readdir order would pick arbitrarily.
+    const dataPath = newDir();
+    const shard = join(dataPath, 'blobs', 'objects', 'ab');
+    mkdirSync(shard, { recursive: true });
+    const objectPath = join(shard, 'cdef.bin');
+    writeFileSync(objectPath, 'SECOND ARCHIVE VERSION');
+    // Created newest-first on purpose: directory order must not be what decides
+    // this, or the sequence prefix is doing nothing.
+    writeFileSync(`${objectPath}.pre-restore-000000001-bbbbbb`, 'FIRST OVERLAY WROTE THIS');
+    writeFileSync(`${objectPath}.pre-restore-000000000-aaaaaa`, 'TRUE ORIGINAL');
+
+    const result = reclaimDisplacedBlobs(dataPath, false);
+
+    expect(readFileSync(objectPath, 'utf8')).toBe('TRUE ORIGINAL');
+    expect(result).toEqual({ restored: 1, reaped: 1, complete: true });
+    expect(readdirSync(shard).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
+  });
+
+  it('selects the oldest park regardless of the order it is handed', () => {
+    // The integration case above cannot prove this: `readdir` returns sorted on
+    // APFS, so the filesystem hides whether the ordering is real. Handing the
+    // list in deliberately wrong order is what makes the assertion mean
+    // something on every platform.
+    const shuffled = [
+      'cdef.bin.pre-restore-000000002-cccccc',
+      'cdef.bin.pre-restore-000000000-aaaaaa',
+      'cdef.bin.pre-restore-000000001-bbbbbb',
+    ];
+    expect(selectParkToRestore(shuffled)).toBe('cdef.bin.pre-restore-000000000-aaaaaa');
+    expect(selectParkToRestore([])).toBeUndefined();
+    // Sequence, not lexicographic accident: 10 must not sort before 2.
+    expect(selectParkToRestore([
+      'x.bin.pre-restore-000000010-zzzzzz',
+      'x.bin.pre-restore-000000002-aaaaaa',
+    ])).toBe('x.bin.pre-restore-000000002-aaaaaa');
+  });
+
+  it('leaves ordinary CAS objects untouched', () => {
+    const dataPath = newDir();
+    const shard = join(dataPath, 'cache_blobs', 'objects', 'ab');
+    mkdirSync(shard, { recursive: true });
+    writeFileSync(join(shard, 'cdef.bin'), 'live');
+    writeFileSync(join(shard, '.tmp-abc'), 'in-flight put');
+
+    expect(reclaimDisplacedBlobs(dataPath, false)).toEqual({ restored: 0, reaped: 0, complete: true });
+    expect(existsSync(join(shard, 'cdef.bin'))).toBe(true);
+    expect(existsSync(join(shard, '.tmp-abc'))).toBe(true);
+  });
+
+  // ⛔ A present-but-UNREADABLE shard is a subtree we could not inspect — any
+  // park hiding in it is unresolved. Reporting `complete: true` there let the
+  // swap journal drop its marker, stranding the park with no journal left to
+  // decide rollback-vs-reap on the next boot. A transient EACCES/EIO must keep
+  // the journal (`complete: false`), exactly like a per-park move failure.
+  it('reports incomplete when a shard directory cannot be read', () => {
+    const { dataPath } = parkFixture();
+    const shard = join(dataPath, 'blobs', 'objects', 'ab');
+    chmodSync(shard, 0o000); // present, but readdir throws EACCES
+    try {
+      const result = reclaimDisplacedBlobs(dataPath, false);
+      expect(result.complete).toBe(false);
+    } finally {
+      chmodSync(shard, 0o700); // restore so afterEach can clean up
+    }
+  });
+
+  it('reports incomplete when an objects root cannot be read', () => {
+    const { dataPath } = parkFixture();
+    const objectsDir = join(dataPath, 'blobs', 'objects');
+    chmodSync(objectsDir, 0o000);
+    try {
+      expect(reclaimDisplacedBlobs(dataPath, false).complete).toBe(false);
+    } finally {
+      chmodSync(objectsDir, 0o700);
+    }
+  });
+
+  it('a genuinely ABSENT objects tree is complete (nothing to reclaim)', () => {
+    // The boundary the fix must not cross: no objects dir at all is not a
+    // failure — it is a root this realm never wrote — so the journal may retire.
+    const dataPath = newDir();
+    expect(reclaimDisplacedBlobs(dataPath, false)).toEqual({ restored: 0, reaped: 0, complete: true });
+  });
+});
+
+describe('rollBackDisplacedBlobs — unwinding a stack of parks', () => {
+  it('reinstates the pre-restore original when one object was displaced twice', async () => {
+    const tgt = newDir();
+    const root = join(tgt, 'blobs');
+    // Two realms, because that is the situation parking exists for: a CAS path
+    // is the PLAINTEXT hash, so identical content collides across realms while
+    // the ciphertext sitting at that path only opens under the key that wrote
+    // it. The live realm's key first, then the archive's.
+    const liveKey = mkKey(0x11);
+    const archiveKey = mkKey(0x22);
+    let key = liveKey;
+    const store = createEncryptedBlobStore(root, () => key);
+
+    const plaintext = Buffer.from('the surviving database still references this');
+    const hash = await store.put(plaintext);
+    const objectPath = join(root, 'objects', hash.slice(0, 2), `${hash.slice(2)}.bin`);
+    const preRestore = readFileSync(objectPath);
+
+    // One blob record carried twice: malformed, but nothing in the importer
+    // rejects it and the archive HMAC still verifies. The second overlay parks
+    // what the FIRST one wrote, so the two parks are a stack over one path.
+    key = archiveKey;
+    const srcPath = join(tgt, 'archive-blob.src');
+    writeFileSync(srcPath, plaintext);
+    const displaced: DisplacedBlob[] = [];
+    await overlaySingleBlobFile(store, hash, srcPath, { root, into: displaced });
+    await overlaySingleBlobFile(store, hash, srcPath, { root, into: displaced });
+    expect(displaced).toHaveLength(2);
+    expect(readFileSync(objectPath).equals(preRestore)).toBe(false);
+
+    rollBackDisplacedBlobs(displaced);
+
+    // Byte-identical to what the live realm wrote. Unwinding in insertion order
+    // instead puts the original back and then renames the FIRST overlay's bytes
+    // over it, which both leaves the archive realm's ciphertext live and drops
+    // the original inode's last link — unrecoverably.
+    expect(readFileSync(objectPath).equals(preRestore)).toBe(true);
+    key = liveKey;
+    expect((await store.get(hash))!.equals(plaintext)).toBe(true);
+    const shardDir = join(root, 'objects', hash.slice(0, 2));
+    expect(readdirSync(shardDir).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
+  });
+
+  /** ⛔ PARTIAL FAILURE must be per-object all-or-nothing. A stack is [oldest =
+   *  true original, …intermediates]. The old flat reversed rename consumed the
+   *  original (it lands last) even when an intermediate could not be resolved —
+   *  stranding that intermediate as the ONLY survivor, so the next boot's
+   *  reclaim (which picks the oldest survivor) restored the INTERMEDIATE over
+   *  the object. The fix discards intermediates FIRST and restores the original
+   *  ONLY if they all clear, so the original is never consumed prematurely.
+   *
+   *  The unresolvable intermediate is a DIRECTORY here — `unlinkSync` throws on
+   *  it deterministically, standing in for any park a transient error strands. */
+  const partialStackFixture = () => {
+    const tgt = newDir();
+    const shard = join(tgt, 'blobs', 'objects', 'ab');
+    mkdirSync(shard, { recursive: true });
+    const objectPath = join(shard, 'cdef.bin');
+    writeFileSync(objectPath, 'ARCHIVE VERSION'); // the overlaid archive bytes
+    const original = `${objectPath}.pre-restore-000000000-aaaaaa`;
+    writeFileSync(original, 'TRUE ORIGINAL');
+    const intermediate = `${objectPath}.pre-restore-000000001-bbbbbb`;
+    mkdirSync(intermediate); // unremovable via unlink ⇒ its discard fails
+    return { tgt, objectPath, original, intermediate };
+  };
+
+  it('rollback does NOT consume the original while an intermediate cannot be resolved', () => {
+    const { tgt, objectPath, original, intermediate } = partialStackFixture();
+
+    const complete = rollBackDisplacedBlobs([
+      { objectPath, asidePath: original },
+      { objectPath, asidePath: intermediate },
+    ]);
+
+    // Unresolved ⇒ keep the journal.
+    expect(complete).toBe(false);
+    // THE FIX: the true original is still on disk (NOT consumed), so a retry can
+    // restore it. The old reversed rename consumed it here.
+    expect(existsSync(original)).toBe(true);
+    expect(readFileSync(objectPath, 'utf8')).toBe('ARCHIVE VERSION');
+
+    // Retry once the obstruction clears: the ORIGINAL is restored — never the
+    // intermediate, which the old path would have left as the sole survivor.
+    rmSync(intermediate, { recursive: true });
+    const r = reclaimDisplacedBlobs(tgt, false);
+    expect(r.complete).toBe(true);
+    expect(readFileSync(objectPath, 'utf8')).toBe('TRUE ORIGINAL');
+    expect(existsSync(original)).toBe(false);
+  });
+
+  it('boot reclaim also preserves the original when an intermediate cannot be resolved', () => {
+    const { tgt, objectPath, original } = partialStackFixture();
+
+    // reclaim is the first responder here (boot after a kill), not rollback.
+    const r = reclaimDisplacedBlobs(tgt, false);
+
+    expect(r.complete).toBe(false);
+    expect(existsSync(original)).toBe(true);
+    expect(readFileSync(objectPath, 'utf8')).toBe('ARCHIVE VERSION');
   });
 });

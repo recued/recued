@@ -9,8 +9,8 @@
  *  use the existing pair-ws client pattern the extension uses.
  */
 
-import Database from 'better-sqlite3';
 import { WebSocket } from 'ws';
+import { openDatabase } from '../open-database.js';
 
 export interface RpcCallOptions {
   dbPath: string;
@@ -30,8 +30,8 @@ export class RpcError extends Error {
 
 /** Read the persisted realm_token from the server's SQLite DB.
  *  Throws if the DB has never been initialized. */
-const readRealmToken = (dbPath: string): string => {
-  const db = new Database(dbPath, { readonly: true });
+const readRealmToken = async (dbPath: string): Promise<string> => {
+  const db = await openDatabase(dbPath, { readonly: true });
   try {
     const row = db.prepare(`SELECT value FROM server_config WHERE key = 'realm_token'`).get() as
       | { value: string }
@@ -50,7 +50,7 @@ const readRealmToken = (dbPath: string): string => {
 
 /** Call a single rpc method against the local daemon. Resolves with the
  *  response body, or rejects with an RpcError on any failure. */
-export const callLocalRpc = <T = unknown>(options: RpcCallOptions): Promise<T> => {
+export const callLocalRpc = async <T = unknown>(options: RpcCallOptions): Promise<T> => {
   const timeoutMs = options.timeoutMs ?? 30_000;
   // Stable per-process id — consecutive CLI calls reconnect AS the same
   // admin instance, so the ws-server's register path treats a fresh ws
@@ -60,7 +60,7 @@ export const callLocalRpc = <T = unknown>(options: RpcCallOptions): Promise<T> =
 
   let realm: string;
   try {
-    realm = readRealmToken(options.dbPath);
+    realm = await readRealmToken(options.dbPath);
   } catch (err) {
     return Promise.reject(err);
   }

@@ -14,7 +14,7 @@
  *  warehouse + HubSpot + Salesforce) in; absent them the hook is a
  *  faithful no-op (the sources are per-pair connection state).
  *
- *  Spec: docs/d-160-spec.md § P2.
+ *  Spec: D-160 § P2.
  */
 
 import type { Middleware, TurnContext } from '@recued/middleware';

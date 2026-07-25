@@ -25,7 +25,7 @@
  *    text / textarea / number / boolean / date / timestamp / enum /
  *    ref / array / uuid / object / discriminated_union.
  *
- *  Spec: docs/d-145-spec.md § A.3. */
+ *  Spec: D-145 § A.3. */
 
 import type { CanonicalFieldType } from '../canonical-schemas/index.js';
 

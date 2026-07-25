@@ -25,7 +25,7 @@
  *      no evaluator for it (see the cognition note below).
  *
  *  **Cognition-driven is a typed stub.** Per the 2026-05-19 cognition
- *  downscope (recued-bench Path B Stage 4 verdict; cognition is a
+ *  downscope (internal benchmarks Path B Stage 4 verdict; cognition is a
  *  pluggable component, DEFAULT DISABLED) no cognition component runs
  *  in the default Recued runtime. `'cognition_driven'` is a member of
  *  `CutAuthority` and `resolveCutAuthority` returns it for a
@@ -75,7 +75,7 @@
  *  No tests in this file per the test-after-review workflow; tests
  *  land in a separate post-review step.
  *
- *  Spec: docs/d-153-spec.md § Cut models — three modes (lines
+ *  Spec: D-153 § Cut models — three modes (lines
  *  535-551). */
 
 import { CHANNELS } from './commits.js';

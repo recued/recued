@@ -9,7 +9,7 @@
  *  `data-action` clicks to `work_entity.source.*` rpcs and patches
  *  the panel state back through.
  *
- *  Spec wireframe (`docs/d-145-spec.md` § PA11 + § A.2):
+ *  Spec wireframe (D-145 § PA11 + § A.2):
  *
  *    Work Entities
  *      Sources are entity providers per kind. Each Source can be
@@ -25,7 +25,7 @@
  *      │    ☐ Enabled    ☐ MCP exposed                   │
  *      └──────────────────────────────────────────────────┘
  *
- *  Spec: docs/d-145-spec.md § PA11. */
+ *  Spec: D-145 § PA11. */
 
 import { WORK_ENTITY_KINDS, type WorkEntityKind } from '@recued/contracts';
 import { inlineError } from '../../primitives/message.js';

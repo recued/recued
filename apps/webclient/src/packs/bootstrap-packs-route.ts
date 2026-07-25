@@ -60,6 +60,13 @@ import {
 // R3 — the by-PACK Access panel's scoped styles (the panel itself mounts
 // inside the packs panel's detail ACCESS section).
 import { PACK_ACCESS_STYLES } from '../settings/pack-access-controls.js';
+import {
+  OWNER_OPERATION_STYLES,
+  type OwnerOperationDeleteCaller,
+  type OwnerOperationInventoryCaller,
+  type OwnerOperationListCaller,
+  type OwnerOperationUpsertCaller,
+} from '../settings/owner-operation-controls.js';
 // R3 — the contract-grant callers the Access panel needs beyond the
 // local-tools trio (cli list/set are structurally identical rpcs, reused
 // below; the contracts list has a dedicated option because the local-tools
@@ -169,6 +176,7 @@ export const PACKS_ROUTE_STYLES = [
   CLI_GRANT_DIALOG_STYLES,
   CONNECTIONS_READINESS_STYLES,
   PACK_ACCESS_STYLES,
+  OWNER_OPERATION_STYLES,
   // The unified surface (list↔detail toggle) + its browse-list panel styles.
   PACKS_SURFACE_STYLES,
   DISCOVER_PANEL_STYLES,
@@ -206,6 +214,11 @@ export interface BootstrapPacksRouteOptions {
   contractGrantWriteCaller?: GrantWriteCaller;
   /** `collection.contract.listCatalogOperations` — the shared op universe. */
   catalogOperationsCaller?: GrantCatalogOperationsCaller;
+  /** D-211 actorless owner operation-default replacements. */
+  ownerOperationInventoryCaller?: OwnerOperationInventoryCaller;
+  ownerOperationListCaller?: OwnerOperationListCaller;
+  ownerOperationUpsertCaller?: OwnerOperationUpsertCaller;
+  ownerOperationDeleteCaller?: OwnerOperationDeleteCaller;
   /** `collection.contract.listContracts` — the Access panel's contract rows.
    *  Dedicated (rather than only riding {@link localToolsContractsCaller})
    *  because the local-tools copy gates on a DIFFERENT feature flag — a host
@@ -475,6 +488,18 @@ export const bootstrapPacksRoute = (
             : {}),
           ...(opts.catalogOperationsCaller !== undefined
             ? { runCatalogOperations: opts.catalogOperationsCaller }
+            : {}),
+          ...(opts.ownerOperationInventoryCaller !== undefined
+            ? { runOwnerOperationInventory: opts.ownerOperationInventoryCaller }
+            : {}),
+          ...(opts.ownerOperationListCaller !== undefined
+            ? { runOwnerOperationList: opts.ownerOperationListCaller }
+            : {}),
+          ...(opts.ownerOperationUpsertCaller !== undefined
+            ? { runOwnerOperationUpsert: opts.ownerOperationUpsertCaller }
+            : {}),
+          ...(opts.ownerOperationDeleteCaller !== undefined
+            ? { runOwnerOperationDelete: opts.ownerOperationDeleteCaller }
             : {}),
           ...(opts.localToolsListCaller !== undefined
             ? { runCliReachabilityList: opts.localToolsListCaller }

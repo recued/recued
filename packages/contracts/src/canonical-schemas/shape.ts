@@ -5,7 +5,7 @@
  *  / enum / ref / array / uuid). PA1 introduces them as data; PA5
  *  consumes them.
  *
- *  Spec: docs/d-145-spec.md § A.3 (form renderer substrate). */
+ *  Spec: D-145 § A.3 (form renderer substrate). */
 
 import type { SourceTopTierKind } from '../source-primitive.js';
 

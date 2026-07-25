@@ -455,11 +455,7 @@ const buildSchedulingLinkInput = (
     min_advance_notice_hours: scheduling.min_advance_notice_hours ?? 24,
     max_lead_time_days: scheduling.max_lead_time_days ?? 30,
     max_bookings_per_day: scheduling.max_bookings_per_day ?? 0,
-    on_booking: {
-      create_calendar_event: true,
-      create_commitment_entity: true,
-      ...scheduling.on_booking,
-    },
+    on_booking: { ...scheduling.on_booking },
   };
 
   const failures = validateSchedulingLinkConfig(schedulingConfig);

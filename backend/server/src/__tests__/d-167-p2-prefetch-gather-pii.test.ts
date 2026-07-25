@@ -6,7 +6,7 @@
  *  chat-egress gather aliases that payload ONCE per turn against the turn's
  *  shared session ledger before rendering — so the model sees the SAME alias for
  *  a contact in the prefetch block, the tool results, AND the user's own message
- *  (N.10.2 ②). Closes `recued-substrate-bench` task 41 (prefetch PII leak).
+ *  (N.10.2 ②). Closes internal benchmarks task 41 (prefetch PII leak).
  *
  *  These tests exercise the producer side (real projections stamp), the gather
  *  alias helper + its shared-ledger consistency (the bench-41 property), the
@@ -15,7 +15,7 @@
  *  packet lives in `d-167-shipped-canonical-pii-schemas.test.ts`; the model-bound
  *  `__entity` strip + byte-identity live in `d-167-p1-entity-marker-pii.test.ts`.
  *
- *  Spec: docs/d-160-n10-part-pii-pending-design.md §E.2 + §N.10.1/N.10.2.
+ *  Spec: D-160 §E.2 + §N.10.1/N.10.2.
  */
 
 import {
@@ -546,7 +546,16 @@ describe('D-167 B3 — contact.search args self-route by alias kind at the bound
     const real: ExecuteChatAiCall = async () => ({
       body: { response: '', events: [], tool_calls: [{ tool: 'contact.search', args }] } satisfies AIOutput,
     });
-    const restored = await wrapExecuteAiCallForPii(real, plan)(MANIFEST, { 'llm.prompt': '{}' });
+    // P3 restore authority is derived from this request, so model the real
+    // boundary: the provider sees each alias before it can echo one in args.
+    const restored = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      {
+        'llm.prompt': JSON.stringify({
+          user_message: 'Ask Rae Kim at Datadog via rae@acme.com',
+        }),
+      },
+    );
     const calls = (restored.body as AIOutput).tool_calls as unknown as Array<{ args: Record<string, unknown> }>;
     return calls[0]!.args;
   };
@@ -571,6 +580,50 @@ describe('D-167 B3 — contact.search args self-route by alias kind at the bound
   it('a RAW (non-alias) query is left untouched — never re-routed', async () => {
     // "Globex" is not a ledger alias shape → not routed, not restored.
     expect(await routeAndRestore({ query: 'Globex' })).toEqual({ query: 'Globex' });
+  });
+
+  it('does not route a collision-escaped alias literal as real entity data', async () => {
+    const plan = makePlan(entityResolver());
+    aliasEntityPayloadForEgress(
+      [{
+        email: 'rae@acme.com',
+        name: 'Rae Kim',
+        target_id: 'rae@acme.com',
+        kind: 'contact',
+        company: 'Datadog',
+      }],
+      'contact',
+      plan,
+    );
+    let exposedLiteral = '';
+    const real: ExecuteChatAiCall = async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as {
+        user_message: string;
+      };
+      exposedLiteral = packet.user_message;
+      return {
+        body: {
+          response: '',
+          events: [],
+          tool_calls: [{
+            tool: 'contact.search',
+            args: { query: exposedLiteral },
+          }],
+        } satisfies AIOutput,
+      };
+    };
+    const restored = await wrapExecuteAiCallForPii(real, plan)(
+      MANIFEST,
+      {
+        // Datadog already owns pii.Org1, so the literal is escaped for this
+        // request and must restore without acquiring organization semantics.
+        'llm.prompt': JSON.stringify({ user_message: 'pii.Org1' }),
+      },
+    );
+    expect(exposedLiteral).toBe('pii.Org2');
+    expect((restored.body as AIOutput).tool_calls[0]?.args).toEqual({
+      query: 'pii.Org1',
+    });
   });
 
   it('FAIL-SAFE: an org alias in query is NOT moved when `company` is already set', async () => {

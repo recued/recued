@@ -63,21 +63,21 @@ describe('readAutoDisabledFromDb', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns [] when the database does not exist', () => {
+  it('returns [] when the database does not exist', async () => {
     const fake = join(tmpDir, 'no-such.db');
-    expect(readAutoDisabledFromDb(fake)).toEqual([]);
+    expect(await readAutoDisabledFromDb(fake)).toEqual([]);
   });
 
-  it('returns [] when no rows are auto-disabled', () => {
+  it('returns [] when no rows are auto-disabled', async () => {
     const store = createCircuitBreakerStore(db);
     store.set({
       recipe_id: 'r1', consecutive_failures: 2, auto_disabled: false,
     });
     db.close();
-    expect(readAutoDisabledFromDb(dbPath)).toEqual([]);
+    expect(await readAutoDisabledFromDb(dbPath)).toEqual([]);
   });
 
-  it('reads only auto-disabled rows', () => {
+  it('reads only auto-disabled rows', async () => {
     const store = createCircuitBreakerStore(db);
     seedRecipe(db, 'r-disabled', 'recued-core', 'Disabled Recipe');
     seedRecipe(db, 'r-active', 'recued-core', 'Active Recipe');
@@ -89,7 +89,7 @@ describe('readAutoDisabledFromDb', () => {
       recipe_id: 'r-active', consecutive_failures: 1, auto_disabled: false,
     });
     db.close();
-    const rows = readAutoDisabledFromDb(dbPath);
+    const rows = await readAutoDisabledFromDb(dbPath);
     expect(rows).toHaveLength(1);
     expect(rows[0].recipe_id).toBe('r-disabled');
     expect(rows[0].name).toBe('Disabled Recipe');
@@ -99,18 +99,18 @@ describe('readAutoDisabledFromDb', () => {
     expect(rows[0].last_failure_reason).toBe('NETWORK_ERROR');
   });
 
-  it('falls back to recipe_id when the recipes row is missing', () => {
+  it('falls back to recipe_id when the recipes row is missing', async () => {
     const store = createCircuitBreakerStore(db);
     store.set({
       recipe_id: 'orphan', consecutive_failures: 8, auto_disabled: true,
     });
     db.close();
-    const rows = readAutoDisabledFromDb(dbPath);
+    const rows = await readAutoDisabledFromDb(dbPath);
     expect(rows[0].name).toBe('orphan');
     expect(rows[0].publisher_id).toBe('');
   });
 
-  it('orders rows by recipe_id', () => {
+  it('orders rows by recipe_id', async () => {
     const store = createCircuitBreakerStore(db);
     for (const id of ['charlie', 'alpha', 'bravo']) {
       store.set({
@@ -118,18 +118,18 @@ describe('readAutoDisabledFromDb', () => {
       });
     }
     db.close();
-    const rows = readAutoDisabledFromDb(dbPath);
+    const rows = await readAutoDisabledFromDb(dbPath);
     expect(rows.map((r) => r.recipe_id)).toEqual(['alpha', 'bravo', 'charlie']);
   });
 
-  it('returns [] when auto_run_circuit table does not exist', () => {
+  it('returns [] when auto_run_circuit table does not exist', async () => {
     // Fresh db that never created the circuit table.
     const bareDir = mkdtempSync(join(tmpdir(), 'recued-cli-bare-'));
     const barePath = join(bareDir, 'bare.db');
     const bare = new Database(barePath);
     bare.exec('CREATE TABLE foo (x INTEGER)');
     bare.close();
-    expect(readAutoDisabledFromDb(barePath)).toEqual([]);
+    expect(await readAutoDisabledFromDb(barePath)).toEqual([]);
     rmSync(bareDir, { recursive: true, force: true });
   });
 });

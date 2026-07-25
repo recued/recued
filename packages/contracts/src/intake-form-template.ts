@@ -16,7 +16,7 @@
  *  `IntakeFormConfig` blob the existing P6 `reception.endpoint.create` rpc
  *  path consumes verbatim.
  *
- *  Spec: `docs/d-149-spec.md` § A.10 + § P11 + § Scope item 10. */
+ *  Spec: D-149 § A.10 + § P11 + § Scope item 10. */
 
 import {
   INTAKE_FORM_DISPLAY_NAME_MAX,
@@ -38,7 +38,7 @@ import {
 
 /** Spec § A.10 — closed list of the six Foundation-pack template refs.
  *  Each ref has a 1:1 JSON file under the pack's `templates/` directory
- *  + a documentation section in `docs/reception-templates.md` (the
+ *  + a documentation section in internal design notes (the
  *  P11 docs-currency CI lint asserts both). Adding a seventh template
  *  is a substrate code change here, not a config drop-in. */
 export const INTAKE_FORM_TEMPLATE_REFS = [

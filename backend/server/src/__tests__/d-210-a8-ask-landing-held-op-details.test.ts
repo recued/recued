@@ -25,6 +25,10 @@ import {
   type AskLandingPortHandlerDeps,
 } from '../ask-landing-port.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
+import {
+  allowingAskLandingAbuseDeps,
+  attachAskTestSocket,
+} from './ask-landing-test-helpers.js';
 
 const PARIS = 'Europe/Paris';
 // 17:30Z — 19:30 in Paris on a SUMMER day (CEST), 18:30 in WINTER (CET).
@@ -298,7 +302,13 @@ const ask = (over: Partial<PendingAsk> = {}): PendingAsk => ({
   handler_payload: { checkpoint_id: 'cp-1' },
   fanout_channels: ['email'],
   status: 'open',
-  created_at: 1,
+  // D-210 finding 6 — a REALISTIC mint time. `1` was an arbitrary placeholder
+  // (nothing here asserts on it), but the port now bounds the public link's life
+  // to ASK_LANDING_LINK_TTL_MS from `created_at`, and an epoch-1 ask is ~53 years
+  // stale against this file's NOW. Production always stamps `now()` at mint and the
+  // field is required on `PendingAsk`, so the placeholder — not the guard — was the
+  // unrealistic part.
+  created_at: NOW,
   ...over,
 });
 
@@ -327,16 +337,84 @@ describe('D-210 A.8 3d-2b — createAskLandingDetailResolver', () => {
     expect(findHoldItem).not.toHaveBeenCalled();
   });
 
-  it('returns null for a BATCHED preflight ask', async () => {
-    // `buildPreflightAsk` stamps ONE checkpoint_id on a payload covering N
-    // members, so rendering "the" args would show one member's values as if
-    // they were the whole approval. The prose already enumerates a batch.
+  // ── the batch gate: MEMBER COUNT, not batch detection ──
+  //
+  // ⛔ This block replaces a single `returns null for a BATCHED preflight ask`.
+  // That predicate was far wider than its own reason: `buildPreflightAsk`
+  // stamps `batch_id` for ANY batch including ONE member, and `deriveOriginUnit`
+  // maps `reception` to a run-scoped unit — so EVERY reception hold is a
+  // one-member batch and the `/ask` page rendered no details and no edit
+  // controls on its own main path, while the messenger text for the same hold
+  // DID enumerate the args. "One member's values as if they were the whole
+  // approval" is true for N>1 and vacuous for N=1.
+  const batchAsk = (batch_id: unknown = 'b-1'): PendingAsk =>
+    ask({ handler_payload: { checkpoint_id: 'cp-1', batch_id } });
+  const withBatch = (
+    findHoldItem: (id: string) => Promise<InboxItem | null>,
+    getBatch?: (batch_id: string) => Promise<{ members: readonly unknown[] } | null>,
+  ) =>
+    createAskLandingDetailResolver({
+      findHoldItem,
+      timeZone: PARIS,
+      ...(getBatch !== undefined ? { getBatch } : {}),
+    });
+
+  it('returns null for a MULTI-MEMBER batch — one member is not the approval', async () => {
+    // Both original claims preserved: null, and the hold is never even read.
     const findHoldItem = vi.fn(async () => HELD);
-    const out = await resolverOver(findHoldItem)(
-      ask({ handler_payload: { checkpoint_id: 'cp-1', batch_id: 'b-1' } }),
-    );
+    const out = await withBatch(findHoldItem, async () => ({ members: [1, 2] }))(batchAsk());
     expect(out).toBeNull();
     expect(findHoldItem).not.toHaveBeenCalled();
+  });
+
+  it('RESOLVES a single-member batch — the reception norm', async () => {
+    const findHoldItem = vi.fn(async () => HELD);
+    const getBatch = vi.fn(async () => ({ members: ['only'] }));
+    const out = await withBatch(findHoldItem, getBatch)(batchAsk());
+    expect(getBatch).toHaveBeenCalledWith('b-1');
+    expect(findHoldItem).toHaveBeenCalledWith('cp-1');
+    expect(out).toEqual({
+      heading: 'Create a booking',
+      details: [{ label: 'Summary', value: 'Table for four' }],
+    });
+  });
+
+  it('FAILS CLOSED on every uncertainty about membership', async () => {
+    // A count we cannot establish must never render — the pre-fix behaviour is
+    // the floor, not a regression. [[complete_the_fence_dont_predict_the_default]]
+    const findHoldItem = vi.fn(async () => HELD);
+    const cases: Array<[string, ReturnType<typeof withBatch>]> = [
+      // No reader wired at all (a composition that cannot count members).
+      ['no getBatch', withBatch(findHoldItem)],
+      // Reader throws (store down).
+      ['throws', withBatch(findHoldItem, async () => { throw new Error('down'); })],
+      // Row gone (pruned while the ask was outstanding).
+      ['row null', withBatch(findHoldItem, async () => null)],
+      // Zero members — not a shape that should render either.
+      ['zero members', withBatch(findHoldItem, async () => ({ members: [] }))],
+    ];
+    for (const [label, resolve] of cases) {
+      expect([label, await resolve(batchAsk())]).toEqual([label, null]);
+    }
+    // A non-string / empty batch_id is refused before the reader is consulted.
+    const getBatch = vi.fn(async () => ({ members: ['only'] }));
+    for (const bad of [42, '', null]) {
+      expect(await withBatch(findHoldItem, getBatch)(batchAsk(bad))).toBeNull();
+    }
+    expect(getBatch).not.toHaveBeenCalled();
+    expect(findHoldItem).not.toHaveBeenCalled();
+  });
+
+  it('reads membership LIVE — an open batch accumulates members', async () => {
+    // ⛔ Why the count is not stamped at ask-build time: the row is mutable
+    // while `open`, so a build-time count goes stale in the one direction that
+    // matters. Same ask, two renders, second one has grown.
+    const findHoldItem = vi.fn(async () => HELD);
+    let members: unknown[] = ['only'];
+    const resolve = withBatch(findHoldItem, async () => ({ members }));
+    expect(await resolve(batchAsk())).not.toBeNull();
+    members = ['only', 'joined'];
+    expect(await resolve(batchAsk())).toBeNull();
   });
 
   it('returns null when the payload carries no usable checkpoint_id', async () => {
@@ -390,7 +468,7 @@ const getReq = (url: string): IncomingMessage => {
   (stream as unknown as { method: string }).method = 'GET';
   (stream as unknown as { url: string }).url = url;
   (stream as unknown as { headers: Record<string, string> }).headers = {};
-  return stream;
+  return attachAskTestSocket(stream);
 };
 
 const portHarness = (
@@ -407,6 +485,7 @@ const portHarness = (
     getVerificationPhrase: async () => undefined,
     nonceStore: createInMemoryAskLandingNonceStore(),
     now: () => NOW,
+    abuse: allowingAskLandingAbuseDeps(),
     ...(resolveDetails !== undefined ? { resolveDetails } : {}),
   };
   return createAskLandingPortHandler(deps);

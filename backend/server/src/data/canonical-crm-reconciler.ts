@@ -50,7 +50,7 @@
  *  `<vendor>_<entity>_` prefix is added HERE, which also makes generic records
  *  consistent with bespoke + dispatchable by the cross-vendor `data.crm.*` resolver.
  *
- *  Spec: `handovers/handover_d190_generic_crm_reconciler_scope.md` (MS4). */
+ *  Spec: internal design notes (MS4). */
 
 import {
   composePlatformRecordTargetId,

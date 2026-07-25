@@ -236,6 +236,10 @@ export {
   KEY_HEALTH_STATUS_ATTR,
   KEY_HEALTH_COMPROMISE_BANNER_ATTR,
   KEY_HEALTH_ERROR_CODE_ATTR,
+  KEYFILE_POSTURE_CARD_ATTR,
+  KEYFILE_POSTURE_TONE_ATTR,
+  KEYFILE_POSTURE_CONSEQUENCE_ATTR,
+  KEYFILE_POSTURE_REMEDIATION_ATTR,
 } from './settings/key-health-panel.js';
 export type {
   MountKeyHealthPanelOptions,
@@ -243,7 +247,19 @@ export type {
   KeyHealthPanelState,
   KeyHealthLoader,
   KeyRotateCaller,
+  SystemStatusLoader,
 } from './settings/key-health-panel.js';
+
+// D-212 §7.10 — the keyfile-posture projection behind that card. Exported
+// so the next surface to render the posture reuses these words instead of
+// paraphrasing them (`'none'` and `null` must not converge).
+export { describeKeyfilePosture } from './settings/keyfile-posture.js';
+export type {
+  KeyfileSealing,
+  KeyfilePostureInput,
+  KeyfilePostureTone,
+  KeyfilePostureView,
+} from './settings/keyfile-posture.js';
 
 export {
   createWebclientWsClient,

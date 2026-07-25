@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Checkpoint, McpInboundTokenRecord } from '@recued/contracts';
+import {
+  D165_CONTRACT_SCHEMA,
+  OWNER_OPERATION_SCOPE,
+  operationSpecHash,
+  type Checkpoint,
+  type IngredientManifest,
+  type McpInboundTokenRecord,
+} from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
 import {
   createAuditLogStore,
@@ -20,6 +27,7 @@ import type { EventBus } from '../events/bus.js';
 import type { RecipeStore } from '../recipe-store.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import { createManifestRegistry } from '../manifest-loader.js';
 import { createContactStore } from '../storage/contact-store.js';
 import type { EnrichmentStore } from '../storage/enrichment-store.js';
 import type { SharedStore } from '../storage/shared-store.js';
@@ -29,6 +37,7 @@ import { ensureSourceDependencyEntitySchema } from '../storage/source-dependency
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
+import { createContractStore } from '../storage/contract-store.js';
 import {
   composeExecuteDeps,
   type ComposeExecuteDepsDeps,
@@ -272,6 +281,11 @@ const importComposerWithNotificationSpy = async () => {
       registerHold: vi.fn(async () => ({ kind: 'fallback' as const })),
       hooks: { handleAnswer: vi.fn(async () => 'fallback' as const) },
     },
+    // The `/ask` landing's live batch-membership read. REQUIRED on the bundle
+    // on purpose: a composition that omits it silently turns the landing
+    // page's detail block off for every reception hold, so the type is the
+    // fence rather than a runtime surprise.
+    getBatch: vi.fn(async () => null),
   }));
 
   vi.doMock('../composition/bin/wire-notification-block.js', () => ({
@@ -301,6 +315,12 @@ describe('composeExecuteDeps bundle shape', () => {
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
       'executeDeps',
+      // The `/ask` landing's live batch-membership read, surfaced from the
+      // notification bundle that owns the batch rows. Undefined alongside
+      // `notificationBlock` on the dbless path, but PRESENT as a key either
+      // way — a composition that cannot count a batch's members must fail
+      // closed at the resolver, not silently omit the seam here.
+      'getBatch',
       'grantEntryStore',
       // D-181 slice 4 — the bundle also surfaces the in-flight registry (the
       // live active-list + kill authority) for the boot composer to wire.
@@ -327,6 +347,12 @@ describe('composeExecuteDeps bundle shape', () => {
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
       'executeDeps',
+      // The `/ask` landing's live batch-membership read, surfaced from the
+      // notification bundle that owns the batch rows. Undefined alongside
+      // `notificationBlock` on the dbless path, but PRESENT as a key either
+      // way — a composition that cannot count a batch's members must fail
+      // closed at the resolver, not silently omit the seam here.
+      'getBatch',
       'grantEntryStore',
       // D-181 slice 4 — the bundle also surfaces the in-flight registry (the
       // live active-list + kill authority) for the boot composer to wire.
@@ -549,6 +575,120 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
     executeDepsRef = bundle.executeDeps;
     expect(callDeps.getExecuteDeps()).toBe(bundle.executeDeps);
     expect(bundle.notificationBlock).toBe(block);
+  });
+
+  it('threads an authoritative standing-ruling writer that preserves sibling policy facets', async () => {
+    const {
+      compose,
+      composeNotificationBlockMock,
+    } = await importComposerWithNotificationSpy();
+    const prereqs = notificationPrereqs();
+    const contractStore = createContractStore(prereqs.db, { now: () => NOW });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    contractStore.put(
+      OWNER_OPERATION_SCOPE,
+      ['test/simple', 'test/simple'],
+      { risk: 'read', approval: 'ask', op_hash: 'old-hash' },
+    );
+    const manifests = createManifestRegistry('/nonexistent-d211-composition-dir');
+    manifests.register({
+      slug: 'test/simple',
+      name: 'D-211 simple operation',
+      description: 'Standing-ruling composition fixture',
+      author: 'recued-core',
+      kind: 'connection',
+      category: 'action',
+      risk_tier: 'read',
+      input: {},
+      output: {},
+    } satisfies IngredientManifest);
+
+    compose(buildDeps({
+      ...prereqs,
+      contractStore,
+      executorConfig: { manifests } as ServerExecutorConfig,
+    }));
+
+    const callDeps = composeNotificationBlockMock.mock.calls[0]![0];
+    expect(callDeps.upsertOverride).toEqual(expect.any(Function));
+    await callDeps.upsertOverride!({
+      kind: 'never_ask',
+      ingredient_id: 'test/simple',
+      operation_id: 'test/simple',
+      op_hash: operationSpecHash({
+        operation_id: 'test/simple',
+        risk_tier: 'read',
+      }),
+      approval: 'never',
+    });
+
+    expect(
+      contractStore.get(
+        OWNER_OPERATION_SCOPE,
+        ['test/simple', 'test/simple'],
+      )?.value,
+    ).toMatchObject({
+      approval: 'never',
+      risk: 'read',
+      op_hash: expect.any(String),
+    });
+  });
+
+  it('rejects a standing-ruling action when the exact operation changed after the ask', async () => {
+    const {
+      compose,
+      composeNotificationBlockMock,
+    } = await importComposerWithNotificationSpy();
+    const prereqs = notificationPrereqs();
+    const contractStore = createContractStore(prereqs.db, { now: () => NOW });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const manifests = createManifestRegistry('/nonexistent-d211-stale-offer-dir');
+    const operation = {
+      operation_id: 'test/catalog.read',
+      description: 'The operation the owner reviewed.',
+      risk_tier: 'read' as const,
+    };
+    const catalog = {
+      slug: 'test/catalog',
+      name: 'D-211 catalog operation',
+      description: 'Standing-ruling staleness fixture',
+      author: 'recued-core',
+      kind: 'connection',
+      category: 'action',
+      risk_tier: 'read',
+      input: {},
+      output: {},
+      operations: { read: operation },
+    } satisfies IngredientManifest;
+    manifests.register(catalog);
+
+    compose(buildDeps({
+      ...prereqs,
+      contractStore,
+      executorConfig: { manifests } as ServerExecutorConfig,
+    }));
+    const writer = composeNotificationBlockMock.mock.calls[0]![0].upsertOverride!;
+
+    manifests.register({
+      ...catalog,
+      operations: {
+        read: { ...operation, description: 'Changed after the ask was rendered.' },
+      },
+    });
+
+    await expect(writer({
+      kind: 'never_ask',
+      ingredient_id: catalog.slug,
+      operation_id: operation.operation_id,
+      op_hash: operationSpecHash(operation),
+      approval: 'never',
+    })).rejects.toThrow(/operation changed or was removed/);
+    expect(
+      contractStore.get(
+        OWNER_OPERATION_SCOPE,
+        [catalog.slug, operation.operation_id],
+      ),
+    ).toBeNull();
   });
 });
 

@@ -34,7 +34,7 @@
  *  hand back; the producer-side wiring is unchanged when later
  *  housekeeping producers swap some entries to Zod schemas.
  *
- *  Spec: `docs/d-122-spec.md` §"Enrichment substrate". */
+ *  Spec: D-122 §"Enrichment substrate". */
 
 // ────────────────────────────────────────────────────────────────
 // Cross-module imports
@@ -959,7 +959,7 @@ export interface ThreadSignalsValue {
   has_unread: boolean;
   /** Canonical thread subject — latest sibling's subject after
    *  reply-thread normalization. Harvest from
-   *  `recued-enrichment-benchmark` v6/v9 — bench measured 9.8K
+   *  internal benchmarks v6/v9 — bench measured 9.8K
    *  tokens/episode and mean 4 hops because the agent had to
    *  follow up with entity.query(mail) to learn the subject.
    *  Optional during the producer-shape harvest. */
@@ -1060,7 +1060,7 @@ const EmbeddingSchema = objectShape<EmbeddingValue>({
 export interface BehavioralSignatureValue {
   /** Resolved subject-contact name (denormalized from the contacts
    *  directory at producer-run time). Harvest from
-   *  `recued-enrichment-benchmark` v10 catalog tuning — bench showed
+   *  internal benchmarks v10 catalog tuning — bench showed
    *  the agent reaches the producer but couldn't tell whose stats
    *  these are without an entity.query lookup. Optional during the
    *  producer-shape harvest. */
@@ -1135,7 +1135,7 @@ const BehavioralSignatureSchema = objectShape<BehavioralSignatureValue>({
 export interface ReplyPatternsValue {
   /** Resolved subject-contact name (denormalized from the contacts
    *  directory at producer-run time). Harvest from
-   *  `recued-enrichment-benchmark` v12a tuning — closes the
+   *  internal benchmarks v12a tuning — closes the
    *  shared-mailbox misattribution gap surfaced by the bench. Optional
    *  during the producer-shape harvest. */
   name?: string;
@@ -1214,7 +1214,7 @@ export interface AttendeeCoOccurrence {
   /** Number of distinct calendar events where the source contact and
    *  this co-attendee both appeared (organizer or attendee). */
   count: number;
-  /** Resolved-name surface harvested from the `recued-enrichment-benchmark`
+  /** Resolved-name surface harvested from the internal benchmarks
    *  v6 catalog tuning — bench measurement showed agents misattribute when
    *  contact references arrive as bare emails. Optional during the
    *  producer-shape harvest (producers gradually emit them); intended to
@@ -1229,7 +1229,7 @@ export interface AttendeeCoOccurrence {
 export interface AttendeePatternsValue {
   /** Resolved subject-contact name (denormalized from the contacts
    *  directory at producer-run time). Harvest from
-   *  `recued-enrichment-benchmark` v10 catalog tuning — surface let
+   *  internal benchmarks v10 catalog tuning — surface let
    *  the agent identify whose patterns these are without an
    *  entity.query lookup. Optional during the producer-shape harvest. */
   name?: string;
@@ -1304,7 +1304,7 @@ const AttendeePatternsSchema = objectShape<AttendeePatternsValue>({
 export interface MeetingFrequencyValue {
   /** Resolved subject-contact name (denormalized from the contacts
    *  directory at producer-run time). Harvest from
-   *  `recued-enrichment-benchmark` v12a tuning. Optional during the
+   *  internal benchmarks v12a tuning. Optional during the
    *  producer-shape harvest. */
   name?: string;
   /** Subject-contact REF<contacts> identifier (today: canonical email).
@@ -1856,7 +1856,7 @@ export interface WorkingGroupValue {
    *  the contacts directory at producer-run time). Each entry is
    *  `{ entity: REF<contacts>, name: string }` parallel to the
    *  `contacts: string[]` field above. Harvest from
-   *  `recued-enrichment-benchmark` v6 catalog tuning — lets the agent
+   *  internal benchmarks v6 catalog tuning — lets the agent
    *  identify group members by name without follow-up entity.query
    *  lookups. Optional during the producer-shape harvest.
    *
@@ -1957,7 +1957,7 @@ export interface OrganizationValue {
    *  the contacts directory at producer-run time). Each entry is
    *  `{ entity: REF<contacts>, name: string }` parallel to the
    *  `contacts: string[]` field above. Harvest from
-   *  `recued-enrichment-benchmark` v8 catalog tuning where the bench
+   *  internal benchmarks v8 catalog tuning where the bench
    *  showed the v7 retirement experiment regressed because the agent
    *  declines to synthesize company names + member names from raw
    *  emails. Optional during the producer-shape harvest. */
@@ -6495,7 +6495,7 @@ export const ENRICHMENT_REGISTRY = {
   // fires once per `'none'` → `'moderate'` or `'moderate'` →
   // `'significant'` crossing. Default `trust_state: 'auto'`
   // (deterministic + zero-cost; honours D-132 trust gate).
-  // Spec: `docs/d-133-spec.md`.
+  // Spec: D-133.
   confidence_drift_signal: {
     return_shape:
       '{ source_topic: string, psi: number, severity: string, baseline_window: { start_at: number, end_at: number, sample_count: number }, recent_window: { start_at: number, end_at: number, sample_count: number }, baseline_distribution: [number], recent_distribution: [number], computed_at: number }',

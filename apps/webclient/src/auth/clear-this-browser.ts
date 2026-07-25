@@ -71,12 +71,15 @@ export interface CacheLikeStorage {
 }
 
 // Codex slice-109 P2 fold — the default MUST match the cache name
-// `public/sw.js` actually opens (`webclient-shell-v1`). Pre-fold the
-// default was a stale name (`recued.webclient.assets`) that no SW
-// build had ever opened, so the default "Clear this browser" flow
-// claimed cache deletion that never happened. The constant lives in
-// `runtime/service-worker.ts` so the SW file's upgrade-version bump
-// + the wipe target stay co-located.
+// `public/sw.js` actually opens. Pre-fold the default was a stale name
+// (`recued.webclient.assets`) that no SW build had ever opened, so the
+// default "Clear this browser" flow claimed cache deletion that never
+// happened. The constant lives in `runtime/service-worker.ts` so the SW
+// file's upgrade-version bump + the wipe target stay co-located.
+//
+// ⚠ Co-located is not derived: the name regressed to exactly the pre-fold
+// failure once already (constant on `v4`, SW on `v5`). Parity is now
+// asserted by a test — see `WEBCLIENT_SHELL_CACHE_NAME`.
 const DEFAULT_SW_CACHE_NAMES = [WEBCLIENT_SHELL_CACHE_NAME] as const;
 
 const resolveSessionStorage = (override?: SessionLikeStorage): SessionLikeStorage | null => {

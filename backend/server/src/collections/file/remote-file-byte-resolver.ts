@@ -1,21 +1,19 @@
-/** D-192 remote byte-fetch (follow-on B) — the `storage_ref.kind:'remote'`
- *  substrate, SLICE 1: the per-vendor byte-resolver PORT + registry + the
- *  orchestrator that bridges a `file:remote:*` record id to fetched bytes.
+/** D-192 remote byte-fetch — the `storage_ref.kind:'remote'` per-vendor
+ *  resolver port + orchestrator that bridges a `file:remote:*` record id to
+ *  fetched bytes.
  *
- *  The file-source family is metadata-only today (bytes never fetched — the
- *  North star). A mirror row lives in the `FileMetaStore` (`file_meta_ref`), a
+ *  File Source SYNC is metadata-only. A mirror row lives in the `FileMetaStore`
+ *  (`file_meta_ref`), a
  *  DIFFERENT store from the `data.file.received` CAS collection `handleFileRead`
  *  reads; its remote-storage_ref shape is synthesized at read time by
  *  `FileViewResolver` under a reversible `file:remote:<b64 scope>:<b64 target>`
- *  id. So a remote file has no reader today. This module is the bridge: given a
- *  remote record id, recover the `FileMetaRow` (via the meta-store) + the
+ *  id. Given a remote record id, this module recovers the `FileMetaRow` + the
  *  connection (from the Source scope) + dispatch to a per-vendor resolver that
  *  actually fetches the bytes — LAZILY, only for the files a consumer opens.
  *
- *  SLICE 1 ships the mechanism with an EMPTY vendor registry (every provider →
- *  `remote_provider_unsupported`); the per-vendor resolvers + the wiring into
- *  `handleFileRead`'s five channels land in later slices. Design +
- *  fork decisions: `docs/d-192-remote-byte-fetch-design.md`. */
+ *  Production composes the complete declared-vendor registry; the exported
+ *  empty registry remains a fail-closed test/default seam. Design + fork
+ *  decisions: D-192. */
 
 import { RpcError, type FileMetaProjection } from '@recued/contracts';
 
@@ -78,8 +76,8 @@ export type RemoteFileByteResolver = (req: RemoteFileByteRequest) => Promise<Rem
 /** The provider → resolver registry (keyed on `FileMetaProjection.provider`). */
 export type RemoteFileByteResolverRegistry = Readonly<Record<string, RemoteFileByteResolver>>;
 
-/** SLICE 1: no vendor is wired yet — every provider resolves to
- *  `remote_provider_unsupported`. Later slices add S3 (reference) then fan out. */
+/** Fail-closed empty registry for isolated tests or deliberately unwired
+ *  runtimes. Production injects `buildRemoteFileByteResolvers()`. */
 export const EMPTY_REMOTE_FILE_BYTE_RESOLVERS: RemoteFileByteResolverRegistry = {};
 
 export interface RemoteFileReadDeps {

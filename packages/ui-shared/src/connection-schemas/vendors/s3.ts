@@ -21,7 +21,7 @@
  *  pushes down to the ListObjectsV2 `Prefix`. See
  *  `packages/contracts/src/import-scope.ts`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; config shape matches
+ *  Spec: D-192; config shape matches
  *  `backend/server/src/file-source-adapters/s3.ts` verbatim. */
 
 import type { ConnectionField } from '../types.js';
@@ -91,8 +91,8 @@ const S3_FIELDS: readonly ConnectionField[] = [
       'A key prefix such as `invoices/` mirrors just that folder — recommended '
       + 'for large buckets, since it scopes the S3 list call server-side rather '
       + 'than after the fact. Globs work too (`invoices/**`, `**/*.pdf`). Leave '
-      + 'blank to mirror the whole bucket. Metadata only — object contents are '
-      + 'never fetched.',
+      + 'blank to mirror the whole bucket. Sync mirrors metadata only; object '
+      + 'contents are fetched lazily only when you explicitly read one.',
   },
   // S3 auth is always the access-key/secret pair carried as `basic`. Hidden +
   // seeded, mirroring the other vendors' locked `auth.type`.
@@ -131,7 +131,7 @@ export const s3Schema: VendorConnectionSchema = {
   kind: 'api',
   label: 'Amazon S3',
   description:
-    'Object storage — mirror object metadata from an S3 (or S3-compatible: MinIO / R2 / B2) bucket into your warehouse (bytes never fetched). Access-key auth.',
+    'Object storage — mirror object metadata from an S3 (or S3-compatible: MinIO / R2 / B2) bucket; object bytes stay remote and are fetched only for an explicit read. Access-key auth.',
   fields: S3_FIELDS,
   initialValues: S3_SCHEMA_INITIAL_VALUES,
 };

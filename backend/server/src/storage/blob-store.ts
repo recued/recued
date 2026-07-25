@@ -9,8 +9,11 @@
  *  Callers that write the same blob from two cache entries share a
  *  single backing file.
  *
- *  Encryption mode (optional):
- *  When `getEncryptionKey` is provided, put() encrypts plaintext under
+ *  Encryption mode:
+ *  Production callers use `createEncryptedBlobStore`, which requires a live
+ *  key provider. The lower-level `createBlobStore` retains an omitted-key mode
+ *  only for explicit test doubles and archive-format unit fixtures. When
+ *  `getEncryptionKey` is provided, put() encrypts plaintext under
  *  AES-256-GCM with AAD = hex hash, and get() decrypts on read. Dedup
  *  is preserved because the hash is computed on plaintext BEFORE
  *  encryption; identical content short-circuits at the exists-check
@@ -49,7 +52,7 @@ export interface BlobStore {
    *  verified bytes. Default (omitted) dedup-skips a present blob.
    *
    *  OPTIONAL capability (interface segregation): the production
-   *  `createBlobStore` always implements it, but a BlobStore that only needs
+   *  the concrete factories always implement it, but a BlobStore that only needs
    *  in-memory `put` need not — `src_path` ingest guards on its presence. */
   putFile?(srcPath: string, opts?: { replace?: boolean }): Promise<string>;
   get(hash: string): Promise<Buffer | null>;
@@ -64,7 +67,7 @@ export interface BlobStore {
    *  encryption mode.
    *
    *  OPTIONAL capability (interface segregation, like `putFile`): the
-   *  production `createBlobStore` always implements it; an in-memory fake that
+   *  the concrete factories always implement it; an in-memory fake that
    *  only needs `get` need not. The archive export guards on its presence. */
   getStream?(hash: string): Promise<Readable | null>;
   /** Decrypt an ENCRYPTED blob's PLAINTEXT to `destPath`, streaming (peak = one
@@ -81,7 +84,7 @@ export interface BlobStore {
    *  decrypt — throws; use `getStream`.
    *
    *  OPTIONAL capability (like `putFile`/`getStream`): the production
-   *  `createBlobStore` always implements it. */
+   *  the concrete factories always implement it. */
   decryptToFile?(hash: string, destPath: string): Promise<void>;
   has(hash: string): Promise<boolean>;
   delete(hash: string): Promise<void>;
@@ -92,7 +95,7 @@ export interface BlobStore {
    *  length for a stream cipher), computed WITHOUT decrypting. Null when absent.
    *
    *  OPTIONAL capability (like `putFile`/`getStream`): the production
-   *  `createBlobStore` always implements it; a consumer that only has `sizeOf`
+   *  the concrete factories always implement it; a consumer that only has `sizeOf`
    *  falls back to it (correct for keyless, where the two coincide). */
   plaintextSizeOf?(hash: string): Promise<number | null>;
   sweepOrphans(keepSet: Set<string>): Promise<number>;
@@ -101,7 +104,7 @@ export interface BlobStore {
   /** True iff this store encrypts at rest (a `getEncryptionKey` was provided).
    *  Consumers that must handle plaintext (the archive export) branch on it:
    *  encrypted → `decryptToFile` to scratch; keyless (or absent) → `getStream`.
-   *  OPTIONAL like the capabilities above — the production `createBlobStore`
+   *  OPTIONAL like the capabilities above — the production encrypted factory
    *  always sets it; an in-memory fake that omits it reads as keyless. */
   readonly encrypted?: boolean;
 }
@@ -112,6 +115,15 @@ export interface BlobStoreOptions {
    *  Omit the option entirely for plaintext mode. */
   getEncryptionKey?: () => Uint8Array | null;
 }
+
+/** The production constructor: a caller cannot accidentally omit the key
+ * provider and silently publish plaintext. `createBlobStore` remains exported
+ * only for keyless test doubles/fixtures; a source ratchet enforces that no
+ * production module calls it directly. */
+export const createEncryptedBlobStore = (
+  root: string,
+  getEncryptionKey: () => Uint8Array | null,
+): BlobStore => createBlobStore(root, { getEncryptionKey });
 
 const sha256Hex = (data: Buffer): string =>
   createHash('sha256').update(data).digest('hex');
@@ -131,6 +143,18 @@ const sha256File = async (srcPath: string): Promise<string> => {
 const pathFor = (root: string, hash: string): string =>
   join(root, 'objects', hash.slice(0, 2), `${hash.slice(2)}.bin`);
 
+/** The on-disk object path for a hash under `root`. Exported for archive
+ *  restore, which must know whether it is about to overwrite a LIVE object
+ *  before it asks `putFile` to replace one. */
+export const resolveBlobObjectPath = pathFor;
+
+/** Marks an object archive restore parked before overwriting it, so an abort
+ *  can put the pre-restore bytes back. Owned here because the CAS layout is
+ *  owned here — and because a parked file does NOT end in `.bin`, so
+ *  `sweepOrphans` would otherwise never reclaim one stranded by a kill
+ *  between the overlay and the commit. */
+export const DISPLACED_BLOB_SUFFIX = '.pre-restore-';
+
 /** Ciphertext wire format: iv (12) || encrypted body (= plaintext || tag 16) */
 const IV_LEN = 12;
 /** AES-256-GCM authentication tag length. The on-disk envelope adds exactly
@@ -145,6 +169,22 @@ const AEAD_TAG_LEN = 16;
  *  so an in-flight put's temp is never mistaken for an orphan. */
 const STALE_TEMP_PREFIX = '.tmp-';
 const STALE_TEMP_MS = 60 * 60 * 1000; // 1h
+
+/** CAS objects are owner-only, and so are the directories holding them.
+ *
+ *  A production root is keyed, so an object is ciphertext and the mode guards
+ *  metadata: which content hashes this install holds, how many, and how big
+ *  each one is. A keyless store writes the plaintext itself, so the default
+ *  cannot be a readable one either way. The directory mode carries as much as
+ *  the file's — a 0600 object under a traversable shard still advertises its
+ *  hash and its size to anyone who can list the shard.
+ *
+ *  Applied at creation only. A temp publishes by rename, which carries the mode
+ *  along with the inode, so pinning the temp pins the object; and a store whose
+ *  shards already exist keeps the mode they were made with rather than being
+ *  chmod-swept on every put. */
+const OBJECT_MODE = 0o600;
+const OBJECT_DIR_MODE = 0o700;
 
 const packCiphertext = (iv: Uint8Array, ct: Uint8Array): Buffer => {
   const buf = Buffer.alloc(iv.length + ct.length);
@@ -170,7 +210,7 @@ const requireKey = (provider: () => Uint8Array | null): Uint8Array => {
 };
 
 export const createBlobStore = (root: string, options: BlobStoreOptions = {}): BlobStore => {
-  if (!existsSync(root)) mkdirSync(root, { recursive: true });
+  if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: OBJECT_DIR_MODE });
   const encryption = options.getEncryptionKey;
 
   return {
@@ -184,7 +224,7 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
       if (existsSync(path)) return hash;
 
       const dir = dirname(path);
-      await mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true, mode: OBJECT_DIR_MODE });
 
       let payload: Buffer;
       if (encryption) {
@@ -206,7 +246,7 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
       // invisible to sweepOrphans/totalBytes.
       const tmpPath = join(dir, `${STALE_TEMP_PREFIX}${hash.slice(2)}-${randomBytes(8).toString('hex')}`);
       try {
-        await writeFile(tmpPath, payload);
+        await writeFile(tmpPath, payload, { mode: OBJECT_MODE });
         await rename(tmpPath, path);
       } catch (err) {
         // Best-effort temp cleanup; ignore if it never landed.
@@ -232,7 +272,7 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
       if (!opts.replace && existsSync(path)) return hash;
 
       const dir = dirname(path);
-      await mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true, mode: OBJECT_DIR_MODE });
 
       // Same atomic-publish discipline as `put`: stream into a unique `.tmp-`
       // file in the SAME directory, then rename onto the canonical path. A
@@ -262,10 +302,10 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
             if (fin.length > 0) yield fin;
             yield cipher.getAuthTag();
           };
-          await pipeline(encryptStream(), createWriteStream(tmpPath));
+          await pipeline(encryptStream(), createWriteStream(tmpPath, { mode: OBJECT_MODE }));
         } else {
           // Plaintext mode — stream-copy the source into the temp.
-          await pipeline(createReadStream(srcPath), createWriteStream(tmpPath));
+          await pipeline(createReadStream(srcPath), createWriteStream(tmpPath, { mode: OBJECT_MODE }));
         }
         // Publish the fully-written temp. POSIX `rename` atomically OVERWRITES
         // an existing dest (the `replace` case) with no window. We deliberately
@@ -376,7 +416,9 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
           const fin = decipher.final(); // throws on GCM tag mismatch
           if (fin.length > 0) yield fin;
         };
-        await pipeline(decryptGen(), createWriteStream(destPath));
+        // 0600: this is the one place a keyed blob's plaintext exists as a file,
+        // so it is owner-only for the moment it does.
+        await pipeline(decryptGen(), createWriteStream(destPath, { mode: 0o600 }));
       } catch (err) {
         // Tag mismatch / torn read / write failure — never leave (possibly
         // unverified) plaintext at destPath for a consumer.
@@ -459,6 +501,24 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
             } catch {
               // raced with a concurrent put's rename/cleanup — ignore
             }
+            continue;
+          }
+          if (file.includes(DISPLACED_BLOB_SUFFIX)) {
+            // A pre-restore original, parked by an in-flight archive restore so
+            // an abort can put it back. NEVER reaped here.
+            //
+            // A staleness gate was tried and is unsound: a park is made with
+            // `link(2)`, which updates ctime and not mtime, so it inherits the
+            // mtime of the CAS object it aliases — any blob stored longer ago
+            // than the window is born stale and would be deleted out from under
+            // the rollback that needs it. And deletion is the wrong recovery
+            // anyway: a park outliving its restore means the swap did NOT
+            // commit, so the surviving database still references the parked
+            // bytes and they must be restored, not dropped.
+            //
+            // Reclaim happens at boot instead, where the swap journal says
+            // which way to go and no restore can be in flight. See
+            // `reclaimDisplacedBlobs` in `archive/archive-restore.ts`.
             continue;
           }
           if (!file.endsWith('.bin')) continue;

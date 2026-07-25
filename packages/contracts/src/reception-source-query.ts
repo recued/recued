@@ -21,7 +21,7 @@
  *  `data.enrichment.*`, `connection.*`) are rejected at the rpc edge —
  *  there is no `string` escape hatch.
  *
- *  Spec: docs/d-149-spec.md § A.4 + § Contract Tightening § Source query
+ *  Spec: D-149 § A.4 + § Contract Tightening § Source query
  *  reference. */
 
 import type { RedactedPacketKind } from './redacted-packets.js';

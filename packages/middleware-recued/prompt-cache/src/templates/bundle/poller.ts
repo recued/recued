@@ -34,7 +34,7 @@
  *  The poller does NOT throw out of `tick`; failures are observable
  *  but never propagate.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 templates/bundle. */
 
 import type { BundleFetcher, BundleManifest } from './fetch.js';

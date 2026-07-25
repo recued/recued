@@ -192,8 +192,8 @@ describe('composeForRole — grant_resolution', () => {
       ],
     });
     const result = composeForRole(COMPOSITE_KEYS, 'grant_resolution', ctx, scan);
-    // override (prec 30, tightening_only) — denied:true → allowed:false (stricter),
-    // approval always (stricter than ask). grant's allowed:true is tightened away.
+    // override (prec 30, tightening_only) — denied:true → allowed:false and
+    // approval always tightens ask. Global D-211 defaults use another scope.
     expect(policy(result)).toEqual({ allowed: false, approval: 'always' });
   });
 

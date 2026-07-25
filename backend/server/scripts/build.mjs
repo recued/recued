@@ -5,7 +5,7 @@
  * Bundles the monorepo workspace packages (@recued/*) into a
  * standalone dist/ so the published npm package is self-contained.
  * External-izes native + heavy real-npm deps so the installed tree
- * stays thin and better-sqlite3 rebuilds postinstall.
+ * stays thin and the native SQLite cipher driver rebuilds postinstall.
  *
  * Outputs:
  *   dist/bin.js          — CLI entry (#!/usr/bin/env node banner)
@@ -37,11 +37,11 @@ const OUT = join(PKG_ROOT, 'dist');
 const pkg = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8'));
 const VERSION = pkg.version;
 
-// Real npm deps we keep external. better-sqlite3 is native (breaks
+// Real npm deps we keep external. better-sqlite3-multiple-ciphers is native (breaks
 // when bundled). The others are heavy enough that bundling inflates
 // the tarball without speeding install.
 const EXTERNAL = [
-  'better-sqlite3',
+  'better-sqlite3-multiple-ciphers',
   'ws',
   'imapflow',
   'mailparser',

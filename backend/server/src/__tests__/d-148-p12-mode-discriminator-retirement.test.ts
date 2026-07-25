@@ -1,6 +1,6 @@
 /** D-148 P12 — mode-discriminator + executor-cap retirement ratchet.
  *
- *  Closes the I.9 invariant in full (`docs/d-148-spec.md` lines
+ *  Closes the I.9 invariant in full (D-148 lines
  *  2872-2874): "no `if (legacy_extension)` branches after P11 / CI
  *  grep ... any branch keyed on legacy extension state, mode
  *  discriminator, FREE_TIER_EXECUTOR_LIMIT, or similar. Zero matches.

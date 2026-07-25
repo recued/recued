@@ -1,8 +1,9 @@
 /** D-192 file SOURCE family — the `file_meta_ref` meta-store.
  *
- *  An own-table `SourceMirrorStore` over remote file METADATA (bytes never
- *  fetched — North star). Cloned from `crm-record-mirror-store.ts` (the
- *  only own-table mirror) and following its conventions verbatim:
+ *  An own-table `SourceMirrorStore` over remote file metadata. Sync writes no
+ *  bodies; explicit reads resolve remote bytes through a separate bounded
+ *  path and do not persist them here. Cloned from `crm-record-mirror-store.ts`
+ *  (the only own-table mirror) and following its conventions verbatim:
  *   - PK `(scope, target_id)`; the file fields live INSIDE a `meta` JSON
  *     blob (not columns) — filtered via `json_extract`;
  *   - the snapshot hash lives at `meta.$.snapshot_hash`, so
@@ -13,7 +14,7 @@
  *
  *  `scope` = the file Source id (e.g. `dropbox.<conn>.file`, a
  *  `CONNECTION_SOURCE_ID`); `target_id` = the vendor's remote file id
- *  (== `meta.remote_id`). Design: `docs/d-192-file-source-family.md`. */
+ *  (== `meta.remote_id`). Design: D-192. */
 
 import type Database from 'better-sqlite3';
 

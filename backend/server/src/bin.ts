@@ -150,6 +150,18 @@ const dispatch = async (): Promise<void> => {
       await runUpdateProfile({ args, bootTrace, serverVersion: SERVER_VERSION });
       return;
     }
+    case 'recover-keyfile': {
+      bootTrace.markImport('./cli-context/recover-keyfile.js');
+      const { runRecoverKeyfileProfile } = await import('./cli-context/recover-keyfile.js');
+      await runRecoverKeyfileProfile({ args, bootTrace });
+      return;
+    }
+    case 'rotate-passphrase': {
+      bootTrace.markImport('./cli-context/rotate-passphrase.js');
+      const { runRotatePassphraseProfile } = await import('./cli-context/rotate-passphrase.js');
+      await runRotatePassphraseProfile({ args, bootTrace });
+      return;
+    }
     case 'daemon': {
       bootTrace.markImport('./cli-context/daemon.js');
       const { runDaemonProfile } = await import('./cli-context/daemon.js');

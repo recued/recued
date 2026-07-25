@@ -1,6 +1,6 @@
 /** D-160 P1 -- three-hook Middleware interface.
  *
- *  Spec: docs/d-160-spec.md sections N.2 / A.1 and Must Hold I-5.
+ *  Spec: D-160 sections N.2 / A.1 and Must Hold I-5.
  */
 
 import { describe, expect, it } from 'vitest';

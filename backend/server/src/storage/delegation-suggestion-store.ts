@@ -29,7 +29,7 @@
  *  reserved out of MCP) and the learner only. Local-only — the contract store
  *  never syncs cloud (D-090/D-097/D-168).
  *
- *  Spec: docs/d-177-spec.md § N.13; landing order P6b. */
+ *  Spec: D-177 § N.13; landing order P6b. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
 import {

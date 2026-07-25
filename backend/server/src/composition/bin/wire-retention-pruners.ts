@@ -44,6 +44,9 @@ import { HANDLED_ASK_RETENTION_MS, type NotificationBlock } from '@recued/notifi
 import type { AuditLogStore, CheckpointStore } from '@recued/storage';
 import type { S2SPreviewStore } from '../../s2s-preview/store.js';
 import type { CorrectionEventsStore } from '../../storage/correction-events-store.js';
+import type {
+  ExecutionCaseLifecycle,
+} from '../../chat-execution-case-tools.js';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -56,6 +59,8 @@ export interface ComposeRetentionPrunersDeps {
    *  anchors); absent on the db-less harness. */
   readonly checkpointStore?: CheckpointStore | undefined;
   readonly auditLog?: AuditLogStore | undefined;
+  /** D-214 closure observer for D-157 approval expiries. */
+  readonly executionCaseLifecycle?: ExecutionCaseLifecycle | undefined;
   /** D-157 N.8 — the notification block's ask-state reads (the
    *  never-drop-a-decision check + the race-safe prompt close).
    *  Narrowed to exactly the two methods the sweep consumes. Absent ⇒
@@ -175,6 +180,22 @@ export const composeRetentionPruners = (
           }
         : {}),
       now: nowOf,
+      ...(deps.executionCaseLifecycle
+        ? {
+            onExpired: async (entry) => {
+              const source = entry.execution_source;
+              if (
+                source?.channel !== 'chat'
+                || typeof source.chat_session_id !== 'string'
+                || typeof source.turn_id !== 'string'
+              ) return;
+              await deps.executionCaseLifecycle?.finalizeTurn({
+                session_id: source.chat_session_id,
+                turn_id: source.turn_id,
+              });
+            },
+          }
+        : {}),
       config: () => {
         let days: number;
         try {

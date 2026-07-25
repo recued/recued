@@ -23,11 +23,12 @@
  *    - `restoreForDisplay` / `restoreArgsForApproval` — the local restore
  *      boundaries (assistant reply rendering; D-157 approval-preview).
  *
- *  Spec: docs/d-167-spec.md §"Runtime flow", §"Gateway", §"Channel ownership
+ *  Spec: D-167 §"Runtime flow", §"Gateway", §"Channel ownership
  *  signal".
  */
 
 import type {
+  EntityFieldPrivacy,
   PiiAliasableData,
   PiiFieldTag,
   RedactionMode,
@@ -36,19 +37,31 @@ import type {
 import {
   aliasArgs,
   aliasFields,
+  aliasIdentifierField,
   aliasRecallArgs,
   buildKnownValueIndex,
+  cloneLedger,
+  commitLedger,
+  containsPotentialPiiAliasLiteral,
   createCounters,
+  createLedger,
+  derivePiiRestoreAuthority,
   preScanReservePii,
   restoreArgs,
+  restoreArgsWithAuthority,
   restoreArgsAndKeys,
+  restoreArgsAndKeysWithAuthority,
+  restoreArgKeysWithAuthority,
   restoreInString,
+  restoreInStringWithAuthority,
+  restrictStagedLedgerToRestoreAuthority,
   summarizeRedactions,
   tokenizeForOverlap,
   type KnownValueIdentifierSeed,
   type KnownValueIndex,
   type KnownValueSeed,
   type Ledger,
+  type PiiRestoreAuthority,
   type RedactionCounters,
 } from '@recued/transforms';
 
@@ -158,6 +171,11 @@ export const preScanPacketForEgress = <T>(
   packet: T,
 ): { value: T; escaped: boolean } => preScanReservePii(ledger, packet);
 
+/** Cheap conservative gate for deciding whether the whole-packet literal
+ * collision pre-scan is necessary. */
+export const hasPotentialPiiAliasLiteral =
+  containsPotentialPiiAliasLiteral;
+
 /**
  * Alias a context packet for LLM egress (spec §"Runtime flow" steps 2-4).
  * Resolves the packet's privacy-tagged fields, runs the substrate's two
@@ -209,6 +227,61 @@ export const restoreArgsForApproval = <T>(ledger: Ledger, args: T): T =>
  */
 export const restoreArgsAndKeysForApproval = <T>(ledger: Ledger, args: T): T =>
   restoreArgsAndKeys(ledger, args);
+
+/**
+ * D-167 P3 — request-local reverse authority. Forward allocation remains
+ * session-scoped; these restore functions admit only aliases found in the exact
+ * protected request that produced the response.
+ */
+export type RequestRestoreAuthority = PiiRestoreAuthority;
+
+export const deriveRequestRestoreAuthority = (
+  ledger: Ledger,
+  serializedProtectedPacket: string,
+): RequestRestoreAuthority =>
+  derivePiiRestoreAuthority(ledger, serializedProtectedPacket);
+
+export const restoreForDisplayWithAuthority = (
+  authority: RequestRestoreAuthority,
+  text: string,
+): string => restoreInStringWithAuthority(authority, text);
+
+export const restoreArgsForApprovalWithAuthority = <T>(
+  authority: RequestRestoreAuthority,
+  args: T,
+): T => restoreArgsWithAuthority(authority, args);
+
+export const restoreArgsAndKeysForApprovalWithAuthority = <T>(
+  authority: RequestRestoreAuthority,
+  args: T,
+): T => restoreArgsAndKeysWithAuthority(authority, args);
+
+/** Restore only nested object keys after the enclosing result's values have
+ * already been restored once. */
+export const restoreArgKeysForApprovalWithAuthority = <T>(
+  authority: RequestRestoreAuthority,
+  args: T,
+): T => restoreArgKeysWithAuthority(authority, args);
+
+/** Stage provider-request allocations and commit them only after send success. */
+export const stageLedgerForRequest = (ledger: Ledger): Ledger =>
+  cloneLedger(ledger);
+
+export const commitLedgerForRequest = (
+  ledger: Ledger,
+  staged: Ledger,
+): void => {
+  commitLedger(ledger, staged);
+};
+
+/** Drop new mappings whose aliases are absent from the final request bytes. */
+export const restrictStagedLedgerForRequest = (
+  baseline: Ledger,
+  staged: Ledger,
+  authority: RequestRestoreAuthority,
+): void => {
+  restrictStagedLedgerToRestoreAuthority(baseline, staged, authority);
+};
 
 /**
  * Re-alias an LLM-bound args object for egress — the forward mirror of
@@ -279,6 +352,8 @@ export interface RecallIndex {
   readonly identifierSeeds: readonly KnownValueIdentifierSeed[];
 }
 
+const EMAIL_PRIVACY_KIND = 'email' as const;
+
 /**
  * Build the recall index from raw contact strings. Pure — the backend builds it
  * once per turn (lazily, only when a `memory.*` result is present) and reuses it
@@ -294,7 +369,7 @@ export const buildRecallIndex = (seeds: RecallContactSeeds): RecallIndex => {
     ...(seeds.addresses ?? []).map((value) => ({ value, kind: 'address' as const })),
   ];
   const identifierSeeds: KnownValueIdentifierSeed[] = [
-    ...seeds.emails.map((value) => ({ kind: 'email' as const, value })),
+    ...seeds.emails.map((value) => ({ kind: EMAIL_PRIVACY_KIND, value })),
     ...seeds.phones.map((value) => ({ kind: 'phone' as const, value })),
   ];
   return { index: buildKnownValueIndex(nameOrgSeeds), identifierSeeds };
@@ -330,6 +405,223 @@ export const aliasRecallArgsForEgress = <T>(
     args,
     recall.index,
     recall.identifierSeeds,
+    disclosed,
+    counters,
+  );
+  return { aliased, summary: buildRedactionSummary(mode, counters) };
+};
+
+/** A schema-attested historical value admitted to the turn-local candidate
+ * index. `content` is intentionally absent: free-form prose is deterministically
+ * extracted, never retained wholesale as one aliasable value. */
+export interface CandidateValueSeed {
+  readonly value: string;
+  readonly kind: Exclude<EntityFieldPrivacy, 'content'>;
+}
+
+const CANDIDATE_UNSAFE_KEYS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
+
+const candidateStringSurfaces = (
+  root: unknown,
+): {
+  readonly all: readonly string[];
+  readonly keys: readonly string[];
+} => {
+  const all: string[] = [];
+  const keys: string[] = [];
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') {
+      all.push(value);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const member of value) stack.push(member);
+      continue;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const [key, member] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
+        // Match the key-aware `walk` contract: prototype-sensitive members are
+        // removed, not inspected. A candidate occurring only there must not
+        // allocate a reverse mapping that the protected result never carries.
+        if (CANDIDATE_UNSAFE_KEYS.has(key)) continue;
+        all.push(key);
+        keys.push(key);
+        stack.push(member);
+      }
+    }
+  }
+  return { all, keys };
+};
+
+const escapeCandidateRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const identifierCandidateOccurs = (
+  surfaces: readonly string[],
+  seed: CandidateValueSeed,
+): boolean => {
+  if (seed.value.length === 0) return false;
+  if (seed.kind === 'phone') {
+    const digits = seed.value.replace(/\D/gu, '');
+    return digits.length > 0 && surfaces.some(
+      (surface) => surface.replace(/\D/gu, '').includes(digits),
+    );
+  }
+  if (seed.kind === 'url') {
+    const needle = seed.value.toLowerCase();
+    return surfaces.some((surface) => surface.toLowerCase().includes(needle));
+  }
+  if (seed.kind === EMAIL_PRIVACY_KIND) {
+    const needle = seed.value.toLowerCase();
+    return surfaces.some((surface) => surface.toLowerCase().includes(needle));
+  }
+  const boundary = new RegExp(
+    `(?<![A-Za-z0-9])${escapeCandidateRegExp(seed.value)}(?![A-Za-z0-9])`,
+    'iu',
+  );
+  return surfaces.some((surface) => boundary.test(surface));
+};
+
+const candidatesThatActuallyAlias = <T>(
+  args: T,
+  candidates: readonly CandidateValueSeed[],
+): readonly CandidateValueSeed[] => {
+  if (candidates.length === 0) return [];
+  const scope = 'candidate-presence-probe';
+  const baseline = createLedger(scope);
+  const probe = createLedger(scope);
+  const requiredReverseKeys = new Map<CandidateValueSeed, readonly string[]>();
+  for (const candidate of candidates) {
+    const alias = aliasIdentifierField(
+      probe,
+      candidate.kind as
+        | KnownValueIdentifierSeed['kind']
+        | 'external_id'
+        | 'account_id',
+      candidate.value,
+    );
+    requiredReverseKeys.set(
+      candidate,
+      [...derivePiiRestoreAuthority(probe, alias).ledger.byKindBaseAlias.keys()],
+    );
+  }
+
+  // Probe all prefiltered candidates in one key-aware packet walk. Restricting
+  // the isolated ledger to aliases that reached its output gives the exact same
+  // presence proof as one probe per candidate without O(candidates × packet
+  // traversal) cloning. Nothing from this scratch ledger reaches the session.
+  const aliased = aliasArgs(probe, args);
+  const exposed = candidateStringSurfaces(aliased).all.join('\u0000');
+  const authority = derivePiiRestoreAuthority(probe, exposed);
+  restrictStagedLedgerToRestoreAuthority(baseline, probe, authority);
+  return candidates.filter((candidate) => {
+    const keys = requiredReverseKeys.get(candidate) ?? [];
+    return keys.length > 0
+      && keys.every((key) => probe.byKindBaseAlias.has(key));
+  });
+};
+
+/**
+ * Alias a dynamic packet projection against one bounded candidate set.
+ * Names/orgs/addresses use one Aho-Corasick index; identifier seeds are first
+ * filtered to values actually present in this packet, and external/account ids
+ * are allocated only after the same presence gate. Thus a superset-safe cache
+ * never widens the session reverse map merely by being read.
+ */
+export const aliasCandidateValuesForEgress = <T>(
+  ledger: Ledger,
+  args: T,
+  candidates: readonly CandidateValueSeed[],
+  disclosedTexts: readonly string[],
+  mode: RedactionMode = 'alias',
+): { aliased: T; summary: RedactionSummary } => {
+  const knownValues: KnownValueSeed[] = [];
+  const identifierCandidates: CandidateValueSeed[] = [];
+  const directCandidates: CandidateValueSeed[] = [];
+  for (const candidate of candidates) {
+    if (candidate.value.length === 0) continue;
+    if (
+      candidate.kind === 'name'
+      || candidate.kind === 'org'
+      || candidate.kind === 'address'
+    ) {
+      knownValues.push({ value: candidate.value, kind: candidate.kind });
+    } else if (
+      candidate.kind === EMAIL_PRIVACY_KIND
+      || candidate.kind === 'phone'
+      || candidate.kind === 'url'
+    ) {
+      identifierCandidates.push(candidate);
+    } else {
+      directCandidates.push(candidate);
+    }
+  }
+
+  const surfaces = candidateStringSurfaces(args);
+  // `aliasRecallArgs` discovers known values from string VALUES, then aliases
+  // object keys ledger-anchored. A candidate present only in a nested key needs
+  // an explicit seed first; otherwise `owner_Alice Ada` stays raw because no
+  // value walk ever populated the ledger. Use the key-aware alphanumeric
+  // boundary, then let the ordinary key mapper perform the replacement.
+  for (const candidate of candidates) {
+    if (
+      (
+        candidate.kind === 'name'
+        || candidate.kind === 'org'
+        || candidate.kind === 'address'
+      )
+      && identifierCandidateOccurs(surfaces.keys, candidate)
+    ) {
+      aliasIdentifierField(
+        ledger,
+        candidate.kind,
+        candidate.value,
+      );
+    }
+  }
+  const presentIdentifiers = candidatesThatActuallyAlias(
+    args,
+    identifierCandidates.filter(
+      (candidate) => identifierCandidateOccurs(surfaces.all, candidate),
+    ),
+  );
+  const presentDirect = candidatesThatActuallyAlias(
+    args,
+    directCandidates.filter(
+      (candidate) => identifierCandidateOccurs(surfaces.all, candidate),
+    ),
+  );
+  const identifierSeeds: KnownValueIdentifierSeed[] = presentIdentifiers
+    .map((candidate) => ({
+      value: candidate.value,
+      kind: candidate.kind as KnownValueIdentifierSeed['kind'],
+    }));
+  for (const candidate of presentDirect) {
+    aliasIdentifierField(
+      ledger,
+      candidate.kind as 'external_id' | 'account_id',
+      candidate.value,
+    );
+  }
+
+  const disclosed = new Set<string>();
+  for (const text of disclosedTexts) {
+    for (const token of tokenizeForOverlap(text)) disclosed.add(token);
+  }
+  const counters = createCounters();
+  const aliased = aliasRecallArgs(
+    ledger,
+    args,
+    buildKnownValueIndex(knownValues),
+    identifierSeeds,
     disclosed,
     counters,
   );

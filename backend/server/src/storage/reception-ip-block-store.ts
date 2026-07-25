@@ -17,7 +17,7 @@
  *  Server-internal table; no cross-cloud sync (D-097 / D-168 —
  *  reception substrate is per-pair only per § Must Hold I-15).
  *
- *  Spec: docs/d-149-spec.md § A.20.5 + § A.16 + § Must Hold I-9. */
+ *  Spec: D-149 § A.20.5 + § A.16 + § Must Hold I-9. */
 
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';

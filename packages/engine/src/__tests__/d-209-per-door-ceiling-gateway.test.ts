@@ -1,16 +1,17 @@
 /** D-209 #1 — the per-door ceiling at the REAL catalog-dispatch chokepoint.
  *
  *  `ctx.contract_snapshot` now rides onto the engine ctx, and the gateway's
- *  `dispatchCeiling` reads its authored `max_risk_without_approval` (honored
- *  only on a contract_id match). These tests dispatch a write-tier op through
- *  the real `runCatalogOperation`:
+ *  `dispatchCeiling` reads its authored `max_risk_without_approval` only for
+ *  the webhook carve-out. These tests dispatch a write-tier op through the
+ *  real `runCatalogOperation`:
  *
  *    - contracted source, no snapshot           → HOLDS (PreflightRequiredSignal)
- *    - own door's snapshot, ceiling `admin`     → DISPATCHES (silent admit)
+ *    - model door's own `admin` snapshot        → still HOLDS (LOW pin)
+ *    - webhook door's own `admin` snapshot      → DISPATCHES (silent admit)
  *    - ANOTHER contract's snapshot, `admin`     → still HOLDS
  *
- *  The hold case is the pre-existing D-209 Slice-B behavior; the other two are
- *  what this slice adds. */
+ *  The no-snapshot hold is the pre-existing D-209 Slice-B behavior; the other
+ *  cases pin the later webhook-only amendment. */
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +22,7 @@ import type {
   ApiExecutionBinding,
   ConnectionOperationProfile,
   ContractSnapshot,
+  ExecutionSource,
   IngredientManifest,
   OperationRiskTier,
   OperationSpec,
@@ -88,7 +90,26 @@ const snapshotFor = (
   ...(ceiling === undefined ? {} : { max_risk_without_approval: ceiling }),
 });
 
-const makeHarness = (opts: { snapshot?: ContractSnapshot } = {}): {
+const modelDoorSource: ExecutionSource = {
+  channel: 'chat',
+  actor: 'contracted_user',
+  chat_session_id: 's1',
+  user_id: 'u1',
+  contract_id: DOOR_CONTRACT_ID,
+};
+
+const webhookDoorSource: ExecutionSource = {
+  channel: 'webhook',
+  actor: 'anonymous',
+  vendor: 'test-vendor',
+  webhook_secret_id: 'secret-1',
+  contract_id: DOOR_CONTRACT_ID,
+};
+
+const makeHarness = (opts: {
+  snapshot?: ContractSnapshot;
+  source?: ExecutionSource;
+} = {}): {
   ctx: ExecutionContext;
   ingredientExecutor: ReturnType<typeof vi.fn<IngredientExecutor>>;
 } => {
@@ -97,13 +118,7 @@ const makeHarness = (opts: { snapshot?: ContractSnapshot } = {}): {
     recipe: { recipe_id: 'r1' } as never,
     stores: {} as never,
     ingredientExecutor,
-    execution_source: {
-      channel: 'chat',
-      actor: 'contracted_user',
-      chat_session_id: 's1',
-      user_id: 'u1',
-      contract_id: DOOR_CONTRACT_ID,
-    },
+    execution_source: opts.source ?? modelDoorSource,
     ...(opts.snapshot === undefined ? {} : { contract_snapshot: opts.snapshot }),
     connectionProfileResolver: () => allowedProfile(),
   };
@@ -139,8 +154,24 @@ describe('D-209 #1 — per-door ceiling at the catalog-dispatch chokepoint', () 
     expect(ingredientExecutor).not.toHaveBeenCalled();
   });
 
-  it('the door\'s OWN authored `admin` ceiling admits the granted write silently', async () => {
+  it('a model door\'s own authored `admin` ceiling cannot raise it — the write still holds', async () => {
     const { ctx, ingredientExecutor } = makeHarness({
+      snapshot: snapshotFor(DOOR_CONTRACT_ID, 'admin'),
+    });
+    let thrown: unknown;
+    try {
+      await run(ctx);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(PreflightRequiredSignal);
+    expect(isPreflightRequiredSignal(thrown)).toBe(true);
+    expect(ingredientExecutor).not.toHaveBeenCalled();
+  });
+
+  it('the webhook door\'s own authored `admin` ceiling admits the granted write silently', async () => {
+    const { ctx, ingredientExecutor } = makeHarness({
+      source: webhookDoorSource,
       snapshot: snapshotFor(DOOR_CONTRACT_ID, 'admin'),
     });
     await expect(run(ctx)).resolves.toEqual({ ok: true });

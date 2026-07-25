@@ -92,7 +92,7 @@
  *  `createElement` + new event listeners. The host element itself
  *  stays attached; only its children swap.
  *
- *  Spec: docs/d-148-spec.md § A.6.5 (operator-initiated cert renewal
+ *  Spec: D-148 § A.6.5 (operator-initiated cert renewal
  *  pathway) + § A.11 (rotation result shape). */
 
 import type { RotationErrorCode, RotationResult } from '@recued/contracts';

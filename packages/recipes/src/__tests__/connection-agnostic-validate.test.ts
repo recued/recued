@@ -9,7 +9,7 @@
  *  only (`op_step_unknown_entity` retired). Binding-time failures (the pack doesn't
  *  declare the op) surface in the install resolver, not here. Op-steps are rejected
  *  in prefetch_steps + trigger_steps (the R1 resolver rewrites `steps` only).
- *  Spec: docs/unified-pack-exploration/connection-agnostic-op-contract.md.
+ *  Spec: internal design notes.
  */
 import { describe, it, expect } from 'vitest';
 import { validateRecipe } from '../validate.js';

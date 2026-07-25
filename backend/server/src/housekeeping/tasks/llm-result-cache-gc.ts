@@ -32,7 +32,7 @@
  *  wrapper's cache-miss-on-undefined behavior — degrade cleanly rather
  *  than throw at use-site.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.10 (cache substrate) +
+ *  Spec: D-145 § A.7.10 (cache substrate) +
  *  [[project_handover_2026_05_26_d145_a79_pa9_6_pa9_7_landed]] (PA9.6
  *  landing memo, scheduled-gc called out as deferred follow-on).
  */

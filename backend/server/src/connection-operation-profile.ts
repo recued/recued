@@ -18,7 +18,7 @@
  *  in-memory map is sufficient for P0/P1; a durable backing (SQLite) can
  *  drop in behind this interface without touching the gateway.
  *
- *  Spec: docs/d-165-spec.md § "P0 — Kernel + gateway"; § Runtime flow.
+ *  Spec: D-165 § "P0 — Kernel + gateway"; § Runtime flow.
  */
 
 import type { ConnectionOperationProfile } from '@recued/contracts';

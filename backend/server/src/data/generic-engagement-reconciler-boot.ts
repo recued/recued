@@ -25,7 +25,7 @@
  *  Ordering: MUST run AFTER the bespoke vendor boots (`composeVendorSubstrate`) so
  *  `bespokeScopes` captures every hb/sf `(vendor, entity)`.
  *
- *  Spec: `docs/d-192-engagement-facet.md` (S4c2); survey Wall-D + Wall-F. */
+ *  Spec: D-192 (S4c2); survey Wall-D + Wall-F. */
 
 import {
   composeVendorEntityScope,

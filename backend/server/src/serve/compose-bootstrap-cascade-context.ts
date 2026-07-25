@@ -114,9 +114,9 @@ const composeCascade = (deps: {
     state: pressureState,
     auditLog,
     cache: cacheStore,
-    // Two posture-split CAS roots (blob-encryption Phase 1). The cache surface
-    // sweeps the encrypted `cacheBlobs` root (cache ∪ collection keepset); the
-    // shared_store surface sweeps the keyless `sharedBlobs` root (shared ∪
+    // Two content-family CAS roots. Both are encrypted in production; the cache
+    // surface sweeps `cacheBlobs` (cache ∪ collection keepset), while the
+    // shared_store surface sweeps `sharedBlobs` (shared ∪
     // annotation keepset). Collections share the cache_blobs instance, so their
     // refs join the cache keepset; annotations share the blobs root, so theirs
     // join the shared keepset — omitting either would let a sweep reap a live

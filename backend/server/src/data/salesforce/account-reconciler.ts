@@ -26,7 +26,7 @@
  *      `hubspot_company_<numeric>` (and matches the cross-vendor
  *      `crm.account.*` lens dispatching at P7).
  *
- *  Spec: `docs/d-130-spec.md` § A.3, § Phase 4. */
+ *  Spec: D-130 § A.3, § Phase 4. */
 
 import {
   PLATFORM_REFERENCE_BATCH_SIZE,

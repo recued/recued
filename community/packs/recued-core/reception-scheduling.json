@@ -1,0 +1,149 @@
+{
+  "manifest_version": 2,
+  "slug": "reception-scheduling",
+  "publisher": "recued-core",
+  "name": "Reception — Scheduling",
+  "description": "Review-by-default scheduling reception (a booking front-door). A visitor picks a slot and the booking lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the slot time / details first) or reject. Materializes a booking in your local warehouse — a mutable business record that owns its own slot and lifecycle (confirmed / completed / no_show / cancelled). A booking is never written to your calendar: the calendar is personal, a booking is business (D-210 A.2). Scheduling never auto-books (D-173 I-7).",
+  "version": 4,
+  "pre_install": true,
+  "recipes": [
+    {
+      "slug": "reschedule-calendar-event",
+      "version": 1
+    },
+    {
+      "slug": "reschedule-booking",
+      "version": 1
+    },
+    {
+      "slug": "reschedule-booking-managed",
+      "version": 1
+    }
+  ],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:reception",
+    "reception",
+    "reception-scheduling",
+    "l2"
+  ],
+  "pack_kind": "app_pack",
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "reception-scheduling",
+        "catalog_kind": "private_byo",
+        "ingredients": [
+          {
+            "slug": "reception-scheduling",
+            "kind": "http",
+            "http": {
+              "base": "https://reception.local",
+              "connection": "reception-scheduling"
+            },
+            "entities": {
+              "scheduling": {
+                "fields": [
+                  {
+                    "field_path": "id",
+                    "type": "string",
+                    "maps_to": "id",
+                    "description": "Materialized booking id."
+                  },
+                  {
+                    "field_path": "summary",
+                    "type": "string",
+                    "maps_to": "summary",
+                    "description": "Owner-facing booking title."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "scheduling.materialize",
+            "ingredient": "reception-scheduling",
+            "risk": "write",
+            "approval": "ask",
+            "out": "result",
+            "args": [
+              "title",
+              "body",
+              "start_at",
+              "notify_visitor"
+            ],
+            "description": "Materialize a reviewed reservation into a BOOKING row (the review-then-approve projection). ⛔ It does NOT create a calendar event and never has since D-210 A.2: booking ⟂ calendar, so the booking carries its own slot_start_at / slot_end_at and is the only artifact. Approval-required: the Gateway gate holds it pending so the owner reviews + edits the slot start / details before it runs, and the EDITED value is what is minted — the reservation row keeps what the visitor originally ASKED, this records what was AGREED. A past-slot booking is never materialized (I-7) — the projection refuses once the slot is in the past. Set notify_visitor to tell the visitor their booking is confirmed; it is off unless the owner turns it on for this approval, and it needs a send-capable sender configured on the scheduling link. The `https://reception.local` base url (surfaces_seed) is a LOCAL-DISPATCH sentinel, not a reachable endpoint — on approve-resume the ingredient executor routes this op to the in-process `reception-materialize` kernel ingredient (runReceptionProjection), so the materialize never makes an HTTP call (D-173 I-2 / P1-dispatch).",
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/reception/scheduling/materialize"
+            },
+            "request_schema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "start_at": {
+                  "type": "number"
+                },
+                "notify_visitor": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "editable_args": [
+              {
+                "key": "title",
+                "type": "string",
+                "label": "Summary",
+                "required": true
+              },
+              {
+                "key": "body",
+                "type": "string",
+                "label": "Details"
+              },
+              {
+                "key": "start_at",
+                "type": "datetime",
+                "label": "Slot start"
+              },
+              {
+                "key": "notify_visitor",
+                "type": "boolean",
+                "label": "Tell the visitor their booking is confirmed"
+              }
+            ]
+          }
+        ],
+        "default_grants": [
+          "reception-scheduling.scheduling.write"
+        ],
+        "recipe_templates": [
+          {
+            "template": "review-then-approve",
+            "trigger": {
+              "entity": "reception_form_submission",
+              "field": "processing_outcome",
+              "value": "pending"
+            },
+            "operation": "scheduling.materialize"
+          }
+        ]
+      }
+    }
+  ]
+}

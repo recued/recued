@@ -23,7 +23,7 @@
  *  SharePoint document-library drive; blank walks the signed-in user's default
  *  `/me/drive`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; mirrors `dropbox.ts`. */
+ *  Spec: D-192; mirrors `dropbox.ts`. */
 
 import {
   MICROSOFT_GRAPH_API_BASE,
@@ -77,7 +77,8 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
     help:
       'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror the whole '
-      + 'drive. Metadata only — file contents are never fetched.',
+      + 'drive. Sync mirrors metadata only; contents are fetched lazily only '
+      + 'when you explicitly read a file.',
   },
   // Optional — target a specific (non-default / SharePoint) drive. The leaf
   // reads `config.drive_id`; blank walks the signed-in user's default drive.
@@ -159,7 +160,7 @@ export const onedriveSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'OneDrive',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse via Microsoft Graph (bytes never fetched). OAuth 2.0 via your own Microsoft Entra app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse via Microsoft Graph; file bytes stay remote and are fetched only for an explicit read. OAuth 2.0 via your own Microsoft Entra app.',
   fields: ONEDRIVE_FIELDS,
   initialValues: ONEDRIVE_SCHEMA_INITIAL_VALUES,
 };

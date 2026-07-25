@@ -22,7 +22,7 @@
  *  interaction. The reconciler's `listUpdatedSince` consumes the
  *  yielded records and runs `hashOf` / `toMeta` against them.
  *
- *  Spec: `docs/d-129-spec.md` § A.3. */
+ *  Spec: D-129 § A.3. */
 
 import {
   HUBSPOT_API_BASE,
@@ -417,7 +417,7 @@ export const getHubSpotObject = async (
  *  Errors: same surface as the search helper (401 + refresh, 429 +
  *  backoff, 404 returns null, others throw `HubSpotSearchError`).
  *
- *  Spec: `docs/d-139-spec.md` § A.4, § A.6.3. */
+ *  Spec: D-139 § A.4, § A.6.3. */
 /** D-139 P1a.1.1 (Codex P2 #1 fold-back) — result of an associations
  *  list-walk. `ids` are the platform-native ids (without
  *  `<vendor>_<entity>_` prefix); `pages_fetched` is the actual page

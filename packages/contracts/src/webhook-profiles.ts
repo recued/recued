@@ -5,7 +5,7 @@
  * registry will pair these serializable descriptors with trusted code in later
  * slices.  A pack may name a profile; it may never define the cryptography.
  *
- * Spec: docs/d-201-spec.md §4 / §9 / Slice 0.
+ * Spec: D-201 §4 / §9 / Slice 0.
  */
 
 // ────────────────────────────────────────────────────────────────

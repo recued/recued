@@ -82,9 +82,11 @@ describe('archive round-trip', () => {
     });
     expect(imported.manifest.producer_version).toBe('0.2.0');
     expect(imported.manifest.db_size_bytes).toBe(imported.db.length);
+    expect(imported.manifest.includes_server_vault_bundle).toBe(false);
     expect(imported.blobs).toHaveLength(0);
     expect(imported.config).toBeUndefined();
     expect(imported.vault).toBeUndefined();
+    expect(imported.serverVault).toBeUndefined();
 
     // SQLite backup produces a logically-equivalent DB, not
     // byte-identical (WAL checkpointing differs). Verify the data
@@ -113,6 +115,7 @@ describe('archive round-trip', () => {
       db: h.db,
       configPath,
       vaultBundleJson: '{"v":1,"fake":"bundle"}',
+      serverVaultBundleJson: '{"v":1,"fake":"server-bundle"}',
       blobs,
       blobHashes: [hash1, hash2],
       producerVersion: '0.2.0',
@@ -126,6 +129,8 @@ describe('archive round-trip', () => {
     });
     expect(imported.config?.toString('utf8')).toContain('bind_port = 7717');
     expect(imported.vault?.toString('utf8')).toContain('"fake":"bundle"');
+    expect(imported.serverVault?.toString('utf8')).toContain('"fake":"server-bundle"');
+    expect(imported.manifest.includes_server_vault_bundle).toBe(true);
     expect(imported.blobs).toHaveLength(2);
     const byHash = new Map(imported.blobs.map((b) => [b.hash, b.bytes]));
     expect(byHash.get(hash1)?.toString('utf8')).toBe('blob-1-contents');

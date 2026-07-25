@@ -257,6 +257,8 @@ describe('D-122 Phase 4 — renderBulkPackDialog', () => {
     });
 
     expect(html).toContain('File access needed');
+    expect(html).toContain('registered file collection');
+    expect(html).toContain('Connections &rarr; Files');
     expect(html).toContain('Registered file slug of the result drop directory');
   });
 

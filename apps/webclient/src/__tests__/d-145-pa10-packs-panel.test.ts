@@ -66,6 +66,8 @@ import {
   PACKS_DIALOG_ERROR_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
+  PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_SLUG_ATTR,
   PACKS_EMPTY_ATTR,
   PACKS_LIST_ERROR_ATTR,
@@ -667,6 +669,51 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(dialogCopy).toContain(
       'Review what this pack adds, then choose any connection and access it should receive.',
     );
+  });
+
+  it('renders changed and removed global owner rulings before update acceptance', async () => {
+    const { host, mount } = setupMount([
+      baseEntry({
+        installed: false,
+        installed_any_version: true,
+        owner_operation_review: [
+          {
+            ingredient_id: 'recued-core/acme',
+            operation_id: 'recued-core/acme.deal.create',
+            change: 'changed',
+            owner_policy: { risk: 'admin', approval: 'always' },
+            incoming: { risk: 'write', approval: 'ask' },
+          },
+          {
+            ingredient_id: 'recued-core/acme',
+            operation_id: 'recued-core/acme.deal.archive',
+            change: 'removed',
+            owner_policy: { approval: 'always' },
+          },
+        ],
+      }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+
+    const review = findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR);
+    expect(review).not.toBeNull();
+    expect(review!.getAttribute('role')).toBe('region');
+    const rows = findAllByAttr(
+      review!,
+      PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getAttribute('data-change'))).toEqual([
+      'changed',
+      'removed',
+    ]);
+    const copy = collectTextContent(review!);
+    expect(copy).toContain('Global operation rulings to review');
+    expect(copy).toContain('Owner risk: admin');
+    expect(copy).toContain('Pack approval: ask');
+    expect(copy).toContain('Removed operations keep their ruling stored but inactive');
+    expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
   });
 
   it('Cancel closes the dialog + clears permission state', async () => {

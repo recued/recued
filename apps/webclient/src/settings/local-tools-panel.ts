@@ -46,7 +46,7 @@
  *  `createElement` + `clearChildren` on every render (the same shape as
  *  `contracts-panel.ts`), not via an HTML string with `data-action` delegation.
  *
- *  Spec: docs/d-182-spec.md §7.2; the rpc shapes live in
+ *  Spec: D-182 §7.2; the rpc shapes live in
  *  `packages/contracts/src/cli-reachability-rpc.ts`. */
 
 import {
@@ -779,6 +779,14 @@ export const mountLocalToolsPanel = (
  *  `[data-recued-local-tools-panel]`. The settings route joins this into its one
  *  style bundle (mirrors `CONTRACTS_PANEL_STYLES`). */
 export const LOCAL_TOOLS_PANEL_STYLES = `
+[data-recued-local-tools-panel],
+[data-recued-local-tools-panel] .lt-principal,
+[data-recued-local-tools-panel] .lt-principal-heading,
+[data-recued-local-tools-panel] .lt-principal-body,
+[data-recued-local-tools-panel] .lt-tool,
+[data-recued-local-tools-panel] .lt-op {
+  min-width: 0;
+}
 [data-recued-local-tools-panel] .lt-loading,
 [data-recued-local-tools-panel] .lt-empty {
   font-size: 13px;
@@ -823,6 +831,7 @@ export const LOCAL_TOOLS_PANEL_STYLES = `
 [data-recued-local-tools-panel] .lt-principal-label {
   font-size: 14px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [data-recued-local-tools-panel] .lt-summary {
   font-size: 11px;
@@ -871,6 +880,8 @@ export const LOCAL_TOOLS_PANEL_STYLES = `
 [data-recued-local-tools-panel] .lt-op-name {
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 [data-recued-local-tools-panel] .lt-risk {
   font-size: 10px;
@@ -928,5 +939,10 @@ export const LOCAL_TOOLS_PANEL_STYLES = `
   border-radius: 6px;
   background: var(--surface);
   cursor: pointer;
+}
+@media (max-width: 560px) {
+  [data-recued-local-tools-panel] .lt-principal { padding: 8px; }
+  [data-recued-local-tools-panel] .lt-principal-body { padding-left: 0; }
+  [data-recued-local-tools-panel] .lt-op { align-items: flex-start; }
 }
 `;

@@ -66,7 +66,7 @@
  *      with or clobber today; a routine token-refresh upsert re-seeds the
  *      identical deterministic set.
  *
- *  Spec: docs/d-165-spec.md § "P1 — First OAuth provider pilot". */
+ *  Spec: D-165 § "P1 — First OAuth provider pilot". */
 
 import type {
   ConnectionOperationProfile,

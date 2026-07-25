@@ -15,7 +15,7 @@
  *  single optional `ref data.mail.message`. `sender_source` is the
  *  Source registry entry for the mail kind (`source.mail` ref target).
  *
- *  Spec: docs/d-145-spec.md § A.5 (Email compose UI). */
+ *  Spec: D-145 § A.5 (Email compose UI). */
 
 import { MAIL_MESSAGE_SUBJECT_MAX } from '../mail.js';
 import type { CanonicalSchema } from './shape.js';

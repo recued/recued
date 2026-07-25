@@ -21,15 +21,22 @@
  *  and hand off to the supervisor for respawn on the restored db.
  */
 
-import { existsSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import Database from 'better-sqlite3';
-import { recoveryKeyToEntropy, bundleToJSON } from '@recued/crypto';
+import type Database from 'better-sqlite3';
+import {
+  recoveryKeyToEntropy,
+  bundleToJSON,
+  serverBundleFromJSON,
+  serverBundleToJSON,
+} from '@recued/crypto';
 import type { ArchiveImportRebind, ArchiveManifest } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { createPairedInstancesStore } from '../paired-instances-store.js';
+import { openDatabase } from '../open-database.js';
+import { deriveDatabaseKeyFromRecoveryEntropy } from '../database-encryption.js';
 import {
   exportArchive,
   buildExportBlobSources,
@@ -56,6 +63,7 @@ import {
   type StagedRestore,
 } from './archive-restore.js';
 import { createBundleStore } from '../bundle-store.js';
+import { createServerBundleStore } from '../server-bundle-store.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { verifyRecoveryKeyAgainstRealm } from '../recovery-key-processor.js';
 import { exportServerPassport } from '../passport/index.js';
@@ -201,9 +209,9 @@ export const isLiveWarehouseEmpty = (database: Database.Database): boolean =>
   restoreGuardUserDataTables(database).length === 0;
 
 export interface ArchiveRuntimeDeps {
-  /** Live warehouse db handle. Export reads blob refs + the vault bundle
-   *  from it; import never touches it (it stages beside + swaps at the
-   *  restart boundary). */
+  /** Live warehouse db handle. Export reads blob refs + the legacy vault
+   *  bundle from it; the D-212 server bundle comes from the db sidecar. Import
+   *  never mutates this handle (it stages beside + swaps at restart). */
   db: Database.Database;
   /** Absolute db file path — the restore target + staging anchor. */
   dbPath: string;
@@ -227,15 +235,14 @@ export interface ArchiveRuntimeDeps {
    *  export time — `undefined` on a db-less / no-audit boot ⇒ exports just
    *  skip the embedded passport. */
   getPassportExport?: () => PassportExportRpcDeps | undefined;
-  /** Late-bound accessor for the live server KeyManager (`app.keys`). Blob-
-   *  encryption fix Phase 2: export needs it to open the ENCRYPTED `cache_blobs`
-   *  (+ later `memory_blobs`) root and decrypt each blob to plaintext under
-   *  `keyProvider('blob-store')`. A getter (not a value) because the archive
+  /** Late-bound accessor for the live server KeyManager (`app.keys`). Export
+   *  needs it to open every production CAS root and decrypt each blob to
+   *  plaintext under `keyProvider('blob-store')`. A getter (not a value)
+   *  because the archive
    *  runtime is composed BEFORE the app/KeyManager exists in the boot order —
-   *  it is resolved at export time, mirroring `getPassportExport`. Returns
-   *  undefined on a keyless server (no vault) — those roots are plaintext, so
-   *  export reads them keyless; a locked vault's provider returns null and the
-   *  encrypted-blob read throws (can't export encrypted blobs while sealed). */
+   *  it is resolved at export time, mirroring `getPassportExport`. A missing or
+   *  locked vault produces a null-returning provider and encrypted-blob reads
+   *  fail closed (blobs cannot export while the realm is sealed). */
   getKeys?: () => KeyManager | undefined;
   /** Clock — injected for deterministic tests. */
   now?: () => number;
@@ -246,6 +253,36 @@ export interface ArchiveRuntimeDeps {
  *  to a `bad_request`. */
 const deriveArchiveKeyBuffer = (mnemonic: string): Buffer =>
   Buffer.from(recoveryKeyToEntropy(mnemonic));
+
+/** SQLite stamps these 16 bytes at offset 0 of every plaintext database. The
+ *  D-212 cipher covers page 1 along with the rest of the file, so the magic's
+ *  absence is what separates an encrypted realm from a plain one. */
+const SQLITE_PLAINTEXT_HEADER = 'SQLite format 3\u0000';
+
+/** Is the realm database at `path` encrypted? Answered from the FILE, because
+ *  the file is what the export actually copies — `VACUUM INTO` inherits the
+ *  cipher of the connection reading it. The KeyManager cannot answer this: its
+ *  state reads `locked` whenever EITHER the legacy D-081 password bundle (a row
+ *  inside SQLite) or the D-212 sidecar is present, so a password-bundle realm
+ *  with a plain database looks encrypted to it — the offline CLI backs such a
+ *  realm up without complaint, and the two export doors must agree about it.
+ *  Anything that does not read back as the plaintext magic counts as encrypted:
+ *  an unrestorable backup only announces itself at disaster-recovery time. */
+const isDatabaseFileEncrypted = (path: string): boolean => {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const head = Buffer.alloc(SQLITE_PLAINTEXT_HEADER.length);
+    const read = readSync(fd, head, 0, head.length, 0);
+    return read !== head.length || head.toString('utf8') !== SQLITE_PLAINTEXT_HEADER;
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+};
 
 /** M5 S2 — mint the import-driving client a fresh bearer + roster row INTO the
  *  STAGED restore db, so it reconnects after the restart without re-pairing
@@ -267,11 +304,18 @@ const deriveArchiveKeyBuffer = (mnemonic: string): Buffer =>
 export const mintRebindIntoStagedDb = async (
   stagingPath: string,
   drivingClient: ArchiveImportDrivingClient,
-  options: { argon2_params?: { t: number; m: number; p: number } } = {},
+  options: {
+    argon2_params?: { t: number; m: number; p: number };
+    databaseKey?: Uint8Array | null;
+  } = {},
 ): Promise<ArchiveImportRebind | undefined> => {
   let stagedDb: Database.Database | undefined;
   try {
-    stagedDb = new Database(stagingPath);
+    stagedDb = await openDatabase(stagingPath, {
+      ...(Object.prototype.hasOwnProperty.call(options, 'databaseKey')
+        ? { databaseKey: options.databaseKey ?? null }
+        : {}),
+    });
     // Fail FAST on any lock contention instead of blocking on the default 5s
     // busy_timeout: in production this connection is the sole writer (the row
     // counter already closed its read handle), so there is nothing to wait for;
@@ -332,9 +376,47 @@ export const mintRebindIntoStagedDb = async (
   }
 };
 
+/** The minimum of a SQLite handle the row-count walk needs. Declared so the
+ *  walk can be driven with a probe that fails on one table — the real path
+ *  cannot synthesize that, because export runs `VACUUM INTO` and a database
+ *  corrupt enough to have an uncountable table never survives the rebuild. */
+export interface RowCountProbe {
+  prepare(sql: string): { all(): unknown; get(): unknown };
+}
+
+/** Count rows per table, reporting the tables that could NOT be counted.
+ *
+ *  ⛔ Skipping an unreadable table is right — one bad table must not fail a
+ *  dry run — but skipping it SILENTLY is not: `tables` would simply lack the
+ *  key, which is indistinguishable from a table the archive never had, and
+ *  the sum is then presented to an operator as "records in this archive"
+ *  while short by an unknown amount, on the screen where they decide to
+ *  restore. The caller needs to know the total is a floor. */
+export const countTablesFromProbe = (
+  probe: RowCountProbe,
+): { record_count: number; tables: Record<string, number>; uncounted: string[] } => {
+  const tableRows = probe
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
+    .all() as Array<{ name: string }>;
+  const tables: Record<string, number> = {};
+  const uncounted: string[] = [];
+  let total = 0;
+  for (const { name } of tableRows) {
+    try {
+      const row = probe.prepare(`SELECT COUNT(*) AS n FROM ${quoteSqliteIdent(name)}`).get() as { n: number };
+      tables[name] = row.n;
+      total += row.n;
+    } catch {
+      uncounted.push(name);
+    }
+  }
+  return { record_count: total, tables, uncounted };
+};
+
 export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime => {
   const now = deps.now ?? (() => Date.now());
   const { db, dbPath, dataPath, configPath, serverVersion } = deps;
+  const serverBundleStore = createServerBundleStore(dbPath);
 
   // The CURRENT realm's recovery-key check lives in `server_config` inside
   // this live db — read it to gate cross-realm restores (Q2). Reads are
@@ -344,25 +426,28 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
 
   /** Open a SQLite db file read-only and count rows per table. Used to
    *  fill the wire manifest's `record_count` / `tables` (the on-disk
-   *  manifest carries neither). */
-  const countDbRowsAtPath = (
+   *  manifest carries neither).
+   *
+   *  ⚠ Returns the tables it could NOT count alongside the total. A row
+   *  count that silently drops a table is a number presented as "records
+   *  in this archive" while being short by an unknown amount — and it is
+   *  read on the restore preview, which is where an operator decides to
+   *  commit. Skipping is still the right behaviour (one unreadable table
+   *  must not fail a dry run); reporting nothing about it is not. */
+  const countDbRowsAtPath = async (
     path: string,
-  ): { record_count: number; tables: Record<string, number> } => {
-    const probe = new Database(path, { readonly: true });
+    databaseKey?: Uint8Array | null,
+  ): Promise<{
+    record_count: number;
+    tables: Record<string, number>;
+    uncounted: string[];
+  }> => {
+    const probe = await openDatabase(path, {
+      readonly: true,
+      ...(databaseKey !== undefined ? { databaseKey } : {}),
+    });
     try {
-      const tableRows = probe
-        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-        .all() as Array<{ name: string }>;
-      const tables: Record<string, number> = {};
-      let total = 0;
-      for (const { name } of tableRows) {
-        try {
-          const row = probe.prepare(`SELECT COUNT(*) AS n FROM ${quoteSqliteIdent(name)}`).get() as { n: number };
-          tables[name] = row.n;
-          total += row.n;
-        } catch { /* unreadable table — skip */ }
-      }
-      return { record_count: total, tables };
+      return countTablesFromProbe(probe as unknown as RowCountProbe);
     } finally {
       try { probe.close(); } catch { /* best effort */ }
     }
@@ -373,7 +458,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
    *  `passport.json` (the on-disk manifest doesn't track it). */
   const toWireManifest = (
     onDisk: OnDiskArchiveManifest,
-    counts: { record_count: number; tables: Record<string, number> },
+    counts: { record_count: number; tables: Record<string, number>; uncounted?: string[] },
     hasPassport: boolean,
   ): ArchiveManifest => ({
     format_version: onDisk.archive_format_version,
@@ -381,9 +466,57 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
     exported_at: new Date(onDisk.created_at).toISOString(),
     record_count: counts.record_count,
     tables: counts.tables,
+    // Emitted ONLY when something was actually skipped: an always-present
+    // empty array would make "this server does not report it" and "nothing
+    // was skipped" the same wire value, which is the distinction the field
+    // exists to carry.
+    ...(counts.uncounted && counts.uncounted.length > 0
+      ? { uncounted_tables: counts.uncounted }
+      : {}),
     includes_blobs: onDisk.blob_count > 0,
     includes_passport: hasPassport,
   });
+
+  /** Does `key` own the CURRENT realm — asked of BOTH anchors, bundle first.
+   *
+   *  ⛔ A realm has two anchors and either alone is insufficient — the exact
+   *  rule `enrollRealmRecoveryKey` enforces at every enrollment door. The
+   *  BUNDLE (an encrypted realm's recovery wrap) is authoritative; the SENTINEL
+   *  (the cheap `recovery_key_check` row) can be ABSENT while the bundle exists,
+   *  because the enroll step-2→step-3 window is not transactional and a crash
+   *  there leaves a realm bundle-owned with no sentinel, permanently. A
+   *  sentinel-ONLY check reads that state as `not_enrolled` and hands the realm
+   *  to whoever asks — which the enrollment door's own comment names as landing
+   *  "here AND at the archive realm gate". This IS that gate; it was checking
+   *  only the sentinel.
+   *
+   *    `owns`    — at least one anchor exists and EVERY existing anchor accepts
+   *                the key.
+   *    `foreign` — an anchor exists and rejects the key (INCLUDING a present
+   *                bundle we cannot check for lack of a KeyManager: fail closed,
+   *                never downgrade an owned realm to unowned).
+   *    `unowned` — neither anchor exists (a genuinely fresh / pre-pair server).
+   *
+   *  Degrades to the prior sentinel-only behaviour exactly when no bundle
+   *  exists (`bundlePresent` false ⇒ the answer is the sentinel's). */
+  const classifyRealmOwnership = async (
+    key: string,
+  ): Promise<'owns' | 'foreign' | 'unowned'> => {
+    const keys = deps.getKeys?.();
+    const bundlePresent = keys?.hasServerBundle() ?? serverBundleStore.load() !== null;
+    const sentinel = await verifyRecoveryKeyAgainstRealm(recoveryStore, key);
+    const sentinelPresent = sentinel !== 'not_enrolled';
+
+    if (!bundlePresent && !sentinelPresent) return 'unowned';
+
+    // `verifyRecoveryKey` opens the bundle's recovery wrap directly from the
+    // key, so it answers even on a LOCKED manager. A present bundle with no
+    // manager to check it is unproven → foreign (fail closed).
+    const bundleAccepts =
+      !bundlePresent || (keys ? await keys.verifyRecoveryKey(key) : false);
+    const sentinelAccepts = !sentinelPresent || sentinel === 'match';
+    return bundleAccepts && sentinelAccepts ? 'owns' : 'foreign';
+  };
 
   return {
     canExport() {
@@ -411,7 +544,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         /* db file unstattable — estimate from 0, headroom still applies */
       }
       // The warehouse runs in WAL mode (compose-storage-context): uncheck-
-      // pointed pages live in `${dbPath}-wal` and `db.backup()` copies them
+      // pointed pages live in `${dbPath}-wal` and the logical snapshot includes them
       // into the temp db + the archive. Count the WAL so a large unflushed
       // write-set doesn't slip past the estimate into a mid-export ENOSPC.
       try {
@@ -419,21 +552,23 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       } catch {
         /* no WAL sidecar (checkpointed / non-WAL) — nothing to add */
       }
-      // Size ONLY the blobs the export bundles (the SAME posture-split sources
+      // Size ONLY the blobs the export bundles (the SAME root-split sources
       // `runExport` builds), not the whole CAS tree — orphaned objects already
       // reduce free space, so counting them too would double-charge. The
       // archive carries PLAINTEXT, so budget the plaintext size (encrypted
       // sources ≈ on-disk minus the small AEAD envelope). No decrypt here.
       let blobBytes = 0;
       // An ENCRYPTED source decrypts each blob to a transient scratch file (one
-      // at a time, in the archive's dir) before streaming it in, so the peak
+      // at a time, in the data dir) before streaming it in, so the peak
       // disk during export exceeds the final archive by the LARGEST single
       // encrypted blob's plaintext. Budget that too, or preflight can green-
       // light an export that then ENOSPC-fails mid-scratch (fails cleanly, but
-      // pointlessly). Keyless sources stream with no scratch.
+      // pointlessly). Explicit keyless format-test fixtures stream without
+      // scratch, but the production builder creates encrypted sources only.
       let maxScratchBytes = 0;
       if (includeBlobs) {
-        for (const source of buildExportBlobSources(dataPath, db, deps.getKeys?.()?.keyProvider('blob-store'))) {
+        const getBlobKey = deps.getKeys?.()?.keyProvider('blob-store') ?? (() => null);
+        for (const source of buildExportBlobSources(dataPath, db, getBlobKey)) {
           for (const hash of source.hashes) {
             const s = source.store.plaintextSizeOf
               ? await source.store.plaintextSizeOf(hash)
@@ -463,13 +598,74 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
 
     async runExport({ includeBlobs, includePassport, recoveryKey }) {
       const key = deriveArchiveKeyBuffer(recoveryKey);
+      try {
+      // Prove this phrase actually opens THIS realm before writing a backup
+      // with it. The rpc layer validates BIP39 well-formedness only, and this
+      // path — unlike the CLI, which must derive the key to open the db at all
+      // — reuses the already-open boot handle, so a different-but-valid
+      // mnemonic would seal the outer archive under key B while the embedded
+      // database and bundle still need key A. Restore accepts one key, so the
+      // archive is unrestorable; without this check the only signal arrives at
+      // disaster-recovery time, which is the one moment it is worthless.
+      const exportBundle = serverBundleStore.load();
+      if (exportBundle) {
+        let probe: Uint8Array | undefined;
+        try {
+          probe = await deriveDatabaseKeyFromRecoveryEntropy(exportBundle, key);
+        } catch (err) {
+          throw new Error(
+            'archive export: that recovery key does not open this server\'s vault — ' +
+              'the backup would not be restorable. ' +
+              `Cause: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        // ⛔ …and prove that key opens the LIVE DATABASE, not just the sidecar.
+        // The check above only proves the mnemonic unwraps the sidecar CURRENTLY
+        // on disk. But the server snapshots the already-open boot handle (keyed
+        // under the Master DEK it booted with, A) while embedding the on-disk
+        // sidecar — and if that sidecar has DRIFTED to a different valid bundle
+        // (Master DEK B) since boot, the mnemonic still unwraps it, yet the key
+        // it yields cannot open the archived database bytes. Restore derives
+        // from the embedded sidecar, so the backup is silently unrestorable —
+        // the one signal arriving at disaster-recovery time. The offline CLI is
+        // immune because it OPENS the db with the sidecar-derived key to export
+        // at all; the online path reuses the boot handle, so it must verify
+        // explicitly. A read-only second handle coexists with the live one under
+        // WAL; a mismatched key fails `assertReadable` inside `openDatabase`.
+        let verify: Database.Database | undefined;
+        try {
+          verify = await openDatabase(dbPath, { databaseKey: probe, readonly: true });
+        } catch (err) {
+          throw new Error(
+            'archive export: this server\'s vault bundle sidecar no longer opens the ' +
+              'running database — it has drifted since boot, so the backup would embed a ' +
+              'bundle that cannot decrypt its own database bytes and would not be restorable. ' +
+              `Cause: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } finally {
+          try { verify?.close(); } catch { /* best effort */ }
+          probe.fill(0);
+        }
+      } else if (isDatabaseFileEncrypted(dbPath)) {
+        // Encrypted realm whose sidecar has gone missing since boot: the keys
+        // are still in RAM so the server runs, but the archive would carry an
+        // encrypted database and nothing able to open it.
+        throw new Error(
+          'archive export: this realm is encrypted but its vault bundle sidecar is ' +
+            'missing — the backup would not be restorable.',
+        );
+      }
       const destPath = newExportPath(dataPath, now());
-      // Blob-encryption fix Phase 2 — posture-split blob sources. The live
-      // KeyManager's `keyProvider('blob-store')` opens the ENCRYPTED cache_blobs
-      // root so its bodies decrypt to plaintext on export; on a keyless server
-      // there are no keys and the same root is plaintext + reads keyless.
+      // D-212 slice 4 — every production blob root is keyed, including the
+      // historical shared `blobs/` root. A missing/locked KeyManager supplies a
+      // null-returning provider so export fails closed at decrypt rather than
+      // interpreting ciphertext as plaintext.
       const blobSources = includeBlobs
-        ? buildExportBlobSources(dataPath, db, deps.getKeys?.()?.keyProvider('blob-store'))
+        ? buildExportBlobSources(
+            dataPath,
+            db,
+            deps.getKeys?.()?.keyProvider('blob-store') ?? (() => null),
+          )
         : undefined;
 
       let vaultBundleJson: string | undefined;
@@ -477,6 +673,10 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         const bundle = createBundleStore(db).load();
         if (bundle) vaultBundleJson = bundleToJSON(bundle);
       } catch { /* no bundle table — pre-D-081 compositions */ }
+      const serverBundle = serverBundleStore.load();
+      const serverVaultBundleJson = serverBundle
+        ? serverBundleToJSON(serverBundle)
+        : undefined;
 
       // Mint + embed a signed `migration_full` identity passport (the
       // default-on "include identity passport" toggle). Best-effort: the
@@ -509,6 +709,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         db,
         configPath: configPath ?? undefined,
         vaultBundleJson,
+        serverVaultBundleJson,
         ...(passportJson !== undefined ? { passportJson } : {}),
         ...(blobSources ? { blobSources } : {}),
         // The export rpc always writes a fresh, uniquely-stamped file, so
@@ -528,6 +729,11 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         // sweep uses the same window, so the reported expiry matches.
         expires_at: now() + EXPORT_TTL_MS,
       };
+      } finally {
+        // The recovery-key entropy copied into `key` opens every archive of
+        // this realm; wipe our copy whether we returned or threw.
+        key.fill(0);
+      }
     },
 
     async readManifest(path, recoveryKey) {
@@ -545,27 +751,45 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
           consumerVersion: serverVersion,
           allowFutureVersion: true,
         });
-        return toWireManifest(
-          preview.manifest,
-          countDbRowsAtPath(tmp),
-          preview.passportPresent,
-        );
+        const previewDatabaseKey = preview.serverVaultBundle
+          ? await deriveDatabaseKeyFromRecoveryEntropy(
+              serverBundleFromJSON(preview.serverVaultBundle.toString('utf8')),
+              key,
+            )
+          : null;
+        try {
+          return toWireManifest(
+            preview.manifest,
+            await countDbRowsAtPath(tmp, previewDatabaseKey),
+            preview.passportPresent,
+          );
+        } finally {
+          previewDatabaseKey?.fill(0);
+        }
       } finally {
         for (const p of [tmp, `${tmp}-wal`, `${tmp}-shm`]) {
           try { if (existsSync(p)) unlinkSync(p); } catch { /* best effort */ }
         }
+        // Wipe the recovery-key entropy: it is the caller's, but this method
+        // copied it into `key`, and leaving that copy in the heap is residual
+        // exposure of the material that opens every archive of this realm.
+        key.fill(0);
       }
     },
 
     async verifyRestoreRealm({ recoveryKey, currentRealmKey }) {
-      // Does the ARCHIVE's key also own the CURRENT realm?
-      const archiveKeyRealm = await verifyRecoveryKeyAgainstRealm(recoveryStore, recoveryKey);
-      // `match` (your own backup over your own enrolled realm) — always
+      // Does the ARCHIVE's key own the CURRENT realm? Asked of BOTH anchors —
+      // see `classifyRealmOwnership`. Checking only the sentinel misread a
+      // bundle-owned-but-sentinel-missing realm as `not_enrolled`, which both
+      // BYPASSED current-realm proof for empty warehouses and BLOCKED the
+      // owner's own valid key for non-empty ones.
+      const ownership = await classifyRealmOwnership(recoveryKey);
+      // `owns` (your own backup over your own enrolled realm) — always
       // authorized, same-realm.
-      if (archiveKeyRealm === 'match') {
+      if (ownership === 'owns') {
         return { realm: 'same', authorized: true };
       }
-      // M5 S3 — `not_enrolled` (a fresh / pre-pair server) reads as same-realm,
+      // M5 S3 — `unowned` (a fresh / pre-pair server) reads as same-realm,
       // but authorize the DESTRUCTIVE swap only when the warehouse is empty.
       //
       // This is DEFENSE-IN-DEPTH, not the primary protection. The footgun the
@@ -586,7 +810,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // user-write paths (recipe.save / runs) are themselves gated pre-enrollment
       // (owner-ratified: not worth seed-aware row counting for a prevented state).
       // A throw in the count fails closed.
-      if (archiveKeyRealm === 'not_enrolled') {
+      if (ownership === 'unowned') {
         let empty: boolean;
         try {
           empty = isLiveWarehouseEmpty(db);
@@ -597,12 +821,13 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
           ? { realm: 'same', authorized: true }
           : { realm: 'same', authorized: false, reason: 'target_not_empty' };
       }
-      // Cross-realm (foreign archive): the destructive swap additionally
+      // `foreign` (a cross-realm archive): the destructive swap additionally
       // demands proof of CURRENT-realm ownership — the `currentRealmKey` must
-      // itself verify against this server's stored check.
+      // itself own this realm, by the SAME two-anchor rule (not the sentinel
+      // alone, which had the identical bundle-owned-but-sentinel-missing hole).
       const authorized =
         currentRealmKey !== undefined &&
-        (await verifyRecoveryKeyAgainstRealm(recoveryStore, currentRealmKey)) === 'match';
+        (await classifyRealmOwnership(currentRealmKey)) === 'owns';
       return authorized
         ? { realm: 'cross', authorized: true }
         : { realm: 'cross', authorized: false, reason: 'realm_mismatch' };
@@ -610,6 +835,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
 
     async runImport({ path, force, recoveryKey, drivingClient }) {
       const key = deriveArchiveKeyBuffer(recoveryKey);
+      try {
       const targets: RestoreTargets = { dbPath, dataPath, configPath };
       const importOpts: ImportOptions = {
         archivePath: path,
@@ -629,18 +855,32 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // debris). Only the SMALL `staged` descriptor (config + counts, no db
       // bytes) is held across the drain.
       const staged: StagedRestore = await stageRestore(targets, importOpts);
+      // From here on a staged db sits on disk and live CAS objects are parked
+      // behind the overlay, so everything up to the response shares one unwind.
+      // Opening the archive's own sidecar belongs inside it: a malformed bundle
+      // or a key that does not open it throws exactly like an unreadable staged
+      // db, and leaving either failure to escape strands the parked objects
+      // under hashes the still-serving original db references.
+      let stagedDatabaseKey: Uint8Array | null = null;
       let manifest: ArchiveManifest;
       try {
+        stagedDatabaseKey = staged.serverVaultBundle
+          ? await deriveDatabaseKeyFromRecoveryEntropy(
+              serverBundleFromJSON(staged.serverVaultBundle.toString('utf8')),
+              key,
+            )
+          : null;
         // Count from the staged file (already on disk — no second write).
         manifest = toWireManifest(
           staged.manifest,
-          countDbRowsAtPath(staged.stagingPath),
+          await countDbRowsAtPath(staged.stagingPath, stagedDatabaseKey),
           staged.passportPresent,
         );
       } catch (err) {
-        // Staging succeeded but the row-count threw — remove THIS restore's
-        // staged file (by its exact path) before aborting.
-        discardStagedRestore(staged.stagingPath);
+        // Remove THIS restore's staged file (by its exact path) and put the
+        // displaced CAS objects back before aborting.
+        stagedDatabaseKey?.fill(0);
+        discardStagedRestore(staged.stagingPath, staged.displacedBlobs);
         throw err;
       }
       const restored_at = now();
@@ -651,9 +891,16 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // of the drain) and BEFORE the swap renames the staged db. Best-effort:
       // `mintRebindIntoStagedDb` never throws — a failure just omits `rebind`
       // and the client re-pairs.
-      const rebind = drivingClient
-        ? await mintRebindIntoStagedDb(staged.stagingPath, drivingClient)
-        : undefined;
+      let rebind: ArchiveImportRebind | undefined;
+      try {
+        rebind = drivingClient
+          ? await mintRebindIntoStagedDb(staged.stagingPath, drivingClient, {
+              databaseKey: stagedDatabaseKey,
+            })
+          : undefined;
+      } finally {
+        stagedDatabaseKey?.fill(0);
+      }
 
       // ── Respond first (return below), THEN drain → swap → restart. The
       // drain closes the ws + db; the swap renames the staged db onto
@@ -666,11 +913,21 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         if (drainOk) {
           await commitStagedRestore(targets, staged, { now });
         } else {
-          discardStagedRestore(staged.stagingPath);
+          // Also puts back any live CAS object the staging overlay wrote over:
+          // the ORIGINAL db keeps serving and still references those hashes, so
+          // leaving the archive realm's ciphertext there would strand them.
+          discardStagedRestore(staged.stagingPath, staged.displacedBlobs);
         }
       });
 
       return { manifest, restored_at, ...(rebind ? { rebind } : {}) };
+      } finally {
+        // Wipe our copy of the recovery-key entropy. The restart callback
+        // registered above captures only `targets`/`staged`/`now` — never
+        // `key` — so wiping it here (as we return, before that callback fires)
+        // is safe, and `stageRestore` already consumed it during the stream.
+        key.fill(0);
+      }
     },
   };
 };
@@ -722,19 +979,42 @@ export const composeArchiveRpcDeps = (
       setImmediate(() => {
         void lifecycle
           .requestDrain({ intent: 'restart', reason: 'archive_import' })
-          .then(async (result) => {
-            // Commit the swap ONLY if the drain genuinely quiesced writers
-            // (`await_inflight` didn't time out) AND closed the db
-            // (`close_db` completed). Otherwise the runtime abandons the
-            // staged restore and the supervisor reboots on the original db.
-            const drainOk =
-              result.completed.includes('close_db') &&
-              !result.aborted.includes('close_db') &&
-              !result.aborted.includes('await_inflight');
-            await onDrained(drainOk);
-            const code = lifecycle.supervisor.handoff('restart');
-            exit(code);
-          })
+          .then(
+            async (result) => {
+              // Commit the swap ONLY if the drain genuinely quiesced writers
+              // (`await_inflight` didn't time out) AND closed the db
+              // (`close_db` completed). Otherwise the runtime abandons the
+              // staged restore and the supervisor reboots on the original db.
+              const drainOk =
+                result.completed.includes('close_db') &&
+                !result.aborted.includes('close_db') &&
+                !result.aborted.includes('await_inflight');
+              await onDrained(drainOk);
+              const code = lifecycle.supervisor.handoff('restart');
+              exit(code);
+            },
+            // A drain that REJECTS is a drain that did not complete, so it takes
+            // the same abandon path as `drainOk === false`. `onDrained` is the
+            // only thing that puts back the CAS objects the staging overlay
+            // displaced, and the supervisor is about to reboot on the ORIGINAL
+            // db, which still references them — skipping it leaves that db
+            // pointing at the archive realm's ciphertext. `requestDrain` has
+            // rejected in practice: it writes the clean-shutdown marker around
+            // the drain, and doing that after `close_db` threw on the closed
+            // connection. This is `then`'s rejection handler rather than a
+            // trailing `catch` so it sees only the drain's own failure, never
+            // the commit's — `commitStagedRestore` unwinds itself and
+            // deliberately preserves a staged db that boot still needs.
+            async (err) => {
+              console.error('[archive] restart drain failed — abandoning the staged restore', err);
+              try {
+                await onDrained(false);
+              } catch (abandonErr) {
+                console.error('[archive] staged-restore abandon failed', abandonErr);
+              }
+              exit(1);
+            },
+          )
           .catch((err) => {
             console.error('[archive] restart drain / commit failed', err);
             exit(1);

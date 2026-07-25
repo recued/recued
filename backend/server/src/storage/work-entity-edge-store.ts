@@ -26,7 +26,7 @@
  *    `markResolved`; identity is the scoped key, so resolution never
  *    re-keys the row.
  *
- *  Spec: docs/d-192-spec.md § Identity and relationships + § P5. */
+ *  Spec: D-192 § Identity and relationships + § P5. */
 
 import type Database from 'better-sqlite3';
 import type {

@@ -17,7 +17,7 @@
  *  `ReceptionEndpointKind` + is about the rendered receipt object, not
  *  the persisted config.
  *
- *  Spec: docs/d-149-spec.md § A.20.3. */
+ *  Spec: D-149 § A.20.3. */
 
 /** Per-endpoint receipt-delivery mode. `page` (default) renders the
  *  receipt server-side for the visitor to save / print; `email` sends

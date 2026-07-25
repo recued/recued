@@ -22,8 +22,8 @@
  * marketplace certification / shape-conformance gates — lives in D-165's own
  * runtime implementation, not here.
  *
- * Spec: docs/d-165-spec.md §Durability model, §Entity schemas,
- * §`MetaField` — the vendor → canonical mapping. PII tag: docs/d-167-spec.md
+ * Spec: D-165 §Durability model, §Entity schemas,
+ * §`MetaField` — the vendor → canonical mapping. PII tag: D-167
  * §Field declaration + §Integration points → D-165 entity schemas.
  */
 

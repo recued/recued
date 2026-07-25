@@ -20,7 +20,7 @@
  *  Every assertion goes through the observable wire (rendered HTML,
  *  conn.calls, subscriber listener counts).
  *
- *  Spec: docs/d-169-spec.md § N.9 (count badge). */
+ *  Spec: D-169 § N.9 (count badge). */
 
 import { describe, expect, it, vi } from 'vitest';
 import type {

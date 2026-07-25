@@ -17,6 +17,7 @@ import {
 } from '@recued/contracts';
 import {
   mountAccountsLanePanel,
+  type AccountsFirstSyncPollScheduler,
   type AccountsOAuthEnv,
   type CalendarLaneCallers,
   type MailLaneCallers,
@@ -31,8 +32,14 @@ const MINTED_STATE = OAUTH_OPENER_RELAY_STATE_PREFIX + 'STATE';
 // ── minimal fake host (delegated dispatcher + field delegation) ──
 const makeHost = () => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
+  let html = '';
+  let renderCount = 0;
   const host = {
-    innerHTML: '',
+    get innerHTML() { return html; },
+    set innerHTML(value: string) {
+      html = value;
+      renderCount += 1;
+    },
     addEventListener(type: string, fn: (ev: unknown) => void) {
       const l = listeners.get(type) ?? [];
       l.push(fn);
@@ -51,8 +58,16 @@ const makeHost = () => {
     for (const fn of [...(listeners.get(type) ?? [])]) fn(ev);
   };
   const clickAction = (data: Record<string, string>) => {
-    const el = { dataset: data, closest: () => el };
+    const attrs = new Map<string, string>();
+    const el = {
+      dataset: data,
+      textContent: '',
+      closest: () => el,
+      setAttribute: (key: string, value: string) => attrs.set(key, value),
+      getAttribute: (key: string) => attrs.get(key) ?? null,
+    };
     fire('click', { target: el, preventDefault() {} });
+    return el;
   };
   const field = (key: string, value: string) => {
     const el = { dataset: { acctField: key }, value, tagName: 'INPUT', closest: () => el };
@@ -62,7 +77,7 @@ const makeHost = () => {
     const el = { dataset: { oauthCredField: key }, value, tagName: 'INPUT', closest: () => el };
     fire('input', { target: el, type: 'input' });
   };
-  return { host, clickAction, field, credField };
+  return { host, clickAction, field, credField, renderCount: () => renderCount };
 };
 
 // ── fake OAuth env (capturable popup + message dispatch) ──
@@ -154,27 +169,60 @@ const setup = (over: {
   config?: OAuthClientConfigResult;
   blockPopup?: boolean;
   origin?: string;
+  syncTimestamp?: () => number | null;
+  firstSyncPoll?: AccountsFirstSyncPollScheduler;
+  onGoToChat?: (source: { lane: 'mail' | 'calendar' | 'file'; providerId: string; slug: string }) => void;
+  onOpenLane?: (lane: 'mail' | 'calendar' | 'file') => void;
 } = {}) => {
-  const { host, clickAction, field } = makeHost();
+  const { host, clickAction, field, renderCount } = makeHost();
   const fake = makeFakeOAuthEnv({
     ...(over.blockPopup ? { blockPopup: true } : {}),
     ...(over.origin !== undefined ? { origin: over.origin } : {}),
   });
+  let connected: Parameters<NonNullable<MailLaneCallers['enrollOAuth']>>[0] | null = null;
   const enrollOAuth = vi.fn(
-    async (_args: Parameters<NonNullable<MailLaneCallers['enrollOAuth']>>[0]) => ({
-      ok: true as const,
-      account_key_prefix: 'gmail.work',
-    }),
+    async (args: Parameters<NonNullable<MailLaneCallers['enrollOAuth']>>[0]) => {
+      connected = args;
+      return ({
+        ok: true as const,
+        account_key_prefix: `${args.provider}.${args.account_slug}`,
+      });
+    },
   );
   const getOAuthClientConfig = vi.fn(async () => over.config ?? CONFIGURED);
+  const mail = makeMail(enrollOAuth);
+  mail.list = vi.fn(async () => ({
+    instances: connected === null
+      ? []
+      : [{
+          slug: connected.account_slug,
+          adapter_type: connected.provider,
+          auth_state: 'healthy' as const,
+          last_synced_at: over.syncTimestamp?.() ?? null,
+          send_capable: false,
+          account_email: 'me@example.com',
+        }],
+  }));
   const mount = mountAccountsLanePanel({
     host: host as unknown as HTMLElement,
     document: {} as Document,
-    mail: makeMail(enrollOAuth),
+    mail,
     getOAuthClientConfig,
     oauthEnv: fake.oauthEnv,
+    ...(over.firstSyncPoll !== undefined ? { firstSyncPoll: over.firstSyncPoll } : {}),
+    ...(over.onGoToChat !== undefined ? { onGoToChat: over.onGoToChat } : {}),
+    ...(over.onOpenLane !== undefined ? { onOpenLane: over.onOpenLane } : {}),
   });
-  return { mount, host, clickAction, field, fake, enrollOAuth, getOAuthClientConfig };
+  return {
+    mount,
+    host,
+    clickAction,
+    field,
+    fake,
+    enrollOAuth,
+    getOAuthClientConfig,
+    renderCount,
+  };
 };
 
 const setupCalendar = (over: { config?: OAuthClientConfigResult } = {}) => {
@@ -240,6 +288,94 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
     });
     expect(mount.getState().stage).toBe('list');
     expect(mount.getState().formError).toBeNull();
+    expect(mount.getState().connectionSuccess).toEqual({
+      slug: 'work',
+      providerId: 'gmail',
+    });
+    expect(mount.getState().rows[0]).toMatchObject({
+      slug: 'work',
+      sublabel: 'me@example.com',
+      lastSyncedAt: null,
+    });
+  });
+
+  it('post-connect actions navigate, refresh, and dismiss without repeating sign-in', async () => {
+    const onGoToChat = vi.fn();
+    const onOpenLane = vi.fn();
+    const { mount, host, clickAction, field, fake, enrollOAuth } = setup({
+      onGoToChat,
+      onOpenLane,
+    });
+    await mount.whenLoaded();
+    openOAuthForm(clickAction, field, 'gmail');
+    clickAction({ action: 'accounts-oauth-connect' });
+    await tick();
+    fake.dispatchCode('AUTH-CODE');
+    await tick();
+
+    expect(host.innerHTML).toContain('data-accounts-connection-success');
+    expect(host.innerHTML).toContain('Gmail connected');
+    expect(host.innerHTML).toContain('me@example.com');
+    expect(host.innerHTML).toContain('First sync pending');
+
+    clickAction({ action: 'accounts-success-go-chat' });
+    expect(onGoToChat).toHaveBeenCalledWith({
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+    });
+    clickAction({ action: 'accounts-success-open-lane', lane: 'calendar' });
+    expect(onOpenLane).toHaveBeenCalledWith('calendar');
+    clickAction({ action: 'accounts-success-open-lane', lane: 'not-a-lane' });
+    expect(onOpenLane).toHaveBeenCalledTimes(1);
+    expect(enrollOAuth).toHaveBeenCalledTimes(1);
+
+    clickAction({ action: 'accounts-dismiss-success' });
+    expect(mount.getState().connectionSuccess).toBeNull();
+    expect(host.innerHTML).not.toContain('data-accounts-connection-success');
+  });
+
+  it('background-checks a pending first sync and promotes it without a loading flash', async () => {
+    let syncedAt: number | null = null;
+    const scheduled: Array<() => void> = [];
+    const firstSyncPoll: AccountsFirstSyncPollScheduler = {
+      schedule: vi.fn((handler) => {
+        scheduled.push(handler);
+        return () => {};
+      }),
+    };
+    const { mount, host, clickAction, field, fake, renderCount } = setup({
+      syncTimestamp: () => syncedAt,
+      firstSyncPoll,
+    });
+    await mount.whenLoaded();
+    openOAuthForm(clickAction, field, 'gmail');
+    clickAction({ action: 'accounts-oauth-connect' });
+    await tick();
+    fake.dispatchCode('AUTH-CODE');
+    await tick();
+
+    expect(host.innerHTML).toContain('data-sync-state="pending"');
+    expect(scheduled).toHaveLength(1);
+    const pendingRenderCount = renderCount();
+    scheduled.shift()!();
+    await tick();
+    expect(host.innerHTML).toContain('data-sync-state="pending"');
+    expect(renderCount()).toBe(pendingRenderCount);
+    expect(scheduled).toHaveLength(1);
+
+    syncedAt = 1_700_000_000_000;
+    scheduled.shift()!();
+    // A background status read keeps the pending confirmation painted until
+    // the new row arrives; it never replaces it with the foreground checker.
+    expect(host.innerHTML).toContain('data-sync-state="pending"');
+    expect(host.innerHTML).not.toContain('data-sync-state="checking"');
+    await tick();
+
+    expect(mount.getState().rows[0]?.lastSyncedAt).toBe(1_700_000_000_000);
+    expect(host.innerHTML).toContain('data-sync-state="ready"');
+    expect(host.innerHTML).toContain('Ready for Chat');
+    expect(scheduled).toHaveLength(0);
   });
 
   it('Microsoft happy path: enrollOAuth provider=graph + Microsoft authorize endpoint', async () => {
@@ -575,6 +711,7 @@ const setupByo = (
     appConfig?: OAuthAppConfigSnapshot;
     withSet?: boolean;
     setRejects?: boolean;
+    copyText?: (value: string) => Promise<void>;
   } = {},
 ) => {
   const { host, clickAction, field, credField } = makeHost();
@@ -604,6 +741,7 @@ const setupByo = (
     getOAuthAppConfig,
     ...(over.withSet === false ? {} : { setOAuthAppConfig }),
     oauthEnv: fake.oauthEnv,
+    ...(over.copyText !== undefined ? { copyText: over.copyText } : {}),
   });
   return {
     mount,
@@ -629,13 +767,33 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(mount.getState().oauthAppConfig).toEqual(APP_CONFIG_GOOGLE_STORED);
   });
 
+  it('keeps the lane loading until OAuth-app status settles', async () => {
+    const { host } = makeHost();
+    const appConfig = deferred<OAuthAppConfigSnapshot>();
+    const mount = mountAccountsLanePanel({
+      host: host as unknown as HTMLElement,
+      document: {} as Document,
+      mail: makeMail(vi.fn()),
+      getOAuthAppConfig: () => appConfig.promise,
+    });
+
+    await tick(); // the immediate list resolved; app status is still pending
+    expect(mount.getState().loading).toBe(true);
+    expect(hostHtml(host)).not.toContain('data-action="accounts-open-add"');
+
+    appConfig.resolve(APP_CONFIG_GOOGLE_STORED);
+    await mount.whenLoaded();
+    expect(mount.getState().loading).toBe(false);
+    expect(hostHtml(host)).toContain('data-action="accounts-open-add"');
+  });
+
   it('without a getOAuthAppConfig caller, config stays null (legacy path)', async () => {
     const { mount } = setup(); // original mail mount, no app-config callers
     await mount.whenLoaded();
     expect(mount.getState().oauthAppConfig).toBeNull();
   });
 
-  it('the OAuth form always shows Connect + the inline credential fields', async () => {
+  it('an unconfigured OAuth form renders setup inputs without adding a route stage', async () => {
     const { mount, host, clickAction, field } = setupByo({ appConfig: APP_CONFIG_UNSET });
     await mount.whenLoaded();
     openOAuthForm(clickAction, field, 'gmail');
@@ -643,7 +801,39 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(html).toContain('data-action="accounts-oauth-connect"');
     expect(html).toContain('data-oauth-cred-field="client_id"');
     expect(html).toContain('data-oauth-cred-field="client_secret"');
-    expect(html).not.toContain('accounts-oauth-open-setup');
+    expect(html).toContain('data-oauth-app-state="setup"');
+    expect(html).toContain('Save setup &amp; connect Gmail');
+  });
+
+  it('copies the exact OAuth callback URI and reports completion in place', async () => {
+    const copyText = vi.fn(async (_value: string) => {});
+    const { mount, clickAction, field } = setupByo({ copyText });
+    await mount.whenLoaded();
+    openOAuthForm(clickAction, field, 'gmail');
+    const copy = clickAction({
+      action: 'accounts-copy-oauth-redirect',
+      copyValue: REDIRECT_URI,
+    });
+    await tick();
+    expect(copyText).toHaveBeenCalledWith(REDIRECT_URI);
+    expect(copy.textContent).toBe('Copied');
+    expect(copy.getAttribute('aria-live')).toBe('polite');
+    expect(copy.getAttribute('aria-atomic')).toBe('true');
+    expect(copy.getAttribute('aria-label')).toBe('Callback URL copied.');
+  });
+
+  it('turns clipboard failure into an actionable accessible fallback', async () => {
+    const copyText = vi.fn(async (_value: string) => Promise.reject(new Error('denied')));
+    const { mount, clickAction, field } = setupByo({ copyText });
+    await mount.whenLoaded();
+    openOAuthForm(clickAction, field, 'gmail');
+    const copy = clickAction({
+      action: 'accounts-copy-oauth-redirect',
+      copyValue: REDIRECT_URI,
+    });
+    await tick();
+    expect(copy.textContent).toBe('Copy manually');
+    expect(copy.getAttribute('aria-label')).toContain('Copy failed');
   });
 
   it('opening the form pre-fills client_id from a stored app; secret stays blank', async () => {
@@ -709,6 +899,22 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(mount.getState().stage).toBe('list');
   });
 
+  it('changing a configured Client ID requires its matching secret', async () => {
+    const { mount, clickAction, field, credField, fake, setOAuthAppConfig, enrollOAuth } = setupByo({
+      appConfig: APP_CONFIG_GOOGLE_STORED,
+    });
+    await mount.whenLoaded();
+    openOAuthForm(clickAction, field, 'gmail');
+    credField('client_id', 'REPLACEMENT-CID');
+    clickAction({ action: 'accounts-oauth-connect' });
+    await tick();
+
+    expect(setOAuthAppConfig).not.toHaveBeenCalled();
+    expect(enrollOAuth).not.toHaveBeenCalled();
+    expect(fake.popupHref()).toBe('');
+    expect(mount.getState().formError).toContain('matching Client secret');
+  });
+
   it('Connect with a blank secret + a known-unconfigured app: errors, no popup/enroll', async () => {
     const { mount, clickAction, field, fake, setOAuthAppConfig, enrollOAuth } = setupByo({
       appConfig: APP_CONFIG_UNSET,
@@ -734,7 +940,7 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     await tick();
     expect(setOAuthAppConfig).not.toHaveBeenCalled();
     expect(enrollOAuth).not.toHaveBeenCalled();
-    expect(mount.getState().formError).toContain('Client ID and secret');
+    expect(mount.getState().formError).toContain('Client secret to finish');
     expect(mount.getState().stage).toBe('form');
     expect(fake.popupHref()).toBe(''); // popup never opened
   });
@@ -801,13 +1007,14 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(mount.getState().oauthCredValues.client_id).toBe('NEW-CID');
   });
 
-  it('configured issuer: the form keeps Connect + the saved client_id pre-filled', async () => {
+  it('configured issuer: the form keeps Connect and collapses app credentials', async () => {
     const { mount, host, clickAction, field } = setupByo({ appConfig: APP_CONFIG_GOOGLE_STORED });
     await mount.whenLoaded();
     openOAuthForm(clickAction, field, 'gmail');
     const html = hostHtml(host);
     expect(html).toContain('data-action="accounts-oauth-connect"');
     expect(html).toContain('value="STORED-CID"');
-    expect(html).toContain('Your Google app is saved');
+    expect(html).toContain('Google sign-in is ready');
+    expect(html).toContain('<details class="accounts-oauth-manage">');
   });
 });

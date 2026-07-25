@@ -14,8 +14,8 @@
  *      tokens (e.g. `C0123456789`) — never numeric — so the validator
  *      stays string-only.
  *
- *  Spec: docs/d-163-spec.md § N.5 / A.1; `connection.notification.slack`
- *  shape: docs/d-125-spec.md § Phase 1.1; outbound transport: D-160 P0
+ *  Spec: D-163 § N.5 / A.1; `connection.notification.slack`
+ *  shape: D-125 § Phase 1.1; outbound transport: D-160 P0
  *  `createSlackTransport` (`@recued/transport`). */
 
 import type { RemoteChannel } from '@recued/notification';

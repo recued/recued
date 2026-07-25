@@ -25,7 +25,7 @@
  *  is inline in SQLite and never touches a blob at all. (Archive/backup of the
  *  rare > 64 KB memory blob is a follow-on; inline bodies ride the DB backup.)
  *
- *  Spec: docs/d-198-spec.md §5 + docs/d-198-build-plan.md §B Slice 2. */
+ *  Spec: D-198 §5 + D-198 §B Slice 2. */
 
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -191,7 +191,7 @@ export interface UserMemoryStore {
    *
    *  NEVER throws on a junk / unparseable query — it returns `[]`. An `ok:false`
    *  here would re-open the retry-to-timeout loop the 2026-06-09
-   *  `enrichment.search` fix closed (see `docs/chat-prompt-optimization-log.md`);
+   *  `enrichment.search` fix closed (see internal design notes);
    *  an empty result is a usable answer, an error is not. */
   search(query: string, limit: number): Promise<string[]>;
 }

@@ -2,7 +2,7 @@
  *
  *  Covers: the OneDrive provider is registered + shaped like the other plain
  *  OAuth vendors (Dropbox is the template), reuses the shared Microsoft
- *  `/common/` identity endpoints, requests metadata-only Graph scopes, and —
+ *  `/common/` identity endpoints, requests read-only Graph scopes, and —
  *  the deliberate asymmetry vs Dropbox/Google — carries NO `authorize_params`:
  *  Microsoft mints the refresh token from the `offline_access` SCOPE, not an
  *  authorize query param. The interim-enrollment registry still passes the
@@ -50,7 +50,7 @@ describe('D-192 — OneDrive vendor provider', () => {
     );
   });
 
-  it('requests metadata-only Graph scopes (bytes are never fetched)', () => {
+  it('requests read-only Graph scopes for metadata sync and lazy byte reads', () => {
     expect(onedrive!.oauth.scopes).toEqual(ONEDRIVE_OAUTH_SCOPES);
     expect([...ONEDRIVE_OAUTH_SCOPES]).toEqual([
       GRAPH_FILES_READ_SCOPE,

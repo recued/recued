@@ -30,6 +30,7 @@ const RESPONSE: FormResponse = {
   visitor: { email: 'visitor@example.test' },
   submitted_at: 1_000,
   accepted_at: 2_000,
+  updated_at: 2_000,
   origin_actor: 'anonymous',
   origin_surface: 'system',
   lifecycle_state: 'received',

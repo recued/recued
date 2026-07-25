@@ -14,7 +14,7 @@
  *  gate, so that visibility decision is enforced by an actual registered-
  *  local-UI boundary — mirrors `timeline-rpc-handler.ts`.
  *
- *  Spec: docs/d-139-spec.md § A.5.1 + § P1a.1 ("server-internal SQL view
+ *  Spec: D-139 § A.5.1 + § P1a.1 ("server-internal SQL view
  *  + rpc surface (`data.contact.engagements.list`)"). */
 
 import {

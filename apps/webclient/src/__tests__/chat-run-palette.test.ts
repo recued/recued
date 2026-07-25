@@ -31,6 +31,7 @@ import {
   RUN_PALETTE_ACTION_ATTR,
   RUN_PALETTE_CLOSE_ATTR,
   RUN_PALETTE_OVERLAY_ATTR,
+  RUN_PALETTE_SEARCH_ATTR,
 } from '../chat/run-palette.js';
 
 // ── fake DOM ──────────────────────────────────────────────────────
@@ -421,6 +422,45 @@ describe('run-palette wire', () => {
     await tick();
     const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
     expect(allText(overlay)).toContain('Find a recipe');
+    handle.destroy();
+  });
+
+  it('turns an empty recipe inventory into a starter-pack recovery path', async () => {
+    const { doc, handle } = mount({
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+      packsHref: '#packs',
+    });
+    await tick();
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(allText(overlay)).toContain('No recipes are installed yet.');
+    expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML).toBe('');
+    const browse = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).find(
+      (action) => action.getAttribute('href') === '#packs',
+    );
+    expect(browse?.textContent).toContain('Browse starter packs');
+    handle.destroy();
+  });
+
+  it('offers an in-place retry after the recipe inventory fails to load', async () => {
+    const recipeList = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ recipes: [MANUAL] });
+    const { doc, handle } = mount({ recipeList });
+    await tick();
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(allText(overlay)).toContain('Couldn’t load recipes.');
+    const retry = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).find(
+      (action) => action.textContent === 'Try again',
+    )!;
+    retry.click();
+    await tick();
+
+    expect(recipeList).toHaveBeenCalledTimes(2);
+    expect(allText(overlay)).toContain('Find a recipe');
+    expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML)
+      .toContain('data-ref-picker');
     handle.destroy();
   });
 });

@@ -18,7 +18,6 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import Database from 'better-sqlite3';
 import { exportArchive, buildExportBlobSources, type BlobSource } from '../archive/archive-export.js';
 import {
   summarizeArchive,
@@ -26,9 +25,12 @@ import {
   type ImportOptions,
 } from '../archive/archive-import.js';
 import { FILE_NAMES } from '../archive/archive-format.js';
-import { applyRestore, deriveBlobStoreKeyFromDb } from '../archive/archive-restore.js';
+import { applyRestore, deriveBlobStoreKey } from '../archive/archive-restore.js';
 import { createBundleStore } from '../bundle-store.js';
-import { bundleToJSON } from '@recued/crypto';
+import { bundleToJSON, serverBundleToJSON } from '@recued/crypto';
+import { createServerBundleStore } from '../server-bundle-store.js';
+import { openDatabase } from '../open-database.js';
+import { deriveDatabaseKeyFromRecoveryEntropy } from '../database-encryption.js';
 
 export interface ArchiveCommandDeps {
   dbPath: string;
@@ -107,12 +109,50 @@ const cmdExport = async (
   const force = hasFlag(args, '--force');
   const includeBlobs = !hasFlag(args, '--no-blobs');
 
-  const db = new Database(deps.dbPath);
+  // Wipe the primary recovery key on EVERY exit. The inner finallys clear the
+  // derived db/blob sub-keys, but a throw before them (a bad key at db-open)
+  // otherwise left this buffer — the material that opens every archive of the
+  // realm — resident in the heap.
   try {
+  // D-212 slice 1 — resolve the recovery-critical bundle before opening the
+  // realm db. Slice 3 can key that open without recreating a bundle-inside-db
+  // dependency cycle.
+  const serverBundle = createServerBundleStore(deps.dbPath).load();
+  let databaseKey: Uint8Array | null;
+  try {
+    databaseKey = serverBundle
+      ? await deriveDatabaseKeyFromRecoveryEntropy(serverBundle, recoveryKey)
+      : null;
+  } catch (err) {
+    throw new Error(
+      `archive export: could not derive this server's database encryption key — ` +
+        `the recovery key is likely wrong, or this server's vault bundle is unreadable. ` +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  let db: Awaited<ReturnType<typeof openDatabase>>;
+  try {
+    db = await openDatabase(deps.dbPath, { databaseKey });
+  } finally {
+    databaseKey?.fill(0);
+  }
+  // SQLite defaults `foreign_keys` OFF per connection, so every connection that
+  // may write has to opt in the way the server's own boot does. Export is a
+  // reader, but the bundle-store constructor it runs still issues DDL against
+  // the live realm, and a connection whose constraint posture differs from the
+  // server's is a trap waiting for the next writer added here.
+  db.pragma('foreign_keys = ON');
+  let blobKeyToClear: Uint8Array | null = null;
+  try {
+    // The sidecar rides the archive as its own authenticated record so a
+    // recovery-key-only restore has the material needed to open the realm.
+    const serverVaultBundleJson = serverBundle
+      ? serverBundleToJSON(serverBundle)
+      : undefined;
     // Legacy `vault-bundle.json` record — present only for a `keys.init`-
     // enrolled realm; it rides for the cross-machine passport / re-key path.
     // The blob re-encryption key is NOT read from here (a D-197 server has no
-    // legacy bundle) — it is derived from the db's server bundle below.
+    // legacy bundle) — it is derived from the server sidecar below.
     let vaultBundleJson: string | undefined;
     try {
       const b = createBundleStore(db).load();
@@ -120,36 +160,41 @@ const cmdExport = async (
     } catch { /* no bundle table — pre-D-081 compositions */ }
 
     // Blob-encryption fix — the offline CLI has no live KeyManager, so derive
-    // the realm's `blob-store` sub-DEK straight from the LIVE db's server bundle
-    // (D-197) / legacy bundle + the recovery key. This is the SAME derivation
-    // restore uses (`deriveBlobStoreKeyFromDb`), so the export decrypts each
+    // the realm's `blob-store` sub-DEK from the LIVE bundle sidecar (D-212), or
+    // the db's legacy password bundle, plus the recovery key. This is the SAME
+    // derivation restore uses (`deriveBlobStoreKey`), so the export decrypts each
     // ENCRYPTED cache/memory blob under exactly the key restore re-encrypts it
     // under. Null → KEYLESS realm → the roots are plaintext and read keyless. A
     // WRONG recovery key throws here (GCM tag) — refusing to emit an archive of
-    // undecryptable ciphertext that could never restore. `--no-blobs` skips this
-    // for a db-only archive on any server.
+    // undecryptable ciphertext that could never restore. `--no-blobs` skips the
+    // blob-key derivation, but an encrypted database still requires the correct
+    // recovery key at the earlier database-key derivation above.
     let blobSources: BlobSource[] | undefined;
     if (includeBlobs) {
       let blobKey: Uint8Array | null;
       try {
-        blobKey = await deriveBlobStoreKeyFromDb(db, recoveryKey);
+        blobKey = await deriveBlobStoreKey({
+          db,
+          serverBundle,
+          recoveryEntropy: recoveryKey,
+        });
       } catch (err) {
         // The realm is ENCRYPTED but the Master DEK would not unwrap — usually a
         // wrong recovery key (the archive envelope reuses the same key, so a bad
         // key here would also make the archive unrestorable), or a corrupt /
         // unreadable vault bundle. Refuse with an operator-facing message rather
-        // than the raw GCM error; the verbatim cause disambiguates. `--no-blobs`
-        // still produces a database-only archive on any server.
+        // than the raw GCM error; the verbatim cause disambiguates.
         throw new Error(
           `archive export: could not derive this server's blob encryption key — ` +
             `the recovery key is likely wrong, or this server's vault bundle is unreadable. ` +
-            `Pass --no-blobs for a database-only archive. Cause: ${(err as Error).message}`,
+            `Cause: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      blobKeyToClear = blobKey;
       blobSources = buildExportBlobSources(
         deps.dataPath,
         db,
-        blobKey ? () => blobKey : undefined,
+        blobKey ? () => blobKey : () => null,
       );
     }
 
@@ -159,6 +204,7 @@ const cmdExport = async (
       db,
       configPath: deps.configPath ?? undefined,
       vaultBundleJson,
+      serverVaultBundleJson,
       ...(blobSources ? { blobSources } : {}),
       force,
       producerVersion: deps.serverVersion,
@@ -167,7 +213,11 @@ const cmdExport = async (
       `archive export: wrote ${result.bytes_written} bytes, ${result.blob_count} blobs → ${result.path}`,
     );
   } finally {
+    blobKeyToClear?.fill(0);
     db.close();
+  }
+  } finally {
+    recoveryKey.fill(0);
   }
 };
 
@@ -184,6 +234,8 @@ const cmdImport = async (
   // `--force=false` must mean false, not "flag present" (see strictBoolFlag).
   const force = strictBoolFlag(args, '--force');
 
+  // Wipe the recovery key on every exit (the dry-run return + the restore end).
+  try {
   const importOpts: ImportOptions = {
     archivePath: src,
     recoveryKey,
@@ -201,6 +253,7 @@ const cmdImport = async (
       `records: db=${summary.dbBytes}b ` +
         `config=${summary.smallRecordBytes[FILE_NAMES.config] ?? 0}b ` +
         `vault=${summary.smallRecordBytes[FILE_NAMES.vault] ?? 0}b ` +
+        `server_vault=${summary.smallRecordBytes[FILE_NAMES.serverVault] ?? 0}b ` +
         `blobs=${summary.blobCount}`,
     );
     return;
@@ -227,6 +280,9 @@ const cmdImport = async (
     console.log(`  Backups (${restored.backups.length}): roll back by stripping the ".bak-<stamp>" suffix.`);
   }
   console.log('  Restart the server to boot on the restored data.');
+  } finally {
+    recoveryKey.fill(0);
+  }
 };
 
 const cmdInspect = (args: string[]): void => {

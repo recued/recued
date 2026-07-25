@@ -11,7 +11,7 @@
  *      not store; the snapshot supplies the contract version).
  *    - `isProvenanceAttribution` — coherent `(kind, origin_actor)` narrowing.
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.7 / I-9 / I-10 / O-3.
+ *  Spec: D-161 § N.8 / A.7 / I-9 / I-10 / O-3.
  */
 
 import { describe, expect, it } from 'vitest';

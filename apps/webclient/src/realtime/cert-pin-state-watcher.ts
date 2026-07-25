@@ -70,7 +70,7 @@
  *  snapshots the counter pre-await + bails on resolve if it has
  *  changed (a more-recent notify has already advanced the state).
  *
- *  Spec: docs/d-148-spec.md § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import type { WebclientCertPinState } from '@recued/contracts';
 

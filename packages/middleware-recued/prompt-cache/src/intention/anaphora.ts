@@ -34,7 +34,7 @@
  *  closed-list shape lets us tighten / loosen by registry edit later
  *  without spec churn.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 2.
+ *  See: D-164 § 2.
  */
 
 /** What kind of anaphor matched. */

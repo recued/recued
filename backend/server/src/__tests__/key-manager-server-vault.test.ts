@@ -5,8 +5,7 @@
  *  and the user's recovery key (disaster recovery). */
 
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -16,7 +15,10 @@ import {
   type ServerBundle,
 } from '@recued/crypto';
 import { createKeyManager } from '../key-manager.js';
-import { createServerBundleStore } from '../server-bundle-store.js';
+import {
+  createServerBundleStore,
+  resolveServerBundlePath,
+} from '../server-bundle-store.js';
 import { createFileServerKeyStore, flushFileServerKeyStore } from '../keys/file-store.js';
 import { createInMemoryServerKeyStore } from '../keys/index.js';
 
@@ -107,6 +109,32 @@ describe('KeyManager.unlockWithServerKey (headless boot auto-unlock)', () => {
     expect(b64(km2.keyProvider('server-data')())).toBe(subDekAtEnroll);
   });
 
+  it('uses a pre-storage bundle snapshot for initial state but re-reads disk to unlock', async () => {
+    const store = mkStore();
+    const { recoveryKey, serverKey } = enroll();
+    const first = createKeyManager(store);
+    await first.initServerVault({ recoveryKey, serverKey });
+    first.lock();
+
+    let liveServerBundleReads = 0;
+    const restarted = createKeyManager({
+      loadBundle: store.loadBundle,
+      saveBundle: store.saveBundle,
+      initialServerBundle: store.serverBundle,
+      loadServerBundle: () => {
+        liveServerBundleReads += 1;
+        return store.serverBundle;
+      },
+      saveServerBundle: store.saveServerBundle,
+    });
+
+    expect(restarted.state()).toBe('locked');
+    expect(liveServerBundleReads).toBe(0);
+    await restarted.unlockWithServerKey({ serverKey });
+    expect(liveServerBundleReads).toBe(1);
+    expect(restarted.state()).toBe('unlocked');
+  });
+
   it('rejects a wrong server key and stays locked', async () => {
     const store = mkStore();
     const { recoveryKey, serverKey } = enroll();
@@ -161,10 +189,12 @@ describe('ServerKeyStore server-vault-key slot', () => {
 });
 
 describe('createServerBundleStore', () => {
-  it('round-trips a server bundle and reports existence', async () => {
-    const db = new Database(':memory:');
+  it('round-trips a server bundle in an owner-only sidecar before any db exists', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'srv-vault-bundle-'));
     try {
-      const store = createServerBundleStore(db);
+      const dbPath = join(dir, 'realm.db');
+      const store = createServerBundleStore(dbPath);
+      expect(store.path).toBe(resolveServerBundlePath(dbPath));
       expect(store.exists()).toBe(false);
       expect(store.load()).toBeNull();
 
@@ -182,11 +212,28 @@ describe('createServerBundleStore', () => {
       const loaded = store.load();
       expect(loaded).not.toBeNull();
       expect(loaded!.wrapped_server.length).toBeGreaterThan(0);
+      expect(statSync(store.path).mode & 0o777).toBe(0o600);
+
+      // A fresh store over the same db path reads the same sidecar; SQLite is
+      // neither opened nor created anywhere in this test.
+      expect(createServerBundleStore(dbPath).load()).toEqual(loaded);
 
       store.clear();
       expect(store.exists()).toBe(false);
     } finally {
-      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a present sidecar is malformed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'srv-vault-bundle-corrupt-'));
+    try {
+      const store = createServerBundleStore(join(dir, 'realm.db'));
+      writeFileSync(store.path, '{not-json', { mode: 0o600 });
+      expect(store.exists()).toBe(true);
+      expect(() => store.load()).toThrow(/is unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

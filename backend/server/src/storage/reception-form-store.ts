@@ -26,7 +26,7 @@
  *  The store interface accepts pre-encrypted base64 strings; this module
  *  stays crypto-free + parallel to the registry-store's pattern.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.3 + § N.6 (visitor-PII retention). */
+ *  Spec: D-149 § A.5.3 + § N.6 (visitor-PII retention). */
 
 import type Database from 'better-sqlite3';
 import {

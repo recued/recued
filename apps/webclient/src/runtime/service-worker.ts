@@ -37,7 +37,7 @@
  *  on its own for the "Reset cache" UX and survives a SW that has
  *  unregistered itself.
  *
- *  Spec: docs/d-148-spec.md § A.4 + `apps/webclient/public/sw.js`. */
+ *  Spec: D-148 § A.4 + `apps/webclient/public/sw.js`. */
 
 /** Default service-worker script URL — sibling of `index.html` so the
  *  scope covers the whole webclient PWA. */
@@ -47,14 +47,22 @@ export const WEBCLIENT_SERVICE_WORKER_URL = './sw.js' as const;
  *  registration call, which is the webclient root. */
 export const WEBCLIENT_SERVICE_WORKER_SCOPE = './' as const;
 
-/** Name of the cache `public/sw.js` opens for the shell assets
- *  (`webclient-shell-v4`). Exported here so the Settings → Privacy
- *  "Clear this browser" panel + `clearThisBrowser` default can target
- *  the *actual* shell cache without hard-coding the string twice. The
- *  SW file owns the upgrade semantics (bump the version suffix to
- *  invalidate prior shells); this constant tracks the current version
- *  so the wipe path stays aligned. */
-export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v4' as const;
+/** Name of the cache `public/sw.js` opens for the shell assets. Exported
+ *  here so the Settings → Privacy "Clear this browser" panel +
+ *  `clearThisBrowser` default can target the *actual* shell cache. The SW
+ *  file owns the upgrade semantics (bump the version suffix to invalidate
+ *  prior shells); this constant has to follow it in the same commit.
+ *
+ *  ⚠ THIS IS A SECOND COPY, AND IT HAS ROTTED BEFORE — TWICE. `public/sw.js`
+ *  is a static file served verbatim, so it cannot import this constant and
+ *  nothing makes them agree. Pre-fold the default named a cache no SW had
+ *  ever opened; it then drifted again (this said `v4` while the SW opened
+ *  `v5`), and in both states the wipe deleted a non-existent cache and
+ *  reported success — a privacy control that silently does nothing.
+ *
+ *  `service-worker-cache-name-parity.test.ts` now reads `public/sw.js` and
+ *  fails if the two disagree. Bump BOTH or that test goes red. */
+export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v7' as const;
 
 /** Test-only seam — both the `navigator.serviceWorker` access path
  *  and the `caches` access path are overridable so the helper can be

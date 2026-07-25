@@ -29,7 +29,7 @@
  *  reachability, revoke a cell a recipe depends on, nor enumerate the grid.
  *  Absent `deps` (db-less harness) leaves both methods returning `not_configured`.
  *
- *  Spec: `docs/d-182-spec.md` §7.2 (per-contract cli reachability grid). */
+ *  Spec: D-182 §7.2 (per-contract cli reachability grid). */
 
 import {
   CLI_REACHABILITY_OWNER_PRINCIPAL,

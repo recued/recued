@@ -9,6 +9,7 @@ import type {
   IngredientManifest,
   RecipeDefinition,
 } from '@recued/contracts';
+import { D165_CONTRACT_SCHEMA, OWNER_OPERATION_SCOPE } from '@recued/contracts';
 import {
   createAuditLogStore,
   createCommitStore,
@@ -32,6 +33,7 @@ import {
   createContractScanFn,
   createContractStore,
 } from '../storage/contract-store.js';
+import { executeResponseAuditRunId } from '../types.js';
 
 const fetchMock = vi.fn();
 const originalFetch = globalThis.fetch;
@@ -202,6 +204,7 @@ describe('handleExecute D-145 slice 3b.3 commit writes', () => {
     expect(result.success).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const auditEntry = await latestAuditEntry(auditLog);
+    expect(executeResponseAuditRunId(result)).toBe(auditEntry.run_id);
     expect(await commitStore.size()).toBe(1);
 
     const commits = await commitStore.listByCorrelation(auditEntry.correlation_id!);
@@ -254,6 +257,48 @@ describe('handleExecute D-145 slice 3b.3 commit writes', () => {
     expect(await commitStore.size()).toBe(0);
     const auditEntry = await latestAuditEntry(auditLog);
     expect(auditEntry.execution_source).toBeUndefined();
+  });
+
+  it('source-less housekeeping enforces a global simple-form owner ruling without minting a source', async () => {
+    const db = new Database(':memory:');
+    try {
+      const contractStore = createContractStore(db, { now: () => NOW });
+      contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+      contractStore.put(
+        OWNER_OPERATION_SCOPE,
+        ['commit-http-action', 'commit-http-action'],
+        { approval: 'always', op_hash: 'test-fixture' },
+      );
+      const recipe = buildRecipe(
+        'commit-gateway-source-less-housekeeping-override',
+        { body: { message: 'hold this read' } },
+      );
+      const auditLog = mkAuditLog();
+      const commitStore = mkCommitStore();
+      const deps = makeDeps(
+        recipe,
+        [buildManifest({ category: 'data', risk_tier: 'read' })],
+        {
+          auditLog,
+          commitStore,
+          contractScan: createContractScanFn(contractStore),
+        },
+      );
+
+      const result = await handleExecute(deps, {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'housekeeping',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.awaiting_approval).toBeUndefined();
+      expect(result.errors[0]).toMatchObject({ code: 'CHECKPOINT_STORE_UNAVAILABLE' });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await commitStore.size()).toBe(0);
+      expect((await latestAuditEntry(auditLog)).execution_source).toBeUndefined();
+    } finally {
+      db.close();
+    }
   });
 
   it('records a failed commit when the ingredient call fails', async () => {

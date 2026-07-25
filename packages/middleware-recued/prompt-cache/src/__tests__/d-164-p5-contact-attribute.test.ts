@@ -252,7 +252,6 @@ describe('D-164 P5 contact-attribute template matcher', () => {
     ['tell me about Alice Bond'],
     ['what do you know about Alice Bond'],
     ['find Alice Bond and tell me their email'],
-    ["what is Alice Bond's birthday?"],
     ["what are Alice Bond's email and phone?"],
     ["Alice Bond's?"],
   ])('returns null for non-renderable read shape: %s', (text) => {

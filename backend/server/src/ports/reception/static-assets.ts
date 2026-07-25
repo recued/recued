@@ -25,7 +25,7 @@
  *  somehow constructed `style.css` via `../../../etc/passwd`, the
  *  dispatcher would still only serve the bundled bytes.
  *
- *  Spec: docs/d-149-spec.md § A.5.1 line 595 + § A.11 TR-8 + § Must
+ *  Spec: D-149 § A.5.1 line 595 + § A.11 TR-8 + § Must
  *  Hold I-7. */
 
 import { createHash } from 'node:crypto';

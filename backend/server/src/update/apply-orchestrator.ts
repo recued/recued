@@ -229,7 +229,8 @@ const mib = (bytes: number): string => `${Math.ceil(bytes / (1024 * 1024))} MiB`
  *  UP FRONT when the data volume can't fit the artifact download + (for a
  *  migrating release) the pre-migration SQLite snapshot — both land on the same
  *  volume, and co-locating the binary there concentrates the pressure. A clean
- *  refusal beats an ENOSPC halfway through the download or the `db.backup()` copy.
+ *  refusal beats an ENOSPC halfway through the download or the keyed
+ *  `VACUUM INTO` snapshot.
  *  Gates OPEN when the probe is unwired / unsupported (null) so an exotic
  *  filesystem can't wedge updates — the natural-ENOSPC fail-closed catches in
  *  `runApply` still protect the apply if the estimate is wrong. Mirrors the

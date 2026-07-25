@@ -29,7 +29,7 @@
  *  `feedback` entity; the source entity is never mutated by the
  *  visitor.
  *
- *  Spec: docs/d-149-spec.md § A.5.6 + § Must Hold I-2 + I-12 + I-13. */
+ *  Spec: D-149 § A.5.6 + § Must Hold I-2 + I-12 + I-13. */
 
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';

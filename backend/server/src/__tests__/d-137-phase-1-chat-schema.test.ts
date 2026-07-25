@@ -2,7 +2,7 @@
  *
  *  Acceptance per spec § Contract Tightening + § Must Hold (D-137-
  *  equivalent of D-149 § Must Hold I-15):
- *    - `ensureChatSchema(db)` lands `chat_sessions` + `chat_messages`.
+ *    - `ensureChatSchema(db)` lands the core session/message/action tables.
  *    - The schema matches the closed `CHAT_TABLES` inventory.
  *    - Schema is idempotent — calling twice does not error.
  *    - `archived` defaults to 0 (session active) at the SQL layer.
@@ -42,7 +42,7 @@ const listColumns = (db: Database.Database, table: string): Set<string> => {
   return new Set(rows.map((r) => r.name));
 };
 
-describe('D-137 P1 — ensureChatSchema lands chat_sessions + chat_messages', () => {
+describe('D-137 P1 — ensureChatSchema lands durable chat state', () => {
   let db: Database.Database;
   beforeEach(() => {
     db = new Database(':memory:');
@@ -65,6 +65,10 @@ describe('D-137 P1 — ensureChatSchema lands chat_sessions + chat_messages', ()
       'idx_chat_messages_session_ts',
       'idx_chat_messages_role',
       'idx_chat_messages_target_server',
+      'idx_chat_plans_session_created',
+      'idx_chat_plans_dispatch_match',
+      'idx_chat_plans_turn',
+      'idx_chat_plans_retry_origin',
     ];
     for (const name of required) {
       expect(indexes.has(name)).toBe(true);
@@ -74,6 +78,11 @@ describe('D-137 P1 — ensureChatSchema lands chat_sessions + chat_messages', ()
   it('lands chat_messages.attachments_blob for session file turn refs', () => {
     ensureChatSchema(db);
     expect(listColumns(db, 'chat_messages').has('attachments_blob')).toBe(true);
+  });
+
+  it('lands durable verify-before-retry lineage on chat plans', () => {
+    ensureChatSchema(db);
+    expect(listColumns(db, 'chat_plans').has('retry_of_plan_id')).toBe(true);
   });
 
   it('is idempotent — second call is a no-op', () => {

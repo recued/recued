@@ -4,7 +4,7 @@
  *  manifest metadata helpers, publish-time validation, compensation
  *  detection, and the in-memory grace-window store.
  *
- *  Spec: docs/d-153-spec.md lines 467-485. */
+ *  Spec: D-153 lines 467-485. */
 
 import { describe, expect, it } from 'vitest';
 

@@ -7,9 +7,9 @@
  *  foundation the kernel op registry (slice 2), the pack regen (slice 3), and
  *  the per-kind handlers (slice 5) build on.
  *
- *  Spec: docs/d-182-spec.md (§3 recipe surface, §4 pack tables, §6/§7 per-kind
+ *  Spec: D-182 (§3 recipe surface, §4 pack tables, §6/§7 per-kind
  *  preflight + cli first-class). Pickup:
- *  recued-project/handovers/handover_d182_build_start.md.
+ *  internal design notes.
  *
  *  Coexistence note (slice 1): the spec (§4) names the Table-B row
  *  `OperationRow`, but the legacy D-170 `OperationRow` (`bulk-pack.ts` — the
@@ -521,6 +521,11 @@ export interface PackOperationRow {
   risk: RiskTier;
   /** R5 — the pack author's approval intent. */
   approval: OperationApproval;
+  /** D-211 Slice 4 — machine-readable author guidance explaining why an
+   *  operation deliberately holds. Recommended for held reads and required by
+   *  the uniform-held-read noise-fence exemption. Lowercase snake_case keeps
+   *  the vocabulary extensible without turning prose into policy. */
+  approval_reason?: string;
   /** the op's input args — a bare string (a required string) or an object for a
    *  non-string type / D-177 authority arg (§4). Optional (an arg-less op omits
    *  it); primarily drives the Compose autocomplete. */

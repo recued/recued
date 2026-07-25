@@ -17,7 +17,7 @@
  *    - last_resolved_at bookkeeping bumps on resolve
  *    - network_domain set / replace
  *
- *  Spec: docs/d-145-spec.md § A.4. */
+ *  Spec: D-145 § A.4. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

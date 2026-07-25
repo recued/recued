@@ -32,8 +32,15 @@ import type Database from 'better-sqlite3';
 import type {
   Checkpoint,
   ExecutionLane,
+  OwnerOperationPolicyInput,
+  PreflightOverrideOffer,
   QualityGateSwitches,
   ScopedSenderCandidate,
+} from '@recued/contracts';
+import {
+  OWNER_OPERATION_SCOPE,
+  isCatalogForm,
+  operationSpecHash,
 } from '@recued/contracts';
 import type {
   AuditLogStore,
@@ -101,6 +108,7 @@ import { createQualityGateResolver } from '../../quality-gate-resolver.js';
 import type { SellerCustomerAccessAdmissionStore } from '../../seller/customer-access-admission.js';
 import type { BatchApprovalCoordinator } from '../../batch-approval.js';
 import { createApprovalResumeAuthorityResolver } from '../../approval-resume-authority.js';
+import { upsertOwnerOperationOverride } from '../../contract-handler.js';
 
 /** Inputs to compose the executeDeps surface.
  *
@@ -293,6 +301,13 @@ export interface ComposeExecuteDepsDeps {
 export interface ExecuteDepsBundle {
   executeDeps: ExecuteHandlerDeps;
   notificationBlock: NotificationBlock | undefined;
+  /** Narrow LIVE batch-membership read (`NotificationBlockBundle.getBatch`).
+   *  The `/ask` landing needs the CURRENT member count before it may render a
+   *  batch-registered hold's values as the approval. Undefined alongside
+   *  `notificationBlock`. */
+  getBatch:
+    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | undefined;
   /** D-210 Phase C — the DECORATED preflight resumer (the one
    *  `withBeforePreflightResume` wrapped), surfaced so the Reception inbox
    *  can release a hold that carries no durable ask.
@@ -382,6 +397,58 @@ export const composeExecuteDeps = (
   const qualityDelegationSignalStore = deps.contractStore
     ? createQualityDelegationSignalStore(deps.contractStore)
     : undefined;
+  const preflightOverrideWriter = deps.contractStore
+    ? async (offer: PreflightOverrideOffer): Promise<void> => {
+        const manifest = deps.executorConfig.manifests.get(offer.ingredient_id);
+        const currentOperation = manifest === null
+          ? undefined
+          : isCatalogForm(manifest)
+            ? Object.values(manifest.operations ?? {}).find(
+                (operation) => operation.operation_id === offer.operation_id,
+              )
+            : manifest.slug === offer.operation_id
+              ? { operation_id: manifest.slug, risk_tier: manifest.risk_tier }
+              : undefined;
+        if (
+          currentOperation === undefined
+          || operationSpecHash(currentOperation) !== offer.op_hash
+        ) {
+          throw new Error(
+            `standing owner action for '${offer.operation_id}' is stale because the `
+              + 'operation changed or was removed; review a fresh ask',
+          );
+        }
+        const segments = [offer.ingredient_id, offer.operation_id];
+        const prior = (
+          deps.contractStore!.get(OWNER_OPERATION_SCOPE, segments)?.value ?? {}
+        ) as unknown as Readonly<Record<string, unknown>>;
+        // `op_hash` is server-owned and gets freshly stamped by the rpc core.
+        // Preserve the other global operation facet while changing approval.
+        const { op_hash: _priorOpHash, ...priorPolicy } = prior;
+        const policy: OwnerOperationPolicyInput = {
+          ...(priorPolicy as OwnerOperationPolicyInput),
+          approval: offer.approval,
+        };
+        await upsertOwnerOperationOverride(
+          {
+            store: deps.contractStore!,
+            getManifest: (slug) => deps.executorConfig.manifests.get(slug),
+            listManifests: () => deps.executorConfig.manifests
+              .slugs()
+              .flatMap((slug) => {
+                const manifest = deps.executorConfig.manifests.get(slug);
+                return manifest === null ? [] : [manifest];
+              }),
+            ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+          },
+          {
+            ingredient_id: offer.ingredient_id,
+            operation_id: offer.operation_id,
+            policy,
+          },
+        );
+      }
+    : undefined;
 
   // D-157 server-wiring — compose the D-158 notification block ahead of
   // executeDeps so the block can thread as `preflightNotifier`.
@@ -394,6 +461,9 @@ export const composeExecuteDeps = (
   // doubt handler leaves swept commits without a surfaced reconciliation
   // prompt (matching pre-wire posture).
   let notificationBlock: NotificationBlock | undefined;
+  let getBatch:
+    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | undefined;
   let batchApprovals: BatchApprovalCoordinator | undefined;
   // D-210 Phase C — retained for the inbox's no-ask release path.
   let preflightResumer: PreflightResumer | undefined;
@@ -408,6 +478,9 @@ export const composeExecuteDeps = (
       ...(deps.askAnswerLink !== undefined ? { askAnswerLink: deps.askAnswerLink } : {}),
       ...(deps.beforePreflightResume
         ? { beforePreflightResume: deps.beforePreflightResume }
+        : {}),
+      ...(preflightOverrideWriter !== undefined
+        ? { upsertOverride: preflightOverrideWriter }
         : {}),
       // D-192 Slice 6c — the write-executor accessor for the create-plan approve
       // dispatcher (runs `executeCreatePlan` at answer time).
@@ -439,6 +512,7 @@ export const composeExecuteDeps = (
         : {}),
     });
     notificationBlock = bundle.block;
+    getBatch = bundle.getBatch;
     batchApprovals = bundle.batchApprovals;
     preflightResumer = bundle.resumer;
   }
@@ -790,6 +864,7 @@ export const composeExecuteDeps = (
   return {
     executeDeps,
     notificationBlock,
+    getBatch,
     preflightResumer,
     inFlightRegistry,
     contractDefinitionStore,

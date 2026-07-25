@@ -18,7 +18,7 @@
  *  handler, so adding this surface does NOT double-expose the MCP tool
  *  nor weaken its `mcp_exposed: 'private'` gate.
  *
- *  Spec: docs/d-174-spec.md D11 + docs/d-120-spec.md (`data.timeline()`). */
+ *  Spec: D-174 D11 + D-120 (`data.timeline()`). */
 
 import {
   RpcError,

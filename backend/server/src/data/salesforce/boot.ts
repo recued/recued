@@ -35,7 +35,7 @@
  *  cleanly with D-129's HubSpot wire on the same store; each handler
  *  filters by vendor and ignores non-matching rows.
  *
- *  Spec: `docs/d-130-spec.md` § A.5. */
+ *  Spec: D-130 § A.5. */
 
 import {
   reconciliationTaskId,

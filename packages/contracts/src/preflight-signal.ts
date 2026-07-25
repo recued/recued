@@ -41,14 +41,40 @@
  *  signal without `details` (just a message) leaves the structured
  *  fields undefined and the host falls back to a bare ask.
  *
- *  Spec: docs/d-157-spec.md § N.3 / N.8 / A.2 / I-4 / I-5.
+ *  Spec: D-157 § N.3 / N.8 / A.2 / I-4 / I-5.
  */
+
+import type {
+  AuthorizationProvenance,
+  OperationApproval,
+} from './ingredient-catalog.js';
 
 /** Stable `name` marker for `PreflightRequiredSignal` — the value the
  *  `isPreflightRequiredSignal` guard tests for. Exported so the gateway
  *  + the engine can both reference the literal without `instanceof`
  *  (cross-realm / cross-bundle safe). */
 export const PREFLIGHT_REQUIRED_SIGNAL_NAME = 'PreflightRequiredSignal';
+
+/** D-211 Slice 2 — a global operation-specific standing owner ruling
+ * offered beside approval. The answer path re-validates this persisted shape
+ * before writing it through the authoritative override rpc core. */
+export type PreflightOverrideOffer =
+  | {
+      kind: 'never_ask';
+      ingredient_id: string;
+      operation_id: string;
+      /** Exact authored operation reviewed when this action was offered. */
+      op_hash: string;
+      approval: 'never';
+    }
+  | {
+      kind: 'relax_to_ask';
+      ingredient_id: string;
+      operation_id: string;
+      /** Exact authored operation reviewed when this action was offered. */
+      op_hash: string;
+      approval: 'ask';
+    };
 
 /** Structured fields the gateway attaches to a `PreflightRequiredSignal`
  *  so the engine — and the host that surfaces the eventual
@@ -114,8 +140,14 @@ export interface PreflightSignalDetails {
    *  `Checkpoint` so the answer-path resumer can `append` a `QualityDelegationSignal`.
    *  Absent (undefined) on every non-quality ask (`authorization_ask`, a legacy
    *  raise site, or a gate with no quality dep) ⇒ no signal is recorded — behaviour-
-   *  preserving. Spec: docs/d-202-quality-gate-seams.md §3 (S4). */
+   *  preserving. Spec: D-202 §3 (S4). */
   quality_relevant?: boolean;
+  /** D-211 — standing-ruling affordance for this exact held operation. */
+  owner_override_offer?: PreflightOverrideOffer;
+  /** D-211 — stored approval that resolved below the effective risk floor. */
+  approval_clamped_from?: OperationApproval;
+  /** D-209 §1.7 — authorization posture before review/quality lifts. */
+  authorization_provenance?: AuthorizationProvenance;
 }
 
 /** Thrown from inside an `ingredientExecutor` when a boundary-crossing
@@ -161,6 +193,9 @@ export class PreflightRequiredSignal extends Error {
   /** D-202 Slice 1b — quality-relevance marker (`quality_not_delegated` ask).
    *  See `PreflightSignalDetails.quality_relevant`. */
   readonly quality_relevant?: boolean;
+  readonly owner_override_offer?: PreflightOverrideOffer;
+  readonly approval_clamped_from?: OperationApproval;
+  readonly authorization_provenance?: AuthorizationProvenance;
 
   constructor(message?: string, details?: PreflightSignalDetails) {
     super(message ?? 'preflight approval required');
@@ -190,6 +225,15 @@ export class PreflightRequiredSignal extends Error {
     }
     if (details?.quality_relevant !== undefined) {
       this.quality_relevant = details.quality_relevant;
+    }
+    if (details?.owner_override_offer !== undefined) {
+      this.owner_override_offer = details.owner_override_offer;
+    }
+    if (details?.approval_clamped_from !== undefined) {
+      this.approval_clamped_from = details.approval_clamped_from;
+    }
+    if (details?.authorization_provenance !== undefined) {
+      this.authorization_provenance = details.authorization_provenance;
     }
   }
 }

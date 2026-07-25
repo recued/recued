@@ -778,7 +778,13 @@ describe('D-137 P4 — orchestrator peer dispatch routing', () => {
       concurrency_safe: false,
     };
     const peerDispatch = vi.fn(
-      async () => ({ ok: true, result: { ok: true } } as ChatDispatchResult),
+      async () => ({
+        ok: true,
+        result: { ok: true },
+        // This address belongs to Bob's execution host. Mary's local Logs
+        // route must not claim it can open the remote audit row.
+        run_id: 'bob-remote-run-1',
+      } as ChatDispatchResult),
     );
     const peerDispatcher: PeerDispatcher = {
       dispatch: peerDispatch,
@@ -814,6 +820,54 @@ describe('D-137 P4 — orchestrator peer dispatch routing', () => {
       (e) => (e as { kind: string }).kind === 'chat.plan_proposed',
     );
     expect(proposed).toBeDefined();
+
+    const approved = planApprovalStore.resolve('plan-1', 'approved', Date.now());
+    expect(approved?.status).toBe('approved');
+    const continued = await orchestrator.dispatch.dispatchTool({
+      session_id: 'sess-1',
+      turn_id: 'turn-Y',
+      tool_name: 'bob.mail.send',
+      arg_values: { to: 'a@b.com' },
+      picker_target: 'connection.mcp.bob',
+    });
+
+    expect(continued.ok).toBe(true);
+    expect(peerDispatch).toHaveBeenCalledTimes(1);
+    expect(
+      planApprovalStore.listForSession('sess-1').find(
+        (record) => record.plan.plan_id === 'plan-1',
+      )?.execution,
+    ).toEqual({
+      status: 'completed',
+      turn_id: 'turn-Y',
+      result_ref: 'sess-1:turn-Y:bob.mail.send',
+    });
+    expect(
+      broadcastedEvents.filter(
+        (event) =>
+          (
+            (event as { kind?: unknown }).kind === 'chat.tool_call_started'
+            || (event as { kind?: unknown }).kind === 'chat.tool_call_completed'
+          )
+          && (event as { turn_id?: unknown }).turn_id === 'turn-Y',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'chat.tool_call_started',
+        plan_id: 'plan-1',
+      }),
+      expect.objectContaining({
+        kind: 'chat.tool_call_completed',
+        status: 'ok',
+        plan_id: 'plan-1',
+      }),
+    ]);
+    const completion = broadcastedEvents.find(
+      (event) =>
+        (event as { kind?: unknown }).kind === 'chat.tool_call_completed'
+        && (event as { turn_id?: unknown }).turn_id === 'turn-Y',
+    );
+    expect(completion).not.toHaveProperty('run_id');
   });
 
   it('peer-target dispatch with unwired dispatcher does NOT leak Self catalog (Codex review P1 fold #2)', async () => {

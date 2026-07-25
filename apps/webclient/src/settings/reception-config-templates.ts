@@ -16,7 +16,7 @@
  *  `buildAuthoringView`) before any preview / create rpc — the same
  *  one-import discipline `reception-templates.ts` keeps for intake.
  *
- *  Spec: docs/d-151-spec.md + docs/d-149-spec.md § A.10. */
+ *  Spec: D-151 + D-149 § A.10. */
 
 import {
   RECEPTION_CONFIG_TEMPLATE_REFS,

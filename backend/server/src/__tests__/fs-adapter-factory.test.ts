@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   fsAdapterFactory,
 } from '../collections/file/adapters/fs/index.js';
+import { probeFsCaps } from '../collections/file/adapters/fs/probe.js';
 import { probeAdapter } from '../collections/file/adapter-registry.js';
 import type { FileMutationCapable } from '../collections/file/adapter-registry.js';
 
@@ -34,7 +35,22 @@ describe('fs adapter probeCaps (Phase 7 / D-110)', () => {
     expect(caps.write).toBe('yes');
     expect(caps.delete).toBe('yes');
     expect(caps.path_style).toBe('posix');
+  });
+
+  it('reports realtime only when a recursive watcher attaches', async () => {
+    const caps = await probeFsCaps(
+      { path: root },
+      { probeRealtimeWatch: async () => true },
+    );
     expect(caps.watch).toBe('realtime');
+  });
+
+  it('reports none, never poll, when recursive watching is unavailable', async () => {
+    const caps = await probeFsCaps(
+      { path: root },
+      { probeRealtimeWatch: async () => false },
+    );
+    expect(caps.watch).toBe('none');
   });
 
   it('rejects a non-existent path with a config error', async () => {
@@ -91,6 +107,32 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
 
       await adapter.deleteRecord('a/b.txt');
       expect(existsSync(join(root, 'a/b.txt'))).toBe(false);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it('watch:none performs one initial scan and stays usable without polling', async () => {
+    writeFileSync(join(root, 'existing.txt'), 'before start');
+    const events: string[] = [];
+    const adapter = fsAdapterFactory.create({
+      slug: 'one-shot',
+      config: { path: root },
+      caps: {
+        read: 'yes', write: 'yes', delete: 'yes', watch: 'none',
+        mirror: 'optional', auth: 'none', path_style: 'posix',
+      },
+      onEvent: (event) => { events.push(`${event.type}:${event.path}`); },
+    }) as FileMutationCapable;
+
+    await adapter.start();
+    try {
+      expect(events).toEqual([`present:${join(root, 'existing.txt')}`]);
+      await adapter.writeRecord('manual.txt', new TextEncoder().encode('still usable'));
+      expect(await readFile(join(root, 'manual.txt'), 'utf8')).toBe('still usable');
+      // No background watcher means the direct write does not synthesize a
+      // second event; a future refresh requires explicit Re-sync.
+      expect(events).toHaveLength(1);
     } finally {
       await adapter.stop();
     }

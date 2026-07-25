@@ -1,11 +1,13 @@
 /** D-192 Fork B — the unified `data.file.*` read resolver.
  *
  *  A file lands three ways, all converging on ONE `data.file` entity (design
- *  `docs/d-192-file-source-family.md` "three landing paths"):
+ *  D-192 "three landing paths"):
  *    - reception / recipe-download / owner-upload → bytes in the CAS, a
  *      `data.file.received` COLLECTION record (`storage_ref:{kind:'cas'}`);
- *    - a vendor mirror (Dropbox / S3 / …) → META only, a `file_meta_ref`
- *      meta-store row (`storage_ref:{kind:'remote'}`), bytes NEVER fetched.
+ *    - a vendor mirror (Dropbox / S3 / …) → META only during sync, a
+ *      `file_meta_ref` meta-store row (`storage_ref:{kind:'remote'}`); an
+ *      explicit, policy-gated file read can resolve bytes lazily from the
+ *      provider without copying them into the mirror.
  *  Those two live in DIFFERENT stores (the collection registry vs the
  *  `FileMetaStore`). Fork B is one file entity kind, two storage postures: this
  *  resolver reads BOTH and projects each into one {@link DataFileView} so a
@@ -15,10 +17,9 @@
  *  (`FileMetaProjection` ↔ `DataFileHotFields`).
  *
  *  The store-backed resolver mirrors the `data.contact` precedent (one core
- *  shared across surfaces), NOT a `CollectionRegistry` collection — a remote
- *  file has no bytes to serve, so it can never be a byte-reading `Collection`.
- *  Bytes stay CAS-only (North star): a remote view carries a `{provider,
- *  remote_id}` pointer, never a download.
+ *  shared across surfaces), NOT a `CollectionRegistry` collection. A remote
+ *  view carries a `{provider, remote_id}` pointer; the separate file-read
+ *  handler may resolve that pointer lazily through the D-192 provider registry.
  *
  *  Record-id scheme (the two postures share the `file:` entity space but stay
  *  distinguishable + reversible): a CAS record keeps its minted
@@ -282,9 +283,10 @@ export const createFileViewResolverFromRegistry = (
 /** Project a unified {@link DataFileView} into the `file`-source
  *  `TimelineEntry`. The payload follows the D-120 raw-record shape
  *  (`{ record_id, hot_fields, size_bytes }`) PLUS `storage_ref` — the posture
- *  discriminator + the remote `{provider, remote_id}` pointer a consumer needs
- *  to open the vendor's own link (bytes are never fetched). `kind` names the
- *  posture; `ts` is the view's `event_at` (vendor mtime / CAS received_at). */
+ *  discriminator + the remote `{provider, remote_id}` pointer used by the
+ *  separate, policy-gated lazy byte-read path. Timeline projection itself
+ *  never fetches content. `kind` names the posture; `ts` is the view's
+ *  `event_at` (vendor mtime / CAS received_at). */
 const fileViewToTimelineEntry = (view: DataFileView): TimelineEntry => {
   const hot_fields: Record<string, unknown> = { filename: view.filename, posture: view.posture };
   const carry = (

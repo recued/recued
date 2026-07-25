@@ -143,6 +143,44 @@ describe('D-137 P1.2 — runTurn persists + emits', () => {
     expect(audits.length).toBe(2);
   });
 
+  it('persists diagnosis grounding on both turn rows', async () => {
+    store.createSession({ id: 'sess-1', now: 1000 });
+    const orchestrator = createChatOrchestrator({
+      chatStore: store,
+      registry,
+      broadcast,
+      auditLog,
+      selfSignature,
+      now: () => 2000,
+      mintId: mintCounter,
+    });
+    const data_diagnosis = {
+      kind: 'data_verification' as const,
+      plan_id: 'plan-one',
+      run_id: 'run-one',
+      intent: 'explanation' as const,
+      relationship: 'involved' as const,
+      run_correlation: 'matched' as const,
+    };
+
+    await orchestrator.runTurn({
+      session_id: 'sess-1',
+      message: 'Explain the evidence.',
+      picker_state: { current: 'self' },
+      data_diagnosis,
+    });
+
+    const messages = await store.listMessages('sess-1');
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.data_diagnosis).toEqual(data_diagnosis);
+    expect(messages[1]?.data_diagnosis).toEqual(data_diagnosis);
+    expect(
+      captured.find((event) => event.kind === 'chat.message_complete'),
+    ).toMatchObject({
+      final: { data_diagnosis },
+    });
+  });
+
   it('throws when session does not exist', async () => {
     const orchestrator = createChatOrchestrator({
       chatStore: store,

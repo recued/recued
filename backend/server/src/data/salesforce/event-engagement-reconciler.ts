@@ -18,7 +18,7 @@
  *  calendar adapter's `timeZone` populates `event_at_tz_hint` per
  *  § A.3.7.
  *
- *  Spec: `docs/d-139-spec.md` § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
+ *  Spec: D-139 § A.1, § A.3, § A.3.1, § A.3.2, § A.3.3,
  *  § A.3.6, § A.3.7. */
 
 import {

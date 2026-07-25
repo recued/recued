@@ -33,7 +33,7 @@
  *  dedup makes a stale button safe — but persisting the vendor message
  *  id is D-158 P3.
  *
- *  Spec: docs/d-158-spec.md § P2 / A.4 / I-9.
+ *  Spec: D-158 § P2 / A.4 / I-9.
  */
 
 import type {

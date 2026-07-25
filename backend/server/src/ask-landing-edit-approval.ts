@@ -33,7 +33,7 @@
  *  paired admin client. The approver is a distinct, named authority
  *  (`ReceptionInboxApprover`) and the audit row says which one acted.
  *
- *  Spec: docs/d-210-spec.md § A.8 slice 3d. */
+ *  Spec: D-210 § A.8 slice 3d. */
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
 import type { ArgEditField, InboxItem } from '@recued/contracts';

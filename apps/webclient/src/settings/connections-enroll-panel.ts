@@ -73,7 +73,7 @@
  *  `refresh()`. The mount gate stays at the FIVE connection callers — email
  *  hydration is additive, never a mount prerequisite.
  *
- *  Spec: docs/d-125-spec.md § 7.1 (the enrollment surface); the host
+ *  Spec: D-125 § 7.1 (the enrollment surface); the host
  *  mirrors `reception-authoring-mount.ts` (innerHTML + dispatcher +
  *  silent field edits). */
 
@@ -138,7 +138,9 @@ export type ConnectionsEnrollListCaller = () => Promise<{
 }>;
 
 /** `collection.connection.enroll` caller. Takes the `projectConnection
- *  Payload` output verbatim (its shape IS the enroll rpc input). */
+ *  Payload` output verbatim (its shape IS the enroll rpc input). The optional
+ *  `probe` response is the enrollment baseline retained for wire compatibility;
+ *  "Save and probe" always follows with the authoritative probe rpc. */
 export type ConnectionsEnrollCaller = (
   args: ConnectionPayload,
 ) => Promise<{ connection: ConnectionView; probe?: ConnectionHealth }>;
@@ -617,10 +619,9 @@ export const mountConnectionsEnrollPanel = (
         // membership gate (validateConnectionForm) stops a value OUTSIDE the
         // displayed list from being submitted, and the SERVER is authoritative
         // — kernel `mail-send` / `connection-notification` re-check
-        // `send_capable` at send time (and the enroll-time `verify_send_capable`
-        // probe, a connection-handler P4.x placeholder today, is the proper
-        // closure). So a sender that lost capability between the last good
-        // hydrate and submit fails LOUDLY at send time, never silent — a
+        // `send_capable` at send time (and the live enrollment follow-up probe
+        // is the proper closure). So a sender that lost capability between the
+        // last good hydrate and submit fails LOUDLY at send time, never silent — a
         // cache→send TOCTOU no client refresh can close. Swallow here; never
         // block enrollment on a list-fetch failure.
       }
@@ -1223,7 +1224,7 @@ export const mountConnectionsEnrollPanel = (
     dialog.error = null;
     render();
     try {
-      let probe: ConnectionHealth | undefined;
+      let probeStatus: string | undefined;
       // The saved connection's CANONICAL name (the server trims / canonicalizes
       // on enroll) — used for the trigger write so a padded create name can't
       // 404 the follow-up `setMatchPatterns`.
@@ -1233,8 +1234,21 @@ export const mountConnectionsEnrollPanel = (
         savedName = connection.name;
       } else {
         const result = await opts.runEnroll(payload);
-        probe = result.probe;
         savedName = result.connection.name;
+        // Enrollment intentionally commits before health checking so an
+        // unreachable service cannot roll back the credential/config the user
+        // needs to repair. The button promises a real probe, though, so invoke
+        // the same rpc as the row action and surface either its health or its
+        // transport-level failure in the retained banner.
+        try {
+          const { health } = await opts.runProbe({
+            name: savedName,
+            kind: payload.kind,
+          });
+          probeStatus = health.status;
+        } catch (err) {
+          probeStatus = errMessage(err);
+        }
       }
       // D-192 M4c-UI — the messenger triggers save via their own merge-write now
       // that the connection exists (create + edit), from the pre-await snapshot.
@@ -1252,9 +1266,11 @@ export const mountConnectionsEnrollPanel = (
       if (disposed || gen !== dialogGen) return;
       resetDialog();
       if (!isEdit) {
-        state.dialog.recentProbe = probe
-          ? { kind: payload.kind, name: payload.name, status: probe.status }
-          : null;
+        state.dialog.recentProbe = {
+          kind: payload.kind,
+          name: savedName,
+          status: probeStatus ?? 'unknown',
+        };
       }
       // Re-list so the new / patched row appears with its server view.
       await doRefresh();

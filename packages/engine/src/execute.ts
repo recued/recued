@@ -484,6 +484,15 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
             ...(e.quality_relevant !== undefined
               ? { quality_relevant: e.quality_relevant }
               : {}),
+            ...(e.owner_override_offer !== undefined
+              ? { owner_override_offer: e.owner_override_offer }
+              : {}),
+            ...(e.approval_clamped_from !== undefined
+              ? { approval_clamped_from: e.approval_clamped_from }
+              : {}),
+            ...(e.authorization_provenance !== undefined
+              ? { authorization_provenance: e.authorization_provenance }
+              : {}),
             // § 7 follow-on — the run's pii ledgers ride the pause so a
             // fresh-process resume can still restore its aliases.
             ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),

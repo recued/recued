@@ -48,7 +48,7 @@
  *  shape at admin-write time so a corrupt config never reaches the
  *  visitor path.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.4 + § Must Hold I-7 + § Drop blob limits. */
+ *  Spec: D-149 § A.5.4 + § Must Hold I-7 + § Drop blob limits. */
 
 import {
   type DropLinkVisitorFieldRequirement,

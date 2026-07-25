@@ -41,7 +41,7 @@
  *      a transient SQLite WAL contention or a mid-flight schema
  *      change.
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import { generateKeyPairSync } from 'node:crypto';
 

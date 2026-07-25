@@ -8,7 +8,7 @@
  *  `etag`) that a dedicated table + typed record-shape is cleaner
  *  than retrofitting `CollectionRecord.hot_fields`.
  *
- *  See `docs/d-117-spec.md` — "Warehouse is authoritative for local
+ *  See D-117 — "Warehouse is authoritative for local
  *  operations only" and "Remote always wins — there is no local
  *  divergence to merge" are the two load-bearing invariants these
  *  types encode. Every write to a calendar warehouse row either

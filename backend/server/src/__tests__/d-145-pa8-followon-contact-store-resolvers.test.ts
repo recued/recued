@@ -162,6 +162,26 @@ describe('D-145 PA8 follow-on — findByAlias', () => {
     expect(result.alternatives).toEqual([]);
   });
 
+  it('peekByAlias resolves identically without stamping last_resolved_at', () => {
+    const alice = seedContact('alice-peek@example.com', {
+      name: 'Alice',
+    });
+    store.upsertContactAlias({
+      contact_id: alice.contact_id!,
+      kind: 'chat_alias',
+      alias_pattern: 'Mom',
+      source: 'manual',
+    });
+
+    const result = store.peekByAlias({ alias_pattern: 'mom' });
+
+    expect(result.contact?.contact_id).toBe(alice.contact_id);
+    expect(result.confidence).toBe(1);
+    expect(result.alternatives).toEqual([]);
+    expect(store.listContactAliases(alice.contact_id!, 'chat_alias')[0]?.last_resolved_at)
+      .toBeUndefined();
+  });
+
   it('surfaces chat_alias alternatives when the alias is ambiguous', () => {
     const alice = seedContact('alice@example.com', {
       name: 'Alice',

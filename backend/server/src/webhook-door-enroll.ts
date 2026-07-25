@@ -39,7 +39,7 @@
  *  recipe's trigger rows (one per provider event type) share one door, and a
  *  pack install mints one door per webhook-declaring recipe it ships.
  *
- *  Spec: `docs/d-209-spec.md` §1.4; `docs/d-207-spec.md` §5.1b / §5.1d / §5.1g. */
+ *  Spec: D-209 §1.4; D-207 §5.1b / §5.1d / §5.1g. */
 
 import type { RecipeDefinition } from '@recued/contracts';
 

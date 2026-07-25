@@ -5,7 +5,7 @@
  * Stage-1 / Stage-2 substrate was removed from chat-orchestrator.ts.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
@@ -766,6 +766,60 @@ describe('D-164 P6.3 tool-loop prompt threading', () => {
     expect(second.prior_tool_calls).toHaveLength(2);
     expect(second.prior_tool_calls[0]?.args.q).toBe('one');
     expect(second.prior_tool_calls[1]?.args.q).toBe('two');
+  });
+
+  it('hard-blocks write dispatches during a guided Data diagnosis', async () => {
+    const calls: CapturedAiCall[] = [];
+    const dispatchImpl = vi.fn(async () => ({
+      ok: true as const,
+      result: { changed: true },
+    }));
+    const executeAiCall = mkExecuteAiCall([
+      {
+        body: aiOutput(
+          'I will retry it.',
+          [toolCall('mail.send', { to: 'owner@example.com' })],
+        ),
+      },
+      { body: aiOutput('I could not run that from this explanation.') },
+    ], calls);
+    const { orchestrator, sessionId } = setup({
+      catalog: [
+        mkTool('mail.search', 1),
+        mkTool('mail.send', 2, {
+          classification: 'write',
+        }),
+      ],
+      dispatchImpl,
+      executeAiCall,
+    });
+
+    await orchestrator.runTurn({
+      session_id: sessionId,
+      message: 'Explain the linked evidence without changing anything.',
+      picker_state: { current: 'self' },
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan-one',
+        run_id: 'run-one',
+        intent: 'explanation',
+        run_correlation: 'matched',
+      },
+    });
+
+    expect(dispatchImpl).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(2);
+    expect(
+      promptBody<{
+        available_tools: ReadonlyArray<{ recipe_slug: string }>;
+      }>(calls[0]!).available_tools.map((tool) => tool.recipe_slug),
+    ).toEqual(['mail.search']);
+    expect(captured).toContainEqual(expect.objectContaining({
+      kind: 'chat.tool_call_completed',
+      tool_name: 'mail.send',
+      status: 'error',
+      reason: 'classification_blocked',
+    }));
   });
 });
 

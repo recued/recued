@@ -77,6 +77,13 @@ import {
   fromRecoveryWords,
   toRecoveryWords,
 } from '@recued/ui-shared/recovery-words';
+import {
+  PAIR_SERVER_ERROR_COPY,
+  PAIR_SERVER_REFUSED_COPY,
+  PAIR_SERVER_SAID_LABEL,
+  describePairServerError,
+  type PairServerErrorCode,
+} from '@recued/ui-shared/pairing';
 import { e } from '@recued/ui-shared/template';
 
 import {
@@ -95,6 +102,11 @@ export const PAIR_CODE_INPUT_SERVER_URL_ID = 'webclient-pair-code-input-server-u
 export const PAIR_CODE_INPUT_CODE_ID = 'webclient-pair-code-input-code';
 export const PAIR_CODE_INPUT_SUBMIT_ID = 'webclient-pair-code-input-submit';
 export const PAIR_CODE_INPUT_STATUS_ID = 'webclient-pair-code-input-status';
+/** D-212 — the RAW code the server sent, when it is not one Recued maps.
+ *  Carried for support ("what did your server actually say?"); the copy the
+ *  user reads never contains it. */
+export const PAIR_CODE_INPUT_SERVER_CODE_ATTR =
+  'data-recued-pair-code-input-server-code';
 const PAIR_CODE_INPUT_REQUIREMENT_ID = 'webclient-pair-code-input-requirement';
 export const PAIR_CODE_INPUT_RECOVERY_PREFIX = 'webclient-pair-code-input-recovery';
 
@@ -140,16 +152,21 @@ export type PairCodeInputClientErrorCode =
   | 'pair_code_input_invalid_recovery_key'
   | 'pair_code_input_transport_failed'
   | 'pair_code_input_server_unknown_error'
+  | 'pair_code_input_server_refused'
   | 'pair_code_input_already_paired';
 
-/** Server-side errors — the `/auth/pair` endpoint's closed-list error
- *  codes (see `backend/server/src/server.ts:473`). Surfaced verbatim
- *  so the copy map can render targeted user-facing strings. */
-export type PairCodeInputServerErrorCode =
-  | 'invalid_code'
-  | 'recovery_key_invalid'
-  | 'bad_request'
-  | 'server_not_configured';
+/** Server-side errors — `/auth/pair` codes this client holds TAILORED
+ *  copy for, sourced from `@recued/ui-shared/pairing` so the webclient
+ *  and the Bridge popup cannot drift apart again.
+ *
+ *  ⚠ NOT a closed list of what the endpoint can return, and it must not
+ *  be read as one. The old hand-copied version claimed to be exactly
+ *  that (citing a `server.ts` line that had since moved) while sitting
+ *  four codes behind; anything it missed was reported to the user as
+ *  "check the URL", which was wrong in every one of those four cases.
+ *  Unrecognised codes now travel as `pair_code_input_server_refused`
+ *  with the server's own message attached. */
+export type PairCodeInputServerErrorCode = PairServerErrorCode;
 
 export type PairCodeInputErrorCode =
   | PairCodeInputClientErrorCode
@@ -166,17 +183,18 @@ export const PAIR_CODE_INPUT_ERROR_COPY: Readonly<Record<PairCodeInputErrorCode,
     "That doesn't look like a valid 24-word recovery key. Check for typos or missing words.",
   pair_code_input_transport_failed:
     "Couldn't reach your recued-server. Check the URL and that the server is running, then try again.",
+  // Reserved for a reply that isn't shaped like a recued-server's at all
+  // (non-JSON, or a 200 with no realm token) — there, "check the URL" is
+  // genuinely the right advice. A server that answered with a proper
+  // error block gets `pair_code_input_server_refused` instead.
   pair_code_input_server_unknown_error:
     'The server returned an unexpected response. Check the URL and try again.',
+  pair_code_input_server_refused: PAIR_SERVER_REFUSED_COPY,
   pair_code_input_already_paired:
     'Another tab finished pairing while this form was open. Reload to use the existing pair, or clear this browser from Settings to pair a new server.',
-  invalid_code:
-    'That pairing code is invalid, expired, or already used. Refresh it from the server terminal.',
-  recovery_key_invalid:
-    "That recovery key doesn't match the one your server has on file. Re-check your written copy and re-enter.",
-  bad_request: 'The server rejected the request. Re-check the fields and try again.',
-  server_not_configured:
-    'The server is missing its recovery-key check store. Ask your admin to run `recued-server pair` first.',
+  // The server half is SPREAD, not restated. Restating it is what let the
+  // webclient and the Bridge drift from each other and from the server.
+  ...PAIR_SERVER_ERROR_COPY,
 };
 
 /** Generate-mode override for `recovery_key_invalid`. A freshly-minted
@@ -191,6 +209,16 @@ export const PAIR_CODE_INPUT_GENERATE_ALREADY_ENROLLED_COPY =
 // ════════════════════════════════════════════════════════════════
 // Pure submit
 // ════════════════════════════════════════════════════════════════
+
+/** A server-supplied error code, but only if it is CODE-SHAPED.
+ *
+ *  ⚠ This string comes from an unauthenticated host at the pairing screen.
+ *  It is escaped wherever it renders, but an attribute is a poor place for
+ *  arbitrary text, and a "code" that is a paragraph is not a code. Anything
+ *  that does not match is dropped rather than shown — the human-readable
+ *  half already travels through `serverSaid`, quoted and attributed. */
+const codeShaped = (raw: string | undefined): string | null =>
+  raw !== undefined && /^[a-z0-9_]{1,64}$/i.test(raw) ? raw : null;
 
 export interface PairCodeInputCommitOptions {
   /** Server URL the form posts against. `/auth/pair` is appended. */
@@ -230,15 +258,18 @@ export type PairCodeInputCommitResult =
       ok: false;
       error: PairCodeInputErrorCode;
       detail?: string;
+      /** The server's own message, sanitized + quotable, when it refused
+       *  with a code this client has no tailored copy for. Present ONLY
+       *  with `pair_code_input_server_refused`; the host renders it
+       *  attributed. */
+      serverSaid?: string;
+      /** The raw code the server sent, when it wasn't one we map. Kept
+       *  for the `data-error` attribute + support conversations — a user
+       *  reading "your server refused" can still name what it said. */
+      serverCode?: string;
     };
 
 const normalizeServerUrl = (raw: string): string => raw.trim().replace(/\/$/, '');
-
-const isKnownServerErrorCode = (s: string): s is PairCodeInputServerErrorCode =>
-  s === 'invalid_code' ||
-  s === 'recovery_key_invalid' ||
-  s === 'bad_request' ||
-  s === 'server_not_configured';
 
 /** Submit the form contents to `/auth/pair`. Never throws — every
  *  parse / transport / server-error path surfaces as a tagged result.
@@ -329,16 +360,26 @@ export const submitPairCodeInput = async (
   const errBlock = (parsed as { error?: { code?: unknown; message?: unknown } } | null)?.error;
   const errCode = errBlock && typeof errBlock.code === 'string' ? errBlock.code : '';
   const errMsg = errBlock && typeof errBlock.message === 'string' ? errBlock.message : '';
-  if (isKnownServerErrorCode(errCode)) {
-    const out: PairCodeInputCommitResult = { ok: false, error: errCode };
+  const presented = describePairServerError(errCode, errMsg);
+  if (presented.tailored) {
+    const out: PairCodeInputCommitResult = {
+      ok: false,
+      error: presented.code as PairServerErrorCode,
+    };
     if (errMsg) out.detail = errMsg;
     return out;
   }
-  return {
+  // The server answered in the right shape and said no with a code we
+  // don't map. That is NOT "an unexpected response, check the URL" — the
+  // URL reached the right server. Carry its own words through instead.
+  const refused: PairCodeInputCommitResult = {
     ok: false,
-    error: 'pair_code_input_server_unknown_error',
+    error: 'pair_code_input_server_refused',
     detail: errMsg || `HTTP ${res.status}`,
   };
+  if (presented.serverSaid) refused.serverSaid = presented.serverSaid;
+  if (errCode) refused.serverCode = errCode;
+  return refused;
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -519,7 +560,19 @@ interface PairCodeInputState {
    *  the re-typed confirmation of the generated key. */
   recoveryWords: string[];
   submitting: boolean;
-  error: { copy: string; code: PairCodeInputErrorCode } | null;
+  error: {
+    copy: string;
+    code: PairCodeInputErrorCode;
+    /** The raw code the server sent, when unmapped. Rendered as an
+     *  attribute for support, never as copy. */
+    serverCode?: string;
+    /** D-212 tail #6 — the server's own message, quoted + attributed
+     *  beneath `copy` when the server refused with a code we don't map.
+     *  Kept as its own field, never concatenated into `copy`: at the
+     *  pairing screen nothing has authenticated that host yet, so its
+     *  words must not read as Recued's. */
+    serverSaid?: string;
+  } | null;
   recoveryMode: PairRecoveryMode;
   /** The freshly-minted phrase (generate mode only). Held in memory
    *  through writing + challenging; the user never sees it again once
@@ -681,6 +734,22 @@ const PAIR_CODE_INPUT_STYLES = `
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.4;
+}
+/* D-212 tail #6 — the quoted server message. Deliberately NOT the danger
+   block above: that block is Recued speaking, this is an unauthenticated
+   host being quoted, and they must not look like one sentence. Muted,
+   monospace-quoted, its own margin. */
+.pair-code-input-server-said {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.pair-code-input-server-said-label {
+  font-weight: 600;
 }
 .pair-code-input-actions {
   margin-top: 16px;
@@ -1274,6 +1343,12 @@ export const mountPairCodeInputHost = (
               ? PAIR_CODE_INPUT_GENERATE_ALREADY_ENROLLED_COPY
               : PAIR_CODE_INPUT_ERROR_COPY[result.error],
             code: result.error,
+            // Only ever set on the refused path (the pure submit attaches
+            // it there and nowhere else), so tailored copy can never end
+            // up quoting a raw server string underneath itself.
+            ...(result.serverSaid ? { serverSaid: result.serverSaid } : {}),
+          ...(result.serverCode ? { serverCode: result.serverCode } : {}),
+            ...(result.serverCode ? { serverCode: result.serverCode } : {}),
           },
           ...(alreadyEnrolled
             ? {
@@ -1439,8 +1514,22 @@ const renderForm = (state: PairCodeInputState): string => {
   // (and tests) find it. A restore bounce surfaces the orchestrator's copy via
   // `restoreNotice` (styled like an error, but carrying no `data-error` code —
   // it isn't one of the pure-submit error codes).
+  // D-212 tail #6 — the server's own words, quoted UNDER Recued's, with an
+  // explicit attribution label. Its own element (`data-server-said`) so a
+  // reader — and a test — can tell whose sentence is whose; at the pairing
+  // screen the host is unauthenticated, so an unattributed merge would let
+  // it put instructions in Recued's mouth. `e()` escapes, as everywhere in
+  // this template.
+  const serverSaidBlock =
+    state.error?.serverSaid
+      ? `<p class="pair-code-input-server-said" data-server-said><span class="pair-code-input-server-said-label">${e(PAIR_SERVER_SAID_LABEL)}</span> <q>${e(state.error.serverSaid)}</q></p>`
+      : '';
+  const rawServerCode = codeShaped(state.error?.serverCode);
+  const serverCodeAttr = rawServerCode
+    ? ` ${PAIR_CODE_INPUT_SERVER_CODE_ATTR}="${e(rawServerCode)}"`
+    : '';
   const statusBlock = state.error
-    ? `<p id="${e(PAIR_CODE_INPUT_STATUS_ID)}" role="status" class="pair-code-input-error" data-error="${e(state.error.code)}">${e(state.error.copy)}</p>`
+    ? `<p id="${e(PAIR_CODE_INPUT_STATUS_ID)}" role="status" class="pair-code-input-error" data-error="${e(state.error.code)}"${serverCodeAttr}>${e(state.error.copy)}</p>${serverSaidBlock}`
     : isRestore && state.restoreNotice
       ? `<p id="${e(PAIR_CODE_INPUT_STATUS_ID)}" role="status" class="pair-code-input-error" data-restore-notice>${e(state.restoreNotice)}</p>`
       : `<p id="${e(PAIR_CODE_INPUT_STATUS_ID)}" role="status" class="pair-code-input-status"></p>`;

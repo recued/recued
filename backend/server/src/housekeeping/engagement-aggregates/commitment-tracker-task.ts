@@ -17,7 +17,7 @@
  *  promotes the topic's D-132 trust to `'auto'`) idle cycles. Manual trust
  *  default (AI-surface) means it stays inert until the user opts in.
  *
- *  Spec: `docs/d-192-spec.md` § Relationship to D-139's
+ *  Spec: D-192 § Relationship to D-139's
  *  `crm-commitment-tracker`. */
 
 import {

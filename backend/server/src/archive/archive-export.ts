@@ -1,11 +1,12 @@
 /** Phase F (D-108) — archive export.
  *
  *  Produces a `.recued.archive` file on disk: manifest + encrypted
- *  DB + config + vault-bundle + blob records + HMAC trailer.
+ *  DB + config + vault bundles + blob records + HMAC trailer.
  *
  *  M2 streaming assembler: the archive is produced by an async generator
  *  piped straight into a `Writable` sink — nothing buffers the whole
- *  archive (no `Buffer.concat`). The db streams from its `db.backup()`
+ *  archive (no `Buffer.concat`). The db streams from its consistent
+ *  `VACUUM INTO` snapshot
  *  temp file through a GCM record cipher, and blobs are read + encrypted +
  *  written ONE at a time. This kills the dominant OOM the old shape had —
  *  `readFileSync(wholeDb)` + every blob held in `blobEntries` + a final
@@ -32,7 +33,6 @@ import {
   statSync,
 } from 'node:fs';
 import { rename, unlink } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import type { Readable } from 'node:stream';
@@ -58,7 +58,9 @@ import {
   encryptRecord,
   newSalt,
 } from './archive-crypto.js';
-import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
+import { exportBlobScratchPath } from './archive-scratch.js';
+import { createEncryptedBlobStore, type BlobStore } from '../storage/blob-store.js';
+import { copyDatabaseForSnapshot } from '../open-database.js';
 import { listReferencedBlobHashes } from '../storage/sqlite-cache-store.js';
 import { listSharedReferencedBlobHashes } from '../storage/shared-store.js';
 import { listAnnotationReferencedBlobHashes } from '../storage/annotation-store.js';
@@ -75,72 +77,104 @@ import {
 export { quoteSqliteIdent };
 
 /** The warehouse blob refs grouped by the CAS root that holds them (blob-
- *  encryption fix Phase 2). Each group maps to one posture-tagged export
+ *  encryption fix Phase 2). Each group maps to one root-tagged export
  *  source, so the archive can carry plaintext + let restore re-encrypt under
- *  the restoring server's key. Same best-effort per-source guarding as
- *  `collectBlobHashes`. */
+ *  the restoring server's key. A group is empty only when that store is
+ *  genuinely absent — see `collectBlobHashesByStore`. */
 export interface BlobHashesByStore {
-  /** KEYLESS `<data>/blobs` root — shared store (+ annotation in Phase 4). */
-  keyless: string[];
+  /** ENCRYPTED `<data>/blobs` root — shared store + annotations. */
+  shared: string[];
   /** ENCRYPTED `<data>/cache_blobs` root — cache values + collection bodies. */
   cache: string[];
   /** ENCRYPTED `<data>/memory_blobs` root — owner-authored `user_memory` bodies. */
   memory: string[];
 }
 
-export const collectBlobHashesByStore = (db: Database.Database): BlobHashesByStore => {
-  const keyless = new Set<string>();
-  try { for (const h of listSharedReferencedBlobHashes(db)) keyless.add(h); } catch { /* shared store absent */ }
-  try { for (const h of listAnnotationReferencedBlobHashes(db)) keyless.add(h); } catch { /* annotation table absent */ }
-  const cache = new Set<string>();
-  try { for (const h of listReferencedBlobHashes(db)) cache.add(h); } catch { /* cache table absent */ }
-  try { for (const h of listCollectionReferencedBlobHashes(db)) cache.add(h); } catch { /* collection scan failed; skip */ }
-  const memory = new Set<string>();
-  try { for (const h of listMemoryReferencedBlobHashes(db)) memory.add(h); } catch { /* user_memory table absent */ }
-  return { keyless: [...keyless], cache: [...cache], memory: [...memory] };
+const MISSING_TABLE_MESSAGE = /no such table:\s*([A-Za-z0-9_]+)/i;
+
+/** Is this failure a store that genuinely does not exist on this realm — the
+ *  one reason a blob-reference scan may legitimately come back short?
+ *
+ *  Proved, not assumed, and in two steps. SQLite raises `no such table` from the
+ *  schema at prepare time, so it is deterministic in a way an I/O error or a
+ *  `SQLITE_BUSY` is not; the name is then taken FROM THE ERROR and confirmed
+ *  absent in `sqlite_master`. Nothing here restates a store's table name, so
+ *  this cannot rot into a probe that silently answers "absent" after a rename —
+ *  the way a hard-coded list would, reintroducing exactly the bug below. */
+const isAbsentStore = (db: Database.Database, err: unknown): boolean => {
+  const name = MISSING_TABLE_MESSAGE.exec(
+    err instanceof Error ? err.message : String(err),
+  )?.[1];
+  if (!name) return false;
+  return db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`)
+    .get(name) === undefined;
 };
 
-/** Build the posture-split export blob sources from a data dir + db. The
- *  keyless `blobs` root (shared + annotation) streams plaintext directly; the
- *  ENCRYPTED `cache_blobs` (cache + collections) + `memory_blobs` (owner memory)
- *  roots are opened with `getBlobKey` — the realm's `blob-store` sub-DEK
- *  provider — so their bodies decrypt on export. Pass `getBlobKey = undefined`
- *  for a KEYLESS server (those roots are plaintext there and read keyless) —
- *  NEVER for an encrypted server, where a keyless view would archive ciphertext.
+/** ⛔ FAIL-CLOSED, like every reader it calls. This used to wrap each one in a
+ *  bare `catch {}` annotated "table absent" — but a catch cannot tell absence
+ *  from an I/O error, a corrupt schema or a transient `SQLITE_BUSY`, and it
+ *  answered all of them with an empty set. The export then bundled the database
+ *  — which still references those blobs — WITHOUT their payloads, and signed the
+ *  result: an authenticated, plausible, silently incomplete backup, discovered
+ *  only when someone restores it.
+ *
+ *  `collection-blob-refs` states the rule for the destructive sibling consumer —
+ *  "a silently-incomplete set would reap LIVE collection bodies" — and export
+ *  opted out of it. A backup has the same standing: both turn a partial answer
+ *  into permanent data loss, just at different moments. */
+export const collectBlobHashesByStore = (db: Database.Database): BlobHashesByStore => {
+  const collect = (into: Set<string>, read: () => Iterable<string>): void => {
+    try {
+      for (const h of read()) into.add(h);
+    } catch (err) {
+      if (!isAbsentStore(db, err)) throw err;
+    }
+  };
+  const shared = new Set<string>();
+  collect(shared, () => listSharedReferencedBlobHashes(db));
+  collect(shared, () => listAnnotationReferencedBlobHashes(db));
+  const cache = new Set<string>();
+  collect(cache, () => listReferencedBlobHashes(db));
+  collect(cache, () => listCollectionReferencedBlobHashes(db));
+  const memory = new Set<string>();
+  collect(memory, () => listMemoryReferencedBlobHashes(db));
+  return { shared: [...shared], cache: [...cache], memory: [...memory] };
+};
+
+/** Build the root-split export blob sources from a data dir + db. Every
+ *  production root is opened with the required `blob-store` sub-DEK provider,
+ *  including shared + annotation's historical `blobs/` root. A locked or
+ *  uninitialized provider fails on decrypt; it never reinterprets ciphertext as
+ *  plaintext.
  *  Only non-empty groups become sources. Shared by the online rpc (`runExport`,
  *  the live `KeyManager.keyProvider('blob-store')`) + the offline CLI
- *  (`cmdExport`, the key derived from the db's server bundle via
- *  `deriveBlobStoreKeyFromDb`). */
+ *  (`cmdExport`, the key derived from the bundle sidecar + recovery key via
+ *  `deriveBlobStoreKey`). */
 export const buildExportBlobSources = (
   dataPath: string,
   db: Database.Database,
-  getBlobKey: (() => Uint8Array | null) | undefined,
+  getBlobKey: () => Uint8Array | null,
 ): BlobSource[] => {
   const byStore = collectBlobHashesByStore(db);
   const sources: BlobSource[] = [];
-  if (byStore.keyless.length > 0) {
+  if (byStore.shared.length > 0) {
     sources.push({
-      store: createBlobStore(join(dataPath, 'blobs')),
-      hashes: byStore.keyless,
+      store: createEncryptedBlobStore(join(dataPath, 'blobs'), getBlobKey),
+      hashes: byStore.shared,
       prefix: BLOB_NAME_PREFIX,
     });
   }
   if (byStore.cache.length > 0) {
     sources.push({
-      store: createBlobStore(
-        join(dataPath, 'cache_blobs'),
-        getBlobKey ? { getEncryptionKey: getBlobKey } : {},
-      ),
+      store: createEncryptedBlobStore(join(dataPath, 'cache_blobs'), getBlobKey),
       hashes: byStore.cache,
       prefix: CACHE_BLOB_NAME_PREFIX,
     });
   }
   if (byStore.memory.length > 0) {
     sources.push({
-      store: createBlobStore(
-        join(dataPath, 'memory_blobs'),
-        getBlobKey ? { getEncryptionKey: getBlobKey } : {},
-      ),
+      store: createEncryptedBlobStore(join(dataPath, 'memory_blobs'), getBlobKey),
       hashes: byStore.memory,
       prefix: MEMORY_BLOB_NAME_PREFIX,
     });
@@ -156,8 +190,8 @@ export interface ExportOptions {
   /** 32-byte recovery key derived from the user's recovery phrase.
    *  The same buffer the FileVault unlock path accepts. */
   recoveryKey: Buffer;
-  /** Live SQLite database. Export uses `db.backup()` so writes
-   *  continue safely during the dump. */
+  /** Live SQLite database. Export takes a consistent `VACUUM INTO` snapshot;
+   *  unlike the fork's `db.backup()`, it preserves the source cipher. */
   db: Database.Database;
   /** Path to the live config.toml (usually `config.source`). Omit
    *  to skip the config record — rare, but useful for test harnesses
@@ -166,23 +200,28 @@ export interface ExportOptions {
   /** Vault recovery bundle JSON from the `bundle-store`. Optional
    *  for parity with test harnesses that didn't enroll FileVault. */
   vaultBundleJson?: string;
+  /** D-212 server vault bundle sidecar JSON. This is the dual-wrapped Master
+   *  DEK needed to recover/open the restored realm without its keyfile. */
+  serverVaultBundleJson?: string;
   /** A signed `migration_full` server passport, serialized JSON. When set,
    *  it rides as the `passport.json` record (the export-time "include
    *  identity passport" toggle). Omit to skip it. */
   passportJson?: string;
-  /** Legacy single keyless blob source. Reference to the blob store so we can
-   *  read CAS payloads; when omitted, `blobHashes` must also be empty.
+  /** Legacy single blob source. Reference to the blob store so we can read CAS
+   *  payloads; when omitted, `blobHashes` must also be empty.
    *  Equivalent to a single `blobSources` entry `{ store, hashes: blobHashes,
-   *  prefix: 'blobs/' }`. Prefer `blobSources` for the posture-split roots. */
+   *  prefix: 'blobs/' }`. Prefer `blobSources` for the root-split stores. This
+   *  compatibility input may still be keyless in explicit format tests, but no
+   *  production builder creates a keyless source. */
   blobs?: BlobStore;
   /** Explicit blob hashes for the legacy `blobs` source. */
   blobHashes?: string[];
-  /** Blob-encryption fix Phase 2 — the posture-split blob sources. Each source
+  /** Blob-encryption fix Phase 2 — the root-split blob sources. Each source
    *  pairs a store with the hashes to bundle from it and the record-name prefix
-   *  that tags its posture (`blobs/` keyless, `cache-blobs/` + `memory-blobs/`
-   *  encrypted). The archive ALWAYS carries plaintext: a keyless source streams
-   *  directly; an encrypted source is decrypted (tag-verified) to a scratch file
-   *  first. Supersedes `blobs`/`blobHashes` when present. */
+   *  that tags its destination root. The archive ALWAYS carries plaintext: an
+   *  encrypted source is decrypted (tag-verified) to a scratch file first; an
+   *  explicit keyless test fixture streams directly. Supersedes
+   *  `blobs`/`blobHashes` when present. */
   blobSources?: BlobSource[];
   /** Overwrite an existing file at `destPath`. Default: throw. */
   force?: boolean;
@@ -197,8 +236,9 @@ export interface ExportOptions {
   producerVersion: string;
 }
 
-/** One posture-tagged blob source for the export. `store.encrypted` decides how
- *  each blob's plaintext is obtained (keyless `getStream` vs. `decryptToFile`);
+/** One root-tagged blob source for the export. `store.encrypted` decides how
+ *  each blob's plaintext is obtained (`decryptToFile` for every production
+ *  source; `getStream` remains for explicit keyless format-test fixtures).
  *  `prefix` tags the record so restore routes it to the matching store. */
 export interface BlobSource {
   store: BlobStore;
@@ -267,12 +307,24 @@ export const exportArchive = async (
   // unless the rename committed it.
   const dbTemp = tempDbPath(opts.destPath);
   const partialPath = `${opts.destPath}.partial`;
+  // Where an encrypted blob's PLAINTEXT is allowed to land. Deliberately NOT
+  // beside `destPath`: the `archive export <dest>` CLI takes that from the
+  // operator, so it can be a USB stick, a network share, or anything else
+  // outside the boundary the warehouse's encryption exists to draw. The db
+  // handle names the realm's own data volume (`dataPath` is `dirname(dbPath)`
+  // everywhere else), which is also where the free-space preflight budgets the
+  // scratch and where the boot sweep looks for strays. The `.partial` archive
+  // and the `VACUUM INTO` db temp stay beside `destPath` — the archive is
+  // encrypted and the db copy keeps the source cipher, so neither is plaintext.
+  const scratchDir = dirname(opts.db.name);
   let committed = false;
   try {
-    // 1. SQLite online backup to a temp file. The db streams straight from
+    // 1. Consistent SQLite snapshot to a temp file. `VACUUM INTO` inherits the
+    //    source connection's cipher; the fork's `db.backup()` refuses because
+    //    its implicit destination has no matching key. The db streams from
     //    this file into the archive (never read whole into memory), so we
     //    only need its byte length up front for the record header.
-    await opts.db.backup(dbTemp);
+    await copyDatabaseForSnapshot(opts.db, dbTemp);
     const dbByteLen = statSync(dbTemp).size;
 
     // 2. Gather the small plaintext inputs (config / vault / passport — all
@@ -284,19 +336,22 @@ export const exportArchive = async (
     const vaultBytes = opts.vaultBundleJson
       ? Buffer.from(opts.vaultBundleJson, 'utf8')
       : null;
+    const serverVaultBytes = opts.serverVaultBundleJson
+      ? Buffer.from(opts.serverVaultBundleJson, 'utf8')
+      : null;
     const passportBytes = opts.passportJson
       ? Buffer.from(opts.passportJson, 'utf8')
       : null;
 
-    // Blobs: normalize to the posture-tagged sources (the legacy single
-    // `blobs`/`blobHashes` maps to one keyless `blobs/` source), then size each
+    // Blobs: normalize to the root-tagged sources (the legacy single
+    // `blobs`/`blobHashes` maps to one `blobs/` source), then size each
     // up front with a cheap stat (no content read) for the manifest and stream
     // one body at a time during assembly so the whole set never sits in RAM.
     // The archive ALWAYS stores plaintext, so the sizing figure is the
     // PLAINTEXT length (`plaintextSizeOf` — for an encrypted store that is the
-    // on-disk size minus the AEAD envelope, no decrypt needed; for keyless it
-    // equals `sizeOf`). A referenced-but-absent blob fails fast here, before
-    // any byte is written.
+    // on-disk size minus the AEAD envelope, no decrypt needed; for an explicit
+    // keyless fixture it equals `sizeOf`). A referenced-but-absent blob fails
+    // fast here, before any byte is written.
     const blobSources: BlobSource[] = opts.blobSources
       ?? (opts.blobs && opts.blobHashes
         ? [{ store: opts.blobs, hashes: opts.blobHashes, prefix: BLOB_NAME_PREFIX }]
@@ -343,6 +398,7 @@ export const exportArchive = async (
       db_size_bytes: dbByteLen,
       blob_count: blobPlan.length,
       blob_bytes: blobTotalBytes,
+      includes_server_vault_bundle: serverVaultBytes !== null,
       encryption: {
         algorithm: 'aes-256-gcm',
         key_derivation: 'hkdf-sha-256',
@@ -410,8 +466,9 @@ export const exportArchive = async (
       yield emit(uint32BE(bodyLen));
       yield emit(cipher.iv);
 
-      // Scratch decrypt path (encrypted sources only) — a sibling temp of the
-      // archive, on the same data volume, always unlinked in the `finally`.
+      // Scratch decrypt path (encrypted sources only) — inside the server's own
+      // data dir, always unlinked in the `finally`, and swept at the next boot
+      // if a hard kill got in the way.
       let scratchPath: string | undefined;
       try {
         let plaintext: Readable;
@@ -419,10 +476,7 @@ export const exportArchive = async (
           if (!store.decryptToFile) {
             throw new Error('ARCHIVE_BLOB_STREAM_UNSUPPORTED: encrypted blob store lacks decryptToFile');
           }
-          scratchPath = join(
-            dirname(opts.destPath),
-            `.decrypt-${hash}-${randomBytes(6).toString('hex')}.tmp`,
-          );
+          scratchPath = exportBlobScratchPath(scratchDir, hash);
           // Verifies the GCM tag before returning; throws (and removes the
           // scratch) on a tampered/absent blob, aborting the whole export.
           await store.decryptToFile(hash, scratchPath);
@@ -457,9 +511,10 @@ export const exportArchive = async (
     }
 
     // 5. Assemble the archive as a byte stream piped straight to disk — no
-    //    whole-archive Buffer, no `Buffer.concat`. Records are written in a
-    //    fixed order; the import builds a name→bytes map so order is free,
-    //    and the HMAC is a running hash over the exact bytes emitted.
+    //    whole-archive Buffer, no `Buffer.concat`. Record order is deliberate:
+    //    the db is complete before any blob and the D-212 bundle sidecar is
+    //    available before an encrypted blob needs its restored-realm key. The
+    //    HMAC is a running hash over the exact bytes emitted.
     async function* assemble(): AsyncGenerator<Buffer> {
       yield emit(MAGIC);
       yield emit(uint32BE(manifestBytes.length));
@@ -468,6 +523,9 @@ export const exportArchive = async (
       yield* streamedDbRecord();
       yield* bufferRecord(FILE_NAMES.config, configBytes);
       yield* bufferRecord(FILE_NAMES.vault, vaultBytes);
+      // The server-bundle sidecar precedes every blob record so a
+      // streaming restore can derive the target CAS key before its first write.
+      yield* bufferRecord(FILE_NAMES.serverVault, serverVaultBytes);
       yield* bufferRecord(FILE_NAMES.passport, passportBytes);
       for (const entry of blobPlan) {
         yield* streamedBlobRecord(entry);

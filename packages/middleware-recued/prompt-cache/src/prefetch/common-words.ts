@@ -1,7 +1,7 @@
 /** D-167 Prefetch PII Coverage Expansion — B4 commonness filter.
  *
  *  The single-token-common-word residual (design
- *  `docs/d-167-prefetch-pii-coverage-design.md` §5 + the §6.1 measurement):
+ *  D-167 §5 + the §6.1 measurement):
  *  with full-value containment (D3) every MULTI-token name/org seeds precisely,
  *  but a SINGLE-token value that is itself a common English word — a contact
  *  whose whole name is "Will", an org literally named "Gap" — still over-aliases

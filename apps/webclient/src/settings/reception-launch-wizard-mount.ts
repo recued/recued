@@ -51,7 +51,7 @@
  *  contract); the host bridges it to D-148's exposure rpc via
  *  `onSwitchProfile`.
  *
- *  Spec: docs/d-149-spec.md § A.20.1 (Reception Launch Wizard) + § DoD
+ *  Spec: D-149 § A.20.1 (Reception Launch Wizard) + § DoD
  *  (the under-10-minute, 3-endpoint onboarding goal). */
 
 import { e } from '@recued/ui-shared/template';

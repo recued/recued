@@ -48,7 +48,7 @@
  *  notification dispatch. Substrate never blocks the visitor thread on
  *  engine work (§ Must Hold I-12).
  *
- *  Spec: docs/d-149-spec.md § A.5.2 + § Must Hold I-12 + I-12b. */
+ *  Spec: D-149 § A.5.2 + § Must Hold I-12 + I-12b. */
 
 import { randomUUID } from 'node:crypto';
 import { verifyReceptionSameOrigin } from './same-origin.js';

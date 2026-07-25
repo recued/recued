@@ -28,7 +28,7 @@
  *  `ensureUploadSessionSchema` (mirrors `ensureContactSchema`). Server-internal,
  *  per-pair — no cross-cloud sync (D-097 / D-168).
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`. */
+ *  Spec: internal design notes. */
 
 import type Database from 'better-sqlite3';
 

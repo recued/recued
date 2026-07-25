@@ -49,7 +49,7 @@
  *  documented follow-on; v1 scopes to the D-139 engagement surface the
  *  pack's body-content grant covers.
  *
- *  Spec: `docs/d-139-spec.md` § P6.B + `docs/d-192-spec.md`
+ *  Spec: D-139 § P6.B + D-192
  *  § Relationship to D-139's `crm-commitment-tracker`. */
 
 import {

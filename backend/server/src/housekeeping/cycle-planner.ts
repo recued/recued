@@ -40,7 +40,7 @@
  *  every leaf treated as `will_compute`. Either path is correct; the
  *  dedup probe just tightens the estimate.
  *
- *  Spec: `docs/d-136-spec.md` §A.7 (walk-cap planner) + §A.8 (D-132
+ *  Spec: D-136 §A.7 (walk-cap planner) + §A.8 (D-132
  *  trust composition) + §A.6 (storage schema for the budget counters). */
 
 import type Database from 'better-sqlite3';

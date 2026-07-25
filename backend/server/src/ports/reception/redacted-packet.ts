@@ -35,7 +35,7 @@
  *  discipline applies identically to every kind. Per-kind source-
  *  query resolution lives in `transformations/<kind>.ts`.
  *
- *  Spec: `docs/d-149-spec.md` § A.4 + § A.5. */
+ *  Spec: D-149 § A.4 + § A.5. */
 
 import {
   buildRedactedPacket,

@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/** Repo root (`recued-dev/`). */
+/** Repo root (the repository root). */
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 
 /** Substrate-internal allowlist. Files where `content_stored: true`

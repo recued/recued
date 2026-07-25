@@ -35,9 +35,7 @@ import {
   LOCAL_CALENDAR_CAPS,
 } from '../../collections/calendar/local-provider.js';
 import { validateCalendarCaps } from '../../collections/calendar/caps.js';
-import type { createBlobStore } from '../../storage/index.js';
-
-type BlobStore = ReturnType<typeof createBlobStore>;
+import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeCalendarStackBootDeps {
   /** SQLite handle. Undefined-or-`cacheBlobs`-undefined → composer

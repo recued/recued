@@ -4,6 +4,7 @@ import {
   buildConnectionEditDialogPatch,
   projectConnectionPayload,
   resolveConnectionSchema,
+  TAVILY_API_BASE,
 } from '@recued/ui-shared';
 
 import {
@@ -343,6 +344,23 @@ describe('packs item E — vendor-prefilled connection enroll deep link', () => 
     expect(dialog.values['auth.token_endpoint']).toBe(
       'https://login.microsoftonline.com/common/oauth2/v2.0/token',
     );
+    panel.dispose();
+  });
+
+  it('auto-opens Tavily with its fixed API origin and bearer mode prefilled', async () => {
+    const { panel } = mountPanel({ initialVendor: 'tavily' });
+
+    await panel.whenLoaded();
+    await flush();
+
+    const { dialog } = panel.getState();
+    expect(dialog.stage).toBe('form');
+    expect(dialog.kind).toBe('api');
+    expect(dialog.vendor).toBe('tavily');
+    expect(dialog.values.name).toBe('tavily');
+    expect(dialog.values['config.vendor']).toBe('tavily');
+    expect(dialog.values['config.base_url']).toBe(TAVILY_API_BASE);
+    expect(dialog.values['auth.type']).toBe('bearer');
     panel.dispose();
   });
 

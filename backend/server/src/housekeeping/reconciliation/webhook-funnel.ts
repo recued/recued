@@ -18,7 +18,7 @@
  *  when the vendor doesn't supply a delivery id) skips duplicate
  *  payloads inside `PLATFORM_REFERENCE_WEBHOOK_REPLAY_WINDOW_MS`.
  *
- *  Spec: `docs/d-128-spec.md` §A.3.1 + Phase 3. */
+ *  Spec: D-128 §A.3.1 + Phase 3. */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 

@@ -26,9 +26,7 @@ import {
   composeMailStack,
   type MailStack,
 } from '../../collections/mail/compose.js';
-import type { createBlobStore } from '../../storage/index.js';
-
-type BlobStore = ReturnType<typeof createBlobStore>;
+import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeMailStackBootDeps {
   /** SQLite handle. Undefined-or-`cacheBlobs`-undefined → composer

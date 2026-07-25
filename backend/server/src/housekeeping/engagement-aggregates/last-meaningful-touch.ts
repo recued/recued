@@ -45,7 +45,7 @@
  *  resolver sorts by `(event_at DESC, connection_id ASC, target_id
  *  ASC)` per § A.5.1, so the producer sees stable-ordered input).
  *
- *  Spec: `docs/d-139-spec.md` § A.9.1 + § A.3.2 + § A.3.6 +
+ *  Spec: D-139 § A.9.1 + § A.3.2 + § A.3.6 +
  *  § P3 acceptance. */
 
 import {

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   PAID_DOCUMENT_DIRECT_CHECKOUT_SELLER_ASSOCIATION_CONFIGURATION_VERSION,
   paidDocumentDirectCheckoutSellerAssociation,
@@ -35,24 +35,6 @@ import { ensureReceptionSchema } from '../storage/reception-store.js';
 const NOW = 1_700_000_000_000;
 const ENDPOINT_ID = 'ep-direct-checkout';
 const FORM_DEFINITION_ID = 'research-brief-v1';
-
-/** D-210 WS2 — the canonical `form_response` log moved to SUBMIT, but ONLY for
- *  unpaired submissions. Every form in this file is a D-200 direct-checkout
- *  pair, and for those the log IS the paid deliverable: it must not exist until
- *  the approve-time payment gate has admitted it. So the invariant this
- *  recorder pins is a NEGATIVE one — nothing is logged at submit — which is
- *  only checkable if the store records the call instead of no-opping. */
-const submitTimeFormResponseWrites: string[] = [];
-const formResponseRecorder = {
-  accept: (input: { submission_id: string }) => {
-    submitTimeFormResponseWrites.push(input.submission_id);
-    return { status: 'created', response: { submission_id: input.submission_id } };
-  },
-} as never;
-
-beforeEach(() => {
-  submitTimeFormResponseWrites.length = 0;
-});
 
 const formConfig = (): IntakeFormConfig => ({
   display_name: 'Commission one research brief',
@@ -533,9 +515,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     expect(nonce).toBeTruthy();
 
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => registry(config) as never,
       getSubmissionStore: () => ({
         countWithinWindow: submissionStore.countWithinWindow,
@@ -595,7 +574,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     // `form_response` is the paid deliverable and is written only after the
     // approve-time payment gate admits it; logging it here would hand the
     // owner the goods before the provider confirmed payment.
-    expect(submitTimeFormResponseWrites).toEqual([]);
   });
 
   it('keeps a paired row durable and reports unavailable when the post-insert claim throws', async () => {
@@ -620,9 +598,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const auditDetails: string[] = [];
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -687,9 +662,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     await getHandler(fakeReq('GET'), getRes, endpoint);
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -732,9 +704,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     await getHandler(fakeReq('GET'), getRes, endpoint);
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -763,11 +732,20 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     expect(claimCalls).toBe(0);
     expect(submissionStore.listPendingForEndpoint(ENDPOINT_ID)[0])
       .toMatchObject({ pair_binding: null });
-    // D-210 WS2 — the other half of the same split: an UNPAIRED submission is
-    // logged at submit. This is the positive control for the paired tests'
-    // negative one, so a change that stopped writing altogether cannot pass by
-    // making every "must not log" assertion trivially true.
-    expect(submitTimeFormResponseWrites).toHaveLength(1);
+    // ⚠ RE-POINTED 2026-07-20 (D-210 audit finding 3a). This was the positive
+    // control for the paired tests' negative one — deliberately asserting that
+    // SOMETHING was written at submit, so a change that stopped writing
+    // altogether could not pass by making every "must not log" assertion
+    // trivially true. That control did its job: this line is what caught the
+    // write being moved. ⇒ [[a_reduction_is_faked_by_doing_less]]
+    //
+    // Nothing is written to `form_response` at submit any more — approve is the
+    // door (A.1). The anti-vacuity role splits in two, and neither half is lost:
+    //   - at THIS layer, the assertion above that the submission row exists with
+    //     `pair_binding: null` proves the handler really ran and reached here;
+    //   - the WRITE itself is pinned at its new home, `form-response-promotion.test.ts`
+    //     ("writes the canonical row for an UNPAIRED form_response approval"),
+    //     alongside the destination discrimination that moved with it.
   });
 
   it('does not invoke the D-200 claim seam for paired spam or rejected-domain rows', async () => {
@@ -813,9 +791,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       let insertedOutcome: string | null = null;
       let claimCalls = 0;
       const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
         getStore: () => registry(config) as never,
         getSubmissionStore: () => ({
           countWithinWindow: submissionStore.countWithinWindow,
@@ -881,9 +856,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
 
     resolution = { kind: 'stale' };
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -946,9 +918,6 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     expect(nonce).toBeTruthy();
 
     const submitHandler = createIntakeFormSubmitHandler({
-      // D-210 WS2 — the submit-time canonical log. Recorded so a test can assert
-      // WHETHER it was written, not merely that a store was supplied.
-      getFormResponseStore: () => formResponseRecorder,
       getStore: () => mutableRegistry() as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,

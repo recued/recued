@@ -7,7 +7,7 @@
  *  `'ask'` verdict + the `notification.ask` flow are slice 4; tests
  *  here raise the signal from a fixture executor.
  *
- *  Spec: docs/d-157-spec.md § N.3 / A.2 / I-4 / I-6 / I-7 / TR-5.
+ *  Spec: D-157 § N.3 / A.2 / I-4 / I-6 / I-7 / TR-5.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -123,12 +123,37 @@ describe('D-157 P1 slice 3 — engine pause (I-4)', () => {
     expect(result.errors).toEqual([]);
     expect(result.awaiting_approval).toBeDefined();
     expect(result.awaiting_approval!.gated_step_id).toBe('gated_call');
-    // step_state carries pre-gate step outputs but NOT the gated step itself
+    // step_state carries pre-gate step OUTPUTS, and never a step after the gate.
     expect(result.awaiting_approval!.step_state).toHaveProperty('s1');
     expect(result.awaiting_approval!.step_state).toHaveProperty('s2');
     expect(result.awaiting_approval!.step_state).toHaveProperty('dispatch_payload');
-    expect(result.awaiting_approval!.step_state).not.toHaveProperty('gated_call');
     expect(result.awaiting_approval!.step_state).not.toHaveProperty('s4');
+    // ⚠ THE GATED STEP NOW CARRIES ITS RESOLVED INPUT, and this assertion was
+    // INVERTED deliberately — it previously read `.not.toHaveProperty`.
+    //
+    // That was true only of the simple-form branch. The catalog branch has
+    // captured `{ input: resolvedArgs }` here since the D-173 capstone, because
+    // without it a HOLD's checkpoint has no record of what the step was about
+    // to run with and the Reception Inbox renders an empty prefill. Every
+    // kernel op lowers to the simple-form branch, so the MAJORITY path was the
+    // one missing it — `d-192-e3`'s held commitment proposal offered the owner
+    // edit fields for `counterparty_contact_id` / `statement` while showing no
+    // values in them.
+    //
+    // Surfacing them is settled: `InboxItem.args` is contracted as "concrete
+    // values — what the held op will dispatch", `InboxItem.preview` is the
+    // field carrying the I-3 redaction obligation, and the owner ruled that the
+    // list lays out full detail because no one can know in advance which fields
+    // a given business needs in order to approve.
+    //
+    // What is recorded is an INPUT, never an output: the step has not run, and
+    // on resume it re-runs and overwrites this transient capture. Resume is
+    // driven by `gated_step_id` via `findIndex`, NOT by step_state presence, so
+    // the extra key cannot cause a step to be skipped.
+    expect(result.awaiting_approval!.step_state).toHaveProperty('gated_call');
+    expect(result.awaiting_approval!.step_state.gated_call).toEqual({
+      input: { who: 'hello-case-42-after', tag: 'p3' },
+    });
     // The gating ingredient was reached exactly once; no step after it ran
     expect(calls).toEqual(['gated-action']);
     // step logs: only pre-gate steps logged (the gated step threw before

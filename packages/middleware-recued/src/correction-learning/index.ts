@@ -29,7 +29,7 @@
  *  summary projection only reads `kind` + `user_feedback` +
  *  scoped `contact_id` keys; raw text fields are not consulted).
  *
- *  Spec: `docs/d-145-spec.md` § B.14.3 + § B.14.4. */
+ *  Spec: D-145 § B.14.3 + § B.14.4. */
 
 import {
   CORRECTION_EVENT_KIND_SET,

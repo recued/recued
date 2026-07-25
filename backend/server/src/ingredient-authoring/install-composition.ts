@@ -45,7 +45,7 @@
  *  all (the nested `recordPackInventory` transaction degrades to a SAVEPOINT).
  *  `registry.register` is in-memory and runs after the commit.
  *
- *  Spec: `docs/d-170-spec.md` § N.14, N.16; the install rpc surface is N.15. */
+ *  Spec: D-170 § N.14, N.16; the install rpc surface is N.15. */
 
 import {
   decomposeComposition,

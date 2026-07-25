@@ -5,7 +5,7 @@
  *  Telegram transports. The channel boundary is therefore deterministic
  *  and no test can hit the network.
  *
- *  Spec: docs/d-160-spec.md sections N.5 / N.6 / N.7 / A.5 + I-10.
+ *  Spec: D-160 sections N.5 / N.6 / N.7 / A.5 + I-10.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -28,6 +28,7 @@ import type {
   TransportSendResult,
   TransportVendor,
 } from '@recued/transport';
+import { isTypeScriptSource } from '../../../../test/source-file-extensions.js';
 
 interface FakeTransport {
   transport: Transport;
@@ -510,7 +511,7 @@ const collectSourceFiles = (dir: string): string[] => {
     if (name === '__tests__') continue;
     const path = join(dir, name);
     if (statSync(path).isDirectory()) out.push(...collectSourceFiles(path));
-    else if (name.endsWith('.ts')) out.push(path);
+    else if (isTypeScriptSource(name)) out.push(path);
   }
   return out;
 };
@@ -538,6 +539,7 @@ describe('D-160 I-10 ratchet -- Slack / Telegram stay BYO leaf transports', () =
       'packages/messenger/src/messenger-channel.ts',
       'packages/transport/src/callback.ts',
       'packages/transport/src/discord.ts',
+      'packages/transport/src/fit-text.ts',
       'packages/transport/src/http.ts',
       'packages/transport/src/index.ts',
       'packages/transport/src/slack-users.ts',

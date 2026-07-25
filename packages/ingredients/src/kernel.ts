@@ -75,6 +75,8 @@ import {
   type EnrichmentScope,
   type FormResponse,
   type FormResponseLifecycleState,
+  type FormResponseListCursor,
+  type FormResponseListQuery,
   FORM_RESPONSE_LIFECYCLE_STATES,
   FORM_RESPONSE_LIFECYCLE_STATE_SET,
   type Link,
@@ -335,29 +337,27 @@ export interface ReceptionMaterializeInput {
   source_id?: string;
   contact_email?: string;
   contact_name?: string;
-  /** D-173 P4 / D7 — a dated commitment's due time (`promised_for_at`).
-   *  Editable at the gate (D4). Epoch ms. (Scheduling now materializes a
-   *  calendar event, not a commitment — P4.3; this stays for the approval
-   *  pack's dated commitments.) */
+  /** A dated commitment's due time. Scheduling uses `start_at` instead. */
   promised_for_at?: number;
   /** D-173 P4 / I-7 — when set (scheduling), the projection refuses to
    *  materialize a slot already in the past. Re-checks at this approve-resume
    *  leg so a booking that sat in the inbox until its slot passed never books.
-   *  Guards the calendar branch's `start_at` (P4.3). */
+   *  Guards the booking branch's `start_at`. */
   reject_if_slot_past?: boolean;
-  /** D-173 P4.3 / D7 (amended) — a scheduling booking's slot start → the
-   *  local calendar event's `start_at`. Editable at the gate (D4). Epoch ms.
-   *  Calendar branch only. */
+  /** Booking or intake-calendar slot start. Editable at the gate. Epoch ms. */
   start_at?: number;
-  /** D-173 P4.3 — the booked slot duration; the calendar branch computes
-   *  `end_at = start_at + duration_minutes`. Calendar branch only. */
+  /** Booking or intake-calendar slot duration. */
   duration_minutes?: number;
-  /** D-173 P4.3 — the calendar event's IANA timezone. Calendar branch only. */
+  /** Booking or intake-calendar IANA timezone. */
   timezone?: string;
-  /** D-173 P4.3 / I-4 — the `reception_booking_request` id, the calendar
-   *  branch's idempotency anchor (pre-check / populate `resolved_calendar_event_id`).
-   *  Calendar branch only. */
+  /** Scheduling reservation id. Presence selects the sealed booking mint. */
   booking_request_id?: string;
+  /** HMAC binding the exact reservation id to the deterministic booking id. */
+  booking_binding?: string;
+  /** Per-approval owner choice to send a booking confirmation. */
+  notify_visitor?: boolean;
+  /** Intake-calendar day-scoped event flag. */
+  is_all_day?: boolean;
   /** D-173 P5 — a `data.file.received` record id (a drop's ingested file).
    *  When present on a work-entity projection (drop → a task), the file is
    *  attached to the materialized entity via `data.link role:'attachment'`.
@@ -366,8 +366,8 @@ export interface ReceptionMaterializeInput {
 }
 
 /** D-173 P1-dispatch — the projection result. Mirrors the backend
- *  `ReceptionProjectionResult`; `form_response` is the verified canonical
- *  terminal that deliberately creates no second entity. */
+ *  `ReceptionProjectionResult`; `form_response` is the mutable working
+ *  destination paired with an immutable sealed Reception submission. */
 export interface ReceptionMaterializeResult {
   top_tier_kind: ReceptionMaterializeKind;
   target_id: string;
@@ -764,6 +764,13 @@ export interface KernelDispatchers {
   formResponseGet?: (input: {
     submission_id: string;
   }) => Promise<{ record: FormResponse | null }>;
+
+  /** Bounded recipe-side collection read. Full values remain content-tainted
+   * and admission is fenced to data.form_response before dispatch. */
+  formResponseList?: (input: FormResponseListQuery) => Promise<{
+    records: readonly FormResponse[];
+    next_cursor?: FormResponseListCursor;
+  }>;
 
   /** D-210 A.8 slice 2 — backs `form-response-set-state`. Advances the
    *  OWNER-authored lifecycle only; the visitor's answers are not writable
@@ -1679,6 +1686,84 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         return dispatchers.deletePrefix({ prefix });
       }
 
+      case 'form-response-list': {
+        if (!dispatchers.formResponseList) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'form-response-list unavailable — no paired server or form-response dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(
+          input,
+          ['endpoint_id', 'form_definition_id', 'lifecycle_states', 'before', 'limit'],
+          slug,
+        );
+        const badListInput = (message: string): never => {
+          throw new IngredientError('BAD_INPUT', `form-response-list: ${message}`, { slug });
+        };
+        // Ingredient dispatch merges manifest defaults first. Optional fields
+        // therefore arrive as null, not undefined; normalize those defaults to
+        // absence before validating explicit values.
+        const limit = input.limit == null ? 100 : input.limit;
+        if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 499) {
+          badListInput('limit must be an integer between 1 and 499');
+        }
+        for (const key of ['endpoint_id', 'form_definition_id'] as const) {
+          const value = input[key];
+          if (
+            value !== undefined
+            && value !== null
+            && (typeof value !== 'string' || value.trim().length === 0)
+          ) {
+            badListInput(`${key} must be a non-empty string when supplied`);
+          }
+        }
+        if (input.lifecycle_states !== undefined && input.lifecycle_states !== null) {
+          if (
+            !Array.isArray(input.lifecycle_states)
+            || input.lifecycle_states.length === 0
+            || input.lifecycle_states.some(
+              (state) => !FORM_RESPONSE_LIFECYCLE_STATE_SET.has(
+                state as FormResponseLifecycleState,
+              ),
+            )
+          ) {
+            badListInput(
+              `lifecycle_states must be a non-empty array of: ${FORM_RESPONSE_LIFECYCLE_STATES.join(', ')}`,
+            );
+          }
+        }
+        if (input.before !== undefined && input.before !== null) {
+          const before = input.before as Record<string, unknown> | null;
+          if (
+            before === null
+            || typeof before !== 'object'
+            || Array.isArray(before)
+            || !Number.isSafeInteger(before.accepted_at)
+            || (before.accepted_at as number) < 0
+            || typeof before.submission_id !== 'string'
+            || before.submission_id.trim().length === 0
+          ) {
+            badListInput('before must contain a non-negative accepted_at and submission_id');
+          }
+        }
+        return dispatchers.formResponseList({
+          limit: limit as number,
+          ...(typeof input.endpoint_id === 'string' ? { endpoint_id: input.endpoint_id } : {}),
+          ...(typeof input.form_definition_id === 'string'
+            ? { form_definition_id: input.form_definition_id }
+            : {}),
+          ...(Array.isArray(input.lifecycle_states)
+            ? { lifecycle_states: input.lifecycle_states as FormResponseListQuery['lifecycle_states'] }
+            : {}),
+          ...(input.before !== undefined && input.before !== null
+            ? { before: input.before as FormResponseListCursor }
+            : {}),
+        });
+      }
+
       case 'form-response-get': {
         if (!dispatchers.formResponseGet) {
           throw new IngredientError(
@@ -2081,10 +2166,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ...(input.source_id !== undefined ? { source_id: input.source_id } : {}),
           ...(input.contact_email !== undefined ? { contact_email: input.contact_email } : {}),
           ...(input.contact_name !== undefined ? { contact_name: input.contact_name } : {}),
-          // D-173 P4 — scheduling's slot time + past-slot guard ride through
-          // the same projection input. A field not threaded HERE is silently
-          // DROPPED (the dispatcher reconstructs a clean object), so the
-          // calendar branch's slot fields must all be relayed (P4.3 / D7 / I-7).
+          // The dispatcher reconstructs a clean projection object, so every
+          // booking, notification and intake-calendar control must be relayed
+          // explicitly here or the real catalog dispatch would drop it.
           ...(input.promised_for_at !== undefined
             ? { promised_for_at: input.promised_for_at }
             : {}),
@@ -2092,6 +2176,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             ? { reject_if_slot_past: input.reject_if_slot_past }
             : {}),
           ...(input.start_at !== undefined ? { start_at: input.start_at } : {}),
+          ...(input.notify_visitor !== undefined
+            ? { notify_visitor: input.notify_visitor }
+            : {}),
           ...(input.duration_minutes !== undefined
             ? { duration_minutes: input.duration_minutes }
             : {}),
@@ -2099,6 +2186,10 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ...(input.booking_request_id !== undefined
             ? { booking_request_id: input.booking_request_id }
             : {}),
+          ...(input.booking_binding !== undefined
+            ? { booking_binding: input.booking_binding }
+            : {}),
+          ...(input.is_all_day !== undefined ? { is_all_day: input.is_all_day } : {}),
           ...(input.file_id !== undefined ? { file_id: input.file_id } : {}),
         });
       }

@@ -26,6 +26,7 @@
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
+import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import {
   HELD_FOR_APPROVAL_MESSAGE,
   projectRunResultForAgent,
@@ -55,6 +56,7 @@ import {
   ENGAGEMENT_VENDOR_VALUES,
   isCliIngredient,
   isExternallyExposableIngredient,
+  readOwnerOperationOverride,
   resolveTrustCeiling,
   STDIO_MCP_TOKEN_ID,
 } from '@recued/contracts';
@@ -188,12 +190,6 @@ const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype
  *  user; no real agent identity at the protocol layer. Future HTTP /
  *  WS transports replace this via `McpDeps.agentId`. */
 const STDIO_MCP_AGENT_ID = 'stdio_local';
-
-/** D-153 P2.C — stub `ContractSnapshot.contract_version` for the
- *  per-token synthetic contract today. The full contracts substrate
- *  (open question #21 — issue / revoke / version-bump) will replace
- *  this with the contract record's actual version. */
-const STUB_CONTRACT_VERSION = '1';
 
 /** D-153 P2.C — build the channel-shaped `ExecutionSource` for an
  *  MCP tool dispatch. Single-user stdio transport synthesises the
@@ -402,14 +398,13 @@ const buildMcpContractSnapshot = (
             ]),
           )
         : allSlugs;
-  return Object.freeze({
+  return buildVersionedContractSnapshot({
     contract_id: source.contract_id,
-    contract_version: STUB_CONTRACT_VERSION,
-    allowed_tools: Object.freeze([...allowed_tools]),
-    approval_required: Object.freeze([]),
+    allowed_tools,
+    approval_required: [],
     scope_restrictions: resolveMcpDoorScopeRestrictions(deps),
     resolved_at: Date.now(),
-  }) as ContractSnapshot;
+  });
 };
 
 /** D-171 slice-2c follow-on #1 — record ONE contract use for an inbound MCP
@@ -828,6 +823,11 @@ const admitMcpDirectDispatch = (
   toolName: string,
 ): { ok: true } | { ok: false; message: string } => {
   const source = buildMcpExecutionSource(deps);
+  const ownerOverride = readOwnerOperationOverride({
+    scan: deps.contractScan,
+    ingredient_id: toolName,
+    operation_id: toolName,
+  });
   const decision = admitByOpRisk({
     slug: toolName,
     risk_tier: mcpNativeToolRiskTier(toolName),
@@ -838,6 +838,7 @@ const admitMcpDirectDispatch = (
     // trust). Same signal every other mcp path resolves, so they cannot drift.
     ceiling: resolveTrustCeiling(source),
     source,
+    ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
   });
   if (decision.verdict === 'deny') {
     return {
@@ -2318,7 +2319,7 @@ const handleToolCall = async (
         // fence into one grant lookup); replaces the retired visibility map +
         // `enrichmentScopeRestrictions`.
         readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
-        // M-ENRICH (factory/launch-todo-map) — exclude enrichment topics
+        // M-ENRICH (internal planning notes) — exclude enrichment topics
         // that have no registered producer AND no agent-readable rows from
         // the agent-facing catalog, so an external agent is never told it
         // can read / compute an enrichment that nothing produces. Sourced

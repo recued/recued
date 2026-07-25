@@ -21,6 +21,44 @@
 # DB-only. Enroll them from the extension's Options → Server UI, or
 # via the `collection.{mail,file,webhook,calendar}.enroll` rpc.
 
+# ─── Environment, not config ────────────────────────────────────
+#
+# One setting deliberately lives ONLY in the environment, never in
+# this file: `RECUED_IDENTITY_PASSPHRASE`.
+#
+# The server unwraps its own vault key from a key file in the data
+# directory at every boot. That file is sealed by whichever factor
+# the host offers on the FIRST boot that creates it:
+#
+#   1. RECUED_IDENTITY_PASSPHRASE, if set — outranks everything below
+#   2. a platform secret store (macOS login keychain, Windows DPAPI,
+#      systemd-creds), whose secret lives outside the data directory
+#   3. nothing — the key file sits readable beside the database
+#
+# ⚠ Rung 2 declines inside containers (a host credential key is
+# either ephemeral or lives in the data volume), so a containerised
+# server is UNSEALED unless you set the passphrase. Unsealed still
+# encrypts the realm; what it stops defending is a copy of the WHOLE
+# data directory, which then carries the key too.
+#
+# ⚠ It belongs in the environment because this file sits inside (or
+# beside) the directory the passphrase protects. Use your service
+# manager's secret mechanism — systemd `EnvironmentFile=`, a compose
+# `env_file`, a secret manager.
+#
+# Changing the PASSPHRASE later is cheap: stop the server and run
+# `recued rotate-passphrase`. Same realm, same identity, nothing
+# re-pairs — then set the new value here in the environment.
+#
+# Changing the FACTOR (passphrase <-> platform store <-> unsealed)
+# is recorded when the key file is created and is PERMANENT for that
+# realm. Before the first pair the key file is disposable and a
+# change costs a fresh identity, never data; afterwards it means
+# `recued recover-keyfile` with the 24-word recovery key, which
+# mints a new server identity and re-pairs every device.
+#
+# `recued auth-status` prints the current posture.
+
 # ─── Bootstrap — changing any field here requires a restart ─────
 [bootstrap]
 # Absolute path to the data directory (SQLite + CAS blobs + logs).

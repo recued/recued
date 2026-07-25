@@ -88,6 +88,20 @@ describe('probeAdapter (Phase 7 / D-110)', () => {
     };
     await expect(probeAdapter(brokenFactory, {})).rejects.toThrow(CapsValidationError);
   });
+
+  it('rejects OAuth adapters in favor of connection-backed D-192 Sources', async () => {
+    const oauthAdapter: FileAdapterFactory = {
+      type: 'oauth-file-adapter',
+      async probeCaps() {
+        return { ...fullCaps(), auth: 'oauth' };
+      },
+      create: () => ({ async start() {}, async stop() {} }),
+    };
+
+    await expect(probeAdapter(oauthAdapter, {})).rejects.toThrow(
+      /connection-backed D-192 Source/,
+    );
+  });
 });
 
 describe('validateCaps / hasCap / effectiveCaps (Phase 7 / D-110)', () => {

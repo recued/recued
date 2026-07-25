@@ -8,6 +8,7 @@ export {
   ACCOUNT_LANES,
   ACCOUNT_SLUG_REGEX,
   ACCOUNTS_PANEL_STYLES,
+  canSubmitAccountForm,
   findAccountLane,
   findAccountProvider,
   initialAccountsPanelState,

@@ -13,7 +13,7 @@
  *
  *  Substrate-only types here — the runtime + persistence + UI live in
  *  `backend/server/src/housekeeping/trust-store.ts` and the
- *  `packages/ui-shared/` settings panel. Spec: `docs/d-132-spec.md`. */
+ *  `packages/ui-shared/` settings panel. Spec: D-132. */
 
 // ────────────────────────────────────────────────────────────────
 // Trust state
@@ -23,7 +23,7 @@
  *  `'manual'` — Run Now only, idle/reactive cycles skip;
  *  `'auto'` — idle cycles + reactive dispatch fire freely. The
  *  fourth "ask before each scheduled run" state was deliberately cut
- *  (incompatible with idle-driven housekeeping per `docs/d-132-spec.md`
+ *  (incompatible with idle-driven housekeeping per D-132
  *  load-bearing decision §1). */
 export type EnrichmentTrustState = 'off' | 'manual' | 'auto';
 

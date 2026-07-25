@@ -1,6 +1,6 @@
 /** D-164 P5 -- concurrent tool-call dispatch primitive.
  *
- *  Spec: docs/d-164-prompt-cache-consolidation-pending-design.md section 6.
+ *  Spec: D-164 section 6.
  */
 
 import { describe, expect, it, vi } from 'vitest';

@@ -1,17 +1,15 @@
 /** D-210 Appendix B — `reception.manage.mint`: the owner mints an on-the-go
- *  reschedule link for one booking's calendar event.
+ *  reschedule link for one booking.
  *
  *  Drives the REAL credential store over an in-memory DB; the link walk + booking
  *  read are the seams. The properties, in the order they matter:
  *    - admin-gated (paired client) like every `reception.*` method,
- *    - only a BOOKING event can be minted — a manual event (no scheduled-from
- *      link) refuses,
+ *    - only a visitor-originated BOOKING can be minted — a manual booking with
+ *      no reception provenance refuses,
  *    - the credential is scoped to the BOOKING (endpoint + record), so the manage
- *      handler targets that booking's event and a link holder cannot retarget,
- *    - a role/collection other than the writer's `scheduled-from` is not mistaken
- *      for a booking origin.
+ *      handler targets that booking and a link holder cannot retarget.
  *
- *  Spec: docs/d-210-spec.md Appendix B. */
+ *  Spec: D-210 Appendix B. */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';

@@ -62,7 +62,7 @@
  *  concept across the Reception Settings surface, same discipline as the
  *  shared `computeExpiryLabel` / `truncateSourceIpHash`.
  *
- *  Spec: docs/d-149-spec.md § A.10 (Pre-built intake_form templates) +
+ *  Spec: D-149 § A.10 (Pre-built intake_form templates) +
  *  § P11 (template substrate the browser projects). */
 
 import {

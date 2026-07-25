@@ -38,8 +38,8 @@
  *  `enrichment_promotion_suggested` / `enrichment_drift_detected` feed
  *  the banners).
  *
- *  Spec: docs/d-123-spec.md §5.2 + docs/d-132-spec.md §A.7/§A.8 +
- *  docs/d-133-spec.md §A.7 + docs/d-136-spec.md §A.12/§A.13.5. */
+ *  Spec: D-123 §5.2 + D-132 §A.7/§A.8 +
+ *  D-133 §A.7 + D-136 §A.12/§A.13.5. */
 
 import type {
   ConfidenceDriftSignal,

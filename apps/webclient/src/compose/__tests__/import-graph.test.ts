@@ -8,6 +8,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isTypeScriptSource } from '../../../../../test/source-file-extensions.js';
 
 const WEBCLIENT_SRC_ROOT = join(__dirname, '..', '..');
 const GUARDED_SRC_ROOTS = [
@@ -22,7 +23,7 @@ const walk = (dir: string): string[] => {
     const st = statSync(full);
     if (st.isDirectory()) {
       out.push(...walk(full));
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.d.ts')) {
+    } else if (isTypeScriptSource(entry)) {
       out.push(full);
     }
   }

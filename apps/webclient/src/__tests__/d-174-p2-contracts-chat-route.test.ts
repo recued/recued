@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type ChatDataDiagnosisContext,
   type ChatMessage,
   type ChatModelRoutingLayer,
+  type ChatPlanRecord,
   type ChatSession,
   type ChatSessionSummary,
   type ContractDefinitionView,
+  type ServerEvent,
 } from '@recued/contracts';
 
 import {
@@ -46,11 +49,17 @@ import type { PermissionsMintContractCaller } from '../settings/permissions-pane
 import type { ContractsListCaller } from '../contracts/contracts-panel.js';
 import {
   bootstrapChatRoute,
+  CHAT_ROUTE_ACTIVATION_ACTION_ATTR,
+  CHAT_ROUTE_ACTIVATION_ATTR,
+  CHAT_ROUTE_ACTIVATION_CARD_ATTR,
   CHAT_ROUTE_ACTIVITY_ATTR,
   CHAT_ROUTE_ACTIVITY_ROW_ATTR,
   CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR,
+  CHAT_ROUTE_ANSWER_WAITING_ATTR,
   CHAT_ROUTE_AI_UNAVAILABLE_ATTR,
   CHAT_ROUTE_AI_UNAVAILABLE_ID,
+  CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR,
+  CHAT_ROUTE_FOLLOWUP_CONTEXT_CLEAR_ATTR,
   CHAT_ROUTE_GREETING_ATTR,
   CHAT_ROUTE_HEADING_ATTR,
   CHAT_ROUTE_INPUT_ATTR,
@@ -58,11 +67,45 @@ import {
   CHAT_ROUTE_MODEL_CONFIGURE_ATTR,
   CHAT_ROUTE_MODEL_PICKER_ATTR,
   CHAT_ROUTE_NEW_SESSION_ATTR,
+  CHAT_ROUTE_PLAN_APPROVE_ATTR,
+  CHAT_ROUTE_PLAN_CANCEL_ATTR,
+  CHAT_ROUTE_PLAN_CARD_ATTR,
+  CHAT_ROUTE_PLAN_CONTINUE_ATTR,
+  CHAT_ROUTE_PLAN_CONTEXT_ATTR,
+  CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+  CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_CLEAR_ATTR,
+  CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+  CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+  CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_MESSAGE_ATTR,
+  CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+  CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+  CHAT_ROUTE_PLAN_RETRY_ATTR,
+  CHAT_ROUTE_PLAN_RUN_ATTR,
+  CHAT_ROUTE_PLAN_TARGET_ATTR,
+  CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR,
   CHAT_ROUTE_SEND_ATTR,
+  CHAT_ROUTE_SOURCE_ACTION_ATTR,
+  CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+  CHAT_ROUTE_SOURCE_ANSWER_ATTR,
+  CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+  CHAT_ROUTE_SOURCE_HANDOFF_ATTR,
+  CHAT_ROUTE_SOURCE_REFERENCE_ATTR,
+  CHAT_ROUTE_SOURCE_REFERENCE_ID_ATTR,
+  CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR,
+  CHAT_ROUTE_SOURCE_REFERENCES_ATTR,
+  CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+  CHAT_ROUTE_RETURN_MISSING_ATTR,
+  CHAT_ROUTE_RETURN_TARGET_ATTR,
+  CHAT_ROUTE_STARTER_PROMPT,
   CHAT_ROUTE_THREAD_ATTR,
   CHAT_ROUTE_TURN_FAILURE_ATTR,
+  type ChatConnectedSourcePollScheduler,
   type ChatRouteConn,
 } from '../chat/bootstrap-chat-route.js';
+import {
+  connectedSourceStarterPrompt,
+  type ChatConnectedSource,
+} from '../chat/connected-source-handoff.js';
 
 interface FakeEl {
   tagName: string;
@@ -71,6 +114,8 @@ interface FakeEl {
   type: string;
   disabled: boolean;
   checked: boolean;
+  focused: boolean;
+  scrolled: boolean;
   value: string;
   attrs: Map<string, string>;
   children: FakeEl[];
@@ -84,15 +129,24 @@ interface FakeEl {
   remove(): void;
   addEventListener(type: string, fn: () => void): void;
   click(): void;
+  focus(): void;
+  scrollIntoView(): void;
+  querySelector(selector: string): FakeEl | null;
+  querySelectorAll(selector: string): FakeEl[];
+  contains(candidate: FakeEl): boolean;
 }
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  activeElement: FakeEl | null;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
 }
 
-const makeFakeEl = (tag: string): FakeEl => {
+const makeFakeEl = (
+  tag: string,
+  onFocus: (element: FakeEl) => void = () => {},
+): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -100,6 +154,8 @@ const makeFakeEl = (tag: string): FakeEl => {
     type: '',
     disabled: false,
     checked: false,
+    focused: false,
+    scrolled: false,
     value: '',
     attrs: new Map(),
     children: [],
@@ -141,6 +197,34 @@ const makeFakeEl = (tag: string): FakeEl => {
       if (el.disabled) return;
       for (const fn of el.listeners.get('click') ?? []) fn();
     },
+    focus() {
+      el.focused = true;
+      onFocus(el);
+    },
+    scrollIntoView() {
+      el.scrolled = true;
+    },
+    querySelector(selector) {
+      return el.querySelectorAll(selector)[0] ?? null;
+    },
+    querySelectorAll(selector) {
+      const match = selector.match(/^\[([\w-]+)\]$/);
+      if (match === null) return [];
+      const attr = match[1]!;
+      const found: FakeEl[] = [];
+      const visit = (candidate: FakeEl): void => {
+        for (const child of candidate.children) {
+          if (child.attrs.has(attr)) found.push(child);
+          visit(child);
+        }
+      };
+      visit(el);
+      return found;
+    },
+    contains(candidate) {
+      if (candidate === el) return true;
+      return el.children.some((child) => child.contains(candidate));
+    },
   };
   return el;
 };
@@ -151,8 +235,9 @@ const makeFakeDocument = (): FakeDoc => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
-  return {
+  const doc: FakeDoc = {
     styleElements,
+    activeElement: null,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -168,8 +253,11 @@ const makeFakeDocument = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeEl(tag),
+    createElement: (tag) => makeFakeEl(tag, (element) => {
+      doc.activeElement = element;
+    }),
   };
+  return doc;
 };
 
 const collectByAttr = (root: FakeEl, attr: string, out: FakeEl[] = []): FakeEl[] => {
@@ -1011,8 +1099,10 @@ describe('D-174 P2 chat route — AI-availability affordance (UX flow-09)', () =
     expect(notice).toHaveLength(1);
     expect(notice[0]!.getAttribute('id')).toBe(CHAT_ROUTE_AI_UNAVAILABLE_ID);
     const link = notice[0]!.children.find((child) => child.tagName === 'A');
-    expect(link?.getAttribute('href')).toBe('#settings/ai-models');
-    expect(allText(root)).toContain('Set up AI / Models');
+    expect(link?.getAttribute('href')).toBe(
+      '#settings/ai-models/setup/session/chat_1',
+    );
+    expect(allText(root)).toContain('Set up Chat');
 
     const send = collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
     expect(send.disabled).toBe(true);
@@ -1231,8 +1321,10 @@ describe('PB7 webclient failure paint chat route', () => {
     expect(allText(notice)).toContain(
       'no AI model source available for this turn — check Settings → AI / Models',
     );
-    expect(link?.getAttribute('href')).toBe('#settings/ai-models');
-    expect(link?.textContent).toBe('Set up AI / Models →');
+    expect(link?.getAttribute('href')).toBe(
+      '#settings/ai-models/setup/session/chat_1',
+    );
+    expect(link?.textContent).toBe('Set up Chat →');
 
     h.route.dispose();
   });
@@ -1745,6 +1837,24 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       llmConfig?: Record<string, unknown>;
       defaultSourceId?: 'slot_1' | 'slot_2' | 'free_pool' | null;
       sessions?: ChatSessionSummary[];
+      messages?: ChatMessage[] | ((sessionGetCall: number) => ChatMessage[]);
+      plans?: ChatPlanRecord[] | ((sessionGetCall: number) => ChatPlanRecord[]);
+      sendAck?: {
+        turn_id: string;
+        data_diagnosis?: ChatDataDiagnosisContext;
+      };
+      resolveDiagnosis?: (
+        payload: {
+          session_id: string;
+          message_id: string;
+          status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+        },
+      ) => {
+        resolution: {
+          status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+          resolved_at: number;
+        };
+      };
     } = {},
   ): ChatRouteConn => {
     const llmConfig = config.llmConfig ?? {
@@ -1752,17 +1862,42 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     };
     const defaultSourceId = config.defaultSourceId ?? null;
     const sessions = config.sessions ?? [];
+    let sessionGetCalls = 0;
     return (async (method: string, payload?: unknown) => {
       config.calls?.push({ method, payload });
       if (method === 'chat.sessions.list') return { sessions };
       if (method === 'chat.session.get') {
+        sessionGetCalls += 1;
         const sid =
           (payload as { session_id?: string } | undefined)?.session_id
           ?? 'chat_new';
-        return { ...chatSession(), id: sid, messages: [] };
+        return {
+          ...chatSession(),
+          id: sid,
+          messages:
+            typeof config.messages === 'function'
+              ? config.messages(sessionGetCalls)
+              : config.messages ?? [],
+          plans:
+            typeof config.plans === 'function'
+              ? config.plans(sessionGetCalls)
+              : config.plans ?? [],
+        };
       }
       if (method === 'chat.session.create') return { session_id: 'chat_new' };
-      if (method === 'chat.send') return { turn_id: 'turn_1' };
+      if (method === 'chat.send') {
+        return config.sendAck ?? { turn_id: 'turn_1' };
+      }
+      if (method === 'chat.data_diagnosis.resolve') {
+        const args = payload as {
+          session_id: string;
+          message_id: string;
+          status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+        };
+        return config.resolveDiagnosis?.(args) ?? {
+          resolution: { status: args.status, resolved_at: 9_000 },
+        };
+      }
       if (method === 'chat.session.set_model_pref') return { ok: true };
       if (method === 'chat.default_model_pref.get') {
         return { source_id: defaultSourceId, updated_at: 1 };
@@ -1786,6 +1921,27 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     slot_2: { provider: 'openai', model: 'gpt', has_key: true },
   };
 
+  const approvedPlanRecord = (
+    overrides: Partial<ChatPlanRecord> = {},
+  ): ChatPlanRecord => ({
+    plan: {
+      plan_id: 'plan_approved',
+      session_id: 'chat_1',
+      turn_id: 'turn_action',
+      tool: 'mail.send',
+      tier: 2,
+      classification: 'write',
+      args: { to: 'mary@example.com', subject: 'Hello' },
+      args_hash: 'hash-approved',
+      status: 'approved',
+      created_at: 1_700_000_000_000,
+      resolved_at: 1_700_000_001_000,
+    },
+    message_id: 'msg_action',
+    payload_available: true,
+    ...overrides,
+  });
+
   it('mounts in the lazy DRAFT state — no session minted, centered greeting', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -1799,6 +1955,2511 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(calls.some((c) => c.method === 'chat.session.create')).toBe(false);
     const thread = collectByAttr(root, CHAT_ROUTE_THREAD_ATTR)[0]!;
     expect(thread.getAttribute('data-empty')).toBe('true');
+    expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('turns the first empty Chat landing into three outcome-led paths', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls }),
+      enableFirstRunActivation: true,
+    });
+    await tick();
+
+    const activation = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)[0]!;
+    expect(activation).toBeDefined();
+    expect(allText(activation)).toContain('Start here');
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_CARD_ATTR).map(
+      (card) => card.getAttribute(CHAT_ROUTE_ACTIVATION_CARD_ATTR),
+    )).toEqual(['ask', 'connect', 'automate']);
+    expect(collectByAttr(activation, 'role').filter(
+      (node) => node.getAttribute('role') === 'status',
+    )).toHaveLength(1);
+    expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(0);
+
+    const connect = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR) === 'connect',
+    );
+    expect(connect?.getAttribute('href')).toBe('#connections');
+
+    const ask = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR) === 'ask',
+    )!;
+    ask.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      CHAT_ROUTE_STARTER_PROMPT,
+    );
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.session.create')).toBe(false);
+    route.dispose();
+  });
+
+  it('makes missing Chat setup the first-run card action', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ llmConfig: {} }),
+      enableFirstRunActivation: true,
+    });
+    await tick();
+
+    const ask = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR) === 'ask',
+    );
+    expect(ask?.textContent).toBe('Set up chat');
+    expect(ask?.getAttribute('href')).toBe('#settings/ai-models/setup/start');
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.getAttribute(
+      'aria-describedby',
+    )).toBe(CHAT_ROUTE_AI_UNAVAILABLE_ID);
+    expect(collectByTag(root, 'span').some(
+      (node) => node.getAttribute('id') === CHAT_ROUTE_AI_UNAVAILABLE_ID,
+    )).toBe(true);
+    route.dispose();
+  });
+
+  it('seeds the starter prompt on the setup return path, but not for returning chat history', async () => {
+    const emptyDoc = makeFakeDocument();
+    const emptyRoot = emptyDoc.createElement('div');
+    const emptyRoute = bootstrapChatRoute({
+      root: emptyRoot as unknown as HTMLElement,
+      document: emptyDoc as unknown as Document,
+      conn: stepConn(),
+      enableFirstRunActivation: true,
+      initialStarterPrompt: true,
+    });
+    await tick();
+    expect(collectByAttr(emptyRoot, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      CHAT_ROUTE_STARTER_PROMPT,
+    );
+    expect(emptyRoute.hasUnsavedChanges()).toBe(false);
+    emptyRoute.dispose();
+
+    const returningDoc = makeFakeDocument();
+    const returningRoot = returningDoc.createElement('div');
+    const returningRoute = bootstrapChatRoute({
+      root: returningRoot as unknown as HTMLElement,
+      document: returningDoc as unknown as Document,
+      conn: stepConn({ sessions: [sessionSummary()] }),
+      enableFirstRunActivation: true,
+      initialStarterPrompt: true,
+    });
+    await tick();
+    expect(collectByAttr(returningRoot, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    returningRoute.dispose();
+  });
+
+  it('turns a ready connected source into a focused first question without sending it', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const connectedSource: ChatConnectedSource = {
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+    };
+    const statusCaller = vi.fn(async () => ({
+      state: 'ready' as const,
+      identity: 'person@example.com',
+      authState: 'healthy' as const,
+      lastSyncedAt: 1_700_000_000_000,
+    }));
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls }),
+      enableFirstRunActivation: true,
+      initialConnectedSource: connectedSource,
+      connectedSourceStatusCaller: statusCaller,
+    });
+    await tick(8);
+
+    const handoff = collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!;
+    expect(handoff.getAttribute('data-state')).toBe('ready');
+    expect(allText(handoff)).toContain('Gmail is ready for Chat');
+    expect(allText(handoff)).toContain('person@example.com');
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      connectedSourceStarterPrompt(connectedSource),
+    );
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.session.create')).toBe(false);
+    expect(statusCaller).toHaveBeenCalledTimes(1);
+    route.dispose();
+  });
+
+  it('waits for first sync without overwriting a question the owner started', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const scheduled: Array<() => void> = [];
+    const connectedSourcePoll: ChatConnectedSourcePollScheduler = {
+      schedule: vi.fn((handler) => {
+        scheduled.push(handler);
+        return () => {};
+      }),
+    };
+    let ready = false;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      initialConnectedSource: {
+        lane: 'mail',
+        providerId: 'gmail',
+        slug: 'work',
+      },
+      connectedSourceStatusCaller: vi.fn(async () => ready
+        ? {
+            state: 'ready' as const,
+            identity: 'person@example.com',
+            authState: 'healthy' as const,
+            lastSyncedAt: 1_700_000_000_000,
+          }
+        : {
+            state: 'pending' as const,
+            identity: 'person@example.com',
+            authState: 'healthy' as const,
+            lastSyncedAt: null,
+          }),
+      connectedSourcePoll,
+    });
+    await tick(8);
+
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
+      .getAttribute('data-state')).toBe('pending');
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    expect(input.value).toBe('');
+    fireEvent(input, 'input', 'Keep the question I already started.');
+
+    ready = true;
+    scheduled.shift()!();
+    await tick(8);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
+      .getAttribute('data-state')).toBe('ready');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      'Keep the question I already started.',
+    );
+    route.dispose();
+  });
+
+  it('recovers a failed initial status read and retries the source handoff', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const scheduled: Array<() => void> = [];
+    const connectedSourcePoll: ChatConnectedSourcePollScheduler = {
+      schedule: vi.fn((handler) => {
+        scheduled.push(handler);
+        return () => {};
+      }),
+    };
+    const statusCaller = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({
+        state: 'ready' as const,
+        identity: 'person@example.com',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      initialConnectedSource: {
+        lane: 'mail',
+        providerId: 'gmail',
+        slug: 'work',
+      },
+      connectedSourceStatusCaller: statusCaller,
+      connectedSourcePoll,
+    });
+    await tick(8);
+
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
+      .getAttribute('data-state')).toBe('unknown');
+    expect(allText(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!))
+      .toContain('Status unavailable');
+    expect(scheduled).toHaveLength(1);
+
+    scheduled.shift()!();
+    await tick(8);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
+      .getAttribute('data-state')).toBe('ready');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toContain(
+      'Using my work mailbox',
+    );
+    expect(statusCaller).toHaveBeenCalledTimes(2);
+    route.dispose();
+  });
+
+  it('retires dismissed source context without re-showing first-run onboarding', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const onConnectedSourceRetired = vi.fn();
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      enableFirstRunActivation: true,
+      initialConnectedSource: {
+        lane: 'mail',
+        providerId: 'gmail',
+        slug: 'work',
+      },
+      connectedSourceStatusCaller: vi.fn(async () => ({
+        state: 'ready' as const,
+        identity: 'person@example.com',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      })),
+      onConnectedSourceRetired,
+    });
+    await tick(8);
+
+    const dismiss = collectByAttr(root, CHAT_ROUTE_SOURCE_ACTION_ATTR).find(
+      (action) => action.textContent === 'Use Chat without this account',
+    )!;
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      'Keep my own question.',
+    );
+    fireEvent(dismiss, 'click');
+
+    expect(onConnectedSourceRetired).toHaveBeenCalledTimes(1);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      'Keep my own question.',
+    );
+    route.dispose();
+  });
+
+  it('keeps source context through the first answer and a context-only follow-up', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const retired = vi.fn();
+    const listeners = new Map<string, Array<(event: never) => void>>();
+    const publish = (event: { kind: string } & Record<string, unknown>): void => {
+      for (const listener of listeners.get(event.kind) ?? []) {
+        listener(event as never);
+      }
+    };
+    let sentTurns = 0;
+    let rejectNextSend = false;
+    const baseConn = stepConn({ calls }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'chat.send') {
+        calls.push({ method, payload });
+        if (rejectNextSend) throw new Error('send unavailable');
+        sentTurns += 1;
+        return { turn_id: `turn_${sentTurns}` };
+      }
+      return baseConn(method, payload);
+    }) as ChatRouteConn;
+    const source: ChatConnectedSource = {
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+    };
+    const question = connectedSourceStarterPrompt(source);
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialConnectedSource: source,
+      connectedSourceStatusCaller: vi.fn(async () => ({
+        state: 'ready' as const,
+        identity: 'person@example.com',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      })),
+      onConnectedSourceRetired: retired,
+      subscribe: ((kind: string, listener: (event: never) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+    });
+    await tick(8);
+    await route.sendMessage(question);
+    await tick(8);
+
+    expect(retired).toHaveBeenCalledTimes(1);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)).toHaveLength(0);
+    let answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    expect(answer.getAttribute('data-state')).toBe('preparing');
+    expect(allText(answer)).toContain('Gmail · person@example.com');
+    expect(collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR)[0]!
+      .textContent).toBe('Checking activity');
+    expect(collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR).some(
+      (row) => row.getAttribute('data-role') === 'user'
+        && allText(row).includes(question),
+    )).toBe(true);
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Preparing your answer…');
+
+    publish({
+      kind: 'chat.tool_call_started',
+      session_id: 'chat_new',
+      turn_id: 'turn_1',
+      tool_name: 'mail.search',
+      tier: 1,
+      args: { query: 'attention' },
+      cursor: 1,
+    });
+    await tick();
+    answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    expect(answer.getAttribute('data-state')).toBe('searching');
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Searching connected mail…');
+
+    publish({
+      kind: 'chat.tool_call_completed',
+      session_id: 'chat_new',
+      turn_id: 'turn_1',
+      tool_name: 'mail.search',
+      tier: 1,
+      status: 'ok',
+      result_ref: 'chat_new:turn_1:mail.search',
+      cursor: 2,
+    });
+    await tick();
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!
+      .getAttribute('data-state')).toBe('reviewing');
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Reviewing the mail search…');
+
+    publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_new',
+      turn_id: 'turn_1',
+      final: {
+        ...chatMessage(),
+        id: 'msg_source_answer',
+        session_id: 'chat_new',
+        content: 'Three messages need your attention.',
+        tool_calls: [{
+          tool_name: 'mail.search',
+          tier: 1,
+          args: { query: 'attention' },
+          status: 'ok',
+          result_ref: 'chat_new:turn_1:mail.search',
+          started_at: 1_000,
+          completed_at: 1_100,
+        }],
+        provenance: [
+          {
+            source: 'local',
+            collection_platform: 'mail',
+            collection_slug: 'work',
+            record_id: 'mail-1',
+            label: 'Quarterly planning',
+          },
+          {
+            source: 'local',
+            collection_platform: 'mail',
+            collection_slug: 'work',
+            record_id: 'mail-2',
+            label: 'Launch readiness',
+          },
+          {
+            source: 'hubspot',
+            label: 'Account timeline',
+          },
+        ],
+      },
+      cursor: 3,
+    });
+    await tick(8);
+
+    answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    expect(answer.getAttribute('data-state')).toBe('search_complete');
+    expect(collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR)[0]!
+      .textContent).toBe('Mail search completed');
+    expect(allText(answer)).toContain(
+      'The receipt does not show which records, if any, informed the answer.',
+    );
+    let references = collectByAttr(answer, CHAT_ROUTE_SOURCE_REFERENCES_ATTR);
+    expect(references).toHaveLength(1);
+    let referencesToggle = collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+    )[0]!;
+    expect(allText(referencesToggle)).toContain('3 recorded references');
+    expect(allText(referencesToggle)).toContain(
+      'Sources and available record IDs',
+    );
+    expect(referencesToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCE_ATTR,
+    )).toHaveLength(0);
+
+    referencesToggle.click();
+    answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    references = collectByAttr(answer, CHAT_ROUTE_SOURCE_REFERENCES_ATTR);
+    referencesToggle = collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+    )[0]!;
+    expect(referencesToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(allText(references[0]!)).toContain(
+      'They are not yet linked to individual sentences.',
+    );
+    expect(collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCE_ATTR,
+    )).toHaveLength(3);
+    expect(collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCE_ID_ATTR,
+    ).map((row) => row.textContent)).toEqual(['mail-1', 'mail-2']);
+    expect(allText(references[0]!)).toContain('Quarterly planning');
+    expect(allText(references[0]!)).toContain('Launch readiness');
+    expect(allText(references[0]!)).toContain('Account timeline');
+    expect(allText(references[0]!)).toContain('Record ID not recorded');
+    expect(collectByAttr(
+      answer,
+      CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR,
+    ).map((link) => link.getAttribute('href'))).toEqual([
+      '#data/mail/record/work/mail-1/return/chat/chat_new/msg_source_answer',
+      '#data/mail/record/work/mail-2/return/chat/chat_new/msg_source_answer',
+    ]);
+    expect(
+      collectByTag(references[0]!, 'a').some(
+        (link) => link.getAttribute('href') === '#data/mail',
+      ),
+    ).toBe(true);
+    expect(allText(root)).toContain('Three messages need your attention.');
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)).toHaveLength(0);
+
+    const actions = collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR);
+    expect(actions.map((action) => action.textContent)).toEqual([
+      'Draft the replies',
+      'Make an action list',
+      'View mailbox',
+    ]);
+    actions[0]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toContain(
+      'Do not send anything.',
+    );
+    let followupContext = collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR);
+    expect(followupContext).toHaveLength(1);
+    expect(followupContext[0]!.getAttribute(
+      CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR,
+    )).toBe('refresh');
+    expect(allText(followupContext[0]!)).toContain('Review first');
+    expect(allText(followupContext[0]!)).toContain(
+      'Reply drafts · Gmail · person@example.com',
+    );
+    expect(allText(followupContext[0]!)).toContain(
+      'Requests a new mail search',
+    );
+    expect(allText(followupContext[0]!)).toContain(
+      'If you ask it to send email, you’ll review and approve that separately.',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
+      .getAttribute('aria-describedby')).not.toBeNull();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
+      .getAttribute('placeholder')).toBe('Review or edit this request...');
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.textContent)
+      .toBe('Ask Chat');
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      `${collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value} `,
+    );
+    expect(allText(followupContext[0]!)).toContain('Review first');
+    expect(allText(followupContext[0]!)).not.toContain('Edited request');
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      'Keep the follow-up I already started.',
+    );
+    expect(allText(followupContext[0]!)).toContain('Edited request');
+    expect(allText(followupContext[0]!)).toContain(
+      'Source use now depends on your edits',
+    );
+    expect(allText(followupContext[0]!)).toContain(
+      'Chat handles data-changing actions through a separate approval step.',
+    );
+    actions[1]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      'Keep the follow-up I already started.',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)[0]!
+      .getAttribute(CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toBe('refresh');
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(1);
+
+    collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_CLEAR_ATTR)[0]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
+      .getAttribute('placeholder')).toBe('Ask Recued...');
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.textContent).toBe('Send');
+
+    answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR)
+      .find((action) => action.textContent === 'Make an action list')!
+      .click();
+    followupContext = collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR);
+    expect(followupContext).toHaveLength(1);
+    expect(followupContext[0]!.getAttribute(
+      CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR,
+    )).toBe('context');
+    expect(allText(followupContext[0]!)).toContain(
+      'Continues from the previous answer · no new search requested',
+    );
+    expect(allText(followupContext[0]!)).toContain(
+      'Prioritized action list · Gmail · person@example.com',
+    );
+    expect(allText(followupContext[0]!)).toContain(
+      'If you ask it to create tasks, you’ll review and approve that separately.',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.textContent)
+      .toBe('Ask Chat');
+
+    const followupQuestion =
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    await route.sendMessage(followupQuestion);
+    await tick(8);
+
+    let sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers.map((row) => row.getAttribute('data-state'))).toEqual([
+      'search_complete',
+      'continuing',
+    ]);
+    expect(allText(sourceAnswers[1]!)).toContain(
+      'Prioritized action list · Gmail · person@example.com',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Continuing from the previous answer…');
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR).map(
+      (row) => row.getAttribute('data-role'),
+    )).toEqual(['user', 'assistant', 'user', 'assistant']);
+
+    publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_new',
+      turn_id: 'turn_2',
+      final: {
+        ...chatMessage(),
+        id: 'msg_source_followup',
+        session_id: 'chat_new',
+        content: '1. Reply to the launch owner. 2. Confirm the review date.',
+        tool_calls: [],
+      },
+      cursor: 4,
+    });
+    await tick(8);
+
+    sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers.map((row) => row.getAttribute('data-state'))).toEqual([
+      'search_complete',
+      'context_only',
+    ]);
+    expect(collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+    )[0]!.textContent).toBe('No new search');
+    expect(collectByAttr(
+      sourceAnswers[0]!,
+      CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+    )[0]!.getAttribute('role')).toBeNull();
+    expect(collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+    )[0]!.getAttribute('role')).toBe('status');
+    expect(allText(sourceAnswers[1]!)).toContain(
+      'No new mail search was recorded.',
+    );
+    expect(collectByAttr(
+      sourceAnswers[0]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    )).toHaveLength(0);
+    expect(collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    ).map((action) => action.textContent)).toEqual([
+      'Draft the replies',
+      'View mailbox',
+    ]);
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(2);
+
+    collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    )[0]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(1);
+    fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', '');
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
+      .getAttribute('aria-describedby')).toBe('');
+
+    collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    )[0]!.click();
+    const refreshQuestion =
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    await route.sendMessage(refreshQuestion);
+    await tick(8);
+
+    sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers.map((row) => row.getAttribute('data-state'))).toEqual([
+      'search_complete',
+      'context_only',
+      'preparing',
+    ]);
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Preparing to search connected mail…');
+
+    publish({
+      kind: 'chat.tool_call_started',
+      session_id: 'chat_new',
+      turn_id: 'turn_3',
+      tool_name: 'mail.search',
+      tier: 1,
+      args: { query: 'needs response' },
+      cursor: 5,
+    });
+    publish({
+      kind: 'chat.tool_call_completed',
+      session_id: 'chat_new',
+      turn_id: 'turn_3',
+      tool_name: 'mail.search',
+      tier: 1,
+      status: 'ok',
+      result_ref: 'chat_new:turn_3:mail.search',
+      cursor: 6,
+    });
+    publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_new',
+      turn_id: 'turn_3',
+      final: {
+        ...chatMessage(),
+        id: 'msg_source_refresh',
+        session_id: 'chat_new',
+        content: 'Draft A: Thanks for the update.',
+        tool_calls: [{
+          tool_name: 'mail.search',
+          tier: 1,
+          args: { query: 'needs response' },
+          status: 'ok',
+          result_ref: 'chat_new:turn_3:mail.search',
+          started_at: 1_200,
+          completed_at: 1_300,
+        }],
+      },
+      cursor: 7,
+    });
+    await tick(8);
+
+    sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers.map((row) => row.getAttribute('data-state'))).toEqual([
+      'search_complete',
+      'context_only',
+      'search_complete',
+    ]);
+    expect(collectByAttr(
+      sourceAnswers[2]!,
+      CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+    )[0]!.textContent).toBe('Mail search completed');
+    expect(collectByAttr(
+      sourceAnswers[0]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    )).toHaveLength(0);
+    expect(collectByAttr(
+      sourceAnswers[1]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    )).toHaveLength(0);
+    expect(collectByAttr(
+      sourceAnswers[2]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    ).map((action) => action.textContent)).toEqual([
+      'Make an action list',
+      'View mailbox',
+    ]);
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(3);
+
+    collectByAttr(
+      sourceAnswers[2]!,
+      CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
+    ).find((action) => action.textContent === 'Make an action list')!
+      .click();
+    const retryableDraft =
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    rejectNextSend = true;
+    await route.sendMessage(retryableDraft);
+    await tick(8);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      retryableDraft,
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)[0]!
+      .getAttribute(CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toBe('context');
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)).toHaveLength(3);
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(4);
+
+    rejectNextSend = false;
+    const editedDraft = `${retryableDraft} Keep this request editable.`;
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      editedDraft,
+    );
+    await route.sendMessage(editedDraft);
+    await tick(8);
+    sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers).toHaveLength(4);
+    expect(sourceAnswers[3]!.getAttribute('data-state')).toBe('continuing');
+    expect(collectByAttr(
+      sourceAnswers[3]!,
+      CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
+    )[0]!.textContent).toBe('Edited request');
+    expect(allText(sourceAnswers[3]!)).toContain(
+      'Any new mail search will appear here.',
+    );
+    expect(allText(sourceAnswers[3]!)).toContain(
+      'Follow-up with Gmail · person@example.com',
+    );
+    expect(allText(sourceAnswers[3]!)).not.toContain(
+      'Prioritized action list · Gmail · person@example.com',
+    );
+
+    publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_new',
+      turn_id: 'turn_4',
+      final: {
+        ...chatMessage(),
+        id: 'msg_source_edited',
+        session_id: 'chat_new',
+        content: 'Here is the edited result.',
+        tool_calls: [],
+      },
+      cursor: 8,
+    });
+    await tick(8);
+    sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
+    expect(sourceAnswers[3]!.getAttribute('data-state')).toBe('context_only');
+    expect(allText(sourceAnswers[3]!)).toContain(
+      'Source use followed your edited request.',
+    );
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(5);
+    route.dispose();
+  });
+
+  it('shows connected-source search progress before a production-order send ack', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const listeners = new Map<string, Array<(event: never) => void>>();
+    let resolveSend!: (value: { turn_id: string }) => void;
+    const sendGate = new Promise<{ turn_id: string }>((resolve) => {
+      resolveSend = resolve;
+    });
+    const baseConn = stepConn({ calls }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'chat.send') {
+        calls.push({ method, payload });
+        return sendGate;
+      }
+      return baseConn(method, payload);
+    }) as ChatRouteConn;
+    const source: ChatConnectedSource = {
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+    };
+    const question = connectedSourceStarterPrompt(source);
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialConnectedSource: source,
+      connectedSourceStatusCaller: vi.fn(async () => ({
+        state: 'ready' as const,
+        identity: 'person@example.com',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      })),
+      subscribe: ((kind: string, listener: (event: never) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+    });
+    await tick(8);
+
+    let sendSettled = false;
+    const send = route.sendMessage(question).then(() => {
+      sendSettled = true;
+    });
+    await tick(8);
+    expect(sendSettled).toBe(false);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)).toHaveLength(1);
+
+    for (const listener of listeners.get('chat.tool_call_started') ?? []) {
+      listener({
+        kind: 'chat.tool_call_started',
+        session_id: 'chat_new',
+        turn_id: 'turn_broadcast_first',
+        tool_name: 'mail.search',
+        tier: 1,
+        args: { query: 'attention' },
+        cursor: 1,
+      } as never);
+    }
+    await tick();
+
+    expect(sendSettled).toBe(false);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!
+      .getAttribute('data-state')).toBe('searching');
+    expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
+      .textContent).toBe('Searching connected mail…');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+
+    resolveSend({ turn_id: 'turn_broadcast_first' });
+    await send;
+    await tick();
+    expect(sendSettled).toBe(true);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!
+      .getAttribute('data-state')).toBe('searching');
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('restores a failed first-source question for review without auto-sending', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const listeners = new Map<string, Array<(event: never) => void>>();
+    const source: ChatConnectedSource = {
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+    };
+    const question = connectedSourceStarterPrompt(source);
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls }),
+      initialConnectedSource: source,
+      connectedSourceStatusCaller: vi.fn(async () => ({
+        state: 'ready' as const,
+        identity: 'person@example.com',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      })),
+      subscribe: ((kind: string, listener: (event: never) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+    });
+    await tick(8);
+    await route.sendMessage(question);
+    await tick(8);
+    for (const listener of listeners.get('chat.transparency') ?? []) {
+      listener({
+        kind: 'chat.transparency',
+        session_id: 'chat_new',
+        turn_id: 'turn_1',
+        event: { kind: 'engine.turn_failed' },
+        cursor: 1,
+      } as never);
+    }
+    await tick(8);
+
+    const answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
+    expect(answer.getAttribute('data-state')).toBe('failed');
+    const retry = collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR)
+      .find((action) => action.textContent === 'Review and retry')!;
+    retry.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(question);
+    expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)[0]!
+      .getAttribute(CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toBe('refresh');
+    expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('preserves connected-source context through the Set up Chat detour', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ llmConfig: {} }),
+      initialConnectedSource: {
+        lane: 'calendar',
+        providerId: 'graph',
+        slug: 'office',
+      },
+      connectedSourceStatusCaller: vi.fn(async () => ({
+        state: 'ready' as const,
+        identity: 'office',
+        authState: 'healthy' as const,
+        lastSyncedAt: 1_700_000_000_000,
+      })),
+    });
+    await tick(8);
+
+    const setup = collectByAttr(root, CHAT_ROUTE_SOURCE_ACTION_ATTR).find(
+      (action) => action.textContent === 'Set up Chat',
+    );
+    expect(setup?.getAttribute('href')).toBe(
+      '#settings/ai-models/setup/source/calendar/graph/office',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    route.dispose();
+  });
+
+  it('returns from setup to the exact durable session instead of a blank Chat', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls, sessions: [sessionSummary()] }),
+      initialSessionId: 'chat_1',
+      // A session deep link must win even if a malformed caller supplies both.
+      initialStarterPrompt: true,
+    });
+    await tick(8);
+
+    expect(calls).toContainEqual({
+      method: 'chat.session.get',
+      payload: { session_id: 'chat_1' },
+    });
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    route.dispose();
+  });
+
+  it('rehydrates, expands, and highlights the cited answer after a Data round-trip', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const citedMessage: ChatMessage = {
+      ...chatMessage(),
+      id: 'msg_cited',
+      provenance: [{
+        source: 'local',
+        collection_platform: 'mail',
+        collection_slug: 'work',
+        record_id: ' mail-1 ',
+      }],
+    };
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [citedMessage],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_cited',
+    });
+    await tick(8);
+
+    const target = collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)[0]!;
+    expect(target.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)).toBe('msg_cited');
+    const toggle = collectByAttr(
+      target,
+      CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+    )[0]!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(collectByAttr(
+      target,
+      CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR,
+    )[0]?.getAttribute('href')).toBe(
+      '#data/mail/record/work/%20mail-1%20/return/chat/chat_1/msg_cited',
+    );
+    route.dispose();
+  });
+
+  it('hydrates and focuses the exact approved action instead of its whole answer', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [approvedPlanRecord()],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+    });
+    await tick(8);
+
+    const target = collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]!;
+    expect(target.getAttribute('data-plan-id')).toBe('plan_approved');
+    expect(target.getAttribute(CHAT_ROUTE_PLAN_CARD_ATTR)).toBe('');
+    expect(target.scrolled).toBe(true);
+    const continueAction = collectByAttr(
+      target,
+      CHAT_ROUTE_PLAN_CONTINUE_ATTR,
+    )[0]!;
+    expect(continueAction.textContent).toBe('Continue in Chat');
+    expect(continueAction.focused).toBe(true);
+    expect(collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)).toHaveLength(0);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    route.dispose();
+  });
+
+  it('returns a Data review to the exact uncertain action without retrying it', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const listeners = new Map<
+      string,
+      Array<(event: ServerEvent) => void>
+    >();
+    const reconnectListeners: Array<() => void> = [];
+    const diagnosisContext: ChatDataDiagnosisContext = {
+      kind: 'data_verification',
+      plan_id: 'plan_approved',
+      run_id: 'run/one',
+      intent: 'explanation',
+      relationship: 'involved',
+      run_correlation: 'matched',
+    };
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: (sessionGetCall) => [
+          { ...chatMessage(), id: 'msg_action' },
+          ...(sessionGetCall > 1
+            ? [{
+                ...chatMessage(),
+                id: 'msg_diagnosis_user',
+                role: 'user' as const,
+                content: 'Help me interpret the linked evidence.',
+                data_diagnosis: diagnosisContext,
+              }]
+            : []),
+        ],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'failed',
+            turn_id: 'turn_action',
+            reason: 'execution_error',
+            run_id: 'run/one',
+          },
+        })],
+        sendAck: {
+          turn_id: 'turn_1',
+          data_diagnosis: diagnosisContext,
+        },
+      }),
+      subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+      reconnect: (listener) => {
+        reconnectListeners.push(listener);
+        return () => {};
+      },
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run/one',
+        relationship: 'involved',
+      },
+    });
+    await tick(8);
+
+    const target = collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]!;
+    const review = collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]!;
+    expect(review.getAttribute('data-result')).toBe('needs_help');
+    expect(review.getAttribute('data-relationship')).toBe('involved');
+    expect(review.getAttribute('data-run-match')).toBe('matched');
+    expect(review.getAttribute('role')).toBe('status');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-title',
+    )?.textContent).toBe('Help interpreting this result');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-detail',
+    )?.textContent).toContain(
+      'Chat can explain what the linked Data evidence does and does not show',
+    );
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-detail',
+    )?.textContent).toContain('Nothing retried.');
+    expect(review.children.find(
+      (child) => child.tagName === 'A',
+    )).toBeUndefined();
+    expect(collectByAttr(
+      target,
+      CHAT_ROUTE_PLAN_RUN_ATTR,
+    )[0]?.getAttribute('href')).toBe(
+      '#logs/run%2Fone/return/chat/session/chat_1/plan/plan_approved/'
+      + 'answer/msg_action',
+    );
+    const retry = collectByAttr(target, CHAT_ROUTE_PLAN_RETRY_ATTR)[0]!;
+    expect(retry.textContent).toBe('Review and retry');
+    expect(retry.focused).toBe(false);
+    const diagnose = collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!;
+    expect(diagnose.textContent).toBe('Help me interpret this');
+    expect(diagnose.focused).toBe(true);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(false);
+
+    diagnose.click();
+    const diagnosis = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )[0]!;
+    expect(diagnosis.getAttribute('aria-label')).toBe(
+      'Get help interpreting Data review for Send email',
+    );
+    expect(allText(diagnosis)).toContain('Explanation only');
+    expect(allText(diagnosis)).toContain('without changing anything');
+    expect(allText(diagnosis)).toContain('does not retry the action');
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    expect(input.value).toContain(
+      'Help me interpret the Data review linked to the action below.',
+    );
+    expect(input.value).toContain('"run_id": "run/one"');
+    expect(input.value).toContain('"execution_status": "failed"');
+    expect(input.value).toContain('"execution_reason": "execution_error"');
+    expect(input.value).toContain(
+      '"run_correlation": "confirmed by the action execution receipt"',
+    );
+    expect(input.value).toContain(
+      '"data_relationship": "item involved in the side-effecting step"',
+    );
+    expect(input.value).toContain('Do not retry the action');
+    expect(input.value).toContain('<reviewed_arguments>');
+    expect(doc.activeElement).toBe(input);
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_CLEAR_ATTR,
+    )[0]!.click();
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    expect(route.hasUnsavedChanges()).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!.click();
+    const preparedInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    await route.sendMessage(preparedInput.value);
+    await tick();
+    const send = calls.find((call) => call.method === 'chat.send')!;
+    expect(send.payload).toMatchObject({
+      session_id: 'chat_1',
+      message: preparedInput.value,
+      data_diagnosis: {
+        plan_id: 'plan_approved',
+        run_id: 'run/one',
+        intent: 'explanation',
+        relationship: 'involved',
+      },
+    });
+    expect(send.payload).not.toHaveProperty('retry_of_plan_id');
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(0);
+    const interpreting = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(interpreting.getAttribute('data-state')).toBe('interpreting');
+    expect(interpreting.getAttribute('data-plan-id')).toBe('plan_approved');
+    expect(interpreting.getAttribute('data-run-id')).toBe('run/one');
+    expect(interpreting.getAttribute('data-run-correlation')).toBe('matched');
+    expect(interpreting.getAttribute('role')).toBe('status');
+    expect(allText(interpreting)).toContain(
+      'This request carries no approval or retry authority',
+    );
+    expect(collectByAttr(
+      interpreting,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    )).toHaveLength(0);
+    expect(allText(collectByAttr(
+      root,
+      CHAT_ROUTE_ANSWER_WAITING_ATTR,
+    )[0]!)).toContain('Interpreting the linked evidence');
+
+    reconnectListeners[0]?.();
+    await tick(8);
+    const recoveredInterpreting = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(recoveredInterpreting.getAttribute('data-state')).toBe(
+      'interpreting',
+    );
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]?.disabled).toBe(true);
+
+    const completed: Extract<
+      ServerEvent,
+      { kind: 'chat.message_complete' }
+    > = {
+      kind: 'chat.message_complete',
+      session_id: 'chat_1',
+      turn_id: 'turn_1',
+      final: {
+        ...chatMessage(),
+        id: 'msg_diagnosis',
+        content: 'The linked evidence confirms the record was updated.',
+        data_diagnosis: {
+          kind: 'data_verification',
+          plan_id: 'plan_approved',
+          run_id: 'run/one',
+          intent: 'explanation',
+          relationship: 'involved',
+          run_correlation: 'matched',
+        },
+      },
+      cursor: 1,
+    };
+    for (const listener of listeners.get(completed.kind) ?? []) {
+      listener(completed);
+    }
+    await tick();
+    const ready = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    );
+    expect(ready).toHaveLength(1);
+    expect(ready[0]?.getAttribute('data-state')).toBe('ready');
+    expect(ready[0]?.getAttribute('role')).toBe('status');
+    expect(collectByAttr(
+      ready[0]!,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    )).toHaveLength(3);
+    route.dispose();
+  });
+
+  it('does not invent read-only authority when the send ack omits diagnosis context', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'failed',
+            turn_id: 'turn_action',
+            reason: 'execution_error',
+            run_id: 'run/one',
+          },
+        })],
+        // Simulates a rolling-deployment server that accepts chat.send but
+        // does not understand/echo the newer diagnosis field.
+        sendAck: { turn_id: 'turn_1' },
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run/one',
+        relationship: 'involved',
+      },
+    });
+    await tick(8);
+
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!.click();
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    await route.sendMessage(input.value);
+    await tick();
+
+    expect(calls.find((call) => call.method === 'chat.send')?.payload)
+      .toMatchObject({
+        data_diagnosis: {
+          plan_id: 'plan_approved',
+          run_id: 'run/one',
+        },
+      });
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )).toHaveLength(0);
+    expect(allText(collectByAttr(
+      root,
+      CHAT_ROUTE_ANSWER_WAITING_ATTR,
+    )[0]!)).toContain('Preparing your answer');
+    expect(allText(root)).not.toContain(
+      'This request carries no approval or retry authority',
+    );
+    route.dispose();
+  });
+
+  it('rehydrates a diagnosis answer with exact, non-executing next steps', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const reconnectListeners: Array<() => void> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [
+          { ...chatMessage(), id: 'msg_action' },
+          {
+            ...chatMessage(),
+            id: 'msg_diagnosis',
+            content: 'The record shows the update landed at 10:42.',
+            data_diagnosis: {
+              kind: 'data_verification',
+              plan_id: 'plan_approved',
+              run_id: 'run/one',
+              intent: 'explanation',
+              relationship: 'derived',
+              run_correlation: 'matched',
+            },
+          },
+        ],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'completed',
+            turn_id: 'turn_action',
+            result_ref: 'result:one',
+            run_id: 'run/one',
+          },
+        })],
+        sendAck: {
+          turn_id: 'turn_safe_check',
+          data_diagnosis: {
+            kind: 'data_verification',
+            plan_id: 'plan_approved',
+            run_id: 'run/one',
+            intent: 'safe_check',
+            relationship: 'derived',
+            run_correlation: 'matched',
+          },
+        },
+      }),
+      reconnect: (listener) => {
+        reconnectListeners.push(listener);
+        return () => {};
+      },
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    const receipt = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(receipt.getAttribute('data-state')).toBe('ready');
+    expect(receipt.getAttribute('data-run-correlation')).toBe('matched');
+    expect(receipt.getAttribute('role')).toBeNull();
+    expect(allText(receipt)).toContain(
+      'Explanation ready — choose a safe next step',
+    );
+    expect(allText(receipt)).toContain(
+      'did not retry the action or grant a new approval',
+    );
+
+    reconnectListeners[0]?.();
+    await tick(8);
+    const recovered = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    );
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.getAttribute('data-state')).toBe('ready');
+
+    const actions = collectByAttr(
+      recovered[0]!,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    );
+    expect(actions.map((action) => action.getAttribute('data-action'))).toEqual([
+      'run',
+      'action',
+      'safe-check',
+    ]);
+    expect(actions[2]?.textContent).toBe('Draft a safe check');
+    expect(actions[0]?.getAttribute('href')).toBe(
+      '#logs/run%2Fone/return/chat/session/chat_1/plan/plan_approved/'
+      + 'answer/msg_diagnosis',
+    );
+    actions[1]!.click();
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_CARD_ATTR)[0]?.focused,
+    ).toBe(true);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(
+      false,
+    );
+
+    actions[2]!.click();
+    const safeCheckContext = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    );
+    expect(safeCheckContext).toHaveLength(1);
+    expect(allText(safeCheckContext[0]!)).toContain('Read-only check');
+    expect(allText(safeCheckContext[0]!)).toContain(
+      'verify remaining uncertainty',
+    );
+    const safeCheckPrompt =
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]?.value ?? '';
+    expect(safeCheckPrompt).toContain(
+      'Use safe, read-only tools to check what remains uncertain',
+    );
+    expect(safeCheckPrompt).toContain(
+      '"run_id": "run/one"',
+    );
+    expect(safeCheckPrompt).not.toContain(
+      'Help me interpret the Data review linked to the action below',
+    );
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    await route.sendMessage(safeCheckPrompt);
+    await tick();
+    expect(calls.find((call) => call.method === 'chat.send')?.payload)
+      .toMatchObject({
+        data_diagnosis: {
+          plan_id: 'plan_approved',
+          run_id: 'run/one',
+          intent: 'safe_check',
+          relationship: 'derived',
+        },
+      });
+    route.dispose();
+  });
+
+  it('closes a safe check explicitly and drafts a fresh action without authority', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const listeners = new Map<
+      string,
+      Array<(event: ServerEvent) => void>
+    >();
+    let durableResolution:
+      | {
+          status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+          resolved_at: number;
+        }
+      | undefined;
+    const safeCheckMessage = (): ChatMessage => ({
+      ...chatMessage(),
+      id: 'msg_safe_check',
+      content: 'The read-only lookup found the expected destination record.',
+      data_diagnosis: {
+        kind: 'data_verification',
+        plan_id: 'plan_approved',
+        run_id: 'run/one',
+        intent: 'safe_check',
+        relationship: 'derived',
+        run_correlation: 'matched',
+      },
+      ...(durableResolution !== undefined
+        ? { data_diagnosis_resolution: durableResolution }
+        : {}),
+    });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: () => [
+          { ...chatMessage(), id: 'msg_action' },
+          safeCheckMessage(),
+          {
+            ...safeCheckMessage(),
+            id: 'msg_safe_check_other',
+            data_diagnosis_resolution: {
+              status: 'needs_new_action',
+              resolved_at: 8_500,
+            },
+          },
+        ],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'completed',
+            turn_id: 'turn_action',
+            result_ref: 'result:one',
+            run_id: 'run/one',
+          },
+        })],
+        resolveDiagnosis: (payload) => {
+          durableResolution = {
+            status: payload.status,
+            resolved_at: 9_000,
+          };
+          return { resolution: durableResolution };
+        },
+      }),
+      subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    const initial = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(initial.getAttribute('data-intent')).toBe('safe_check');
+    expect(initial.getAttribute('data-resolution')).toBeNull();
+    expect(initial.getAttribute('role')).toBeNull();
+    expect(allText(initial)).toContain(
+      'Read-only check complete — close the loop',
+    );
+    const closeResolved = collectByAttr(
+      initial,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'resolve-resolved',
+    )!;
+    closeResolved.focus();
+    closeResolved.click();
+    await tick();
+
+    expect(calls.find(
+      (call) => call.method === 'chat.data_diagnosis.resolve',
+    )?.payload).toEqual({
+      session_id: 'chat_1',
+      message_id: 'msg_safe_check',
+      status: 'resolved',
+    });
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(
+      false,
+    );
+    const resolved = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(resolved.getAttribute('data-resolution')).toBe('resolved');
+    expect(resolved.getAttribute(
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_MESSAGE_ATTR,
+    )).toBe('msg_safe_check');
+    expect(resolved.getAttribute('tabindex')).toBe('-1');
+    expect(resolved.focused).toBe(true);
+    expect(doc.activeElement).toBe(resolved);
+    expect(resolved.getAttribute('role')).toBe('status');
+    expect(allText(resolved)).toContain(
+      'Closed — no further action requested',
+    );
+
+    const changed: Extract<
+      ServerEvent,
+      { kind: 'chat.data_diagnosis_resolved' }
+    > = {
+      kind: 'chat.data_diagnosis_resolved',
+      session_id: 'chat_1',
+      message_id: 'msg_safe_check',
+      resolution: {
+        status: 'needs_new_action',
+        resolved_at: 9_100,
+      },
+      cursor: 2,
+    };
+    for (const listener of listeners.get(changed.kind) ?? []) {
+      listener(changed);
+    }
+    await tick();
+    const needsAction = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(needsAction.getAttribute('data-resolution')).toBe(
+      'needs_new_action',
+    );
+    expect(allText(needsAction)).toContain('Closed — fresh review needed');
+    const stale: Extract<
+      ServerEvent,
+      { kind: 'chat.data_diagnosis_resolved' }
+    > = {
+      ...changed,
+      resolution: { status: 'resolved', resolved_at: 9_050 },
+      cursor: 3,
+    };
+    for (const listener of listeners.get(stale.kind) ?? []) {
+      listener(stale);
+    }
+    await tick();
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]?.getAttribute('data-resolution')).toBe('needs_new_action');
+    const fresh = collectByAttr(
+      needsAction,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'fresh-action',
+    )!;
+    fresh.click();
+
+    const context = collectByAttr(root, CHAT_ROUTE_PLAN_CONTEXT_ATTR)[0]!;
+    expect(allText(context)).toContain('Fresh approval required');
+    expect(allText(context)).toContain(
+      'Nothing can run until you approve that fresh review',
+    );
+    const initialPrompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    expect(initialPrompt).toContain(
+      'Prepare the exact action below as a new proposal',
+    );
+    expect(initialPrompt).toContain('Do not execute it from the prior approval');
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    const otherSafeCheck = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[1]!;
+    const otherFresh = collectByAttr(
+      otherSafeCheck,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'fresh-action',
+    )!;
+    expect(otherFresh.textContent).toBe('Go to current draft');
+
+    const reclosed: Extract<
+      ServerEvent,
+      { kind: 'chat.data_diagnosis_resolved' }
+    > = {
+      ...changed,
+      resolution: { status: 'resolved', resolved_at: 9_200 },
+      cursor: 4,
+    };
+    for (const listener of listeners.get(reclosed.kind) ?? []) {
+      listener(reclosed);
+    }
+    await tick();
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]?.getAttribute('role')).toBe('status');
+    expect(collectByAttr(root, CHAT_ROUTE_PLAN_CONTEXT_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]?.value).toBe('');
+
+    const reopened: Extract<
+      ServerEvent,
+      { kind: 'chat.data_diagnosis_resolved' }
+    > = {
+      ...changed,
+      resolution: { status: 'needs_new_action', resolved_at: 9_300 },
+      cursor: 5,
+    };
+    for (const listener of listeners.get(reopened.kind) ?? []) {
+      listener(reopened);
+    }
+    await tick();
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'fresh-action',
+    )!.click();
+    const prompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    await route.sendMessage(prompt);
+    await tick();
+    const sent = calls.find((call) => call.method === 'chat.send');
+    expect(sent?.payload).not.toHaveProperty('retry_of_plan_id');
+    expect(sent?.payload).not.toHaveProperty('data_diagnosis');
+    expect(sent?.payload).toMatchObject({ message: prompt });
+    expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(
+      false,
+    );
+    route.dispose();
+  });
+
+  it('hydrates a saved safe-check closure without announcing old activity', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const listeners = new Map<
+      string,
+      Array<(event: ServerEvent) => void>
+    >();
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{
+          ...chatMessage(),
+          id: 'msg_safe_check',
+          data_diagnosis: {
+            kind: 'data_verification',
+            plan_id: 'plan_approved',
+            run_id: 'run/one',
+            intent: 'safe_check',
+            run_correlation: 'matched',
+          },
+          data_diagnosis_resolution: {
+            status: 'still_uncertain',
+            resolved_at: 8_000,
+          },
+        }],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'completed',
+            turn_id: 'turn_action',
+            result_ref: 'result:one',
+            run_id: 'run/one',
+          },
+        })],
+      }),
+      subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    const receipt = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(receipt.getAttribute('data-resolution')).toBe('still_uncertain');
+    expect(receipt.getAttribute('role')).toBeNull();
+    expect(allText(receipt)).toContain('Closed as still uncertain');
+    expect(collectByAttr(
+      receipt,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).some(
+      (action) => action.getAttribute('data-action') === 'safe-check',
+    )).toBe(true);
+
+    const tiedStale: Extract<
+      ServerEvent,
+      { kind: 'chat.data_diagnosis_resolved' }
+    > = {
+      kind: 'chat.data_diagnosis_resolved',
+      session_id: 'chat_1',
+      message_id: 'msg_safe_check',
+      resolution: {
+        status: 'resolved',
+        resolved_at: 8_000,
+      },
+      cursor: 2,
+    };
+    for (const listener of listeners.get(tiedStale.kind) ?? []) {
+      listener(tiedStale);
+    }
+    await tick();
+    const afterStale = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    expect(afterStale.getAttribute('data-resolution')).toBe('still_uncertain');
+    expect(afterStale.getAttribute('role')).toBeNull();
+    route.dispose();
+  });
+
+  it('keeps a missing receipt run correlation explicit in guided help', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'failed',
+            turn_id: 'turn_action',
+            reason: 'execution_error',
+          },
+        })],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run-from-data',
+        relationship: 'action',
+      },
+    });
+    await tick(8);
+
+    const review = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]!;
+    expect(review.getAttribute('data-run-match')).toBe('unverified');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-detail',
+    )?.textContent).toContain(
+      'action receipt does not identify a run',
+    );
+    collectByAttr(
+      review,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!.click();
+
+    const diagnosis = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )[0]!;
+    expect(allText(diagnosis)).toContain(
+      'without assuming this run belongs to the action',
+    );
+    const prompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    expect(prompt).toContain(
+      '"run_correlation": "not confirmed by the action execution receipt"',
+    );
+    expect(prompt).toContain(
+      'keep that uncertainty explicit instead of inferring a match',
+    );
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    route.dispose();
+  });
+
+  it('keeps a grounded diagnosis through reconnect and retires it if the receipt run changes', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const reconnectListeners: Array<() => void> = [];
+    const planForRun = (runId: string): ChatPlanRecord =>
+      approvedPlanRecord({
+        execution: {
+          status: 'failed',
+          turn_id: 'turn_action',
+          reason: 'execution_error',
+          run_id: runId,
+        },
+      });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: (call) => [
+          call < 3 ? planForRun('run-one') : planForRun('run-new'),
+        ],
+      }),
+      reconnect: (listener) => {
+        reconnectListeners.push(listener);
+        return () => {};
+      },
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run-one',
+        relationship: 'derived',
+      },
+    });
+    await tick(8);
+
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!.click();
+    const prompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
+    reconnectListeners[0]?.();
+    await tick(8);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(prompt);
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(1);
+
+    reconnectListeners[0]?.();
+    await tick(8);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(0);
+    const review = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]!;
+    expect(review.getAttribute('data-run-match')).toBe('mismatched');
+    expect(collectByAttr(
+      review,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )).toHaveLength(0);
+    route.dispose();
+  });
+
+  it('preserves an edited help request as an ordinary draft when a live receipt changes its run', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const listeners = new Map<
+      string,
+      Array<(event: ServerEvent) => void>
+    >();
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'failed',
+            turn_id: 'turn_action',
+            reason: 'execution_error',
+            run_id: 'run-one',
+          },
+        })],
+      }),
+      subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run-one',
+        relationship: 'derived',
+      },
+    });
+    await tick(8);
+
+    collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!.click();
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    const edited = `${input.value}\nMy own verification note`;
+    fireEvent(input, 'input', edited);
+
+    const event: Extract<ServerEvent, { kind: 'chat.tool_call_completed' }> = {
+      kind: 'chat.tool_call_completed',
+      session_id: 'chat_1',
+      turn_id: 'turn_action_update',
+      tool_name: 'mail.send',
+      tier: 2,
+      status: 'error',
+      reason: 'execution_error',
+      detail: 'provider outcome still unknown',
+      run_id: 'run-other',
+      plan_id: 'plan_approved',
+      cursor: 1,
+    };
+    for (const listener of listeners.get(event.kind) ?? []) listener(event);
+    await tick();
+
+    const preservedInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    expect(preservedInput.value).toBe(edited);
+    expect(doc.activeElement).toBe(preservedInput);
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(0);
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]?.getAttribute('data-run-match')).toBe('mismatched');
+    route.dispose();
+  });
+
+  it('fails closed when the Data return names a different run than the action receipt', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'failed',
+            turn_id: 'turn_action',
+            reason: 'execution_error',
+            run_id: 'run-receipt',
+          },
+        })],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+      initialDataVerificationReturn: {
+        result: 'needs_help',
+        runId: 'run-other',
+        relationship: 'derived',
+      },
+    });
+    await tick(8);
+
+    const target = collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]!;
+    const review = collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]!;
+    expect(review.getAttribute('data-run-match')).toBe('mismatched');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-title',
+    )?.textContent).toBe('Data return does not match this action');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-detail',
+    )?.textContent).toContain(
+      'different run than this action’s execution receipt',
+    );
+    expect(review.children.find(
+      (child) => child.tagName === 'A',
+    )?.getAttribute('href')).toBe(
+      '#logs/run-other/return/chat/session/chat_1/plan/plan_approved/'
+      + 'answer/msg_action',
+    );
+    expect(collectByAttr(
+      target,
+      CHAT_ROUTE_PLAN_RUN_ATTR,
+    )[0]?.getAttribute('href')).toBe(
+      '#logs/run-receipt/return/chat/session/chat_1/plan/plan_approved/'
+      + 'answer/msg_action',
+    );
+    const retry = collectByAttr(target, CHAT_ROUTE_PLAN_RETRY_ATTR)[0]!;
+    expect(retry.focused).toBe(false);
+    expect(collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )).toHaveLength(0);
+    expect(target.focused).toBe(true);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(false);
+    route.dispose();
+  });
+
+  it('focuses a pending action card without preselecting a decision', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const approved = approvedPlanRecord();
+    const pendingPlan = { ...approved.plan };
+    delete pendingPlan.resolved_at;
+    const pending: ChatPlanRecord = {
+      ...approved,
+      plan: {
+        ...pendingPlan,
+        status: 'proposed',
+      },
+    };
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: [pending],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_approved',
+    });
+    await tick(8);
+
+    const target = collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]!;
+    expect(target.focused).toBe(true);
+    expect(
+      collectByAttr(target, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]?.focused,
+    ).toBe(false);
+    expect(
+      collectByAttr(target, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]?.focused,
+    ).toBe(false);
+    route.dispose();
+  });
+
+  it('falls back to the linked answer without presenting it as the action', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const fallbackMessage: ChatMessage = {
+      ...chatMessage(),
+      id: 'msg_action',
+      provenance: [{
+        source: 'local',
+        collection_platform: 'mail',
+        collection_slug: 'work',
+        record_id: 'mail-1',
+      }],
+    };
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [fallbackMessage],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_action',
+      initialPlanId: 'plan_missing',
+      initialDataVerificationReturn: {
+        result: 'reviewed',
+        runId: 'run-missing-plan',
+        relationship: 'action',
+      },
+    });
+    await tick(8);
+
+    expect(collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)).toHaveLength(0);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
+    ).toBe(
+      'The exact action card is no longer available. Showing its Chat answer instead.',
+    );
+    const fallback = collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)[0]!;
+    expect(fallback.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)).toBe('msg_action');
+    expect(fallback.getAttribute('aria-label')).toBe(
+      'Chat answer for unavailable action card',
+    );
+    expect(collectByAttr(
+      fallback,
+      CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+    )[0]?.getAttribute('aria-expanded')).toBe('false');
+    const review = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]!;
+    expect(review.getAttribute('data-result')).toBe('reviewed');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-title',
+    )?.textContent).toBe('Data review marked complete');
+    expect(review.children.find(
+      (child) => child.className === 'chat-data-verification-detail',
+    )?.textContent).toContain(
+      'It cannot confirm that the destination changed.',
+    );
+    route.dispose();
+  });
+
+  it('does not claim a missing action when its freshness check fails', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    let sessionGetCalls = 0;
+    const baseConn = stepConn({
+      calls,
+      sessions: [sessionSummary()],
+      messages: [{ ...chatMessage(), id: 'msg_action' }],
+    }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.get') return baseConn(method, payload);
+      sessionGetCalls += 1;
+      if (sessionGetCalls === 1) return baseConn(method, payload);
+      calls.push({ method, payload });
+      throw new Error('offline');
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    expect(route.openPlanLanding({
+      sessionId: 'chat_1',
+      planId: 'plan_unverified',
+      messageId: 'msg_action',
+    })).toBe(true);
+    await tick(8);
+
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
+    ).toBe(
+      'The exact action card could not be verified. Showing its last linked Chat answer instead.',
+    );
+    expect(
+      collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)[0]
+        ?.getAttribute('aria-label'),
+    ).toBe('Chat answer for unavailable action card');
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    route.dispose();
+  });
+
+  it('preserves active same-session drafting while targeting a plan in place', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_action' }],
+        plans: (call) => call === 1 ? [] : [approvedPlanRecord()],
+      }),
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      'Keep this unrelated draft',
+    );
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.openPlanLanding({
+      sessionId: 'chat_1',
+      planId: 'plan_approved',
+      messageId: 'msg_action',
+      dataVerification: {
+        result: 'needs_help',
+        runId: 'run-same-session',
+        relationship: 'derived',
+      },
+    })).toBe(true);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
+    ).toBe('Finding the exact action in Chat…');
+    collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.focus();
+    await tick(8);
+    const recoveredInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    expect(recoveredInput.value).toBe(
+      'Keep this unrelated draft',
+    );
+    expect(doc.activeElement).toBe(recoveredInput);
+    const target = collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]!;
+    expect(collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+    )[0]?.getAttribute('data-result')).toBe('needs_help');
+    const primary = collectByAttr(
+      target,
+      CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
+    )[0]!;
+    expect(primary.textContent).toBe('Go to current draft');
+    expect(primary.focused).toBe(false);
+    primary.click();
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
+      'Keep this unrelated draft',
+    );
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
+    )).toHaveLength(0);
+    expect(route.openPlanLanding({
+      sessionId: 'chat_other',
+      planId: 'plan_other',
+    })).toBe(false);
+    route.dispose();
+  });
+
+  it('settles a checking landing as soon as its live plan arrives', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const listeners = new Map<string, Array<(event: ServerEvent) => void>>();
+    let sessionGetCalls = 0;
+    let resolveRecovery: (snapshot: unknown) => void = () => {};
+    const recovery = new Promise<unknown>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    const snapshot = {
+      ...chatSession(),
+      messages: [{ ...chatMessage(), id: 'msg_action' }],
+      plans: [],
+    };
+    const baseConn = stepConn({
+      sessions: [sessionSummary()],
+    }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.get') return baseConn(method, payload);
+      sessionGetCalls += 1;
+      return sessionGetCalls === 1 ? snapshot : recovery;
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialSessionId: 'chat_1',
+      subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+    });
+    await tick(8);
+
+    expect(route.openPlanLanding({
+      sessionId: 'chat_1',
+      planId: 'plan_live',
+      messageId: 'msg_action',
+    })).toBe(true);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
+    ).toBe('Finding the exact action in Chat…');
+
+    const event: Extract<ServerEvent, { kind: 'chat.plan_proposed' }> = {
+      kind: 'chat.plan_proposed',
+      session_id: 'chat_1',
+      turn_id: 'turn_live',
+      plan_id: 'plan_live',
+      tool: 'mail.send',
+      tier: 2,
+      args: { to: 'mary@example.com', subject: 'Live' },
+      args_hash: 'hash-live',
+      created_at: 1_700_000_004_000,
+      cursor: 1,
+    };
+    for (const listener of listeners.get(event.kind) ?? []) listener(event);
+
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR),
+    ).toHaveLength(0);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]
+        ?.getAttribute('data-plan-id'),
+    ).toBe('plan_live');
+    expect(collectByAttr(
+      root,
+      CHAT_ROUTE_PLAN_TARGET_ATTR,
+    )[0]?.focused).toBe(true);
+
+    resolveRecovery(snapshot);
+    await tick(8);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_ATTR)[0]
+        ?.getAttribute('data-plan-id'),
+    ).toBe('plan_live');
+    route.dispose();
+  });
+
+  it('keeps the Chat usable when a returned cited answer no longer exists', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [{ ...chatMessage(), id: 'msg_other' }],
+      }),
+      initialSessionId: 'chat_1',
+      initialMessageId: 'msg_deleted',
+    });
+    await tick(8);
+
+    expect(collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)).toHaveLength(0);
+    expect(
+      collectByAttr(root, CHAT_ROUTE_RETURN_MISSING_ATTR)[0]?.textContent,
+    ).toBe(
+      'The cited answer is no longer available. This chat is still open.',
+    );
+    expect(route.getThread().session?.id).toBe('chat_1');
+    route.dispose();
+  });
+
+  it('keeps the compact greeting for returning users with completed history', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ sessions: [sessionSummary()] }),
+      enableFirstRunActivation: true,
+    });
+    await tick();
+
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('retires the activation surface after a completed chat event', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const listeners = new Map<string, Array<(event: never) => void>>();
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      enableFirstRunActivation: true,
+      subscribe: ((kind: string, listener: (event: never) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
+    });
+    await tick();
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)).toHaveLength(1);
+
+    const event = {
+      kind: 'chat.message_complete',
+      session_id: 'chat_elsewhere',
+      turn_id: 'turn_done',
+      final: { ...chatMessage(), id: 'msg_done', content: 'Done.' },
+      cursor: 1,
+    };
+    for (const listener of listeners.get('chat.message_complete') ?? []) {
+      listener(event as never);
+    }
+    await tick();
+
+    expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)).toHaveLength(0);
     expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
     route.dispose();
   });
@@ -1896,7 +4557,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
-  it('renders the picker AS the "Configure LLM →" link when no source is configured', async () => {
+  it('renders the picker AS the "Set up Chat →" link when no source is configured', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const route = bootstrapChatRoute({
@@ -1907,7 +4568,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick();
     expect(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)).toHaveLength(0);
     const link = collectByAttr(root, CHAT_ROUTE_MODEL_CONFIGURE_ATTR)[0]!;
-    expect(link.getAttribute('href')).toBe('#settings/ai-models');
+    expect(link.getAttribute('href')).toBe('#settings/ai-models/setup/start');
+    expect(link.textContent).toBe('Set up Chat →');
     route.dispose();
   });
 

@@ -28,7 +28,6 @@ import type { IntakeFormConfig } from '@recued/contracts';
 import { ensureReceptionSchema } from '../storage/reception-store.js';
 import { createPublicEndpointRegistryStore } from '../storage/public-endpoint-registry-store.js';
 import { createReceptionFormSubmissionStore } from '../storage/reception-form-store.js';
-import { createFormResponseStore } from '../storage/form-response-store.js';
 import { createReceptionRateLimiter } from '../ports/reception/rate-limiter.js';
 import { createReceptionRegistryCache } from '../ports/reception/registry-cache.js';
 import {
@@ -75,13 +74,8 @@ const buildEnv = () => {
   const cache = createReceptionRegistryCache();
   const limiter = createReceptionRateLimiter({ db });
   const submission = createReceptionFormSubmissionStore(db);
-  // D-210 WS2 — the canonical form_response log the POST path writes at submit.
-  // A real store on the SAME db, not a stub: the POST readiness gate requires
-  // it (a submission the substrate cannot record is not accepted), and several
-  // tests below assert what actually landed in it.
-  const formResponse = createFormResponseStore(db);
   const formNonce = createInMemoryIntakeFormNonceStore();
-  return { db, store, cache, limiter, submission, formResponse, formNonce };
+  return { db, store, cache, limiter, submission, formNonce };
 };
 
 const goodConfig: IntakeFormConfig = {
@@ -211,7 +205,6 @@ const buildHandler = (
     getPepper: () => PEPPER,
     now: () => NOW,
     getIntakeFormSubmissionStore: () => env.submission,
-    getFormResponseStore: () => env.formResponse,
     getIntakeFormNonceStore: () => env.formNonce,
     getIntakeFormSubmissionPiiKey: () => deriveFormSubmissionPiiKeyFromSubDek(SUB_DEK),
     auditLog: audit ?? fakeAudit(),

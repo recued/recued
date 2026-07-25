@@ -43,7 +43,7 @@
  *  `cascadeForSourceDelete`; D-128 P1 widens the bridge to recognise
  *  the open four-segment scope shape.
  *
- *  Spec: `docs/d-128-spec.md` §A.3. */
+ *  Spec: D-128 §A.3. */
 
 import {
   CONNECTION_VENDOR_ENTITIES,

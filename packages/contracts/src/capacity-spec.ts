@@ -14,8 +14,8 @@
  *  runtime side effects. Walker / cache / probes / audit emission
  *  ship in PB1.2 – PB1.7 (`packages/engine/src/capacity/`).
  *
- *  Spec: `docs/d-145-spec.md` § B.1 + § B.4 + § B.17.
- *  Design draft: `docs/d-145-pb1-design.md`. */
+ *  Spec: D-145 § B.1 + § B.4 + § B.17.
+ *  Design draft: D-145. */
 
 // ── N.1 — CapacityKind (closed list, 9 values) ──────────────────────
 

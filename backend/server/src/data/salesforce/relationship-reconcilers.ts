@@ -27,7 +27,7 @@
  *  only fan out `engagement_edges`. The parent reconciler is
  *  authoritative for the row.
  *
- *  Spec: `docs/d-139-spec.md` § A.2.1, § A.4. */
+ *  Spec: D-139 § A.2.1, § A.4. */
 
 import {
   PLATFORM_REFERENCE_BATCH_SIZE,

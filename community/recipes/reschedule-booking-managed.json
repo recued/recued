@@ -1,0 +1,67 @@
+{
+  "recipe_id": "reschedule-booking-managed",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 60,
+  "requires": [],
+  "metadata": {
+    "name": "Reschedule a booking (managed door)",
+    "description": "D-210 Appendix B — the RESCHEDULE ignition for the public /reception/manage door. Identical write to reschedule-booking (one core.work-entity.booking.update patching slot_start_at + slot_end_at) but WITHOUT an output.render block, so it can back a public reception door: a door whose recipe renders output cannot carry a write (bindReceptionDoor refuses it — an anonymous write holds and returns no output, so the visitor would get a bare page). Here the manage HANDLER owns the response (the held-request page), not the recipe, so the recipe renders nothing. Run by the manage handler under the anonymous reception actor + the door's minted contract: the booking-update write is pinned to the read ceiling and HOLDS at the D-157 gate — the owner approves it in the Reception Inbox (or on the go). config {booking_id, new_start_at, new_end_at} (unix ms) is supplied per-request by the manage handler — the TARGET (booking_id) is resolved server-side from the credential (a visitor cannot retarget), only the new time comes from the form. ⚠ The visitor is NOT auto-notified here, and that is deliberate: on this door the VISITOR asked for the move, so they already know. This used to claim a reactive notify-visitor-on-reschedule recipe told them on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). If the owner approves a DIFFERENT time than the visitor asked for, telling them is a deliberate act: run reschedule-booking with notify_visitor set. The slot pair moves ATOMICALLY: booking-update refuses a half-supplied move, so a re-run of the same times is safe and a partial one is impossible.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": [
+      "calendar",
+      "reschedule",
+      "booking",
+      "reception",
+      "managed-door"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "booking_id": {
+      "label": "Booking id",
+      "type": "string",
+      "default": ""
+    },
+    "new_start_at": {
+      "label": "New start (unix ms)",
+      "type": "number",
+      "default": null
+    },
+    "new_end_at": {
+      "label": "New end (unix ms)",
+      "type": "number",
+      "default": null
+    }
+  },
+  "steps": [
+    {
+      "id": "ready",
+      "transform": "all",
+      "conditions": [
+        "{{config.booking_id}} is_not_empty",
+        "{{config.new_start_at}} is_not_null",
+        "{{config.new_end_at}} is_not_null"
+      ]
+    },
+    {
+      "id": "manage_target_booking_id",
+      "transform": "coalesce",
+      "values": ["{{config.booking_id}}", ""]
+    },
+    {
+      "id": "reschedule",
+      "skip_when": "{{step.ready}} not_equal true",
+      "op": "core.work-entity.booking.update",
+      "args": {
+        "id": "{{config.booking_id}}",
+        "slot_start_at": "{{config.new_start_at}}",
+        "slot_end_at": "{{config.new_end_at}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  }
+}

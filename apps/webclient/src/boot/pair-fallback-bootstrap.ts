@@ -29,8 +29,8 @@
  *  the message slot's innerHTML + detaches listeners, but leaves the
  *  wrapper element) so the re-mount never doubles up listeners.
  *
- *  Spec: docs/d-148-spec.md § A.4 (Thin Webclient);
- *  docs/d-169-spec.md (P1.5 pair persistence). */
+ *  Spec: D-148 § A.4 (Thin Webclient);
+ *  D-169 (P1.5 pair persistence). */
 
 import {
   bootstrapWebclient,

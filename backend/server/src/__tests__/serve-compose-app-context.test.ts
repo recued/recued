@@ -78,13 +78,13 @@ describe('composeAppContext', () => {
       expect(app.cacheDeps?.store).toBe(app.cacheStore);
       expect(app.cacheDeps?.gate).toBe(storageContext.gateRegistry?.cache);
       expect(app.cacheBlobs).toBeDefined();
-      // Blob-encryption Phase 1 — posture-split CAS roots: cache + collection
-      // bodies at the ENCRYPTED `cache_blobs` root, shared + annotation at the
-      // KEYLESS `blobs` root. Guards against reverting the root constant (which
-      // would re-introduce the cross-posture sweep-reap + dedup collision).
+      // D-212 slice 4 — all production CAS roots are encrypted, while the
+      // content-family root split keeps each orphan sweep's references isolated.
       expect(basename(app.cacheBlobs!.root)).toBe('cache_blobs');
+      expect(app.cacheBlobs!.encrypted).toBe(true);
       expect(app.sharedBlobs).toBeDefined();
       expect(basename(app.sharedBlobs!.root)).toBe('blobs');
+      expect(app.sharedBlobs!.encrypted).toBe(true);
       expect(app.cacheBlobs!.root).not.toBe(app.sharedBlobs!.root);
       expect(app.sharedStoreRef).toBeDefined();
       expect(app.sharedDeps?.store).toBe(app.sharedStoreRef);

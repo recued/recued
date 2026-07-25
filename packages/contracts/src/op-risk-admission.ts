@@ -35,7 +35,7 @@
  *  separate op-admission gate (`backend/server/src/op-admission-gate.ts`), layered on
  *  top of this decision by each dispatch host — never here. Pure: no I/O, no clock.
  *
- *  Spec: `docs/d-187-spec.md` + `[[project_policy_matrix_retirement]]`. */
+ *  Spec: D-187 + `[[project_policy_matrix_retirement]]`. */
 
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import { executionSourceHasContract, isDelegatedMcpToken } from './commits.js';
@@ -43,10 +43,13 @@ import { stripCorePrefix } from './core-pack.js';
 import {
   resolveSimpleFormOperationPolicy,
   type CatalogOperationResolution,
+  type OwnerOverridePolicy,
   type TrustCeiling,
 } from './ingredient-catalog.js';
 import type { RiskTier } from './ingredient.js';
 import type { AdmissionDecision, AdmissionDenyCode } from './policy-enforcement.js';
+import type { PreflightOverrideOffer } from './preflight-signal.js';
+import { operationSpecHash } from './owner-operation-override.js';
 
 // ════════════════════════════════════════════════════════════════
 // Outbound-send slug set (relocated from policy-matrix-dispatch.ts)
@@ -319,7 +322,15 @@ const liftOutboundSend = (
   if (res.verdict !== 'admit') return res;
   if (source.actor !== 'user_self') return res;
   if (!isOutboundSendSlug(slug)) return res;
-  return { ...res, verdict: 'ask', approval: 'ask' };
+  return {
+    ...res,
+    verdict: 'ask',
+    approval: 'ask',
+    authorization_provenance: {
+      ...res.authorization_provenance,
+      lift_reason: 'review_send',
+    },
+  };
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -363,7 +374,15 @@ const liftCommitmentProposal = (
 ): CatalogOperationResolution => {
   if (res.verdict !== 'admit') return res;
   if (!isCommitmentProposalSlug(slug)) return res;
-  return { ...res, verdict: 'ask', approval: 'ask' };
+  return {
+    ...res,
+    verdict: 'ask',
+    approval: 'ask',
+    authorization_provenance: {
+      ...res.authorization_provenance,
+      lift_reason: 'review_commitment',
+    },
+  };
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -385,14 +404,27 @@ const liftCommitmentProposal = (
 const mapResolutionToAdmission = (
   res: CatalogOperationResolution,
   slug: string,
+  ownerOverride?: OwnerOverridePolicy,
+  ownerOverrideOffer?: PreflightOverrideOffer,
 ): AdmissionDecision => {
   switch (res.verdict) {
     case 'admit':
-      return Object.freeze({ verdict: 'admit' });
+      return Object.freeze({
+        verdict: 'admit',
+        authorization_provenance: res.authorization_provenance,
+      });
     case 'ask':
       return Object.freeze({
         verdict: 'ask',
         risk_tier: res.effective_risk_tier,
+        authorization_provenance: res.authorization_provenance,
+        ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
+        ...(ownerOverrideOffer !== undefined
+          ? { owner_override_offer: ownerOverrideOffer }
+          : {}),
+        ...(res.approval_clamped_from !== undefined
+          ? { approval_clamped_from: res.approval_clamped_from }
+          : {}),
         // These render VERBATIM into the ask body's "Reason:" line, so
         // they are owner-facing prose, not log text: no field syntax
         // (`risk_tier='write'` names the field the engine reads — the ask
@@ -412,6 +444,7 @@ const mapResolutionToAdmission = (
         verdict: 'deny',
         code: 'op_risk_denied' satisfies AdmissionDenyCode,
         detail: `op '${slug}' denied by op-risk policy (${res.deny_reason ?? 'unspecified'})`,
+        authorization_provenance: res.authorization_provenance,
       });
   }
 };
@@ -428,21 +461,52 @@ export const admitByOpRisk = (args: {
   readonly risk_tier: RiskTier;
   readonly ceiling: TrustCeiling;
   readonly source: ExecutionSource;
+  readonly owner_override?: OwnerOverridePolicy;
 }): AdmissionDecision => {
   // D-209 Slice B — the stage-trust ceiling is applied INSIDE the resolver now
   // (one relax code path for every op shape); this path no longer re-applies
   // `applyTrustCeiling` (the double-apply the spec removes). The outbound-send /
   // commitment-proposal review lifts still compose OVER the relaxed resolution.
-  const relaxed = resolveSimpleFormOperationPolicy({
-    slug: args.slug,
-    risk_tier: args.risk_tier,
-    ceiling: args.ceiling,
-  });
-  const lifted = liftCommitmentProposal(
-    liftOutboundSend(relaxed, args.slug, args.source),
+  const resolveAndLift = (
+    ownerOverride: OwnerOverridePolicy | undefined,
+  ): CatalogOperationResolution => {
+    const relaxed = resolveSimpleFormOperationPolicy({
+      slug: args.slug,
+      risk_tier: args.risk_tier,
+      ceiling: args.ceiling,
+      ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
+    });
+    return liftCommitmentProposal(
+      liftOutboundSend(relaxed, args.slug, args.source),
+      args.slug,
+    );
+  };
+  const lifted = resolveAndLift(args.owner_override);
+  let ownerOverrideOffer: PreflightOverrideOffer | undefined;
+  if (lifted.verdict === 'ask' && lifted.effective_risk_tier === 'read') {
+    const simulated = resolveAndLift({
+      ...args.owner_override,
+      approval: 'never',
+    });
+    if (simulated.verdict === 'admit' && simulated.approval === 'never') {
+      ownerOverrideOffer = {
+        kind: 'never_ask',
+        ingredient_id: args.slug,
+        operation_id: args.slug,
+        op_hash: operationSpecHash({
+          operation_id: args.slug,
+          risk_tier: args.risk_tier,
+        }),
+        approval: 'never',
+      };
+    }
+  }
+  return mapResolutionToAdmission(
+    lifted,
     args.slug,
+    args.owner_override,
+    ownerOverrideOffer,
   );
-  return mapResolutionToAdmission(lifted, args.slug);
 };
 
 /** D-202 task 4a — the op-risk verdict BEFORE the two quality-review lifts:
@@ -492,12 +556,43 @@ export const admitByOpRiskWithoutQualityLifts = (args: {
   readonly slug: string;
   readonly risk_tier: RiskTier;
   readonly ceiling: TrustCeiling;
+  readonly owner_override?: OwnerOverridePolicy;
+  /** True for a source-less host that can durably surface the owner action. */
+  readonly offer_owner_override?: boolean;
 }): AdmissionDecision => {
-  // D-209 Slice B — ceiling applied inside the resolver (no double-apply).
-  const relaxed = resolveSimpleFormOperationPolicy({
+  const resolve = (
+    ownerOverride: OwnerOverridePolicy | undefined,
+  ): CatalogOperationResolution => resolveSimpleFormOperationPolicy({
     slug: args.slug,
     risk_tier: args.risk_tier,
     ceiling: args.ceiling,
+    ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
   });
-  return mapResolutionToAdmission(relaxed, args.slug);
+  const relaxed = resolve(args.owner_override);
+  let ownerOverrideOffer: PreflightOverrideOffer | undefined;
+  if (
+    args.offer_owner_override === true
+    && relaxed.verdict === 'ask'
+    && relaxed.effective_risk_tier === 'read'
+  ) {
+    const simulated = resolve({ ...args.owner_override, approval: 'never' });
+    if (simulated.verdict === 'admit' && simulated.approval === 'never') {
+      ownerOverrideOffer = {
+        kind: 'never_ask',
+        ingredient_id: args.slug,
+        operation_id: args.slug,
+        op_hash: operationSpecHash({
+          operation_id: args.slug,
+          risk_tier: args.risk_tier,
+        }),
+        approval: 'never',
+      };
+    }
+  }
+  return mapResolutionToAdmission(
+    relaxed,
+    args.slug,
+    args.owner_override,
+    ownerOverrideOffer,
+  );
 };

@@ -20,7 +20,7 @@
  *  pre-authenticated S3 url or an arbitrary external host). Notion file objects
  *  carry no mime, so the mime comes from the download response `Content-Type`.
  *
- *  Design: `docs/d-192-remote-byte-fetch-design.md` (Fork E). */
+ *  Design: D-192 (Fork E). */
 
 import { RpcError } from '@recued/contracts';
 

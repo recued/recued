@@ -6,7 +6,7 @@
  *  write` + `housekeeping.status.read` + `housekeeping.task.run_now`
  *  rpcs and patches the panel state back through.
  *
- *  Spec wireframe (`docs/d-123-spec.md` §5.2):
+ *  Spec wireframe (D-123 §5.2):
  *
  *    [Housekeeping]
  *      Schedule
@@ -24,7 +24,7 @@
  *      Enrichment producers
  *        thread_signals  Deterministic — no cost     [Run now]
  *
- *  Spec: `docs/d-123-spec.md` §5.2. */
+ *  Spec: D-123 §5.2. */
 
 import type { HousekeepingTaskStatus } from '@recued/contracts';
 import { e } from '../../template.js';

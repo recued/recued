@@ -102,7 +102,7 @@ export interface RegistryDescribeDeps {
    *  `mcp_exposed` field in each entry continues to reflect the effective grant
    *  regardless. */
   includePrivateTopics?: boolean;
-  /** M-ENRICH (factory/launch-todo-map) — the set of enrichment topics
+  /** M-ENRICH (internal planning notes) — the set of enrichment topics
    *  that have a registered producer. Today this is every
    *  `listHousekeepingTasks()` entry carrying a `.topic`
    *  (`buildEnrichmentProducerTask` per-record producers + the Shape-B /
@@ -602,7 +602,7 @@ export const handleRegistryDescribe = (
     ) {
       continue;
     }
-    // M-ENRICH (factory/launch-todo-map) — drop topics with no registered
+    // M-ENRICH (internal planning notes) — drop topics with no registered
     // producer AND no rows from the agent catalog so the AI never plans
     // against an enrichment that nothing produces + that holds nothing to
     // read. Opt-in via `registeredProducerTopics`; the Settings-UI path

@@ -57,7 +57,11 @@ import { createContractGrantEntryStore } from '../storage/contract-grant-entry-s
 import { liveVendorRegistry } from '../connection-convention-families.js';
 import { createReceptionCalendarEventSeam } from '../ports/reception/projection/reception-calendar-event.js';
 import { createReceptionBookingMintSeam } from '../ports/reception/projection/reception-booking-mint.js';
-import { deriveFormSubmissionPiiKeyFromSubDek } from '../ports/reception/form-pii.js';
+import {
+  deriveFormSubmissionPiiKeyFromSubDek,
+  openFormSubmissionField,
+} from '../ports/reception/form-pii.js';
+import { deriveReceptionPepperFromSubDek } from '../ports/reception/server-secret-pepper.js';
 import { createReceptionAttachFileSeam } from '../ports/reception/projection/reception-attach-file.js';
 import { composeTelegramCallbackAck } from '../composition/bin/wire-telegram-callback-ack.js';
 import {
@@ -219,6 +223,8 @@ export interface ComposeListenersOptions {
     // the endpoint's owner-authored `display_name` (the booking's title; the
     // visitor-derived alternatives all carry their name / free text).
     | 'publicEndpointRegistryStoreRef'
+    | 'receptionRateLimiterRef'
+    | 'ipBlockStoreRef'
   >;
   app: Pick<
     AppContext,
@@ -326,6 +332,9 @@ export interface ComposeListenersOptions {
     ExecutionContext,
     | 'executeDeps'
     | 'notificationBlock'
+    // The `/ask` landing's live batch-membership read — a single-member batch
+    // may render its held op's values; a multi-member one may not.
+    | 'getBatch'
     // D-210 Phase C — the decorated resumer, for the inbox's no-ask release.
     | 'preflightResumer'
     | 'messengerChannels'
@@ -771,6 +780,17 @@ export const composeListeners = async (
             clientTokens.list({ include_revoked: false }).length,
         }
       : {}),
+    // D-212 §7.10 — the standing sealing posture. Read live from the key
+    // store's own header on every snapshot, not captured at compose time:
+    // `bootSigningIdentity` runs after this deps object is built, and a
+    // posture cached from before it would report `null` forever.
+    //
+    // 🔑 This is the floor that replaced the retracted §7.9 refusal. An
+    // operator may run an unsealed keyfile; what they may not do is run one
+    // without knowing, so `'none'` has to reach a client and be rendered as
+    // the warning it is — never collapsed into the not-wired `null`.
+    getKeyfileSealing: () =>
+      storage.signingIdentity?.keyStore.sealingPosture?.() ?? null,
   };
 
   // D-178 — release update-check orchestrator deps. Shares the booted db
@@ -926,7 +946,7 @@ export const composeListeners = async (
   // `display_name`) are each independently optional, so a partial substrate
   // costs the booking a FIELD, never the row.
   const receptionBookingSeam =
-    storage.workEntityStoreRef && storage.intakeFormSubmissionStoreRef
+    storage.workEntityStoreRef && storage.intakeFormSubmissionStoreRef && app.keys
       ? createReceptionBookingMintSeam({
           writeBooking: (writeInput, now) =>
             storage.workEntityStoreRef!.writeBooking(writeInput, now),
@@ -940,17 +960,12 @@ export const composeListeners = async (
                   storage.publicEndpointRegistryStoreRef!.findById(endpoint_id),
               }
             : {}),
-          ...(app.keys
-            ? {
-                // ⚠ D-210 A.8 slice 4b-ii — the FORM key. Renaming the mint's dep
-                // did NOT make this a type error: a conditional SPREAD skips
-                // tsc's excess-property check, so the old key would have been
-                // silently dropped and every booking would have quietly lost its
-                // counterparty contact. ⇒ the spread trap, caught by grep.
-                getFormSubmissionPiiKey: () =>
-                  deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
-              }
-            : {}),
+          // The same reception key both verifies the drain-minted id binding
+          // and (when contact storage exists) opens the sealed visitor email.
+          // The seam is not constructed without it: unauthenticated ids must
+          // fail closed rather than becoming a weaker no-counterparty booking.
+          getFormSubmissionPiiKey: () =>
+            deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
           ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
         })
       : undefined;
@@ -1008,6 +1023,112 @@ export const composeListeners = async (
               window_start,
               window_end,
             );
+          },
+        }
+      : {}),
+    // D-210 A.5.3b — owner-side lookup only. Re-derive from the
+    // substrate-authored projection args at this privacy boundary rather than
+    // treating the presentation-layer source ref as authority.
+    ...(storage.intakeFormSubmissionStoreRef
+      && storage.workEntityStoreRef
+      && app.contactStoreRef
+      && app.keys
+      ? {
+          lookupBookingHistory: async (
+            source: { kind: string },
+            args: Readonly<Record<string, unknown>>,
+          ) => {
+            // A managed reschedule already names the existing booking. Its
+            // opaque contact id is enough for an owner-side history lookup and
+            // avoids reopening any visitor PII. Exclude the current row so the
+            // panel is genuinely prior history.
+            const bookingId = args.booking_id;
+            if (typeof bookingId === 'string' && bookingId.length > 0) {
+              const booking = storage.workEntityStoreRef!.readBooking(bookingId);
+              if (booking?.counterparty_contact_id === undefined) return undefined;
+              return storage.workEntityStoreRef!.getBookingHistory({
+                counterparty_contact_id: booking.counterparty_contact_id,
+                exclude_booking_id: booking.id,
+                limit: 10,
+              });
+            }
+
+            // A fresh scheduling approval has no booking yet, so resolve the
+            // sealed request email to the local contact id. Other reception
+            // sources neither carry this request id nor receive visitor PII.
+            if (source.kind !== 'scheduling_link') return undefined;
+            const requestId = args.booking_request_id;
+            if (typeof requestId !== 'string' || requestId.length === 0) return undefined;
+            const row = storage.intakeFormSubmissionStoreRef!.findById(requestId);
+            if (row === null || row.slot === null || row.visitor_email_encrypted === null) {
+              return undefined;
+            }
+            const email = await openFormSubmissionField({
+              key: deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
+              endpoint_id: row.endpoint_id,
+              submission_id: row.submission_id,
+              field: 'visitor_email',
+              ciphertext: row.visitor_email_encrypted,
+            });
+            if (email === null || email.trim().length === 0) return undefined;
+            const contact = app.contactStoreRef!.get(email.trim().toLowerCase());
+            if (contact?.contact_id === undefined) return undefined;
+            return storage.workEntityStoreRef!.getBookingHistory({
+              counterparty_contact_id: contact.contact_id,
+              limit: 10,
+            });
+          },
+        }
+      : {}),
+    // A form_response destination is the owner-editable working copy. Reveal
+    // its sealed source only on this paired-admin approval surface; public
+    // visitor links never receive this resolver.
+    ...(storage.intakeFormSubmissionStoreRef && app.keys
+      ? {
+          resolveFormResponseEdit: async (
+            source: { kind: string },
+            args: Readonly<Record<string, unknown>>,
+          ) => {
+            if (source.kind !== 'intake_form') return undefined;
+            const metadata = args.metadata;
+            if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
+              return undefined;
+            }
+            const submissionId = (metadata as Record<string, unknown>)
+              .reception_form_submission_id;
+            if (typeof submissionId !== 'string' || submissionId.length === 0) return undefined;
+            const row = storage.intakeFormSubmissionStoreRef!.findById(submissionId);
+            if (row === null || row.submission_blob_encrypted === null) return undefined;
+            const key = deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception'));
+            const [payloadJson, visitorEmail] = await Promise.all([
+              openFormSubmissionField({
+                key,
+                endpoint_id: row.endpoint_id,
+                submission_id: row.submission_id,
+                field: 'submission_blob',
+                ciphertext: row.submission_blob_encrypted,
+              }),
+              openFormSubmissionField({
+                key,
+                endpoint_id: row.endpoint_id,
+                submission_id: row.submission_id,
+                field: 'visitor_email',
+                ciphertext: row.visitor_email_encrypted,
+              }),
+            ]);
+            if (payloadJson === null) return undefined;
+            const payload = JSON.parse(payloadJson) as unknown;
+            if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+              return undefined;
+            }
+            const fields = (payload as Record<string, unknown>).fields;
+            if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) {
+              return undefined;
+            }
+            return {
+              values: fields as Readonly<Record<string, unknown>>,
+              ...(visitorEmail !== null ? { visitor_email: visitorEmail } : {}),
+            };
           },
         }
       : {}),
@@ -1117,6 +1238,16 @@ export const composeListeners = async (
           resolveDetails: createAskLandingDetailResolver({
             findHoldItem: (hold_id: string) =>
               findReceptionHoldItem(receptionInboxBundle.receptionInboxDeps, hold_id),
+            // ⛔ REQUIRED for a reception hold to render at all. Reception maps
+            // to a run-scoped origin unit, so its holds are SINGLE-MEMBER
+            // batches; without a live membership read the resolver fails closed
+            // on every one of them and the `/ask` page shows no details and no
+            // edit controls — which is exactly what it did before this was
+            // wired. Not passing it is a silent feature-off, so it is threaded
+            // from the same bundle that owns the batch rows.
+            ...(execution.getBatch !== undefined
+              ? { getBatch: execution.getBatch }
+              : {}),
             editable: true,
           }),
           submitEditedApproval: createAskLandingEditApproval({
@@ -1142,6 +1273,10 @@ export const composeListeners = async (
 
   const askLandingPortDeps: ServerConfig['askLandingPortDeps'] =
     execution.notificationBlock
+      && storage.publicEndpointRegistryStoreRef
+      && storage.receptionRateLimiterRef
+      && storage.ipBlockStoreRef
+      && app.keys
       ? {
           getAsk: (ask_id: string) => execution.notificationBlock!.getAsk(ask_id),
           submitAnswer: (reply) => execution.notificationBlock!.submitAnswer(reply),
@@ -1150,6 +1285,15 @@ export const composeListeners = async (
               .verification_phrase,
           nonceStore: createInMemoryAskLandingNonceStore(),
           trustForwardedProto: askTrustForwardedProto,
+          abuse: {
+            getStore: () => storage.publicEndpointRegistryStoreRef!,
+            getRateLimiter: () => storage.receptionRateLimiterRef!,
+            getIpBlockStore: () => storage.ipBlockStoreRef!,
+            getPepper: () => deriveReceptionPepperFromSubDek(
+              app.keys!.getSubDEK('reception'),
+            ),
+            trustForwardedFor: askTrustForwardedProto,
+          },
           ...askDetailDeps,
         }
       : undefined;
@@ -1634,6 +1778,7 @@ export const composeListeners = async (
     // are live: `app.keys` is the KeyManager; the keyStore getter reads
     // the (lazily-booted) signing identity at call time.
     ...(app.keys ? { keys: app.keys } : {}),
+    ...(app.keys ? { database: storage.db } : {}),
     getServerKeyStore: () => storage.signingIdentity?.keyStore,
     scheduleDeps,
     ...(dishDeps ? { dishDeps } : {}),
@@ -1749,6 +1894,18 @@ export const composeListeners = async (
         }
       : {}),
     recoveryKeyCheck: storage.recoveryKeyCheck,
+    // The WS enrollment twin gets the SAME encryption handles as the HTTP
+    // `/auth/pair` door above. It previously got only the check store, so
+    // enrolling over WS opened the gate on a plaintext database.
+    ...(app.keys
+      ? {
+          recoveryVaultDeps: {
+            keys: app.keys,
+            database: storage.db,
+            getServerKeyStore: () => storage.signingIdentity?.keyStore,
+          },
+        }
+      : {}),
     ...(clientTokens ? { clientTokens } : {}),
     pressureDeps,
     oauthClientConfigDeps: collection.oauthClientConfigDeps,
@@ -1786,6 +1943,19 @@ export const composeListeners = async (
             store: app.connectionStoreRef,
             ...(app.keys && app.keys.state() !== 'uninitialized'
               ? { getEncryptionKey: app.keys.keyProvider('connection') }
+              : {}),
+            // Manual MCP probes use the exact Node transport capabilities
+            // already composed for live recipe execution. Reusing these seams
+            // keeps websocket auth/redirect handling and stdio shell/env
+            // hardening identical between "Probe" and a real MCP call.
+            ...(execution.executorConfig.connectionMcp?.wsConnect
+              ? { wsConnect: execution.executorConfig.connectionMcp.wsConnect }
+              : {}),
+            ...(execution.executorConfig.connectionMcp?.spawnStdioMcp
+              ? {
+                  spawnStdioMcp:
+                    execution.executorConfig.connectionMcp.spawnStdioMcp,
+                }
               : {}),
             ...(app.enrichmentCascadeRef
               ? {

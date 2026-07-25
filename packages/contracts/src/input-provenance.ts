@@ -27,7 +27,7 @@
  *  MCP writes). Both are "input-provenance" but read different facets;
  *  producers that care about both declare both.
  *
- *  Spec: docs/d-161-spec.md § N.8 / A.5 / A.6 / A.7 / I-7 / I-8 / O-4.
+ *  Spec: D-161 § N.8 / A.5 / A.6 / A.7 / I-7 / I-8 / O-4.
  */
 
 import type { Actor } from './commits.js';

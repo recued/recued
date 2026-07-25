@@ -50,7 +50,7 @@
  *  Token cost: ~250 per record. Same magnitude as `purpose` /
  *  `company` / `role` AI producers.
  *
- *  Spec: `docs/d-129-spec.md` §A.6 + §Phase 6 + load-bearing
+ *  Spec: D-129 §A.6 + §Phase 6 + load-bearing
  *  decision §3 (cross-source join via canonical email). */
 
 import {

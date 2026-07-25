@@ -22,7 +22,7 @@
  *  No `onInvalidate` — TTL expiry is purely time-driven; nothing
  *  about a source-record write makes a non-expired row eligible.
  *
- *  Spec: `docs/d-123-spec.md` §3.2. */
+ *  Spec: D-123 §3.2. */
 
 import type {
   HousekeepingCursor,

@@ -17,7 +17,7 @@
  *  the per-cycle association-rescan substrate (§ A.6.3) covers the
  *  case.
  *
- *  Spec: `docs/d-139-spec.md` § A.3.8, § A.4, § A.6. */
+ *  Spec: D-139 § A.3.8, § A.4, § A.6. */
 
 import type { ConnectionRecord } from '@recued/contracts';
 

@@ -16,7 +16,7 @@
  *       (mirrors the bin.ts gate that decides whether to call
  *       `housekeeping.start()` at all).
  *
- *  Spec: `docs/d-123-spec.md` §7. */
+ *  Spec: D-123 §7. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

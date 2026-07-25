@@ -117,6 +117,7 @@ describe('composeExecutionContext', () => {
       expect(kernelDispatchers?.collectionList).toEqual(
         expect.any(Function),
       );
+      expect(kernelDispatchers?.formResponseList).toEqual(expect.any(Function));
       expect(kernelDispatchers?.formResponseGet).toEqual(expect.any(Function));
       expect(kernelDispatchers?.webhookEventGet).toEqual(expect.any(Function));
       expect(kernelDispatchers?.scheduleRecipe).toEqual(expect.any(Function));
@@ -193,6 +194,8 @@ describe('composeExecutionContext', () => {
           submission_id: 'submission-execution-context',
         }),
       ).resolves.toEqual({ record: accepted?.response });
+      await expect(kernelDispatchers?.formResponseList?.({ limit: 10 }))
+        .resolves.toMatchObject({ records: [accepted?.response] });
       expect(context.executeDeps.recipeStore).toBe(storageContext.recipeStore);
       expect(context.executeDeps.executorConfig).toBe(context.executorConfig);
       expect(context.executeDeps.baseVault).toBe(storageContext.baseVault);

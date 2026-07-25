@@ -2,7 +2,7 @@
  *
  *  Pure / portable / testable in isolation. Producers in
  *  `backend/server/src/housekeeping/reconciliation/*` + the resolver +
- *  tests share this module. Spec: `docs/d-128-spec.md` §A.2.
+ *  tests share this module. Spec: D-128 §A.2.
  *
  *  Meta is the **enrichment-compute substrate** for
  *  `connection.api.<vendor>.<entity>` rows — a small denormalised

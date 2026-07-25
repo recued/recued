@@ -26,7 +26,7 @@
  *  server-side at materialize (see `resolveSealedVisitorEmail` on the
  *  projection deps). This module maps only what a visible FIELD can carry.
  *
- *  Spec: `docs/d-210-spec.md`; the config contract is
+ *  Spec: D-210; the config contract is
  *  `IntakeFormCalendarMapping` / `IntakeFormContactMapping`. */
 
 import {

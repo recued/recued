@@ -14,7 +14,7 @@
  *  AI-surface flag (LLM = a positive per-record token estimate,
  *  Computed = deterministic / zero-cost).
  *
- *  Spec: `handovers/webclient-ia-treemap.md` §R25 (LOCKED) points 2 + 5/7E. */
+ *  Spec: internal design notes §R25 (LOCKED) points 2 + 5/7E. */
 
 import type { HousekeepingTaskStatus } from '@recued/contracts';
 import { ENRICHMENT_REGISTRY } from '@recued/contracts';

@@ -30,7 +30,7 @@
  *  token budget (§ A.6.2). Page-cap respected. Suspended budget
  *  collapses the sweep to a no-op for the connection.
  *
- *  Spec: `docs/d-139-spec.md` § A.6.3. */
+ *  Spec: D-139 § A.6.3. */
 
 import {
   ENGAGEMENT_ASSOCIATION_RESCAN_WINDOW_MS,

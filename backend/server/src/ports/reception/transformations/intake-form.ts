@@ -20,7 +20,7 @@
  *
  *  Pure module — no I/O.
  *
- *  Spec: `docs/d-149-spec.md` § A.5.3 + § Must Hold I-1. */
+ *  Spec: D-149 § A.5.3 + § Must Hold I-1. */
 
 import {
   validateIntakeFormConfig,

@@ -6,8 +6,27 @@ import {
   loadVaultAsObject,
   listVaultPublishers,
 } from '../server-vault.js';
+import { createKeyManager, type KeyManager } from '../key-manager.js';
+import { generateRecoveryKey, generateServerKey, type ServerBundle } from '@recued/crypto';
 
 let db: Database.Database;
+
+/** A KeyManager enrolled and unlocked over an in-memory server bundle — the
+ *  shape every production consumer of `getSubDEK` / `keyProvider` sees. */
+const unlockedManager = async (): Promise<KeyManager> => {
+  let serverBundle: ServerBundle | null = null;
+  const keys = createKeyManager({
+    loadBundle: () => null,
+    saveBundle: () => {},
+    loadServerBundle: () => serverBundle,
+    saveServerBundle: (b) => { serverBundle = b; },
+  });
+  await keys.initServerVault({
+    recoveryKey: generateRecoveryKey().mnemonic,
+    serverKey: generateServerKey(),
+  });
+  return keys;
+};
 
 beforeEach(() => {
   db = new Database(':memory:');
@@ -230,5 +249,53 @@ describe('createServerVaultStore — quotas', () => {
     const vault = await createServerVaultStore(db);
     await vault.set('recued-core', 'big', 'x'.repeat(10_000));
     expect(await vault.get('recued-core', 'big')).toHaveLength(10_000);
+  });
+});
+
+describe('sub-DEK ownership — a caller may wipe what it was handed', () => {
+  /** The zeroization discipline this codebase applies everywhere else is
+   *  `const k = …; try { … } finally { k.fill(0) }`. When `getSubDEK` returned
+   *  its cached array directly, that pattern zeroed the KeyManager's cache in
+   *  place while `state` stayed `unlocked` — every later read of the domain
+   *  returned 32 zero bytes, so everything written afterwards was encrypted
+   *  under a publicly known key and everything written before became
+   *  unreadable, with no error and no state change. No consumer did it, which
+   *  is precisely why the next one would. */
+  it('wiping a returned sub-DEK does not poison the cache', async () => {
+    const keys = await unlockedManager();
+
+    const first = keys.getSubDEK('blob-store');
+    expect(first.some((b) => b !== 0)).toBe(true);
+    first.fill(0);
+
+    const second = keys.getSubDEK('blob-store');
+    expect(second.some((b) => b !== 0)).toBe(true);
+    expect(keys.state()).toBe('unlocked');
+  });
+
+  it('the provider hands out an independent copy too', async () => {
+    const keys = await unlockedManager();
+    const provider = keys.keyProvider('blob-store');
+
+    const handed = provider()!;
+    handed.fill(0);
+
+    expect(provider()!.some((b) => b !== 0)).toBe(true);
+  });
+
+  it('the copy is still the SAME key each time — only the array differs', async () => {
+    const keys = await unlockedManager();
+    const a = keys.getSubDEK('server-data');
+    const b = keys.getSubDEK('server-data');
+    expect(Buffer.from(b).equals(Buffer.from(a))).toBe(true);
+    expect(b).not.toBe(a);
+  });
+
+  it('lock() still zeroes the cached originals', async () => {
+    const keys = await unlockedManager();
+    keys.getSubDEK('blob-store');
+    keys.lock();
+    expect(keys.keyProvider('blob-store')()).toBeNull();
+    expect(() => keys.getSubDEK('blob-store')).toThrow(/locked/i);
   });
 });

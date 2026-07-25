@@ -44,7 +44,7 @@
  *      so the next reconnect picks up exactly where the last event
  *      left off.
  *
- *  Spec: `docs/d-130-spec.md` § A.4 + § Phase 5. */
+ *  Spec: D-130 § A.4 + § Phase 5. */
 
 import {
   SALESFORCE_COMETD_PATH,

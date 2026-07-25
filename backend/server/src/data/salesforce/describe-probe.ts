@@ -38,7 +38,7 @@
  *  loser is registered with `available: false` so the capability
  *  surface can show "this org runs VoiceCall, not CallHistory".
  *
- *  Spec: `docs/d-139-spec.md` § A.2.1, § A.6, Pass-5 R5.10, R5.11. */
+ *  Spec: D-139 § A.2.1, § A.6, Pass-5 R5.10, R5.11. */
 
 import {
   SALESFORCE_API_VERSION,

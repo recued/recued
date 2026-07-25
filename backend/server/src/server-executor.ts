@@ -122,9 +122,8 @@ export interface ServerExecutorConfig {
   /** D-125 P4.2 — `connection.mcp` per-kind handler deps. Boot site
    *  closes over `decodeAuthFromStorage` + the same connection sub-DEK
    *  used by P4.1. Pool entries scoped per-handler-instance with
-   *  `MCP_CLIENT_IDLE_TIMEOUT_MS` reaping. P4.2 ships sse transport
-   *  only (treated as Streamable HTTP POST); websocket + stdio throw
-   *  `MCP_TRANSPORT_NOT_IMPLEMENTED` until a follow-on phase lands. */
+   *  `MCP_CLIENT_IDLE_TIMEOUT_MS` reaping. SSE uses Streamable HTTP POST;
+   *  websocket and stdio use the injected Node connector/spawner. */
   connectionMcp?: ConnectionMcpHandlerDeps;
   /** D-177 P2b — pre-dispatch gate threaded onto the connection adapter
    *  (`ConnectionAdapterDeps.gateDispatch`). The boot site closes over
@@ -303,6 +302,12 @@ export interface ConnectionGatewayAuditDetail {
   operation_group: string | null;
   risk_tier: string;
   approval: string;
+  /** D-211 §2 — present when a stored owner-override `approval` was below-floor
+   *  at resolve — a hand-stored row, or an rpc-legal ingredient-wide ruling
+   *  clamped per-op — and the resolver clamped it fail-closed AT the floor:
+   *  carries the stored (below-floor) value so the Runs surface can warn.
+   *  Carried verbatim from `GatewayCallAudit`. */
+  approval_clamped_from?: string;
   outcome: 'success' | 'failed';
   surface_kind?: string;
   approval_id?: string;
@@ -326,7 +331,7 @@ export interface ConnectionGatewayAuditDetail {
    *  path, the call's canonical target path, the template, and the
    *  `checkPathScope` reason. Carried verbatim from `GatewayCallAudit.path_-
    *  scope` so the DURABLE row holds the forensic detail the spec mandates
-   *  (`docs/d-165-spec.md:933`), not just the in-memory event. */
+   *  (D-165:933`), not just the in-memory event. */
   path_scope?: GatewayCallAudit['path_scope'];
 }
 
@@ -356,6 +361,11 @@ export const createGatewayAuditEmitter = (
       operation_group: event.operation_group,
       risk_tier: event.risk_tier,
       approval: event.approval,
+      // D-211 §2 — fire-and-forget like every sibling field (hot path): the
+      // fail-closed clamp marker rides the same best-effort emit.
+      ...(event.approval_clamped_from !== undefined
+        ? { approval_clamped_from: event.approval_clamped_from }
+        : {}),
       outcome: event.outcome,
       ...(event.surface_kind !== undefined ? { surface_kind: event.surface_kind } : {}),
       ...(event.approval_id !== undefined ? { approval_id: event.approval_id } : {}),

@@ -45,7 +45,7 @@
  *    - Malformed `hot_fields` JSON → row skipped, aggregation
  *      continues. Same defense-in-depth as A.6 / A.7.
  *
- *  Spec: `docs/launch-sequence-2026-04-30.md` line 46 +
+ *  Spec: internal design notes line 46 +
  *        `ENRICHMENT_REGISTRY.attendee_patterns`. */
 
 import {

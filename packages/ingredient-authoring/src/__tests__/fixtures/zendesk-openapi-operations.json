@@ -112,16 +112,16 @@
     },
     "composition_bytes": {
       "zendesk": 77768,
-      "zendesk-ticketing-engagement": 118659,
-      "zendesk-users-groups": 90724,
-      "zendesk-organizations-brands": 71277,
+      "zendesk-ticketing-engagement": 120291,
+      "zendesk-users-groups": 91642,
+      "zendesk-organizations-brands": 72025,
       "zendesk-business-rules": 90424,
       "zendesk-fields-workspaces": 95274,
-      "zendesk-custom-objects-routing": 102595,
-      "zendesk-data-exports-itam": 83991,
-      "zendesk-platform-admin": 35067,
-      "zendesk-help-center-content": 124792,
-      "zendesk-help-center-community": 102432
+      "zendesk-custom-objects-routing": 102935,
+      "zendesk-data-exports-itam": 84535,
+      "zendesk-platform-admin": 35441,
+      "zendesk-help-center-content": 124996,
+      "zendesk-help-center-community": 103554
     },
     "pagination_counts": {
       "none": 610,
@@ -11010,7 +11010,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.bulk_set_agent_attribute_values_job": {
@@ -11122,7 +11122,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.create_access_rule": {
@@ -11789,7 +11789,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.custom_objects_limit": {
@@ -12539,7 +12539,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.filtered_search_custom_object_records": {
@@ -12681,7 +12681,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.get_object_trigger": {
@@ -13019,7 +13019,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.incremental_skil_based_routing_attribute_values_export": {
@@ -13709,7 +13709,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.list_custom_object_records": {
@@ -13845,7 +13845,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.list_custom_objects": {
@@ -14681,7 +14681,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.search_object_triggers": {
@@ -15344,7 +15344,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-custom-objects-routing.show_permission_policy": {
@@ -16609,7 +16609,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.count_tags": {
@@ -17813,7 +17813,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.filtered_search_itam_assets": {
@@ -17942,7 +17942,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_organization_export": {
@@ -18027,7 +18027,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_sample_export": {
@@ -18107,7 +18107,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_ticket_events": {
@@ -18197,7 +18197,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_ticket_export_cursor": {
@@ -18294,7 +18294,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_ticket_export_time": {
@@ -18374,7 +18374,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_user_export_cursor": {
@@ -18476,7 +18476,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.incremental_user_export_time": {
@@ -18561,7 +18561,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.itam_asset_bulk_jobs": {
@@ -18675,7 +18675,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.list_dynamic_contents": {
@@ -18940,7 +18940,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.list_itam_locations": {
@@ -19350,7 +19350,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.list_user_tags": {
@@ -19699,7 +19699,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.set_organization_tags": {
@@ -20063,7 +20063,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.show_itam_asset_type": {
@@ -20513,7 +20513,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-data-exports-itam.update_dynamic_content_item": {
@@ -27916,7 +27916,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_comment_votes_with_locale": {
@@ -28004,7 +28004,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_comments": {
@@ -28082,7 +28082,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_comments_by_user_no_locale": {
@@ -28150,7 +28150,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_subscriptions": {
@@ -28228,7 +28228,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_subscriptions_no_locale": {
@@ -28296,7 +28296,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_votes_no_locale": {
@@ -28364,7 +28364,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_article_votes_with_locale": {
@@ -28442,7 +28442,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_content_subscriptions_by_user_id": {
@@ -28510,7 +28510,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_post_comment_votes": {
@@ -28588,7 +28588,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_post_comments": {
@@ -28656,7 +28656,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_post_comments_by_user_no_locale": {
@@ -28724,7 +28724,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_post_subscriptions": {
@@ -28779,7 +28779,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_post_votes": {
@@ -28847,7 +28847,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_posts": {
@@ -28925,7 +28925,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_posts_by_topic_no_locale": {
@@ -29013,7 +29013,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_posts_by_user_no_locale": {
@@ -29101,7 +29101,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_section_subscriptions": {
@@ -29179,7 +29179,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_section_subscriptions_no_locale": {
@@ -29247,7 +29247,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_topic_subscriptions": {
@@ -29315,7 +29315,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_topics": {
@@ -29450,7 +29450,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_user_votes": {
@@ -29518,7 +29518,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.list_votes_no_user": {
@@ -29575,7 +29575,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.request_user_image_upload": {
@@ -29694,7 +29694,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_article_subscription_no_locale": {
@@ -29759,7 +29759,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_comment": {
@@ -29834,7 +29834,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_post": {
@@ -29889,7 +29889,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_post_comment": {
@@ -29954,7 +29954,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_post_subscription": {
@@ -30019,7 +30019,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_section_subscription": {
@@ -30094,7 +30094,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_section_subscription_no_locale": {
@@ -30159,7 +30159,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_topic": {
@@ -30279,7 +30279,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.show_vote": {
@@ -30334,7 +30334,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-community.update_article_comment_no_locale": {
@@ -35214,7 +35214,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.list_user_segment_topics": {
@@ -35282,7 +35282,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.list_user_segments": {
@@ -35350,7 +35350,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.list_user_segments_applicable": {
@@ -35418,7 +35418,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.list_user_segments_by_user": {
@@ -35496,7 +35496,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.search_service_catalog_items": {
@@ -36277,7 +36277,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-help-center-content.unified_search": {
@@ -37630,7 +37630,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.check_host_mapping_validity": {
@@ -37833,7 +37833,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.count_user_organizations": {
@@ -37889,7 +37889,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.create_brand": {
@@ -39139,7 +39139,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_brand_agents_by_brand": {
@@ -39195,7 +39195,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_countries": {
@@ -39425,7 +39425,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_organization_memberships_by_organization": {
@@ -39480,7 +39480,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_organization_merges": {
@@ -39535,7 +39535,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_organization_subscriptions": {
@@ -39591,7 +39591,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_organization_subscriptions_by_organization": {
@@ -39659,7 +39659,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_sharing_agreements": {
@@ -39759,7 +39759,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_user_organization_memberships": {
@@ -39824,7 +39824,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_user_organization_subscriptions": {
@@ -39892,7 +39892,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.list_user_organizations": {
@@ -40014,7 +40014,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.organization_related": {
@@ -40069,7 +40069,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.set_organization_as_default": {
@@ -40254,7 +40254,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_country": {
@@ -40485,7 +40485,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_organization_membership_by_id": {
@@ -40540,7 +40540,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_organization_membership_by_user_id": {
@@ -40605,7 +40605,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_organization_merge": {
@@ -40660,7 +40660,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_organization_subscription": {
@@ -40715,7 +40715,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.show_sharing_agreement": {
@@ -40836,7 +40836,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-organizations-brands.unassign_organization": {
@@ -41728,7 +41728,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.list_audit_logs": {
@@ -41896,7 +41896,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.list_monitored_twitter_handles": {
@@ -41940,7 +41940,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.list_remote_authentications": {
@@ -41995,7 +41995,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.list_sessions": {
@@ -42068,7 +42068,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.list_targets": {
@@ -42168,7 +42168,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.open_ticket_in_agent_browser": {
@@ -42541,7 +42541,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.show_currently_authenticated_session": {
@@ -42585,7 +42585,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.show_monitored_twitter_handle": {
@@ -42640,7 +42640,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.show_security_settings": {
@@ -42695,7 +42695,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.show_session": {
@@ -42760,7 +42760,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-platform-admin.show_target": {
@@ -43044,7 +43044,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.bulk_delete_tickets": {
@@ -43318,7 +43318,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_audits_for_ticket": {
@@ -43373,7 +43373,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_organization_tickets": {
@@ -43428,7 +43428,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_satisfaction_ratings": {
@@ -43472,7 +43472,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_ticket_comments": {
@@ -43527,7 +43527,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_tickets": {
@@ -43571,7 +43571,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_user_assigned_tickets": {
@@ -43626,7 +43626,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.count_user_ccd_tickets": {
@@ -43681,7 +43681,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.create_approval_request": {
@@ -44467,7 +44467,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_approval_requests": {
@@ -44575,7 +44575,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ccd_requests": {
@@ -44640,7 +44640,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_comments": {
@@ -44715,7 +44715,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_conversation_log_for_ticket": {
@@ -44803,7 +44803,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_deleted_tickets": {
@@ -44915,7 +44915,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_email_notifications": {
@@ -44990,7 +44990,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_open_requests": {
@@ -45055,7 +45055,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_organization_requests": {
@@ -45130,7 +45130,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_organization_tickets": {
@@ -45185,7 +45185,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_recent_tickets": {
@@ -45229,7 +45229,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_requests": {
@@ -45327,7 +45327,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_satisfaction_rating_reasons": {
@@ -45491,7 +45491,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_suspended_tickets": {
@@ -45589,7 +45589,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_audits": {
@@ -45684,7 +45684,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_collaborators": {
@@ -45735,7 +45735,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_content_pins": {
@@ -45793,7 +45793,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_email_c_cs": {
@@ -45844,7 +45844,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_followers": {
@@ -45895,7 +45895,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_incidents": {
@@ -45946,7 +45946,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_metric_events": {
@@ -46033,7 +46033,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_problems": {
@@ -46124,7 +46124,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_ticket_skips": {
@@ -46310,7 +46310,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_user_ccd_tickets": {
@@ -46365,7 +46365,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_user_followed_tickets": {
@@ -46483,7 +46483,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_user_requested_tickets": {
@@ -46621,7 +46621,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.list_user_requests": {
@@ -46696,7 +46696,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.make_ticket_comment_private": {
@@ -47615,7 +47615,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_activity": {
@@ -47670,7 +47670,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_attachment": {
@@ -47725,7 +47725,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_comment": {
@@ -47790,7 +47790,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_email_notification": {
@@ -47845,7 +47845,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_many_email_notifications": {
@@ -47920,7 +47920,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_request": {
@@ -47975,7 +47975,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_satisfaction_ratings": {
@@ -48085,7 +48085,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_ticket_by_messaging_conversation_id": {
@@ -48140,7 +48140,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.show_ticket_metrics": {
@@ -48195,7 +48195,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.suspended_tickets_attachments": {
@@ -48452,7 +48452,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.tickets_create_many": {
@@ -48575,7 +48575,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-ticketing-engagement.tickets_update_many": {
@@ -48956,7 +48956,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.autocomplete_users_post": {
@@ -49053,7 +49053,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.count_deleted_users": {
@@ -49097,7 +49097,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.count_group_users": {
@@ -49183,7 +49183,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.count_groups": {
@@ -49312,7 +49312,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.count_user_groups": {
@@ -49452,7 +49452,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.create_end_user_identity": {
@@ -50475,7 +50475,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.get_user_password_requirements": {
@@ -50752,7 +50752,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_assignable_group_memberships_by_group": {
@@ -50808,7 +50808,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_assignable_groups": {
@@ -51038,7 +51038,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_end_user_identities": {
@@ -51103,7 +51103,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_group_memberships": {
@@ -51201,7 +51201,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_group_memberships_by_group": {
@@ -51257,7 +51257,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_group_users": {
@@ -51353,7 +51353,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_organization_users": {
@@ -51501,7 +51501,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_user_group_memberships": {
@@ -51599,7 +51599,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_user_groups": {
@@ -51840,7 +51840,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.list_users": {
@@ -52008,7 +52008,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.logout_many_users": {
@@ -52543,7 +52543,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_default_group": {
@@ -52642,7 +52642,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_end_user_identity": {
@@ -52707,7 +52707,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_group_membership_by_id": {
@@ -52762,7 +52762,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_many_users": {
@@ -52857,7 +52857,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_user_compliance_deletion_statuses": {
@@ -52922,7 +52922,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_user_group_membership_by_id": {
@@ -52988,7 +52988,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_user_identity": {
@@ -53053,7 +53053,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.show_user_related": {
@@ -53108,7 +53108,7 @@
       "compatibility_approval_preserved": false,
       "required_scopes": [],
       "risk": "read",
-      "approval": "never",
+      "approval": "ask",
       "idempotency": "safe"
     },
     "zendesk-users-groups.update_current_user_settings": {

@@ -50,9 +50,9 @@
  *
  *  Render-only by construction (design § 3 Invariant 1/2): the template is a
  *  `render_template` — `entity.query` (the warehouse read in the probe) +
- *  body interpolation, no `ai-*`, no mutations. `{{count_phrase}}` is the
- *  probe-pluralized phrase ("2 emails" / "1 email"); `{{name}}` the resolved
- *  contact display name — both supplied by the probe's frozen snapshot.
+ *  body interpolation, no `ai-*`, no mutations. English uses the
+ *  probe-pluralized `{{count_phrase}}`; localized bodies use the grammar-
+ *  neutral string `{{count}}`. `{{name}}` is the resolved display name.
  *
  *  PERSON-scoped answer (the load-bearing honesty design, v2). v1 counted the
  *  contact's ONE resolved canonical address and therefore NAMED it in the body
@@ -77,10 +77,18 @@
  *  single-address count behind this body — the probe's `emails` requirement
  *  is the guard.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md § 3. */
+ *  See: D-164 § 3. */
 
 import type { TemplateMatcher } from '../gate/index.js';
 import type { RenderTemplate } from '../types.js';
+import {
+  escapeTemplateRegExp,
+  hasMutationIntent,
+  LOCALIZED_TAIL,
+  normaliseTemplateText,
+  resolveTemplateLocale,
+  type SupportedLocale,
+} from './locales.js';
 
 /** The single render template for the mail from-count class. Keyed on one
  *  `entity.name` slot; the body references the probe-pluralized count phrase
@@ -97,6 +105,49 @@ export const MAIL_FROM_COUNT_TEMPLATE: RenderTemplate = {
   action_class: 'read',
   short_circuit_eligible: true,
   body: 'You have {{count_phrase}} from {{name}}.',
+};
+
+const localizedMailCountTemplate = (
+  locale: Exclude<SupportedLocale, 'en'>,
+  body: string,
+): RenderTemplate => ({
+  ...MAIL_FROM_COUNT_TEMPLATE,
+  template_hash: `recued/mail-from-count-by-name-${locale}@v2`,
+  body,
+});
+
+export const MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE: Readonly<
+  Record<SupportedLocale, RenderTemplate>
+> = {
+  en: MAIL_FROM_COUNT_TEMPLATE,
+  de: localizedMailCountTemplate('de', 'Anzahl der E-Mails von {{name}}: {{count}}.'),
+  es: localizedMailCountTemplate('es', 'Número de correos de {{name}}: {{count}}.'),
+  fr: localizedMailCountTemplate('fr', 'Nombre d’e-mails de {{name}} : {{count}}.'),
+  ja: localizedMailCountTemplate('ja', '{{name}}からのメール件数：{{count}}件。'),
+  pt: localizedMailCountTemplate('pt', 'Número de e-mails de {{name}}: {{count}}.'),
+  zh: localizedMailCountTemplate('zh', '来自{{name}}的邮件数量：{{count}}。'),
+};
+
+const matchesLocalizedMailCount = (
+  locale: SupportedLocale,
+  haystack: string,
+  name: string,
+): boolean => {
+  if (locale === 'en') return false;
+  const n = escapeTemplateRegExp(name);
+  const t = LOCALIZED_TAIL;
+  const pattern = locale === 'de'
+    ? `^wie viele\\s+(?:e-?mails?|nachrichten)\\s+(?:habe ich\\s+)?von\\s+${n}${t}`
+    : locale === 'es'
+      ? `^[¿¡]?\\s*cu[aá]ntos?\\s+(?:correos?|mensajes?)\\s+(?:tengo\\s+)?de\\s+${n}${t}`
+      : locale === 'fr'
+        ? `^combien\\s+(?:d['’]|de\\s+)(?:e-?mails?|courriels?|messages?)\\s+(?:ai-je\\s+)?de\\s+${n}${t}`
+        : locale === 'pt'
+          ? `^quantos?\\s+(?:e-?mails?|mensagens?)\\s+(?:(?:eu\\s+)?tenho\\s+)?d[eo]\\s+${n}${t}`
+          : locale === 'ja'
+            ? `^${n}からの(?:メール|メッセージ)(?:は|が)?(?:何通|何件)(?:ありますか)?${t}`
+            : `^(?:来自|从)${n}的(?:邮件|电子邮件|消息)(?:有)?(?:多少封|多少个|几封)${t}`;
+  return new RegExp(pattern, 'u').test(haystack);
 };
 
 /** Mutation / imperative verbs that turn a "emails from `<Name>`" prompt
@@ -217,17 +268,25 @@ const middleIsAllowed = (middle: string): boolean => {
  *  Whitespace is collapsed + lower-cased on both sides so a double-spaced or
  *  differently-cased prompt still matches the NER slot value. The match is
  *  purely lexical — no warehouse read here (that's the probe). */
-export const matchMailFromCountTemplate: TemplateMatcher = ({ text, slots }) => {
+export const matchMailFromCountTemplate: TemplateMatcher = ({ text, slots, locale }) => {
   if (slots.length !== 1) return null;
   const name = slots[0]!;
   if (name.kind !== 'entity.name') return null;
-  const haystack = text.toLowerCase().replace(/\s+/g, ' ');
-  if (MAIL_MUTATION_RE.test(haystack)) return null;
-  const needleName = name.value.toLowerCase().replace(/\s+/g, ' ');
+  const templateLocale = resolveTemplateLocale(locale);
+  const haystack = normaliseTemplateText(text);
+  if (hasMutationIntent(haystack) || MAIL_MUTATION_RE.test(haystack)) return null;
+  const needleName = normaliseTemplateText(name.raw);
   if (needleName.length === 0) return null;
   const core = coreMailCountStart(haystack, needleName);
-  if (core === null) return null;
-  if (!leadIsAllowed(haystack.slice(0, core.index))) return null;
-  if (!middleIsAllowed(core.middle)) return null;
-  return MAIL_FROM_COUNT_TEMPLATE;
+  if (
+    core !== null
+    && leadIsAllowed(haystack.slice(0, core.index))
+    && middleIsAllowed(core.middle)
+  ) {
+    return MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  if (matchesLocalizedMailCount(templateLocale, haystack, needleName)) {
+    return MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE[templateLocale];
+  }
+  return null;
 };

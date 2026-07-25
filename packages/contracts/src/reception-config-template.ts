@@ -50,7 +50,7 @@
  *  surfaced as an editable field in the authoring form, where the user
  *  replaces it before creating the endpoint.
  *
- *  Spec: docs/d-151-spec.md + docs/d-149-spec.md § A.10 (the intake
+ *  Spec: D-151 + D-149 § A.10 (the intake
  *  template precedent this parallels). */
 
 import {
@@ -77,7 +77,7 @@ import {
 
 /** Closed list of Foundation-pack `scheduling_link` template refs. Each
  *  ref has a 1:1 JSON file under the pack's `config-templates/` directory
- *  + a documentation section in `docs/reception-templates.md`. Adding a
+ *  + a documentation section in internal design notes. Adding a
  *  template is a substrate code change here, not a config drop-in. */
 export const SCHEDULING_LINK_TEMPLATE_REFS = [
   'foundation:scheduling/intro_call',

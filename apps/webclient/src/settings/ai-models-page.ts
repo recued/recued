@@ -28,12 +28,17 @@ import {
   type ChatModelDefaultRenderModel,
 } from './chat-model-default.js';
 import {
+  buildChatModelSourceOptions,
+} from '../chat/model-routing.js';
+import {
   mountLlmResultCacheCard,
   type LlmResultCacheCardMount,
   type LlmResultCacheClearCaller,
   type LlmResultCacheStatsCaller,
 } from './llm-result-cache-card-mount.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { serializeShellRoute } from '../shell/route.js';
+import { isAnyAiSourceConfigured } from './llm-availability.js';
 
 export const AI_MODELS_PAGE_ATTR = 'data-recued-ai-models-page';
 export const AI_MODELS_PAGE_STATE_ATTR = 'data-recued-ai-models-page-state';
@@ -83,6 +88,27 @@ export const AI_MODELS_PROMPT_BADGE_ATTR = 'data-recued-ai-models-prompt-badge';
 export const AI_MODELS_PROMPT_POLICY_ATTR = 'data-recued-ai-models-prompt-policy';
 export const AI_MODELS_PROMPT_POLICY_HINT_ATTR = 'data-recued-ai-models-prompt-policy-hint';
 export const AI_MODELS_PROMPT_ALWAYS_ATTR = 'data-recued-ai-models-prompt-always';
+/** Intent-specific first-run path reached from Chat when no source is
+ * configured. It deliberately omits the dense four-tab manager. */
+export const AI_MODELS_CHAT_SETUP_ATTR = 'data-recued-ai-models-chat-setup';
+export const AI_MODELS_CHAT_SETUP_PROVIDER_ATTR =
+  'data-recued-ai-models-chat-setup-provider';
+export const AI_MODELS_CHAT_SETUP_MODEL_ATTR =
+  'data-recued-ai-models-chat-setup-model';
+export const AI_MODELS_CHAT_SETUP_KEY_ATTR =
+  'data-recued-ai-models-chat-setup-key';
+export const AI_MODELS_CHAT_SETUP_BASE_URL_ATTR =
+  'data-recued-ai-models-chat-setup-base-url';
+export const AI_MODELS_CHAT_SETUP_SOURCE_ATTR =
+  'data-recued-ai-models-chat-setup-source';
+export const AI_MODELS_CHAT_SETUP_SUBMIT_ATTR =
+  'data-recued-ai-models-chat-setup-submit';
+export const AI_MODELS_CHAT_SETUP_STATUS_ATTR =
+  'data-recued-ai-models-chat-setup-status';
+export const AI_MODELS_CHAT_SETUP_ERROR_ATTR =
+  'data-recued-ai-models-chat-setup-error';
+export const AI_MODELS_CHAT_SETUP_ADVANCED_ATTR =
+  'data-recued-ai-models-chat-setup-advanced';
 
 /** The AI / Models page's internal sub-views. */
 type AiModelsTab = 'preference' | 'providers' | 'prompts' | 'usage';
@@ -97,6 +123,61 @@ type LlmConfigRecord = Record<string, unknown>;
 type LlmSlotKey = 'slot_1' | 'slot_2';
 type LlmSlotRecord = Record<string, unknown>;
 type FreePoolEntryRecord = Record<string, unknown>;
+
+export type AiModelsInitialView = 'manage' | 'chat-setup';
+
+type ChatSetupProvider =
+  | 'openai'
+  | 'anthropic'
+  | 'google'
+  | 'openai-compatible';
+
+const CHAT_SETUP_PROVIDERS: ReadonlyArray<{
+  id: ChatSetupProvider;
+  label: string;
+  suggestedModel: string;
+  keyPlaceholder: string;
+}> = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    suggestedModel: 'gpt-4.1-mini',
+    keyPlaceholder: 'sk-…',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    suggestedModel: 'claude-sonnet-4-6',
+    keyPlaceholder: 'sk-ant-…',
+  },
+  {
+    id: 'google',
+    label: 'Google',
+    suggestedModel: 'gemini-2.5-flash',
+    keyPlaceholder: 'API key',
+  },
+  {
+    id: 'openai-compatible',
+    label: 'OpenAI-compatible endpoint',
+    suggestedModel: '',
+    keyPlaceholder: 'API key',
+  },
+];
+
+const isChatSetupProvider = (value: string): value is ChatSetupProvider =>
+  CHAT_SETUP_PROVIDERS.some((provider) => provider.id === value);
+
+const isChatSetupEndpointUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+      && parsed.hostname.length > 0
+    );
+  } catch {
+    return false;
+  }
+};
 
 export type AiModelsPageState = 'loading' | 'ready' | 'error';
 
@@ -191,6 +272,15 @@ export type AiModelsHousekeepingConfigWriteCaller = (args: {
 export interface MountAiModelsPageOptions {
   host: HTMLElement;
   document?: Document;
+  /** Full settings manager by default. `chat-setup` is the focused first-run
+   * journey reached from Chat's no-model affordances. */
+  initialView?: AiModelsInitialView;
+  /** Called only after the slot write AND default-source write have both been
+   * confirmed. The shell uses it to return to Chat with a starter draft. */
+  onChatSetupComplete?: () => void;
+  /** Optional exact Chat destination for setup entered from an existing
+   * thread. When absent, first-run setup keeps its normal Chat/start exits. */
+  chatSetupReturnHref?: string;
   runGetDefaultModelPref?: ChatDefaultModelPrefGetCaller;
   runSetDefaultModelPref?: ChatDefaultModelPrefSetCaller;
   runGetLLMConfig?: AiModelsLlmConfigGetCaller;
@@ -561,6 +651,21 @@ const appendButton = (
   return button;
 };
 
+const appendLink = (
+  doc: Document,
+  parent: HTMLElement,
+  label: string,
+  href: string,
+  attrs: ReadonlyArray<readonly [string, string]> = [],
+): HTMLAnchorElement => {
+  const link = doc.createElement('a') as HTMLAnchorElement;
+  link.textContent = label;
+  link.setAttribute('href', href);
+  for (const [k, v] of attrs) link.setAttribute(k, v);
+  parent.appendChild(link);
+  return link;
+};
+
 const appendInput = (
   doc: Document,
   parent: HTMLElement,
@@ -594,6 +699,7 @@ export const mountAiModelsPage = (
   }
 
   let disposed = false;
+  const chatSetupMode = opts.initialView === 'chat-setup';
   let state: AiModelsPageState = 'loading';
   // Mount-local active sub-view (the Preference / Providers / Usage tab).
   let aiTab: AiModelsTab = 'preference';
@@ -624,6 +730,21 @@ export const mountAiModelsPage = (
   // so an unwired caller / rejected rpc shows as a banner instead of an
   // unhandled promise rejection.
   let actionError: string | null = null;
+  let chatSetupError: string | null = null;
+  let chatSetupSubmitting = false;
+  let chatSetupCompleted = false;
+  let chatSetupExistingSourceId: ChatModelSourceId | null = null;
+  const chatSetupDraft: {
+    provider: ChatSetupProvider;
+    model: string;
+    apiKey: string;
+    baseUrl: string;
+  } = {
+    provider: 'openai',
+    model: CHAT_SETUP_PROVIDERS[0]!.suggestedModel,
+    apiKey: '',
+    baseUrl: '',
+  };
   let pendingLoad: Promise<void> = Promise.resolve();
 
   /** Run a write action, surfacing failures as the action-error banner
@@ -657,7 +778,7 @@ export const mountAiModelsPage = (
   // sub-mount's subscription + state survive). Left detached here; render
   // places it.
   let cacheHost: HTMLElement | null = null;
-  if (opts.runCacheStats !== undefined) {
+  if (!chatSetupMode && opts.runCacheStats !== undefined) {
     cacheHost = doc.createElement('div');
     cacheHost.setAttribute(AI_MODELS_CONTROL_ATTR, 'cache');
     cacheCard = mountLlmResultCacheCard({
@@ -1301,6 +1422,457 @@ export const mountAiModelsPage = (
     parent.appendChild(section);
   };
 
+  /** Persist a known source as Chat's global default. The setup journey calls
+   * this immediately after creating slot_1, so it must not depend on a prior
+   * preference read having succeeded. The public picker still applies its own
+   * configured-option guard below. */
+  const persistModelPreference = async (
+    sourceId: ChatModelSourceId,
+  ): Promise<void> => {
+    if (!opts.runSetDefaultModelPref) {
+      throw new Error(
+        'AI / Models: chat.default_model_pref.set caller is not wired',
+      );
+    }
+    const next = await opts.runSetDefaultModelPref({ source_id: sourceId });
+    if (disposed) return;
+    modelPrefSnapshot = next;
+    recomputeModelPreference();
+    render();
+  };
+
+  const finishChatSetup = (): void => {
+    if (disposed) return;
+    chatSetupSubmitting = false;
+    chatSetupCompleted = true;
+    chatSetupError = null;
+    chatSetupDraft.apiKey = '';
+    render();
+    opts.onChatSetupComplete?.();
+  };
+
+  const useExistingChatSource = async (
+    sourceId: ChatModelSourceId,
+  ): Promise<void> => {
+    if (chatSetupSubmitting) return;
+    chatSetupSubmitting = true;
+    chatSetupError = null;
+    render();
+    try {
+      await persistModelPreference(sourceId);
+      finishChatSetup();
+    } catch (err) {
+      if (disposed) return;
+      chatSetupSubmitting = false;
+      chatSetupError = stringifyError(err);
+      render();
+    }
+  };
+
+  const saveNewChatSource = async (): Promise<void> => {
+    if (chatSetupSubmitting) return;
+    const provider = chatSetupDraft.provider;
+    const model = chatSetupDraft.model.trim();
+    const apiKey = chatSetupDraft.apiKey.trim();
+    const baseUrl = chatSetupDraft.baseUrl.trim();
+    if (model.length === 0) {
+      chatSetupError = 'Enter the model name supplied by your provider.';
+      render();
+      return;
+    }
+    if (apiKey.length === 0) {
+      chatSetupError = 'Enter an API key to connect this model.';
+      render();
+      return;
+    }
+    if (provider === 'openai-compatible' && baseUrl.length === 0) {
+      chatSetupError = 'Enter the base URL for this compatible endpoint.';
+      render();
+      return;
+    }
+    if (
+      provider === 'openai-compatible'
+      && !isChatSetupEndpointUrl(baseUrl)
+    ) {
+      chatSetupError =
+        'Enter a full Base URL beginning with http:// or https://.';
+      render();
+      return;
+    }
+
+    chatSetupSubmitting = true;
+    chatSetupError = null;
+    render();
+    try {
+      await api.saveByokSlot('slot_1', {
+        provider,
+        model,
+        api_key: apiKey,
+        // An explicit blank clears a stale custom endpoint. Omitting this
+        // field would make saveByokSlot carry slot_1's previous base_url onto
+        // a newly selected OpenAI/Anthropic/Google credential.
+        base_url: provider === 'openai-compatible' ? baseUrl : '',
+        speed: 'fast',
+      });
+      // The field-level slot write updates the live manager. Pinning slot_1 as
+      // the default is the second and final confirmed write before navigation.
+      await persistModelPreference('slot_1');
+      finishChatSetup();
+    } catch (err) {
+      if (disposed) return;
+      chatSetupSubmitting = false;
+      chatSetupError = stringifyError(err);
+      render();
+    }
+  };
+
+  const appendChatSetupExits = (
+    parent: HTMLElement,
+    includeStartChat: boolean,
+  ): void => {
+    const actions = doc.createElement('div');
+    actions.className = 'ai-models-chat-setup-actions';
+    if (includeStartChat) {
+      const start = appendLink(
+        doc,
+        actions,
+        'Start chatting',
+        opts.chatSetupReturnHref ?? serializeShellRoute('chat', 'start'),
+      );
+      start.className = 'rx-btn rx-btn-primary';
+    }
+    const advanced = appendLink(
+      doc,
+      actions,
+      'Advanced settings',
+      serializeShellRoute('settings', 'ai-models'),
+      [[AI_MODELS_CHAT_SETUP_ADVANCED_ATTR, '']],
+    );
+    advanced.className = 'rx-btn rx-btn-secondary';
+    if (!includeStartChat) {
+      const back = appendLink(
+        doc,
+        actions,
+        'Back to Chat',
+        opts.chatSetupReturnHref ?? serializeShellRoute('chat'),
+      );
+      back.className = 'ai-models-chat-setup-back';
+    }
+    parent.appendChild(actions);
+  };
+
+  const renderChatSetup = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    section.setAttribute(AI_MODELS_CHAT_SETUP_ATTR, '');
+    section.className = 'ai-models-chat-setup';
+    section.setAttribute('aria-labelledby', 'recued-chat-setup-title');
+
+    const eyebrow = doc.createElement('p');
+    eyebrow.className = 'ai-models-chat-setup-eyebrow';
+    eyebrow.textContent = 'CHAT SETUP';
+    section.appendChild(eyebrow);
+    const setupHeading = appendHeading(
+      doc,
+      section,
+      'h3',
+      'Connect a model to start chatting',
+    );
+    setupHeading.id = 'recued-chat-setup-title';
+    const intro = doc.createElement('p');
+    intro.className = 'ai-models-chat-setup-intro';
+    intro.textContent =
+      'Choose your provider, confirm its model name, and add your API key. You can tune everything else later.';
+    section.appendChild(intro);
+
+    if (state === 'loading') {
+      const status = doc.createElement('div');
+      status.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'loading');
+      status.setAttribute('role', 'status');
+      status.textContent = 'Checking your current Chat setup…';
+      section.appendChild(status);
+      parent.appendChild(section);
+      return;
+    }
+
+    if (loadErrors.length > 0) {
+      const alert = doc.createElement('div');
+      alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'load');
+      alert.setAttribute('role', 'alert');
+      alert.textContent = `Could not read all current settings: ${loadErrors.join(' ')}`;
+      section.appendChild(alert);
+    }
+    if (chatSetupError !== null) {
+      const alert = doc.createElement('div');
+      alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'save');
+      alert.setAttribute('role', 'alert');
+      alert.textContent = chatSetupError;
+      section.appendChild(alert);
+    }
+
+    // Never treat an unread config as an empty config: saving slot_1 from that
+    // assumption could overwrite a provider the owner cannot currently see.
+    const configReadFailed = loadErrors.some(
+      (error) => error.startsWith('LLM config:'),
+    );
+    if (opts.runGetLLMConfig === undefined || configReadFailed) {
+      if (opts.runGetLLMConfig === undefined) {
+        const alert = doc.createElement('div');
+        alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'unavailable');
+        alert.setAttribute('role', 'alert');
+        alert.textContent =
+          'This server cannot read the current model setup, so Recued will not overwrite it.';
+        section.appendChild(alert);
+      } else {
+        const retry = appendButton(
+          doc,
+          section,
+          'Try again',
+          () => {
+            void api.refresh();
+          },
+        );
+        retry.className = 'rx-btn rx-btn-primary ai-models-chat-setup-submit';
+      }
+      appendChatSetupExits(section, false);
+      parent.appendChild(section);
+      return;
+    }
+
+    const hasConfiguredSource = isAnyAiSourceConfigured(llmConfig);
+    const sources = buildChatModelSourceOptions(llmConfig ?? {});
+    const selectedSourceId =
+      modelPreference.kind === 'resolved' && modelPreference.matched
+        ? modelPreference.source_id
+        : null;
+    const selectedSource = selectedSourceId === null
+      ? null
+      : sources.find((source) => source.id === selectedSourceId) ?? null;
+
+    if (chatSetupCompleted || selectedSource !== null) {
+      const ready = doc.createElement('div');
+      ready.className = 'ai-models-chat-setup-ready';
+      ready.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready');
+      ready.setAttribute('role', 'status');
+      appendHeading(doc, ready, 'h4', 'Model selected for Chat');
+      const detail = doc.createElement('p');
+      detail.textContent = selectedSource === null
+        ? 'Your model is selected for new chats.'
+        : `${selectedSource.label} is selected for Chat.`;
+      ready.appendChild(detail);
+      section.appendChild(ready);
+      appendChatSetupExits(section, true);
+      parent.appendChild(section);
+      return;
+    }
+
+    if (hasConfiguredSource && sources.length > 0 && chatSetupSubmitting) {
+      const finishing = doc.createElement('div');
+      finishing.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'saving');
+      finishing.setAttribute('role', 'status');
+      finishing.textContent = 'Finishing Chat setup…';
+      section.appendChild(finishing);
+      parent.appendChild(section);
+      return;
+    }
+
+    if (hasConfiguredSource && sources.length > 0 && !chatSetupSubmitting) {
+      appendHeading(doc, section, 'h4', 'Use a model that is already connected');
+      const copy = doc.createElement('p');
+      copy.className = 'ai-models-chat-setup-helper';
+      copy.textContent =
+        'Your provider is connected, but Chat still needs a default model.';
+      section.appendChild(copy);
+      if (
+        chatSetupExistingSourceId === null
+        || !sources.some((source) => source.id === chatSetupExistingSourceId)
+      ) {
+        chatSetupExistingSourceId = sources[0]!.id;
+      }
+      const sourceLabel = doc.createElement('label');
+      sourceLabel.className = 'ai-models-field';
+      appendText(doc, sourceLabel, 'Chat model');
+      const sourceSelect = doc.createElement('select') as HTMLSelectElement;
+      sourceSelect.setAttribute(AI_MODELS_CHAT_SETUP_SOURCE_ATTR, '');
+      for (const source of sources) {
+        const option = doc.createElement('option') as HTMLOptionElement;
+        option.value = source.id;
+        option.textContent = source.label;
+        if (source.id === chatSetupExistingSourceId) {
+          option.setAttribute('selected', '');
+        }
+        sourceSelect.appendChild(option);
+      }
+      sourceSelect.value = chatSetupExistingSourceId;
+      sourceSelect.addEventListener('change', () => {
+        if (isChatModelSourceId(sourceSelect.value)) {
+          chatSetupExistingSourceId = sourceSelect.value;
+        }
+      });
+      sourceLabel.appendChild(sourceSelect);
+      section.appendChild(sourceLabel);
+      const useButton = appendButton(
+        doc,
+        section,
+        'Use this model and start chatting',
+        () => {
+          if (chatSetupExistingSourceId !== null) {
+            void useExistingChatSource(chatSetupExistingSourceId);
+          }
+        },
+        [[AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'existing']],
+      );
+      useButton.className = 'rx-btn rx-btn-primary ai-models-chat-setup-submit';
+      if (!opts.runSetDefaultModelPref) useButton.disabled = true;
+      appendChatSetupExits(section, false);
+      parent.appendChild(section);
+      return;
+    }
+
+    const providerLabel = doc.createElement('label');
+    providerLabel.className = 'ai-models-field';
+    appendText(doc, providerLabel, 'Provider');
+    const providerSelect = doc.createElement('select') as HTMLSelectElement;
+    providerSelect.setAttribute(AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '');
+    for (const provider of CHAT_SETUP_PROVIDERS) {
+      const option = doc.createElement('option') as HTMLOptionElement;
+      option.value = provider.id;
+      option.textContent = provider.label;
+      if (provider.id === chatSetupDraft.provider) {
+        option.setAttribute('selected', '');
+      }
+      providerSelect.appendChild(option);
+    }
+    providerSelect.value = chatSetupDraft.provider;
+    providerLabel.appendChild(providerSelect);
+    section.appendChild(providerLabel);
+
+    const modelInput = appendInput(
+      doc,
+      section,
+      'Model',
+      chatSetupDraft.model,
+      [
+        [AI_MODELS_CHAT_SETUP_MODEL_ATTR, ''],
+        ['autocomplete', 'off'],
+        ['spellcheck', 'false'],
+      ],
+    );
+    modelInput.addEventListener('input', () => {
+      chatSetupDraft.model = modelInput.value;
+    });
+    const modelHint = doc.createElement('span');
+    modelHint.className = 'ai-models-chat-setup-helper';
+    modelHint.textContent = 'This suggestion is editable if your provider gave you a different model ID.';
+    section.appendChild(modelHint);
+
+    const keyInput = appendInput(
+      doc,
+      section,
+      'API key',
+      chatSetupDraft.apiKey,
+      [
+        [AI_MODELS_CHAT_SETUP_KEY_ATTR, ''],
+        ['autocomplete', 'off'],
+      ],
+    );
+    keyInput.type = 'password';
+    keyInput.addEventListener('input', () => {
+      chatSetupDraft.apiKey = keyInput.value;
+    });
+    const keyHint = doc.createElement('span');
+    keyHint.className = 'ai-models-chat-setup-helper';
+    keyHint.textContent =
+      'The key is stored server-side; Recued never sends it back to this browser.';
+    section.appendChild(keyHint);
+
+    const baseUrlWrap = doc.createElement('div');
+    baseUrlWrap.className = 'ai-models-chat-setup-custom';
+    baseUrlWrap.setAttribute(
+      'data-active',
+      chatSetupDraft.provider === 'openai-compatible' ? 'true' : 'false',
+    );
+    const baseUrlInput = appendInput(
+      doc,
+      baseUrlWrap,
+      'Base URL',
+      chatSetupDraft.baseUrl,
+      [
+        [AI_MODELS_CHAT_SETUP_BASE_URL_ATTR, ''],
+        ['placeholder', 'https://example.com/v1'],
+        ['autocomplete', 'url'],
+      ],
+    );
+    baseUrlInput.addEventListener('input', () => {
+      chatSetupDraft.baseUrl = baseUrlInput.value;
+    });
+    section.appendChild(baseUrlWrap);
+
+    const submitOnEnter = (event: KeyboardEvent): void => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void saveNewChatSource();
+    };
+    modelInput.addEventListener('keydown', submitOnEnter);
+    keyInput.addEventListener('keydown', submitOnEnter);
+    baseUrlInput.addEventListener('keydown', submitOnEnter);
+
+    providerSelect.addEventListener('change', () => {
+      if (!isChatSetupProvider(providerSelect.value)) return;
+      const previous = CHAT_SETUP_PROVIDERS.find(
+        (provider) => provider.id === chatSetupDraft.provider,
+      )!;
+      const next = CHAT_SETUP_PROVIDERS.find(
+        (provider) => provider.id === providerSelect.value,
+      )!;
+      const mayReplaceModel =
+        chatSetupDraft.model.trim().length === 0
+        || chatSetupDraft.model === previous.suggestedModel;
+      // A masked credential is easy to overlook. Never carry one across a
+      // provider change where it would be bound to a different API host.
+      chatSetupDraft.apiKey = '';
+      keyInput.value = '';
+      chatSetupDraft.provider = next.id;
+      if (mayReplaceModel) {
+        chatSetupDraft.model = next.suggestedModel;
+        modelInput.value = next.suggestedModel;
+      }
+      keyInput.setAttribute('placeholder', next.keyPlaceholder);
+      baseUrlWrap.setAttribute(
+        'data-active',
+        next.id === 'openai-compatible' ? 'true' : 'false',
+      );
+    });
+    const provider = CHAT_SETUP_PROVIDERS.find(
+      (candidate) => candidate.id === chatSetupDraft.provider,
+    )!;
+    keyInput.setAttribute('placeholder', provider.keyPlaceholder);
+
+    const save = appendButton(
+      doc,
+      section,
+      chatSetupSubmitting ? 'Saving setup…' : 'Save and start chatting',
+      () => {
+        void saveNewChatSource();
+      },
+      [[AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new']],
+    );
+    save.className = 'rx-btn rx-btn-primary ai-models-chat-setup-submit';
+    save.disabled =
+      chatSetupSubmitting
+      || !opts.runSetLLMSlot
+      || !opts.runSetDefaultModelPref;
+    if (chatSetupSubmitting) save.setAttribute('aria-busy', 'true');
+    if (!opts.runSetLLMSlot || !opts.runSetDefaultModelPref) {
+      const unavailable = doc.createElement('p');
+      unavailable.className = 'ai-models-chat-setup-helper';
+      unavailable.textContent =
+        'This server does not expose the settings needed to finish Chat setup.';
+      section.appendChild(unavailable);
+    }
+    appendChatSetupExits(section, false);
+    parent.appendChild(section);
+  };
+
   /** Switch the internal sub-view. Pure re-render — no rpc. */
   const setAiTab = (tab: AiModelsTab): void => {
     if (disposed || aiTab === tab) return;
@@ -1312,6 +1884,10 @@ export const mountAiModelsPage = (
     if (disposed) return;
     wrapper.setAttribute(AI_MODELS_PAGE_STATE_ATTR, state);
     removeChildren(dynamicHost);
+    if (chatSetupMode) {
+      renderChatSetup(dynamicHost);
+      return;
+    }
     // The settings route already renders the section's "AI / Models"
     // heading (<h2>); the page no longer repeats it as an <h3> (the
     // duplicate-header review finding).
@@ -1399,7 +1975,7 @@ export const mountAiModelsPage = (
     loadErrors = [];
     render();
     const tasks: Array<Promise<void>> = [];
-    if (opts.runGetLlmPrompts) {
+    if (!chatSetupMode && opts.runGetLlmPrompts) {
       tasks.push(
         opts.runGetLlmPrompts()
           .then((snapshot) => {
@@ -1432,7 +2008,7 @@ export const mountAiModelsPage = (
           }),
       );
     }
-    if (opts.runGetConfigSchema) {
+    if (!chatSetupMode && opts.runGetConfigSchema) {
       tasks.push(
         opts.runGetConfigSchema()
           .then((snapshot) => {
@@ -1443,7 +2019,7 @@ export const mountAiModelsPage = (
           }),
       );
     }
-    if (opts.runReadHousekeepingConfig) {
+    if (!chatSetupMode && opts.runReadHousekeepingConfig) {
       tasks.push(
         opts.runReadHousekeepingConfig()
           .then((snapshot) => {
@@ -1491,9 +2067,6 @@ export const mountAiModelsPage = (
     },
     whenLoaded: () => pendingLoad,
     setModelPreference: async (sourceId) => {
-      if (!opts.runSetDefaultModelPref) {
-        throw new Error('AI / Models: chat.default_model_pref.set caller is not wired');
-      }
       // D-174 R28 Slice A — the picker and the rpc both speak `source_id`, so
       // we persist the chosen id directly (no layer/hint round-trip; the server
       // resolves source_id → {layer, model_hint} live). Guard against a stale id
@@ -1502,10 +2075,7 @@ export const mountAiModelsPage = (
         modelPreference.kind === 'resolved'
         && modelPreference.options.some((o) => o.id === sourceId);
       if (!known) return;
-      const next = await opts.runSetDefaultModelPref({ source_id: sourceId });
-      modelPrefSnapshot = next;
-      recomputeModelPreference();
-      render();
+      await persistModelPreference(sourceId);
     },
     saveByokSlot: async (slotKey, patch) => {
       if (!opts.runSetLLMSlot) {
@@ -1867,6 +2437,96 @@ export const AI_MODELS_PAGE_STYLES = `
   display: grid;
   gap: 14px;
 }
+[${AI_MODELS_CHAT_SETUP_ATTR}] {
+  width: min(100%, 680px);
+  box-sizing: border-box;
+  padding: clamp(18px, 4vw, 30px) !important;
+  border-radius: 12px !important;
+  background: var(--surface);
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-intro {
+  max-width: 58ch;
+  margin: 0 0 18px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-field {
+  max-width: 520px;
+  margin-top: 14px;
+  font-weight: 600;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] input,
+[${AI_MODELS_CHAT_SETUP_ATTR}] select {
+  width: 100%;
+  max-width: none;
+  min-height: 42px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-helper {
+  display: block;
+  max-width: 58ch;
+  margin: 5px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-custom[data-active="false"] {
+  display: none;
+}
+[${AI_MODELS_CHAT_SETUP_STATUS_ATTR}="loading"],
+[${AI_MODELS_CHAT_SETUP_STATUS_ATTR}="saving"] {
+  padding: 16px 0;
+  color: var(--fg-muted);
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-ready {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-ready p {
+  margin: 0;
+  color: var(--fg-muted);
+}
+[${AI_MODELS_CHAT_SETUP_ERROR_ATTR}] {
+  max-width: 58ch;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  background: var(--surface-subtle);
+  color: var(--fg);
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-submit.rx-btn {
+  margin-top: 18px;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-actions .rx-btn {
+  margin: 0;
+  text-decoration: none;
+}
+[${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-back {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
 [${AI_MODELS_PAGE_ATTR}] section,
 [${AI_MODELS_PAGE_ATTR}] .ai-models-slot,
 [${AI_MODELS_PAGE_ATTR}] .ai-models-pool-row,
@@ -2069,5 +2729,17 @@ export const AI_MODELS_PAGE_STYLES = `
 }
 [${AI_MODELS_PENDING_CONTROL_ATTR}] {
   color: var(--fg-muted);
+}
+@media (max-width: 640px) {
+  [${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  [${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-actions .rx-btn,
+  [${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-back {
+    justify-content: center;
+    text-align: center;
+    width: 100%;
+  }
 }
 `;

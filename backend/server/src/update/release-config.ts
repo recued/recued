@@ -29,6 +29,7 @@ import {
   verifyArtifactFile,
   writeStagedSig,
 } from './binary-apply-executor.js';
+import { copyDatabaseForSnapshot } from '../open-database.js';
 import { createBootFailureCounter, BOOT_FAILURE_COUNTER_FILE } from './boot-failure-counter.js';
 import { createReleaseStateStore } from './release-state-store.js';
 import { createUpdateLedger, UPDATE_LEDGER_FILE } from './update-ledger.js';
@@ -203,7 +204,10 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
     rollbackSwap: () => rollbackSwap(oldPath, binaryPath),
     discardStaged: () => discardStaged(stagedPath),
     persistStagedSig: (sig) => writeStagedSig(stagedPath, sig),
-    takeSnapshot: () => takeSnapshot((dest) => opts.db.backup(dest).then(() => undefined), snapshotPath),
+    takeSnapshot: () => takeSnapshot(
+      (dest) => copyDatabaseForSnapshot(opts.db, dest),
+      snapshotPath,
+    ),
     restoreSnapshot: () => restoreSnapshot(snapshotPath, dbPath, (from, to) => copyFileSync(from, to)),
     hasPreviousBinary: () => existsSync(oldPath),
     hasSnapshot: () => existsSync(snapshotPath),
@@ -233,8 +237,8 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
     },
     dbSizeBytes: () => {
       try {
-        // db.backup() copies the logical DB — the main file plus any uncheckpointed
-        // WAL — so include the -wal size in the estimate (conservative).
+        // The consistent logical copy includes committed WAL pages, so include
+        // the live -wal size in the estimate (conservative).
         const main = statSync(dbPath).size;
         let wal = 0;
         try {

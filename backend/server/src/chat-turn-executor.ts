@@ -37,7 +37,7 @@
  *  channel-note transparency events the chat turn does not emit (it emits
  *  the rich `chat.tool_call_*` directly); see the orchestrator's closure.
  *
- *  Spec: docs/d-160-spec.md § N.9 + A.8.
+ *  Spec: D-160 § N.9 + A.8.
  */
 
 import {
@@ -57,6 +57,7 @@ import {
   type ChatModelSourceId,
   type ChatPickerTarget,
   type ChatPriorToolCall,
+  type ChatProvenanceRef,
   type ChatTailMessage,
   type ChatToolCall,
   type ChatDispatchResult,
@@ -84,12 +85,101 @@ import type {
   OrchestratorDispatch,
   PeerDispatcher,
 } from './chat-orchestrator.js';
+import type {
+  ExecutionCaseAugmentationContext,
+} from './execution-case-retrieval.js';
+import type {
+  ExecutionCaseProposalCritique,
+} from './execution-case-critic.js';
 
 /** D-164 P6.3 — per-channel default tier baseline for the chat surface.
  *  The chat channel pins `'fast'` directly; SI / session preference /
  *  model hint overrides land when the tier-strategy substrate wires
  *  through the chat orchestrator (deferred follow-on). */
 const CHAT_CHANNEL_DEFAULT_TIER: ModelTier = 'fast';
+export const EXECUTION_CASE_COMPLETION_NUDGE =
+  'After the approved work reaches a terminal outcome, call outcome.report '
+  + 'once with the fulfillment claim. Do not call it while approval or work '
+  + 'is still pending.';
+/** Bounded locator-only references persisted with one assistant message.
+ * Subjects, snippets, bodies, and hot fields stay out of the plaintext
+ * provenance column; the Data detail resolves display content after the
+ * owner's normal collection-read gate. */
+export const CHAT_RECORD_PROVENANCE_LIMIT = 8;
+
+const RECORD_SEARCH_PLATFORMS = {
+  'mail.search': 'mail',
+  'calendar.search': 'calendar',
+} as const;
+
+/** Project successful local collection-search matches into durable,
+ * account-qualified record locators. Unknown/malformed result envelopes fail
+ * closed to no references; they never fail the answer itself. */
+export const recordProvenanceFromSearchResult = (
+  toolName: string,
+  dispatchResult: ChatDispatchResult,
+): ChatProvenanceRef[] => {
+  const collectionPlatform =
+    RECORD_SEARCH_PLATFORMS[toolName as keyof typeof RECORD_SEARCH_PLATFORMS];
+  if (
+    collectionPlatform === undefined
+    || !dispatchResult.ok
+    || dispatchResult.run_failed !== undefined
+    || dispatchResult.run_held !== undefined
+  ) return [];
+
+  try {
+    if (
+      dispatchResult.result === null
+      || typeof dispatchResult.result !== 'object'
+      || Array.isArray(dispatchResult.result)
+    ) return [];
+    const matches = (dispatchResult.result as { matches?: unknown }).matches;
+    if (!Array.isArray(matches)) return [];
+
+    const references: ChatProvenanceRef[] = [];
+    const seen = new Set<string>();
+    for (const rawMatch of matches) {
+      if (
+        rawMatch === null
+        || typeof rawMatch !== 'object'
+        || Array.isArray(rawMatch)
+      ) continue;
+      const match = rawMatch as {
+        collection_slug?: unknown;
+        record_id?: unknown;
+      };
+      // These are address components, not display copy. Validate with trim,
+      // but preserve the exact opaque bytes or the later collection.get can
+      // target a different record.
+      const collectionSlug =
+        typeof match.collection_slug === 'string'
+        && match.collection_slug.trim().length > 0
+          ? match.collection_slug
+          : '';
+      const recordId =
+        typeof match.record_id === 'string'
+        && match.record_id.trim().length > 0
+          ? match.record_id
+          : '';
+      if (collectionSlug.length === 0 || recordId.length === 0) continue;
+      const key = `${collectionPlatform}\u0000${collectionSlug}\u0000${recordId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      references.push({
+        source: 'local',
+        collection_platform: collectionPlatform,
+        collection_slug: collectionSlug,
+        record_id: recordId,
+      });
+      if (references.length >= CHAT_RECORD_PROVENANCE_LIMIT) break;
+    }
+    return references;
+  } catch {
+    // A hostile accessor or malformed internal result must not fail the turn.
+    return [];
+  }
+};
 /** Fail-loud message when the model matcher finds NO usable LLM source for
  *  the resolved routing — e.g. no model configured for the picked source, or a
  *  fail-closed pinned slot (D-191 `pinSlot`) that is unavailable. Replaces the
@@ -213,7 +303,7 @@ export const isEmptyChatAiOutput = (output: AIOutput): boolean =>
 /** Model-facing feedback for the ONE empty-output retry per site. Names the
  *  stray keys the model emitted so it can SEE its mistake — concrete feedback
  *  outperforms a generic "invalid output" (cf. the guided-empty and
- *  held-action entries in `docs/chat-prompt-optimization-log.md`). KEY NAMES
+ *  held-action entries in internal design notes). KEY NAMES
  *  only, never values: everything the model reads is already alias-space at
  *  the PII boundary, but values would waste tokens and could echo
  *  tool-result content into a field the egress does not scan. The
@@ -289,7 +379,7 @@ export const FEATURE_TEXT_APPROVALS =
  *
  *  ⚠ THE JOIN IS LOAD-BEARING. With `DEFAULT_CHAT_ROLE_INSTRUCTIONS` this must
  *  reproduce the pre-split prompt BYTE-FOR-BYTE — every bench tuning in
- *  `docs/chat-prompt-optimization-log.md` was measured against those exact
+ *  internal design notes was measured against those exact
  *  bytes. A byte-identity test pins it; do not "tidy" the separators. */
 export const composeSystemPromptBlocks = (input: {
   readonly role_instructions: string;
@@ -325,7 +415,7 @@ export const CHAT_MAIN_TURN_SYSTEM_PROMPT = composeSystemPromptBlocks({
  *  model invokes a listed recipe fine, either directly by slug or via the
  *  always-present `recipe.run` umbrella; the `{full,index}×{75,218}×2` A/B on
  *  qwen3.7-plus called `tools.search` 0/44 times yet routing HELD (report
- *  `recued-substrate-bench/reports/catalog-mode-lane-2026-07-03T04-51-25-010Z.md`).
+ *  internal benchmarks).
  *  So `tools.search` is a FALLBACK ("if you need a recipe's arguments, or no
  *  listed tool fits, look one up"), NOT a mandatory pre-step — and its
  *  load-bearing role arrives only with a future lean-core mode that drops the
@@ -360,7 +450,7 @@ export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
  *  unanswerable WITHOUT a search, so the copy must actually prime the reach.
  *
  *  STRENGTHENED 2026-07-03 (discovery bench, finding
- *  `recued-substrate-bench/reports/leancore-discovery-FINDING.md`). The first
+ *  internal benchmarks). The first
  *  copy framed the reach as "when a request needs a capability the core tools
  *  do not cover" — but the bench (qwen3.7-plus) showed that condition lets the
  *  model off the hook: for a dropped recipe whose capability OVERLAPS a visible
@@ -493,7 +583,7 @@ export interface RunChatTurnPromptContent {
  *
  *  D-167 (recall path) — the turn-internal tool state is split into two
  *  typed fields: `recall_context` (the memory RECALL results —
- *  `tool_name ∈ MEMORY_RECALL_TOOL_NAMES`) and `prior_tool_calls` (every
+ *  `tool_name ∈ NON_RETAINABLE_RECALL_TOOL_NAMES`) and `prior_tool_calls` (every
  *  other dispatch). The split is purely a serialisation concern — the
  *  cooperative loop still accumulates one mixed `prior_tool_calls` array;
  *  the composer partitions it at the wire. Typing recall as its own field
@@ -518,10 +608,13 @@ interface ChatMainTurnPromptPacket {
    *  summary). Computed once per turn and threaded into every round's
    *  packet; omitted from the wire shape when empty. */
   readonly correction_context?: readonly string[];
+  /** D-214 typed historical-evidence cards. This is a dynamic tail field,
+   * never part of the cacheable prefix. */
+  readonly execution_case_context?: ExecutionCaseAugmentationContext;
   /** Prompt-cache prefetch — the speculative entity candidates the
    *  before-turn hook resolved from the warehouse (labeled "verify"
    *  context). Omitted from the wire shape when empty.
-   *  See docs/prefetch-middleware-pending-design.md. */
+   *  See internal design notes. */
   readonly prefetch_context?: readonly string[];
   /** Day-granular current-date stamp (`formatChatCurrentDate`) so the
    *  model can anchor date-relative asks ("tomorrow", "this week") —
@@ -560,7 +653,7 @@ interface ChatMainTurnPromptPacket {
  *  lands AFTER it, so accumulating history never invalidates the cached prefix.
  *
  *  Construction guarantees the two invariants the LLM-layer cache split relies
- *  on (see `docs/prompt-cache-restructure-checkpoints.md`):
+ *  on (see internal design notes):
  *    1. `body` is BYTE-IDENTICAL to the legacy single `JSON.stringify` of the
  *       merged object (head-sans-`}` + `,` + tail-sans-`{`) → the model reads
  *       the EXACT same bytes → zero routing-quality risk.
@@ -675,6 +768,10 @@ export const composeChatMainTurnPromptParts = (
     chat_tail: packet.content.chat_tail,
     ...(packet.current_date ? { current_date: packet.current_date } : {}),
     user_message: packet.content.user_message,
+    ...(packet.execution_case_context
+      && packet.execution_case_context.cards.length > 0
+      ? { execution_case_context: packet.execution_case_context }
+      : {}),
     ...(recall.length > 0 ? { recall_context: recall } : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
@@ -794,7 +891,14 @@ const priorToolCallEntry = (
     args: tc.args,
     status: 'error',
     reason: result.reason,
-    ...(result.detail !== undefined ? { detail: result.detail } : {}),
+    ...(result.detail !== undefined
+      ? {
+          detail:
+            result.reason === 'awaiting_approval'
+              ? `${result.detail}\n${EXECUTION_CASE_COMPLETION_NUDGE}`
+              : result.detail,
+        }
+      : {}),
     started_at,
     completed_at,
   };
@@ -806,6 +910,8 @@ const priorToolCallEntry = (
 export interface RunChatTurnInputs {
   readonly session_id: string;
   readonly turn_id: string;
+  /** Correlation-only origin for an owner-sent verify-before-retry turn. */
+  readonly retry_of_plan_id?: string;
   readonly picker_target: ChatPickerTarget;
   /** The bare peer name when the picker is on a `connection.mcp.<name>`
    *  target, else `null` (Self). The orchestrator resolves this once. */
@@ -849,10 +955,12 @@ export interface RunChatTurnInputs {
   /** The `correction-learning` middleware's before-turn contribution
    *  (flat "recent corrections — …" summary; `[]` when none). */
   readonly correction_context: readonly string[];
+  /** D-214 request-time cards selected by the controlled retrieval seam. */
+  readonly execution_case_context?: ExecutionCaseAugmentationContext;
   /** The prompt-cache prefetch middleware's before-turn contribution
    *  (labeled speculative entity candidates; omitted/`undefined` when the
    *  prefetch search is unwired or resolved nothing — behavior-preserving).
-   *  See docs/prefetch-middleware-pending-design.md. */
+   *  See internal design notes. */
   readonly prefetch_context?: readonly string[];
   readonly model_layer: ChatModelRoutingLayer;
   /** § A.14 slot-aware chat routing — the BYOK slot capability hint the
@@ -904,6 +1012,12 @@ export interface RunChatTurnDeps {
    *  envelope. The turn calls it per tool; it is NOT re-implemented
    *  here. */
   readonly dispatchTool: OrchestratorDispatch['dispatchTool'];
+  /** Optional D-214 experiment seam. It may return advisory evidence for an
+   * argument-free consequential proposal. A null result preserves the exact
+   * ordinary dispatch path; Gateway remains the only authority either way. */
+  readonly critiqueProposal?: (
+    calls: ReadonlyArray<ToolCall>,
+  ) => Promise<ExecutionCaseProposalCritique | null>;
   /** Null-safe bus emit, bound by the orchestrator to its broadcast
    *  emitter. The RICH tool-call / plan / multi-turn transparency
    *  events emit DIRECTLY here (decision b — NOT through the framework
@@ -921,6 +1035,9 @@ export interface RunChatTurnDeps {
 export interface RunChatTurnResult {
   readonly assistant_content: string;
   readonly tool_calls?: ChatToolCall[];
+  /** Bounded, locator-only local records returned by successful source
+   * searches during this turn. */
+  readonly provenance?: ChatProvenanceRef[];
   readonly usage?: TokenUsageReport;
   /** Present when a provider/decoder failure ended a cooperative tool loop
    * after dispatch. Gateway callers use this signal to return a non-retryable
@@ -1009,6 +1126,9 @@ export const runChatTurn = async (
         current_date: currentDate,
         ...(inputs.correction_context.length > 0
           ? { correction_context: inputs.correction_context }
+          : {}),
+        ...(inputs.execution_case_context
+          ? { execution_case_context: inputs.execution_case_context }
           : {}),
         ...(inputs.prefetch_context && inputs.prefetch_context.length > 0
           ? { prefetch_context: inputs.prefetch_context }
@@ -1270,6 +1390,8 @@ export const runChatTurn = async (
   //       stay silent (the empty body is the renderer's signal).
   let assistantContent = '';
   let assistantToolCalls: ChatToolCall[] | undefined;
+  const assistantProvenance: ChatProvenanceRef[] = [];
+  const assistantProvenanceKeys = new Set<string>();
   let totalUsage: TokenUsageReport | undefined;
   let toolLoopFailure: { readonly detail: string } | undefined;
   // Present iff the initial main turn succeeded — the orchestrator's
@@ -1393,7 +1515,85 @@ export const runChatTurn = async (
         | 'max_rounds_exhausted'
         | 'aborted' = 'completed';
 
-      while (nextToolCalls.length > 0) {
+      toolLoop: while (nextToolCalls.length > 0) {
+        // D-214 §10.2 — treatment-only advisory reinvocation before a
+        // consequential candidate dispatches. The critic itself records both
+        // arms and suppresses repeated candidate hashes; therefore a model
+        // that repeats the same flow after reading this advisory reaches the
+        // normal dispatch below and the Gateway remains authoritative.
+        while (deps.critiqueProposal !== undefined) {
+          let proposalCritique: ExecutionCaseProposalCritique | null = null;
+          try {
+            proposalCritique = await deps.critiqueProposal(nextToolCalls);
+          } catch {
+            // Quality observation must never become an availability gate.
+          }
+          if (proposalCritique === null) break;
+          const critiqueAt = now();
+          priorToolCalls.push({
+            tool_name: 'execution.case.critique',
+            tier: 1,
+            // Attribution ids/hashes stay server-side. The model needs only
+            // the typed advisory and cannot name an intervention later.
+            args: {},
+            status: 'ok',
+            result: {
+              kind: 'historical_flow_critique',
+              advisory_only: true,
+              critique: proposalCritique.critique,
+              guidance:
+                'Judge applicability, then either revise the proposal or '
+                + 'repeat it. Current Gateway policy still decides.',
+            },
+            started_at: critiqueAt,
+            completed_at: now(),
+          });
+          let critiqueReinvoke =
+            await tryMainTurn(priorToolCalls.slice());
+          totalUsage = aggregateTokenUsageReports(
+            totalUsage,
+            critiqueReinvoke.usage,
+          );
+          if (
+            critiqueReinvoke.kind === 'ok'
+            && isEmptyChatAiOutput(critiqueReinvoke.output)
+          ) {
+            recoveryCalls += 1;
+            critiqueReinvoke = await tryMainTurn(
+              priorToolCalls.slice(),
+              buildEmptyAiOutputFeedback(
+                critiqueReinvoke.output,
+                'tool_loop',
+              ),
+            );
+            totalUsage = aggregateTokenUsageReports(
+              totalUsage,
+              critiqueReinvoke.usage,
+            );
+          }
+          if (critiqueReinvoke.kind !== 'ok') {
+            toolLoopFailure = { detail: critiqueReinvoke.detail };
+            terminationReason = 'aborted';
+            if (currentAiOutput.response.trim().length === 0) {
+              assistantContent = NO_LLM_SOURCE_DETAIL_RE.test(
+                critiqueReinvoke.detail,
+              )
+                ? NO_LLM_SOURCE_MESSAGE
+                : PROVIDER_FAILED_MID_TURN_MESSAGE;
+            }
+            break toolLoop;
+          }
+          currentAiOutput = critiqueReinvoke.output;
+          if (isEmptyChatAiOutput(currentAiOutput)) {
+            assistantContent = EMPTY_AI_OUTPUT_MESSAGE;
+            loopEmptyUnrecovered = true;
+            break toolLoop;
+          }
+          assistantContent = currentAiOutput.response;
+          nextToolCalls = currentAiOutput.tool_calls;
+          if (nextToolCalls.length === 0) break toolLoop;
+        }
+
         deps.emit({
           kind: 'chat.transparency',
           session_id,
@@ -1451,6 +1651,9 @@ export const runChatTurn = async (
             const result = await deps.dispatchTool({
               session_id,
               turn_id,
+              ...(inputs.retry_of_plan_id !== undefined
+                ? { retry_of_plan_id: inputs.retry_of_plan_id }
+                : {}),
               tool_name: tc.tool,
               arg_values: tc.args,
               picker_target,
@@ -1494,6 +1697,21 @@ export const runChatTurn = async (
                 started_at: now(),
                 completed_at: now(),
               };
+          for (const reference of recordProvenanceFromSearchResult(
+            tc.tool,
+            execution.result,
+          )) {
+            if (assistantProvenance.length >= CHAT_RECORD_PROVENANCE_LIMIT) {
+              break;
+            }
+            const key =
+              `${reference.collection_platform ?? ''}\u0000`
+              + `${reference.collection_slug ?? ''}\u0000`
+              + `${reference.record_id ?? ''}`;
+            if (assistantProvenanceKeys.has(key)) continue;
+            assistantProvenanceKeys.add(key);
+            assistantProvenance.push(reference);
+          }
           toolCallsAccum.push(toolCallProvenanceEntry(
             tc,
             execution.result,
@@ -1720,6 +1938,9 @@ export const runChatTurn = async (
   return {
     assistant_content: assistantContent,
     ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
+    ...(assistantProvenance.length > 0
+      ? { provenance: assistantProvenance }
+      : {}),
     ...(totalUsage !== undefined ? { usage: totalUsage } : {}),
     ...(toolLoopFailure !== undefined ? { tool_loop_failure: toolLoopFailure } : {}),
     ...(finalAiOutput !== undefined ? { final_ai_output: finalAiOutput } : {}),

@@ -7,15 +7,15 @@
         "url": "https://api.pulumi.com/api/openapi/pulumi-spec.json",
         "reference_url": "https://www.pulumi.com/docs/reference/cloud-rest-api/",
         "reference_source_url": "https://raw.githubusercontent.com/pulumi/docs/4fd0c5118c6c909fcc2209e1d0b76308c2cac50c/layouts/shortcodes/cloud-rest-api-intro.html",
-        "bytes": 2209208,
-        "sha256": "ef31e6ee7e12c2791f36a2d85729791e650140bfcf683ecdd229d5c2c3a816e3",
+        "bytes": 2215856,
+        "sha256": "16a5dbf2f2e6686ff7a401f2f5175d82d1aa2d97c3c0620c325f981018392f2d",
         "reference_bytes": 1473,
         "reference_sha256": "4bff8544a9b7f891f8d06bb1fe70fbc34e6ebc0f3b752c2596ca6c6622bc55b8",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-07-20",
         "mutability": "The live first-party OpenAPI is mutable and byte/hash locked. The separate origin/auth/header authority is fetched from an immutable first-party docs commit and independently byte/hash verified before any artifact is written.",
         "evidence": [
-          "617 official operations across 470 paths",
-          "553 nondeprecated and 64 provider-deprecated operations",
+          "618 official operations across 471 paths",
+          "554 nondeprecated and 64 provider-deprecated operations",
           "OpenAPI method, path, parameter, request, response, media, and deprecation contracts",
           "REST guide managed origin https://api.pulumi.com",
           "REST guide Authorization: token {token} authentication contract",
@@ -24,20 +24,20 @@
         "openapi": "3.0.3",
         "title": "Pulumi APIs",
         "api_version": "1.0.0",
-        "official_path_count": 470,
+        "official_path_count": 471,
         "declared_servers": null,
         "security_schemes": {},
         "top_level_security": null
       }
     },
-    "official_operation_count": 617,
-    "nondeprecated_operation_count": 553,
+    "official_operation_count": 618,
+    "nondeprecated_operation_count": 554,
     "deprecated_operation_count": 64,
-    "admitted_operation_count": 547,
+    "admitted_operation_count": 548,
     "exclusion_count": 70,
     "official_method_counts": {
       "DELETE": 59,
-      "GET": 282,
+      "GET": 283,
       "HEAD": 6,
       "PATCH": 56,
       "POST": 200,
@@ -45,7 +45,7 @@
     },
     "admitted_method_counts": {
       "DELETE": 52,
-      "GET": 250,
+      "GET": 251,
       "PATCH": 52,
       "POST": 180,
       "PUT": 13
@@ -54,7 +54,7 @@
       "AI": 1,
       "AI Agents": 13,
       "CloudSetup": 10,
-      "Deployments": 39,
+      "Deployments": 40,
       "Environments": 116,
       "Insights": 46,
       "Miscellaneous": 4,
@@ -70,7 +70,7 @@
     "admitted_tag_counts": {
       "AI Agents": 12,
       "CloudSetup": 10,
-      "Deployments": 37,
+      "Deployments": 38,
       "Environments": 71,
       "Insights": 45,
       "Miscellaneous": 4,
@@ -90,7 +90,7 @@
     "pack_operation_counts": {
       "pulumi-cloud-environments-read": 33,
       "pulumi-cloud-environments-write": 38,
-      "pulumi-cloud-deployments-runners": 42,
+      "pulumi-cloud-deployments-runners": 43,
       "pulumi-cloud-insights": 45,
       "pulumi-cloud-vcs-integrations": 49,
       "pulumi-cloud-registry-service": 31,
@@ -106,12 +106,12 @@
     "composition_bytes": {
       "pulumi-cloud-environments-read": 72831,
       "pulumi-cloud-environments-write": 96021,
-      "pulumi-cloud-deployments-runners": 99336,
+      "pulumi-cloud-deployments-runners": 102243,
       "pulumi-cloud-insights": 86952,
       "pulumi-cloud-vcs-integrations": 99090,
       "pulumi-cloud-registry-service": 70306,
-      "pulumi-cloud-account-agents-setup": 83456,
-      "pulumi-cloud-organization-identity": 106399,
+      "pulumi-cloud-account-agents-setup": 84432,
+      "pulumi-cloud-organization-identity": 107383,
       "pulumi-cloud-organization-governance": 80723,
       "pulumi-cloud-organization-automation": 62834,
       "pulumi-cloud-organization-change-search": 63047,
@@ -120,7 +120,7 @@
       "pulumi-cloud-stack-engine": 136212
     },
     "request_body_counts": {
-      "none": 351,
+      "none": 352,
       "raw": 196,
       "official_required": 0,
       "admitted_required": 196
@@ -137,20 +137,20 @@
     "response_mode_counts": {
       "empty": 155,
       "file_ref": 1,
-      "json": 362,
+      "json": 363,
       "json_or_text": 15,
       "text": 10,
       "undocumented_success": 4
     },
     "response_media_counts": {
-      "application/json": 377,
+      "application/json": 378,
       "application/x-tar": 1,
       "application/x-yaml": 5,
       "text/markdown": 6,
       "text/plain": 4
     },
     "success_status_set_counts": {
-      "200": 393,
+      "200": 394,
       "201": 12,
       "202": 4,
       "204": 124,
@@ -160,21 +160,22 @@
     "risk_counts": {
       "admin": 58,
       "destructive": 239,
-      "read": 250
+      "read": 251
     },
     "approval_counts": {
-      "always": 547
+      "always": 297,
+      "never": 251
     },
     "idempotency_counts": {
       "idempotent": 52,
       "non_idempotent": 245,
-      "safe": 250
+      "safe": 251
     },
     "pagination": {
-      "automatic_operation_count": 30,
+      "automatic_operation_count": 33,
       "kind_counts": {
         "offset": 3,
-        "query_token": 27
+        "query_token": 30
       },
       "automatic_operation_keys": [
         "GET /api/change-requests/{orgName}",
@@ -189,6 +190,8 @@
         "GET /api/orgs/{orgName}/deployments",
         "GET /api/orgs/{orgName}/members",
         "GET /api/orgs/{orgName}/services",
+        "GET /api/orgs/{orgName}/teams/{teamName}/tokens",
+        "GET /api/orgs/{orgName}/tokens",
         "GET /api/preview/agents/{orgName}/tasks",
         "GET /api/preview/agents/{orgName}/tasks/{taskID}/events",
         "GET /api/preview/insights/{orgName}/accounts",
@@ -206,7 +209,8 @@
         "GET /api/stacks/{orgName}/{projectName}/{stackName}/preview/{updateID}/events",
         "GET /api/stacks/{orgName}/{projectName}/{stackName}/refresh/{updateID}/events",
         "GET /api/stacks/{orgName}/{projectName}/{stackName}/update/{updateID}/events",
-        "GET /api/user/stacks"
+        "GET /api/user/stacks",
+        "GET /api/user/tokens"
       ],
       "manual_operation_count": 25,
       "manual_operation_keys": [
@@ -264,7 +268,7 @@
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
-      "official_operation_ids_present": 617,
+      "official_operation_ids_present": 618,
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_official_operation_id>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
@@ -635,7 +639,7 @@
       {
         "severity": "high",
         "finding": "Several reads and control-plane handshakes return decrypted secrets, minted update tokens, VCS webhook secrets, deployment credentials, logs, or agent content.",
-        "resolution": "Keep every operation approval-gated, scan nested response schemas for credential fields, label secret-capable responses, and exclude those routes from bundled workflows."
+        "resolution": "Keep every mutation approval-gated, scan nested response schemas for credential fields, label secret-capable responses, and exclude those routes from bundled workflows. Reads carry no approval gate per D-209 §4: a mark true of every read carries no sensitivity signal, so containment rests on the secret-response label and the workflow exclusion rather than on a uniform prompt."
       },
       {
         "severity": "high",
@@ -645,7 +649,7 @@
       {
         "severity": "high",
         "finding": "The initially selected GetStack workflow can return deprecated encryptedKey and encryptionSalt configuration fields.",
-        "resolution": "Retain GetStack as an approval-gated direct operation, classify it as secret-capable from schema fields, and replace its bundled workflow with the non-secret organization role-scope catalog."
+        "resolution": "Retain GetStack as a direct operation, classify it as secret-capable from schema fields, and replace its bundled workflow with the non-secret organization role-scope catalog."
       },
       {
         "severity": "medium",
@@ -890,8 +894,8 @@
         "pagination": null
       }
     ],
-    "official_operation_ids_sha256": "935ea3a944d0b576f21e2600d74949b328df851aadcb42c619c8ce37abca0d81",
-    "generated_operation_ids_sha256": "fdf7eb16ff0480ac46f76c095106b9ef98b93188e3cba021a520159eaba14b02"
+    "official_operation_ids_sha256": "deb01a0ea4a8c7b4e0e42002e8c053f4629c2e9a3787b350341db2264e7cc852",
+    "generated_operation_ids_sha256": "b0b02df477c7269276176b56562191b82d30ec36f1ffde453904b95f939936ef"
   },
   "official_operations": [
     {
@@ -15506,6 +15510,33 @@
       "op": "deployments.list_drift_runs"
     },
     {
+      "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/runs/{driftRunId}",
+      "method": "GET",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/drift/runs/{driftRunId}",
+      "primary_tag": "Deployments",
+      "tags": [
+        "Deployments"
+      ],
+      "official_operation_id": "GetDriftRun",
+      "generated_operation_id": "deployments.get_drift_run",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-deployments-runners",
+      "op": "deployments.get_drift_run"
+    },
+    {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/status",
       "method": "GET",
       "path": "/api/stacks/{orgName}/{projectName}/{stackName}/drift/status",
@@ -18267,7 +18298,7 @@
       ],
       "summary": "SignupChallenge",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -18364,7 +18395,7 @@
       ],
       "summary": "SignupValidate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18514,7 +18545,7 @@
       ],
       "summary": "ClaimStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18578,7 +18609,7 @@
       ],
       "summary": "Capabilities",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -18623,7 +18654,7 @@
       ],
       "summary": "ListChangeGates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -18791,7 +18822,7 @@
       ],
       "summary": "ReadChangeGate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19039,7 +19070,7 @@
       ],
       "summary": "ListChangeRequests",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19182,7 +19213,7 @@
       ],
       "summary": "ReadChangeRequest",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19766,7 +19797,7 @@
       ],
       "summary": "ListChangeRequestEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -19957,7 +19988,7 @@
       ],
       "summary": "Version",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -20002,7 +20033,7 @@
       ],
       "summary": "ListAllVCSIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20066,7 +20097,7 @@
       ],
       "summary": "ListAzureDevOpsIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20196,7 +20227,7 @@
       ],
       "summary": "GetAzureDevOpsAccessStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20396,7 +20427,7 @@
       ],
       "summary": "ListAzureDevOpsOrganizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20460,7 +20491,7 @@
       ],
       "summary": "ListAzureDevOpsProjects",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20542,7 +20573,7 @@
       ],
       "summary": "GetAzureDevOpsIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20788,7 +20819,7 @@
       ],
       "summary": "ListBitBucketIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20918,7 +20949,7 @@
       ],
       "summary": "GetBitBucketAccessStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -20982,7 +21013,7 @@
       ],
       "summary": "GetBitBucketIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21228,7 +21259,7 @@
       ],
       "summary": "ListCustomVCSIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21364,7 +21395,7 @@
       ],
       "summary": "GetCustomVCSIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21784,7 +21815,7 @@
       ],
       "summary": "ListGitHubIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21912,7 +21943,7 @@
       ],
       "summary": "ListGitHubEnterpriseIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -21976,7 +22007,7 @@
       ],
       "summary": "GetGitHubEnterpriseIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22222,7 +22253,7 @@
       ],
       "summary": "GetGitHubEnterpriseUserIdentity",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22384,7 +22415,7 @@
       ],
       "summary": "GetGitHubEnterpriseAuthorizeURL",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22466,7 +22497,7 @@
       ],
       "summary": "ListGitHubEnterpriseLinkedMembers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22548,7 +22579,7 @@
       ],
       "summary": "GetGitHubAccess",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22680,7 +22711,7 @@
       ],
       "summary": "ListClaimableGitHubIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22744,7 +22775,7 @@
       ],
       "summary": "GetGitHubIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -22990,7 +23021,7 @@
       ],
       "summary": "ListGitLabIntegrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23120,7 +23151,7 @@
       ],
       "summary": "GetGitLabAccessStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23184,7 +23215,7 @@
       ],
       "summary": "GetGitLabIntegration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23430,7 +23461,7 @@
       ],
       "summary": "ListVCSRepos",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23548,7 +23579,7 @@
       ],
       "summary": "ListVCSRepoDestinations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23648,7 +23679,7 @@
       ],
       "summary": "ListVCSBranches",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23766,7 +23797,7 @@
       ],
       "summary": "ListMemberStackPermissions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -23884,7 +23915,7 @@
       ],
       "summary": "ListNeoMemberUsageCaps",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24183,7 +24214,7 @@
       ],
       "summary": "GetStackOverview",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24403,7 +24434,7 @@
       ],
       "summary": "UpdateSummaryHandlerLatest",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24503,7 +24534,7 @@
       ],
       "summary": "UpdateSummary",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24621,7 +24652,7 @@
       ],
       "summary": "GetPulumiDeployExecutor",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -24666,7 +24697,7 @@
       ],
       "summary": "PollDeploymentsQueue",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -24715,7 +24746,7 @@
       ],
       "summary": "GetDeploymentsStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -24847,7 +24878,7 @@
       ],
       "summary": "AWSSSOListAccounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25083,7 +25114,7 @@
       ],
       "summary": "AzureListAccounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25301,7 +25332,7 @@
       ],
       "summary": "GCPListAccounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25537,7 +25568,7 @@
       ],
       "summary": "ListEnvironments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25662,7 +25693,7 @@
       ],
       "summary": "ListOrgEnvironments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -25871,7 +25902,7 @@
       ],
       "summary": "ListDeletedEnvironments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26026,7 +26057,7 @@
       ],
       "summary": "ListAllEnvironmentTags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26257,7 +26288,7 @@
       ],
       "summary": "ReadAnonymousOpenEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26357,7 +26388,7 @@
       ],
       "summary": "ReadEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -26882,7 +26913,7 @@
       ],
       "summary": "DecryptEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27186,7 +27217,7 @@
       ],
       "summary": "ReadEnvironmentDraft",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27698,7 +27729,7 @@
       ],
       "summary": "ListWebhooks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -27906,7 +27937,7 @@
       ],
       "summary": "GetWebhook",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28266,7 +28297,7 @@
       ],
       "summary": "GetWebhookDeliveries",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28638,7 +28669,7 @@
       ],
       "summary": "GetEnvironmentMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -28960,7 +28991,7 @@
       ],
       "summary": "ReadOpenEnvironmentRequest",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29218,7 +29249,7 @@
       ],
       "summary": "ReadOpenEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29458,7 +29489,7 @@
       ],
       "summary": "ListEnvironmentReferrers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29734,7 +29765,7 @@
       ],
       "summary": "ListEnvironmentSecretRotationHistory",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -29834,7 +29865,7 @@
       ],
       "summary": "ListEnvironmentSchedule",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30038,7 +30069,7 @@
       ],
       "summary": "ReadEnvironmentSchedule",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30394,7 +30425,7 @@
       ],
       "summary": "ListEnvironmentScheduleHistory",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30744,7 +30775,7 @@
       ],
       "summary": "GetEnvironmentSettings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -30946,7 +30977,7 @@
       ],
       "summary": "ListEnvironmentTags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31186,7 +31217,7 @@
       ],
       "summary": "GetEnvironmentTag",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31542,7 +31573,7 @@
       ],
       "summary": "ListEnvironmentRevisions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31678,7 +31709,7 @@
       ],
       "summary": "ListRevisionTags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -31923,7 +31954,7 @@
       ],
       "summary": "ReadRevisionTag",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32277,7 +32308,7 @@
       ],
       "summary": "ReadEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32534,7 +32565,7 @@
       ],
       "summary": "DecryptEnvironment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -32788,7 +32819,7 @@
       ],
       "summary": "ListEnvironmentReferrers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33098,7 +33129,7 @@
       ],
       "summary": "ListRevisionTags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33259,7 +33290,7 @@
       ],
       "summary": "ListProviders",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33323,7 +33354,7 @@
       ],
       "summary": "GetProviderSchema",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33390,7 +33421,7 @@
       ],
       "summary": "ListRotators",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33454,7 +33485,7 @@
       ],
       "summary": "GetRotatorSchema",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33574,7 +33605,7 @@
       ],
       "summary": "FetchRestSpecification",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -33619,7 +33650,7 @@
       ],
       "summary": "GetOrganization",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33752,7 +33783,7 @@
       ],
       "summary": "ListOrgAgentPool",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -33888,7 +33919,7 @@
       ],
       "summary": "GetAgentPool",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34157,7 +34188,7 @@
       ],
       "summary": "ListAuditLogEventsHandlerV1",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34337,7 +34368,7 @@
       ],
       "summary": "ExportAuditLogEventsHandlerV1",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34510,7 +34541,7 @@
       ],
       "summary": "GetAuditLogExportConfiguration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34857,7 +34888,7 @@
       ],
       "summary": "GetAuditLogsReaderKind",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -34922,7 +34953,7 @@
       ],
       "summary": "ListAuditLogEventsHandlerV2",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35102,7 +35133,7 @@
       ],
       "summary": "ExportAuditLogEventsHandlerV2",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35275,7 +35306,7 @@
       ],
       "summary": "GetAuthPolicy",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35511,7 +35542,7 @@
       ],
       "summary": "ListOrganizationKeys",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35705,7 +35736,7 @@
       ],
       "summary": "ListOrganizationKeyMigrations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -35995,7 +36026,7 @@
       ],
       "summary": "ListOrgDeployments",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36145,7 +36176,7 @@
       ],
       "summary": "OrgDeploymentsMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36333,7 +36364,7 @@
       ],
       "summary": "GetUsageSummaryDeployCompute",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36452,7 +36483,7 @@
       ],
       "summary": "GetDeployUsageReport",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36535,7 +36566,7 @@
       ],
       "summary": "GetUsageSummaryDiscoveredResourceHours",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36655,7 +36686,7 @@
       ],
       "summary": "ListOrganizationWebhooks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -36793,7 +36824,7 @@
       ],
       "summary": "GetOrganizationWebhook",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37048,7 +37079,7 @@
       ],
       "summary": "GetOrganizationWebhookDeliveries",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37315,7 +37346,7 @@
       ],
       "summary": "GetUsageSummaryInsightsScans",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37435,7 +37466,7 @@
       ],
       "summary": "ListOrgInvites",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -37707,7 +37738,7 @@
       ],
       "summary": "GetOrgInvite",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38036,7 +38067,7 @@
       ],
       "summary": "ListOrganizationMembers",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38473,7 +38504,7 @@
       ],
       "summary": "GetOrganizationMemberTeams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38555,7 +38586,7 @@
       ],
       "summary": "GetOrganizationMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38619,7 +38650,7 @@
       ],
       "summary": "GetOrgNeoTokenBudget",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38631,6 +38662,24 @@
           ],
           "official_format": null,
           "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "taskId",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.taskId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": {
@@ -38667,7 +38716,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "b8b6a15335ae34cc2295abdad94b3bb7b93de09ad0f429f5a42cf8d53496a712"
+      "response_schema_sha256": "30944c5e2567790a79afdee68b4d96a2dc714251b18d5c052bb25b1822778282"
     },
     "GET /api/orgs/{orgName}/neo/tokens/summary": {
       "key": "GET /api/orgs/{orgName}/neo/tokens/summary",
@@ -38683,7 +38732,7 @@
       ],
       "summary": "GetUsageSummaryNeoTokens",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -38820,7 +38869,7 @@
       ],
       "summary": "GetNeoUsageCap",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39016,7 +39065,7 @@
       ],
       "summary": "List",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39150,7 +39199,7 @@
       ],
       "summary": "GetOidcIssuer",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39483,7 +39532,7 @@
       ],
       "summary": "GetPackageUsedByStacks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39627,7 +39676,7 @@
       ],
       "summary": "ListPolicyGroups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39759,7 +39808,7 @@
       ],
       "summary": "GetPolicyGroupMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -39824,7 +39873,7 @@
       ],
       "summary": "GetPolicyGroup",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40158,7 +40207,7 @@
       ],
       "summary": "ListPolicyPacks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40391,7 +40440,7 @@
       ],
       "summary": "GetPolicyPack",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -40690,7 +40739,7 @@
       ],
       "summary": "GetPolicyPackConfigSchema",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41121,7 +41170,7 @@
       ],
       "summary": "GetPolicyIssue",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41291,7 +41340,7 @@
       ],
       "summary": "GetPolicyResultsMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41425,7 +41474,7 @@
       ],
       "summary": "GetOrgRegistryPolicyPack",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41526,7 +41575,7 @@
       ],
       "summary": "GetUsageSummaryResourceHours",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41645,7 +41694,7 @@
       ],
       "summary": "ListDeletedStacks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41793,7 +41842,7 @@
       ],
       "summary": "ListRolesByOrgIDAndUXPurpose",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -41961,7 +42010,7 @@
       ],
       "summary": "ListAvailableScopes",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42025,7 +42074,7 @@
       ],
       "summary": "GetRole",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42371,7 +42420,7 @@
       ],
       "summary": "ListTeamsWithRole",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42453,7 +42502,7 @@
       ],
       "summary": "ListOrgTokensWithRole",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42519,7 +42568,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "a2cf86fdaac1d89c15376cafaf0ca4555558c8d416e012c8198ffd41926c08e6"
+      "response_schema_sha256": "3917c2124e187572c7a62118e0dfdcb68549edcf463e6176296a8b95fc7b8c19"
     },
     "GET /api/orgs/{orgName}/roles/{roleID}/users": {
       "key": "GET /api/orgs/{orgName}/roles/{roleID}/users",
@@ -42535,7 +42584,7 @@
       ],
       "summary": "ListUsersWithRole",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42617,7 +42666,7 @@
       ],
       "summary": "GetSAMLOrganization",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42749,7 +42798,7 @@
       ],
       "summary": "ListSAMLOrganizationAdmins",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42893,7 +42942,7 @@
       ],
       "summary": "GetResourceColumnFilterSet",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -42994,7 +43043,7 @@
       ],
       "summary": "GetResourceDashboardAggregations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43059,7 +43108,7 @@
       ],
       "summary": "ExportOrgResourceSearchQuery",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43286,7 +43335,7 @@
       ],
       "summary": "GetNaturalLanguageQuery",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43369,7 +43418,7 @@
       ],
       "summary": "GetOrgResourceSearchV2Query",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43631,7 +43680,7 @@
       ],
       "summary": "GetUsageSummaryEnvironmentSecrets",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43751,7 +43800,7 @@
       ],
       "summary": "ListServices",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -43928,7 +43977,7 @@
       ],
       "summary": "GetService",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44614,7 +44663,7 @@
       ],
       "summary": "ListTeams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -44814,7 +44863,7 @@
       ],
       "summary": "GetTeam",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45142,7 +45191,7 @@
       ],
       "summary": "ListTeamRoles",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45420,7 +45469,7 @@
       ],
       "summary": "ListTeamTokens",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45461,6 +45510,24 @@
         },
         {
           "in": "query",
+          "wire_name": "continuationToken",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
           "wire_name": "filter",
           "required": false,
           "official_types": [
@@ -45476,6 +45543,24 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "maxResults",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": "query.maxResults",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
         }
       ],
       "parameter_repairs": [],
@@ -45493,10 +45578,17 @@
       ],
       "selected_response_media": "application/vnd.pulumi+8",
       "response_body_mode": "json",
-      "result_path": null,
-      "pagination_kind": null,
-      "pagination": null,
-      "pagination_signal": false,
+      "result_path": "tokens",
+      "pagination_kind": "query_token",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "continuationToken",
+        "token_to": {
+          "placement": "query",
+          "param": "continuationToken"
+        }
+      },
+      "pagination_signal": true,
       "manual_pagination": null,
       "sensitive_request": false,
       "sensitive_response": true,
@@ -45504,7 +45596,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "a2cf86fdaac1d89c15376cafaf0ca4555558c8d416e012c8198ffd41926c08e6"
+      "response_schema_sha256": "3917c2124e187572c7a62118e0dfdcb68549edcf463e6176296a8b95fc7b8c19"
     },
     "POST /api/orgs/{orgName}/teams/{teamName}/tokens": {
       "key": "POST /api/orgs/{orgName}/teams/{teamName}/tokens",
@@ -45742,7 +45834,7 @@
       ],
       "summary": "GetProjectTemplate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45855,7 +45947,7 @@
       ],
       "summary": "GetProjectTemplateConfiguration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -45944,7 +46036,7 @@
       ],
       "summary": "GetOrgTemplateDownload",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46033,7 +46125,7 @@
       ],
       "summary": "GetOrgTemplateReadme",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46122,7 +46214,7 @@
       ],
       "summary": "GetOrgTemplates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46186,7 +46278,7 @@
       ],
       "summary": "GetOrgTemplateCollections",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46485,7 +46577,7 @@
       ],
       "summary": "ListOrgTokens",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46499,6 +46591,24 @@
           "admitted_key": "orgName",
           "admitted_type": "string",
           "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "continuationToken",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
           "authority": {
             "kind": "official_openapi_parameter"
           },
@@ -46523,6 +46633,24 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "maxResults",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": "query.maxResults",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
         }
       ],
       "parameter_repairs": [],
@@ -46540,10 +46668,17 @@
       ],
       "selected_response_media": "application/vnd.pulumi+8",
       "response_body_mode": "json",
-      "result_path": null,
-      "pagination_kind": null,
-      "pagination": null,
-      "pagination_signal": false,
+      "result_path": "tokens",
+      "pagination_kind": "query_token",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "continuationToken",
+        "token_to": {
+          "placement": "query",
+          "param": "continuationToken"
+        }
+      },
+      "pagination_signal": true,
       "manual_pagination": null,
       "sensitive_request": false,
       "sensitive_response": true,
@@ -46551,7 +46686,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "a2cf86fdaac1d89c15376cafaf0ca4555558c8d416e012c8198ffd41926c08e6"
+      "response_schema_sha256": "3917c2124e187572c7a62118e0dfdcb68549edcf463e6176296a8b95fc7b8c19"
     },
     "POST /api/orgs/{orgName}/tokens": {
       "key": "POST /api/orgs/{orgName}/tokens",
@@ -46738,7 +46873,7 @@
       ],
       "summary": "ListTasks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -46969,7 +47104,7 @@
       ],
       "summary": "GetTask",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47309,7 +47444,7 @@
       ],
       "summary": "GetTaskEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47435,7 +47570,7 @@
       ],
       "summary": "ListAccounts",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -47648,7 +47783,7 @@
       ],
       "summary": "ReadAccount",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48069,7 +48204,7 @@
       ],
       "summary": "ListPolicyPacksForAccount",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48342,7 +48477,7 @@
       ],
       "summary": "ReadResource",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48443,7 +48578,7 @@
       ],
       "summary": "ListResourceVersionEdges",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48587,7 +48722,7 @@
       ],
       "summary": "ReadResourceWithReferences",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48688,7 +48823,7 @@
       ],
       "summary": "ListResourceStackEdges",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48789,7 +48924,7 @@
       ],
       "summary": "ListResourceVersions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -48933,7 +49068,7 @@
       ],
       "summary": "ReadResource",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -49052,7 +49187,7 @@
       ],
       "summary": "ListResourceVersionEdges",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -49335,7 +49470,7 @@
       ],
       "summary": "ReadScanStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -49749,7 +49884,7 @@
       ],
       "summary": "ReadScheduledScanSettings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -49917,7 +50052,7 @@
       ],
       "summary": "ListScanStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50043,7 +50178,7 @@
       ],
       "summary": "GetScan",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50144,7 +50279,7 @@
       ],
       "summary": "GetScanLogs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50335,7 +50470,7 @@
       ],
       "summary": "GetInsightAccountTags",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50503,7 +50638,7 @@
       ],
       "summary": "ListInsightsAccountTeams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50689,7 +50824,7 @@
       ],
       "summary": "GetDiscoveredProject",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -50790,7 +50925,7 @@
       ],
       "summary": "GetDiscoveredStack",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -51111,7 +51246,7 @@
       ],
       "summary": "ListDiscoveredStackResources",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -51425,7 +51560,7 @@
       ],
       "summary": "GetInsightsTrialSummary",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -51611,7 +51746,7 @@
       ],
       "summary": "GetStackMigration",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -51989,7 +52124,7 @@
       ],
       "summary": "ListPackages",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -52344,7 +52479,7 @@
       ],
       "summary": "GetPackageVersion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -52700,7 +52835,7 @@
       ],
       "summary": "GetPackageDocs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -52873,7 +53008,7 @@
       ],
       "summary": "GetPackageExamples",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -53046,7 +53181,7 @@
       ],
       "summary": "GetPackageInstallation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -53201,7 +53336,7 @@
       ],
       "summary": "GetPackageNav",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -53374,7 +53509,7 @@
       ],
       "summary": "GetPackageReadme",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -53677,7 +53812,7 @@
       ],
       "summary": "ListPolicyPackVersions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -53875,7 +54010,7 @@
       ],
       "summary": "GetPolicyPackVersion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -54223,7 +54358,7 @@
       ],
       "summary": "ListTemplates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -54359,7 +54494,7 @@
       ],
       "summary": "ListTemplateVersions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -54606,7 +54741,7 @@
       ],
       "summary": "GetTemplateVersion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -54980,7 +55115,7 @@
       ],
       "summary": "ListTerraformModules",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -55105,7 +55240,7 @@
       ],
       "summary": "ListTerraformModuleVersions",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -55248,7 +55383,7 @@
       ],
       "summary": "GetTerraformModuleVersion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -55586,7 +55721,7 @@
       ],
       "summary": "GetStack",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -55805,7 +55940,7 @@
       ],
       "summary": "GetStackActivity",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -55945,7 +56080,7 @@
       ],
       "summary": "GetStacksAnnotation",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -56580,7 +56715,7 @@
       ],
       "summary": "GetStackConfig",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -57200,7 +57335,7 @@
       ],
       "summary": "ListStackDeploymentsHandlerV2",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -57816,7 +57951,7 @@
       ],
       "summary": "StackDeploymentsMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -58113,7 +58248,7 @@
       ],
       "summary": "ListScheduledDeployment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -58319,7 +58454,7 @@
       ],
       "summary": "ReadScheduledDeployment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -58678,7 +58813,7 @@
       ],
       "summary": "ListScheduledDeploymentHistory",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -59030,7 +59165,7 @@
       ],
       "summary": "GetDeploymentSettings",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -59648,7 +59783,7 @@
       ],
       "summary": "GetDeployment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -59768,7 +59903,7 @@
       ],
       "summary": "GetDeployment",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -60004,7 +60139,7 @@
       ],
       "summary": "GetDeploymentLogs",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -60212,7 +60347,7 @@
       ],
       "summary": "GetDeploymentUpdates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -60436,7 +60571,7 @@
       ],
       "summary": "GetUpdateStatusForDestroy",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -61293,7 +61428,7 @@
       ],
       "summary": "GetEngineEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62112,7 +62247,7 @@
       ],
       "summary": "ListDownstreamStackReferences",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62212,7 +62347,7 @@
       ],
       "summary": "ListDriftRuns",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62348,6 +62483,124 @@
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "673aef805c094b8def2f6223e7180a25d3031081996b22b3b2cd83772d65ffe2"
     },
+    "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/runs/{driftRunId}": {
+      "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/runs/{driftRunId}",
+      "official_operation_id": "GetDriftRun",
+      "generated_operation_id": "deployments.get_drift_run",
+      "pack": "pulumi-cloud-deployments-runners",
+      "op": "deployments.get_drift_run",
+      "method": "GET",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/drift/runs/{driftRunId}",
+      "primary_tag": "Deployments",
+      "tags": [
+        "Deployments"
+      ],
+      "summary": "GetDriftRun",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "projectName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "projectName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "stackName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "stackName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "driftRunId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "driftRunId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "77b01659a448e7ff8b8934c17a30d5eb9fe82f3ab9e4fda409b67ecda2026bfa"
+    },
     "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/status": {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/drift/status",
       "official_operation_id": "GetStackDriftStatus",
@@ -62362,7 +62615,7 @@
       ],
       "summary": "GetStackDriftStatus",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62566,7 +62819,7 @@
       ],
       "summary": "ExportStack",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62666,7 +62919,7 @@
       ],
       "summary": "ExportStackAtVersion",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62785,7 +63038,7 @@
       ],
       "summary": "ListStackWebhooks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -62995,7 +63248,7 @@
       ],
       "summary": "GetStackWebhook",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -63358,7 +63611,7 @@
       ],
       "summary": "GetStackWebhookDeliveries",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -63836,7 +64089,7 @@
       ],
       "summary": "GetStackMetadata",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -64145,7 +64398,7 @@
       ],
       "summary": "GetStackPolicyGroups",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -64246,7 +64499,7 @@
       ],
       "summary": "GetStackPolicyPacks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -64468,7 +64721,7 @@
       ],
       "summary": "GetUpdateStatusForPreview",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -64964,7 +65217,7 @@
       ],
       "summary": "GetEngineEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -65783,7 +66036,7 @@
       ],
       "summary": "GetStackPreview",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -65903,7 +66156,7 @@
       ],
       "summary": "GetStackPreviewSummary",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -66125,7 +66378,7 @@
       ],
       "summary": "GetUpdateStatusForRefresh",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -66981,7 +67234,7 @@
       ],
       "summary": "GetEngineEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -67904,7 +68157,7 @@
       ],
       "summary": "GetStackResourceCount",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -68004,7 +68257,7 @@
       ],
       "summary": "GetLatestStackResources",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -68104,7 +68357,7 @@
       ],
       "summary": "GetLatestStackResource",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -68222,7 +68475,7 @@
       ],
       "summary": "GetStackResources",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -68340,7 +68593,7 @@
       ],
       "summary": "GetStackResource",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -68920,7 +69173,7 @@
       ],
       "summary": "ListStackTeams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -69227,7 +69480,7 @@
       ],
       "summary": "GetUpdateStatusForUpdate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -70083,7 +70336,7 @@
       ],
       "summary": "GetEngineEvents",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -70903,7 +71156,7 @@
       ],
       "summary": "GetStackUpdates",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71057,7 +71310,7 @@
       ],
       "summary": "GetLatestStackUpdate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71160,7 +71413,7 @@
       ],
       "summary": "GetLatestStackPreviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71316,7 +71569,7 @@
       ],
       "summary": "GetLatestUpdateTimeline",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71420,7 +71673,7 @@
       ],
       "summary": "GetStackUpdate",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71540,7 +71793,7 @@
       ],
       "summary": "GetStackPreviews",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71714,7 +71967,7 @@
       ],
       "summary": "GetStackUpdateSummary",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71832,7 +72085,7 @@
       ],
       "summary": "GetUpdateTimeline",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -71954,7 +72207,7 @@
       ],
       "summary": "ListUpstreamStackReferences",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -72158,7 +72411,7 @@
       ],
       "summary": "GetCurrentUser",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -72203,7 +72456,7 @@
       ],
       "summary": "ListGitHubOrganizationTeams",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -72267,7 +72520,7 @@
       ],
       "summary": "GetDefaultOrganization",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -72374,7 +72627,7 @@
       ],
       "summary": "GetLatestPendingEmailChange",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -72463,7 +72716,7 @@
       ],
       "summary": "ListUserOrgInvites",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -72508,7 +72761,7 @@
       ],
       "summary": "ListUserStacks",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -72688,9 +72941,27 @@
       ],
       "summary": "ListPersonalTokens",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
+        {
+          "in": "query",
+          "wire_name": "continuationToken",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
         {
           "in": "query",
           "wire_name": "filter",
@@ -72708,6 +72979,24 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "maxResults",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": "query.maxResults",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
         }
       ],
       "parameter_repairs": [],
@@ -72725,10 +73014,17 @@
       ],
       "selected_response_media": "application/vnd.pulumi+8",
       "response_body_mode": "json",
-      "result_path": null,
-      "pagination_kind": null,
-      "pagination": null,
-      "pagination_signal": false,
+      "result_path": "tokens",
+      "pagination_kind": "query_token",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "continuationToken",
+        "token_to": {
+          "placement": "query",
+          "param": "continuationToken"
+        }
+      },
+      "pagination_signal": true,
       "manual_pagination": null,
       "sensitive_request": false,
       "sensitive_response": true,
@@ -72736,7 +73032,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "a2cf86fdaac1d89c15376cafaf0ca4555558c8d416e012c8198ffd41926c08e6"
+      "response_schema_sha256": "3917c2124e187572c7a62118e0dfdcb68549edcf463e6176296a8b95fc7b8c19"
     },
     "POST /api/user/tokens": {
       "key": "POST /api/user/tokens",
@@ -72950,7 +73246,7 @@
       ],
       "summary": "ListIdentityProviderOrganizations",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],
@@ -73059,7 +73355,7 @@
       ],
       "summary": "GetUserHasVerifiedEmail",
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "parameter_repairs": [],

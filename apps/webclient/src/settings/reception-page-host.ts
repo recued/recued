@@ -85,7 +85,7 @@
  *  (the host never overlaps mounts — the inner state would race on the
  *  shell's `last_error` channel).
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX integration) + § A.20.1
+ *  Spec: D-149 § A.9 (Settings UX integration) + § A.20.1
  *  (Launch Wizard) + § A.20.4 (Share Cards) + § A.3 (preview-hash gate). */
 
 import type {

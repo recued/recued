@@ -9,7 +9,7 @@
  *  XSS posture: every interpolated string flows through `escapeHtml`.
  *  See `template.ts` for the central rule.
  *
- *  Spec: docs/d-145-spec.md § A.3.
+ *  Spec: D-145 § A.3.
  */
 
 import {

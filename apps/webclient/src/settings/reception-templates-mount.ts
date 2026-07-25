@@ -35,7 +35,7 @@
  *  Use / close controls are native `<button>`s (keyboard-operable) with
  *  `aria-label`s.
  *
- *  Spec: docs/d-149-spec.md § A.10 (Pre-built intake_form templates). */
+ *  Spec: D-149 § A.10 (Pre-built intake_form templates). */
 
 import {
   isReceptionEndpointKind,

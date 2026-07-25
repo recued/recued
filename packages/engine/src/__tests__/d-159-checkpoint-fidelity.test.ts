@@ -6,7 +6,7 @@
  *  contracts/types, with no middleware in the path, which is itself part
  *  of the I-8 invariant.
  *
- *  Spec: docs/d-159-spec.md section A.4 + I-8. */
+ *  Spec: D-159 section A.4 + I-8. */
 
 import { describe, it, expect } from 'vitest';
 import {

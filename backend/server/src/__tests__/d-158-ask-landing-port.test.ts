@@ -14,7 +14,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InboundReply, PendingAsk } from '@recued/notification';
 
 import {
+  ASK_LANDING_ENDPOINT_ID,
   createAskLandingPortHandler,
+  type AskLandingAbuseDeps,
   type AskLandingPortHandlerDeps,
 } from '../ask-landing-port.js';
 import {
@@ -25,6 +27,11 @@ import {
   resolvePublicBaseUrl,
   buildAskLandingAnswerLink,
 } from '../ask-landing-answer-link.js';
+import {
+  allowingAskLandingAbuseDeps,
+  attachAskTestSocket,
+} from './ask-landing-test-helpers.js';
+import { hashSourceIpServerWide } from '../ports/reception/server-secret-pepper.js';
 
 const NOW = 1_700_000_000_000;
 const HOST = 'h.example.com';
@@ -73,6 +80,7 @@ const buildReq = (opts: {
   url: string;
   body?: string;
   headers?: Record<string, string>;
+  remoteAddress?: string;
 }): IncomingMessage => {
   const chunks = opts.body === undefined ? [] : [Buffer.from(opts.body, 'utf8')];
   const stream = Readable.from(chunks) as unknown as IncomingMessage;
@@ -80,7 +88,14 @@ const buildReq = (opts: {
   (stream as unknown as { url: string }).url = opts.url;
   (stream as unknown as { headers: Record<string, string> }).headers =
     opts.headers ?? {};
-  return stream;
+  const request = attachAskTestSocket(stream);
+  if (opts.remoteAddress !== undefined) {
+    Object.defineProperty(request, 'socket', {
+      configurable: true,
+      value: { remoteAddress: opts.remoteAddress },
+    });
+  }
+  return request;
 };
 
 const makeHarness = (over: { ask?: PendingAsk | null } = {}) => {
@@ -103,6 +118,7 @@ const makeHarness = (over: { ask?: PendingAsk | null } = {}) => {
     getVerificationPhrase: async () => 'river-stone-velvet',
     nonceStore,
     now: () => NOW,
+    abuse: allowingAskLandingAbuseDeps(),
   };
   const handler = createAskLandingPortHandler(deps);
   return { handler, nonceStore, submitAnswer, currentAsk: () => current };
@@ -191,11 +207,42 @@ describe('D-158 P2b-ii — ask-landing nonce store', () => {
     expect(store.consume('ask-1', 'never-issued', NOW)).toBe(false);
     // Bound to the ask it was issued for — a different ask_id can't consume it.
     expect(store.consume('ask-2', nonce, NOW)).toBe(false);
+    // Presentation to the wrong ask spends it; a disclosed nonce is not
+    // reusable against the right ask afterwards.
+    expect(store.consume('ask-1', nonce, NOW)).toBe(false);
     // Still valid for the right ask within the window…
     const fresh = store.issue('ask-1', NOW);
     expect(store.consume('ask-1', fresh, NOW + ASK_LANDING_NONCE_TTL_MS + 1)).toBe(
       false,
     );
+  });
+
+  it('evicts the oldest nonce per ask and globally at the configured bounds', () => {
+    const perAsk = createInMemoryAskLandingNonceStore({ maxEntries: 10, maxPerAsk: 2 });
+    const a1 = perAsk.issue('ask-a', NOW);
+    const a2 = perAsk.issue('ask-a', NOW + 1);
+    const a3 = perAsk.issue('ask-a', NOW + 2);
+    expect(perAsk.consume('ask-a', a1, NOW + 2)).toBe(false);
+    expect(perAsk.consume('ask-a', a2, NOW + 2)).toBe(true);
+    expect(perAsk.consume('ask-a', a3, NOW + 2)).toBe(true);
+
+    const global = createInMemoryAskLandingNonceStore({ maxEntries: 2, maxPerAsk: 2 });
+    const g1 = global.issue('ask-a', NOW);
+    const g2 = global.issue('ask-b', NOW + 1);
+    const g3 = global.issue('ask-c', NOW + 2);
+    expect(global.consume('ask-a', g1, NOW + 2)).toBe(false);
+    expect(global.consume('ask-b', g2, NOW + 2)).toBe(true);
+    expect(global.consume('ask-c', g3, NOW + 2)).toBe(true);
+  });
+
+  it('sweeps expired entries before enforcing capacity and rejects invalid bounds', () => {
+    const store = createInMemoryAskLandingNonceStore({ maxEntries: 1, maxPerAsk: 1 });
+    const expired = store.issue('ask-old', NOW);
+    const fresh = store.issue('ask-new', NOW + ASK_LANDING_NONCE_TTL_MS + 1);
+    expect(store.consume('ask-old', expired, NOW + ASK_LANDING_NONCE_TTL_MS + 1)).toBe(false);
+    expect(store.consume('ask-new', fresh, NOW + ASK_LANDING_NONCE_TTL_MS + 1)).toBe(true);
+    expect(() => createInMemoryAskLandingNonceStore({ maxEntries: 0 })).toThrow(/positive integer/);
+    expect(() => createInMemoryAskLandingNonceStore({ maxPerAsk: 1.5 })).toThrow(/positive integer/);
   });
 });
 
@@ -371,5 +418,142 @@ describe('D-158 P2b-ii — ask-landing method gate', () => {
     await handler(buildReq({ method: 'DELETE', url: '/ask/ask-test-1' }), res as unknown as ServerResponse);
     expect(res.statusCode).toBe(405);
     expect(res.headers['allow']).toBe('GET, POST');
+  });
+});
+
+describe('D-210 — /ask abuse controls and redacted access logging', () => {
+  const makeAbuseHarness = (input: {
+    blocked?: boolean;
+    rate?: { ok: true } | { ok: false; retry_after_at: number };
+    trustForwardedFor?: boolean;
+    pepperThrows?: boolean;
+  } = {}) => {
+    const accessLogs: Array<Record<string, unknown>> = [];
+    const consumePreVerify = vi.fn(() => input.rate?.ok === false
+      ? {
+          ok: false as const,
+          bucket_kind: 'per_ip_global' as const,
+          retry_after_at: input.rate.retry_after_at,
+        }
+      : { ok: true as const });
+    const getAsk = vi.fn(async (id: string) => id === 'ask-test-1' ? buildAsk() : null);
+    const abuse: AskLandingAbuseDeps = {
+      getRateLimiter: () => ({ consumePreVerify } as never),
+      getPepper: () => {
+        if (input.pepperThrows === true) throw new Error('vault locked');
+        return Buffer.alloc(32, 9);
+      },
+      getStore: () => ({ appendAccessLog: (row) => accessLogs.push(row as never) }),
+      getIpBlockStore: () => ({ isBlocked: () => input.blocked === true } as never),
+      ...(input.trustForwardedFor !== undefined
+        ? { trustForwardedFor: input.trustForwardedFor }
+        : {}),
+    };
+    const handler = createAskLandingPortHandler({
+      getAsk,
+      submitAnswer: async () => {},
+      getVerificationPhrase: async () => undefined,
+      nonceStore: createInMemoryAskLandingNonceStore(),
+      now: () => NOW,
+      abuse,
+    });
+    return { handler, accessLogs, consumePreVerify, getAsk };
+  };
+
+  it('runs IP block and rate gates before touching the bearer store', async () => {
+    const blocked = makeAbuseHarness({ blocked: true });
+    const blockedRes = makeRes();
+    await blocked.handler(
+      buildReq({ method: 'GET', url: '/ask/ask-test-1' }),
+      blockedRes as unknown as ServerResponse,
+    );
+    expect(blockedRes.statusCode).toBe(403);
+    expect(blocked.consumePreVerify).not.toHaveBeenCalled();
+    expect(blocked.getAsk).not.toHaveBeenCalled();
+    expect(blocked.accessLogs.at(-1)).toMatchObject({
+      endpoint_id: ASK_LANDING_ENDPOINT_ID,
+      action_taken: 'reject',
+      outcome: 'rejected',
+      url_path_redacted: '/ask/<redacted>',
+    });
+
+    const limited = makeAbuseHarness({
+      rate: { ok: false, retry_after_at: NOW + 5_001 },
+    });
+    const limitedRes = makeRes();
+    await limited.handler(
+      buildReq({ method: 'GET', url: '/ask/ask-test-1' }),
+      limitedRes as unknown as ServerResponse,
+    );
+    expect(limitedRes.statusCode).toBe(429);
+    expect(limitedRes.headers['retry-after']).toBe('6');
+    expect(limited.getAsk).not.toHaveBeenCalled();
+    expect(limited.accessLogs.at(-1)).toMatchObject({
+      action_taken: 'rate_limited',
+      outcome: 'rate_limited',
+    });
+  });
+
+  it('uses X-Forwarded-For only when the listener explicitly trusts it', async () => {
+    const remote = '203.0.113.10';
+    const forwarded = '198.51.100.22';
+    const untrusted = makeAbuseHarness({ trustForwardedFor: false });
+    await untrusted.handler(buildReq({
+      method: 'GET',
+      url: '/ask/ask-test-1',
+      headers: { 'x-forwarded-for': `${forwarded}, 10.0.0.1` },
+      remoteAddress: remote,
+    }), makeRes() as unknown as ServerResponse);
+    expect(untrusted.consumePreVerify).toHaveBeenCalledWith(expect.objectContaining({
+      source_ip_hash: hashSourceIpServerWide(remote, Buffer.alloc(32, 9)),
+    }));
+
+    const trusted = makeAbuseHarness({ trustForwardedFor: true });
+    await trusted.handler(buildReq({
+      method: 'GET',
+      url: '/ask/ask-test-1',
+      headers: { 'x-forwarded-for': `${forwarded}, 10.0.0.1` },
+      remoteAddress: remote,
+    }), makeRes() as unknown as ServerResponse);
+    expect(trusted.consumePreVerify).toHaveBeenCalledWith(expect.objectContaining({
+      source_ip_hash: hashSourceIpServerWide(forwarded, Buffer.alloc(32, 9)),
+    }));
+  });
+
+  it('logs terminal outcomes without persisting the raw bearer', async () => {
+    const harness = makeAbuseHarness();
+    const ok = makeRes();
+    await harness.handler(
+      buildReq({ method: 'GET', url: '/ask/ask-test-1' }),
+      ok as unknown as ServerResponse,
+    );
+    const missing = makeRes();
+    await harness.handler(
+      buildReq({ method: 'GET', url: '/ask/ask-does-not-exist' }),
+      missing as unknown as ServerResponse,
+    );
+    expect(harness.accessLogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action_taken: 'view', outcome: 'ok' }),
+      expect.objectContaining({ action_taken: 'invalid_token', outcome: 'invalid_token' }),
+    ]));
+    expect(JSON.stringify(harness.accessLogs)).not.toContain('ask-test-1');
+    expect(JSON.stringify(harness.accessLogs)).not.toContain('ask-does-not-exist');
+  });
+
+  it('fails closed when the stable pepper is unavailable, before bearer lookup', async () => {
+    const harness = makeAbuseHarness({ pepperThrows: true });
+    const res = makeRes();
+    await harness.handler(
+      buildReq({ method: 'GET', url: '/ask/ask-test-1' }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).toBe(503);
+    expect(harness.getAsk).not.toHaveBeenCalled();
+    expect(harness.accessLogs.at(-1)).toMatchObject({
+      action_taken: 'view',
+      outcome: 'rejected',
+      source_ip_hash: null,
+      metadata: { rejection_reason: 'pepper_unavailable' },
+    });
   });
 });

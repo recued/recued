@@ -1,0 +1,139 @@
+{
+  "manifest_version": 2,
+  "slug": "reception-drop",
+  "publisher": "recued-core",
+  "name": "Reception — Drop",
+  "description": "Review-by-default file-drop reception. A visitor uploads a file and it lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the title / details / destination first) or reject. On approve it materializes a task in your local warehouse with the uploaded file attached (data.link role:'attachment', D-172) — no external connection required. Every upload is reviewed — there is no way to skip the gate.",
+  "version": 1,
+  "pre_install": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:reception",
+    "reception",
+    "reception-drop",
+    "l2"
+  ],
+  "pack_kind": "app_pack",
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "reception-drop",
+        "catalog_kind": "private_byo",
+        "ingredients": [
+          {
+            "slug": "reception-drop",
+            "kind": "http",
+            "http": {
+              "base": "https://reception.local",
+              "connection": "reception-drop"
+            },
+            "entities": {
+              "drop": {
+                "fields": [
+                  {
+                    "field_path": "id",
+                    "type": "string",
+                    "maps_to": "id",
+                    "description": "Materialized task id."
+                  },
+                  {
+                    "field_path": "title",
+                    "type": "string",
+                    "maps_to": "title",
+                    "description": "Drop task title (the uploaded filename)."
+                  },
+                  {
+                    "field_path": "body",
+                    "type": "string",
+                    "maps_to": "body",
+                    "optional": true,
+                    "description": "Visitor's description."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "drop.materialize",
+            "ingredient": "reception-drop",
+            "risk": "write",
+            "approval": "ask",
+            "out": "result",
+            "args": [
+              "title",
+              "body",
+              {
+                "key": "source_id",
+                "affects_target": true
+              }
+            ],
+            "description": "Materialize a reviewed file-drop into a task in the local warehouse with the uploaded file attached (the review-then-approve projection — the file was ingested into data.file.received at submit; on approve the task is written and the file is linked via data.link role:'attachment', D-172). Approval-required: the Gateway gate holds it pending so the user reviews + edits the title / details before it runs. The `https://reception.local` base url (surfaces_seed) is a LOCAL-DISPATCH sentinel, not a reachable endpoint — on approve-resume the ingredient executor routes this op to the in-process `reception-materialize` kernel ingredient (runReceptionProjection), so the materialize never makes an HTTP call (D-173 I-2 / P1-dispatch).",
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/reception/drop/materialize"
+            },
+            "request_schema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "editable_args": [
+              {
+                "key": "title",
+                "type": "string",
+                "label": "Title",
+                "required": true
+              },
+              {
+                "key": "body",
+                "type": "string",
+                "label": "Details"
+              },
+              {
+                "key": "source_id",
+                "type": "string",
+                "label": "Destination",
+                "options_source": "reception_destination_sources",
+                "affects_target": true
+              }
+            ]
+          }
+        ],
+        "default_grants": [
+          "reception-drop.drop.write"
+        ],
+        "recipe_templates": [
+          {
+            "template": "review-then-approve",
+            "trigger": {
+              "entity": "reception_drop_blob_metadata",
+              "field": "processing_outcome",
+              "value": "pending"
+            },
+            "operation": "drop.materialize"
+          }
+        ]
+      }
+    }
+  ]
+}

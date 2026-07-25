@@ -1078,7 +1078,7 @@ const MAX_LIMIT = 1000;
  *  cap 10× to cover realistic personal warehouses. Beyond it, `scanComplete`
  *  honestly degrades again (coverage capped, phone matching suppressed) — the FTS
  *  (`unicode61 remove_diacritics 2`) path is the next step for >10k warehouses
- *  (`docs/d-167-prefetch-pii-coverage-design.md` §6 / §6.1). */
+ *  (D-167 §6 / §6.1). */
 const PREFETCH_SCAN_MAX = 10000;
 
 /** D-167 §1.A — PER-TOKEN cap on FTS5(name/company) candidate rows fed to the
@@ -1140,6 +1140,34 @@ export interface RecallIdentifierMatches {
 
 export interface ContactWriteOptions {
   silent?: boolean;
+  /** D-210 audit finding 5 — the rung to attribute this write's ATTRIBUTE
+   *  contributions to, when the values did NOT come from the owner's hands.
+   *  Absent ⇒ `manual`, which is correct for the `contact.upsert` rpc: a paired
+   *  client calling it IS the owner typing.
+   *
+   *  ⛔ SERVER-DETERMINED, exactly like the origin facets above — never read from
+   *  an rpc payload. A caller able to choose its own provenance rung could park a
+   *  guess at the top of the ladder, which is the whole failure this ladder exists
+   *  to prevent.
+   *
+   *  The intake→contact destination sets `'derived'`: the name is text a VISITOR
+   *  typed about themselves at a public door, and it is not shown to the owner at
+   *  approval (`intake.materialize` exposes only title / body / destination), so
+   *  nothing about it is owner-asserted. Recording it as `manual` put it at rank 0
+   *  — above `user_confirmed`, above CRM — where it outranked every future
+   *  correction, forever.
+   *
+   *  🔑 This is the same judgement the no-name branch of `upsertManualInner`
+   *  already makes for the email local-part fallback, in its own words: "the user
+   *  did not TYPE that, so recording it as `manual` would be a lie with teeth."
+   *
+   *  ⏭ `derived`'s doc says "nobody ASSERTED it", and a visitor asserting their
+   *  own name is not quite that — it is closer than `manual` on every axis that
+   *  matters, but a truthful `self_reported` rung would be better. Adding one is
+   *  deliberately NOT done here: the array order IS the rank, so inserting a rung
+   *  silently re-ranks everything below it, and D-138 gates its inference pool on
+   *  specific rungs. That is an owner call, not a fix-it. */
+  attribution_source?: 'derived';
   /** D-161 P2 — origin provenance facet. The mail / calendar `observe*`
    *  sync paths omit it → `'system'` (the column default). The manual
    *  `contact.upsert` rpc handler passes `'user_self'` (a paired-client
@@ -1679,6 +1707,11 @@ export interface ContactStore {
    *  for empty / malformed inputs; alternatives surface only when the
    *  chat_alias branch could not collapse multiple candidates. */
   findByAlias(input: ContactAliasLookupInput): ContactAliasLookupResult;
+  /** Non-mutating twin of `findByAlias`, for speculative deterministic
+   *  candidate discovery. It performs the same exact resolution + merge-chain
+   *  hydration but deliberately does NOT stamp `last_resolved_at`; only a
+   *  committed user-facing resolver call may write that audit field. */
+  peekByAlias(input: ContactAliasLookupInput): ContactAliasLookupResult;
 
   // ── D-145 PB11 — Person-Specific Automation primitive ─────────────
   /** § B.12 — read the contact's `personal_recipes` blob. Returns
@@ -2374,6 +2407,17 @@ export const createContactStore = (
     // after the user edited only the phone number, be recorded as hand-typed by
     // the user — and would then outrank every future HubSpot correction, forever.
     // Silence is the honest contribution for a field the user did not touch.
+    // D-210 audit finding 5 — `manual` is the DEFAULT, not a constant. A caller
+    // that knows its values were not hand-typed by the owner passes
+    // `attribution_source: 'derived'` (server-determined; see ContactWriteOptions).
+    // Without it the intake→contact destination recorded a VISITOR-typed name at
+    // rank 0, above `user_confirmed` and above CRM, where it outranked every
+    // future correction forever — the same "lie with teeth" the no-name branch
+    // below already refuses to tell about the local-part fallback.
+    const attributionSource = opts.attribution_source ?? 'manual';
+    const attributionSourceId = attributionSource === 'derived'
+      ? CONTACT_SOURCE_ID_DERIVED
+      : CONTACT_SOURCE_ID_MANUAL;
     const contribute = (
       attr_kind: 'name' | 'org' | 'address' | 'title' | 'photo' | 'birthday',
       value: unknown,
@@ -2383,8 +2427,8 @@ export const createContactStore = (
           contact_id,
           kind: attr_kind,
           value,
-          source: 'manual',
-          source_id: CONTACT_SOURCE_ID_MANUAL,
+          source: attributionSource,
+          source_id: attributionSourceId,
           as_of: now,
           created_at: now,
         },
@@ -4994,16 +5038,9 @@ export const createContactStore = (
     };
   };
 
-  const findByAlias = (input: ContactAliasLookupInput): ContactAliasLookupResult => {
-    if (!input || typeof input.alias_pattern !== 'string' || !input.alias_pattern.length) {
-      return { contact: null, confidence: 0, alternatives: [] };
-    }
-    const context: ContactReferenceContext = input.context ?? { recent_contacts: [] };
-    const reference: ContactReference =
-      input.platform !== undefined
-        ? { platform: input.platform, id: input.alias_pattern }
-        : input.alias_pattern;
-    const resolution = resolveContactReference(reference, context);
+  const aliasLookupResult = (
+    resolution: ContactReferenceResolution,
+  ): ContactAliasLookupResult => {
     if (resolution.contact_id !== null) {
       const row = getByContactIdStmt.get(resolution.contact_id) as ContactRow | undefined;
       const initial = row ? rowToRecord(row) : null;
@@ -5034,6 +5071,30 @@ export const createContactStore = (
     }
     return { contact: null, confidence: 0, alternatives };
   };
+
+  const resolveAliasLookup = (
+    input: ContactAliasLookupInput,
+    touchLastResolved: boolean,
+  ): ContactAliasLookupResult => {
+    if (!input || typeof input.alias_pattern !== 'string' || !input.alias_pattern.length) {
+      return { contact: null, confidence: 0, alternatives: [] };
+    }
+    const context: ContactReferenceContext = input.context ?? { recent_contacts: [] };
+    const reference: ContactReference =
+      input.platform !== undefined
+        ? { platform: input.platform, id: input.alias_pattern }
+        : input.alias_pattern;
+    const resolution = touchLastResolved
+      ? resolveContactReference(reference, context)
+      : resolveContactReferenceImpl(reference, context, resolverLookups);
+    return aliasLookupResult(resolution);
+  };
+
+  const findByAlias = (input: ContactAliasLookupInput): ContactAliasLookupResult =>
+    resolveAliasLookup(input, true);
+
+  const peekByAlias = (input: ContactAliasLookupInput): ContactAliasLookupResult =>
+    resolveAliasLookup(input, false);
 
   // ── D-192 C-2b — the CUTOVER backfill ─────────────────────────────────────
   //
@@ -5325,6 +5386,7 @@ export const createContactStore = (
     // D-145 PA8 follow-on — identifier-keyed lookup helpers
     findByPhone,
     findByAlias,
+    peekByAlias,
   };
 };
 

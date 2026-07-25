@@ -15,7 +15,7 @@
 // waiter auto-jumps the head so `promote` can't starve it) + queue-wait abort
 // via `SlotRequest.signal`. The in-flight *run* registry, the kill mechanisms,
 // and the `execution.*` rpc live in `in-flight-registry.ts` / the handler.
-// See `docs/d-181-spec.md` §5/§7.
+// See D-181 §5/§7.
 
 import { availableParallelism, freemem } from 'node:os';
 import {

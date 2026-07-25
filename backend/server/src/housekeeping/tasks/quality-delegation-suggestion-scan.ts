@@ -34,7 +34,7 @@
  *  refreshes the "Quality auto-accept" card live rather than on re-list — is a
  *  deferred polish; the D-177 event is itself best-effort, recovered by re-list.)
  *
- *  Spec: docs/d-202-spec.md §2 (signals) / §6 / §8 / §12.3. */
+ *  Spec: D-202 §2 (signals) / §6 / §8 / §12.3. */
 
 import {
   QUALITY_DELEGATION_SUGGESTION_SCAN_TASK_ID,

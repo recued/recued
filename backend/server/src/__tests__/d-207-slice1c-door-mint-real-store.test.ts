@@ -28,7 +28,7 @@
  *  empty op closure) would have been admitted ANY op. Rejecting was the lucky failure mode;
  *  the assertions below pin the field's presence, not just the absence of a throw.
  *
- *  Spec: `docs/d-207-spec.md` §5.1. */
+ *  Spec: D-207 §5.1. */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

@@ -25,7 +25,7 @@
  *  `req_id`. A frame the server cannot even parse acks as `upload_error` (no
  *  `req_id` to echo).
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`. */
+ *  Spec: internal design notes. */
 
 export const UPLOAD_FRAME_VERSION = 1;
 export const UPLOAD_FRAME_TYPE_CHUNK = 1;

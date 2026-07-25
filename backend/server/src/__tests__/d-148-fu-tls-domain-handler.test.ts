@@ -27,7 +27,7 @@
  *    - Channel-isolation invariant: `tls_domain.` in
  *      `MCP_RESERVED_RPC_PREFIXES`; every method in `SERVER_RPC_METHODS`.
  *
- *  Spec: docs/d-148-spec.md § A.6.3. */
+ *  Spec: D-148 § A.6.3. */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';

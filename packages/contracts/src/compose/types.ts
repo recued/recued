@@ -164,7 +164,7 @@ export interface TemplateSafetyMatrix {
    *  compiled config. Absent HERE (a template constraining nothing) is a
    *  different statement from absent on an ENDPOINT, which no longer exists.
    *  ⚠ This matrix is serialized to the authoring model — see
-   *  `docs/chat-prompt-optimization-log.md`. */
+   *  internal design notes. */
   readonly processing_target?: IntakeFormTargetKind;
   // D-210 Phase C — `notification_defaults` RETIRED (owner ruling, 2026-07-18).
   // ⛔ IT WAS A TIER ERROR, not merely an orphan. This matrix is an AI *input* —

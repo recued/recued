@@ -16,7 +16,7 @@
  *  No `onInvalidate` — expiry is time-driven; no source write changes whether a
  *  session's TTL has elapsed in real time.
  *
- *  Spec: `recued-project/handovers/handover_drop_resumable_upload_design.md`
+ *  Spec: internal design notes
  *  (rev 2 lifecycle § + rev 4 build order). */
 
 import type {

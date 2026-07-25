@@ -392,3 +392,90 @@ describe('resolveRecipeInput', () => {
     expect(resolveRecipeInput('  deal-risk-hubspot  ')).toEqual({ slug: 'deal-risk-hubspot' });
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Install-vs-browse marker on the apex install-manifest fetch.
+// ────────────────────────────────────────────────────────────────
+
+describe('install-manifest marker header', () => {
+  /** Captures the init of every call so the HEADERS can be asserted — the
+   *  shared `mockFetch` helper above discards them. */
+  const capturing = (body: unknown) => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchFn = (async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push({ url, headers: { ...(init?.headers ?? {}) } });
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => body,
+      };
+    }) as unknown as typeof globalThis.fetch;
+    return { calls, fetchFn };
+  };
+
+  const recipeBody = {
+    recipe_id: 'deal-risk',
+    publisher_id: 'recued-core',
+    version: 1,
+    recipe: { recipe_id: 'deal-risk', version: 1, metadata: {}, steps: [] },
+  };
+
+  const packBody = {
+    manifest_version: 1,
+    slug: 'sales-pack',
+    publisher: 'recued-core',
+    name: 'Sales Pack',
+    description: 'A pack.',
+    version: 1,
+    recipes: [{ slug: 'deal-risk', version: 1 }],
+    requires: ['install_bulk_pack'],
+  };
+
+  it('fetchRecipeBySlug OMITS the marker by default (browse / preview)', async () => {
+    const { calls, fetchFn } = capturing(recipeBody);
+    await fetchRecipeBySlug('deal-risk', fetchFn);
+    expect(calls[0].headers).toHaveProperty('Accept', 'application/json');
+    // Absence must be asserted structurally — toMatchObject cannot prove a key
+    // is missing, and a marker that leaks onto browse traffic silently turns
+    // the install count back into a view count.
+    expect(Object.hasOwn(calls[0].headers, 'x-recued-install')).toBe(false);
+  });
+
+  it('fetchRecipeBySlug SETS the marker when install: true', async () => {
+    const { calls, fetchFn } = capturing(recipeBody);
+    await fetchRecipeBySlug('deal-risk', fetchFn, { install: true });
+    expect(calls[0].headers['x-recued-install']).toBe('1');
+    expect(calls[0].headers).toHaveProperty('Accept', 'application/json');
+  });
+
+  it('fetchBulkPackBySlug OMITS the marker by default', async () => {
+    const { fetchBulkPackBySlug } = await import('../bulk-pack-resolver.js');
+    const { calls, fetchFn } = capturing(packBody);
+    await fetchBulkPackBySlug('sales-pack', fetchFn);
+    expect(Object.hasOwn(calls[0].headers, 'x-recued-install')).toBe(false);
+  });
+
+  it('fetchBulkPackBySlug SETS the marker when install: true', async () => {
+    const { fetchBulkPackBySlug } = await import('../bulk-pack-resolver.js');
+    const { calls, fetchFn } = capturing(packBody);
+    await fetchBulkPackBySlug('sales-pack', fetchFn, { install: true });
+    expect(calls[0].headers['x-recued-install']).toBe('1');
+  });
+
+  it('fetchBulkPackByUrl NEVER marks — a side-loaded URL is not our apex', async () => {
+    const { fetchBulkPackByUrl } = await import('../bulk-pack-resolver.js');
+    const { calls, fetchFn } = capturing(packBody);
+    await fetchBulkPackByUrl('https://example.com/some-pack.json', fetchFn);
+    expect(Object.hasOwn(calls[0].headers, 'x-recued-install')).toBe(false);
+  });
+
+  it('the marker name matches the contract the SSR worker reads', async () => {
+    // Sender and reader are separate deploys; a drifting literal would stop the
+    // counting silently, so both sides must key off the shared constant.
+    const { INSTALL_MANIFEST_MARKER_HEADER } = await import('@recued/contracts');
+    const { calls, fetchFn } = capturing(recipeBody);
+    await fetchRecipeBySlug('deal-risk', fetchFn, { install: true });
+    expect(calls[0].headers[INSTALL_MANIFEST_MARKER_HEADER]).toBe('1');
+  });
+});

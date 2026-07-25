@@ -35,7 +35,7 @@
  *      kinds in `CORRECTION_EVENT_DURABLE_KINDS` (contact_merged,
  *      standing_instruction_added) which retain indefinitely.
  *
- *  Spec: `docs/d-145-spec.md` § B.14. */
+ *  Spec: D-145 § B.14. */
 
 import type { ExtractionEventKind } from './extraction-events.js';
 import { isExtractionEventKind } from './extraction-events.js';

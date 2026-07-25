@@ -306,7 +306,7 @@ describe('D-166 Slice 4d.4 catalog override tightening', () => {
     await expectSuccessfulRead(ctx, manifest, fallbackResult, executorCalls, auditCalls);
   });
 
-  it('does not scan overrides or overwrite the structural deny reason when the base floor already denies', async () => {
+  it('preserves the structural deny reason when the base floor already denies (tighten layer skips; only the D-211 raw pre-read scans)', async () => {
     const manifest = manifestFor(operation('read'));
     const { ctx, executorCalls, auditCalls, scanCalls } = makeHarness({
       profile: null,
@@ -318,7 +318,13 @@ describe('D-166 Slice 4d.4 catalog override tightening', () => {
 
     expect(caught).toBeInstanceOf(Error);
     expect(isPreflightRequiredSignal(caught)).toBe(false);
-    expect(scanCalls).toHaveLength(0);
+    // The global owner-operation pair is read before resolution; the legacy
+    // actor tightening layer still short-circuits on the base deny.
+    expect(scanCalls).toHaveLength(1);
+    expect(scanCalls[0]).toEqual({
+      scope: 'owner_operation',
+      prefixSegments: ['pub/cat', 'pub/cat.x'],
+    });
     expect(executorCalls).toHaveLength(0);
     expect(auditCalls).toHaveLength(1);
     expect(auditCalls[0]).toMatchObject({
@@ -362,13 +368,8 @@ describe('D-166 Slice 4d.4 catalog override tightening', () => {
     });
   });
 
-  it('does not loosen a base ask floor when an override sets approval:never', async () => {
+  it('does not loosen a base ask floor when an actor override sets approval:never', async () => {
     const manifest = manifestFor(operation('write'));
-    // D-209 Slice B — dispatch as a CONTRACTED door (LOW `read` ceiling) so the
-    // write does NOT relax on owner trust. This ISOLATES the override-tightening
-    // property under test: an override:never cannot loosen the write below its `ask`
-    // floor (stricter-wins). Under the owner `admin` ceiling the write would relax to
-    // admit regardless of the override, hiding the property.
     const { ctx, executorCalls, auditCalls } = makeHarness({
       actor: 'contracted_user',
       overrideRows: [

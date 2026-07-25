@@ -21,7 +21,7 @@
  *      returns `{ ok: true, new_fingerprint }`.
  *    - Renewal reuses the existing private key (standard ACME practice).
  *
- *  Spec: `docs/d-148-spec.md` § A.6.5. */
+ *  Spec: D-148 § A.6.5. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { TLSDomainCertChain, TLSDomainUploadResult } from '@recued/contracts';

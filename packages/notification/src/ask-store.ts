@@ -12,7 +12,7 @@
  *  D-097). The store is small + bounded; D-158 P3 prunes terminal
  *  (`handled`) rows on a retention window.
  *
- *  Spec: docs/d-158-spec.md § A.2 / I-2.
+ *  Spec: D-158 § A.2 / I-2.
  */
 
 import type { Collection } from '@recued/storage';

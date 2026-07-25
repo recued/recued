@@ -64,7 +64,7 @@
  *  completeness proof). So this leaf never has to prove a remote absence itself — it
  *  inherits a proof that was already made, once, upstream.
  *
- *  Spec: `docs/d-192-contact-source-family.md` step 7. */
+ *  Spec: D-192 step 7. */
 
 import {
   composeConnectionTargetIdPrefix,

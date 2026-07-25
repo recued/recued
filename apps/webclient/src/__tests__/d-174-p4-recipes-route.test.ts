@@ -23,6 +23,9 @@ import {
   RECIPES_ROUTE_HEADING_ATTR,
   RECIPES_ROUTE_HOST_ATTR,
   RECIPES_ROUTE_KITCHEN_LINK_ATTR,
+  RECIPES_ROUTE_COUNT_ATTR,
+  RECIPES_ROUTE_PAGER_ATTR,
+  RECIPES_ROUTE_RECIPE_CARD_ATTR,
   RECIPES_ROUTE_RECIPE_TRIGGER_ATTR,
   RECIPES_ROUTE_RELATED_ATTR,
   RECIPES_ROUTE_RELATED_ROW_ATTR,
@@ -577,6 +580,31 @@ describe('R24 — Recipes route: list view', () => {
     expect(html).toContain(`${RECIPES_ROUTE_RECIPE_TRIGGER_ATTR}="manual"`);
     // The notify-named recipe is manual, not alert — the structural swap.
     expect(html).not.toContain(`${RECIPES_ROUTE_RECIPE_TRIGGER_ATTR}="alert"`);
+
+    rig.route.dispose();
+  });
+
+  it('renders a bounded recipe page instead of mounting the full library', async () => {
+    const rig = mountRoute({
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: Array.from({ length: 50 }, (_, idx) =>
+          recipeEntry(`recipe-${String(idx).padStart(2, '0')}`)),
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    let html = shellHtml(rig.root);
+    expect(html.match(new RegExp(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}=`, 'g'))).toHaveLength(24);
+    expect(html).toContain(`${RECIPES_ROUTE_COUNT_ATTR}`);
+    expect(html).toContain('Showing 1–24 of 50 recipes');
+    expect(html).toContain(`${RECIPES_ROUTE_PAGER_ATTR}`);
+    expect(html).toContain('Page 1 of 3');
+
+    clickRecipeAction(rig.root, 'recipe-page', '', { 'data-page': '3' });
+    html = shellHtml(rig.root);
+    expect(html.match(new RegExp(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}=`, 'g'))).toHaveLength(2);
+    expect(html).toContain('Showing 49–50 of 50 recipes');
+    expect(html).toContain('Page 3 of 3');
 
     rig.route.dispose();
   });

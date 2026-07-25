@@ -15,7 +15,7 @@
  *  but the producer must still fold mixed rows symmetrically because
  *  it operates at one level below the platform-reference-id keying.
  *
- *  Spec: docs/d-139-spec.md § P7 acceptance + § A.10 (cascade —
+ *  Spec: D-139 § P7 acceptance + § A.10 (cascade —
  *  producers iterate per-type scopes via `aggregates_from`). */
 
 import { describe, expect, it } from 'vitest';
@@ -300,7 +300,7 @@ describe('D-139 P7 — inbound_outbound_ratio cross-vendor symmetry', () => {
  *  directory alongside the other P3 producers; until then, this
  *  in-test mirror keeps the cross-vendor invariant pinned.
  *
- *  Spec: docs/d-139-spec.md § A.9.1 + § P1a.1 acceptance "deterministic +
+ *  Spec: D-139 § A.9.1 + § P1a.1 acceptance "deterministic +
  *  gates on event_at IS NOT NULL" + § P7 acceptance widening. */
 const SILENCE_DURATION_DAY_MS = 24 * 60 * 60 * 1000;
 const computeSilenceDurationLocal = (

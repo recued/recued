@@ -110,7 +110,10 @@ describe('M-ENFORCE-2 evaluatePreflightAdmission scope_path gate', () => {
         tool: { slug: 'email-get', kind: 'storage', risk_tier: 'read' },
         scope_path: 'data.mail',
       }),
-    ).toEqual({ verdict: 'admit' });
+    ).toEqual({
+      verdict: 'admit',
+      authorization_provenance: { pre_lift_approval: 'never' },
+    });
   });
 
   it('checks scope BEFORE the contract tool allowlist (deny reason is scope, not tool)', () => {

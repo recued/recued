@@ -4,9 +4,9 @@
       "openapi": {
         "kind": "official_openapi",
         "url": "https://fivetran.com/assets-docs/openapi/file_v1.json",
-        "bytes": 3061804,
-        "sha256": "efe2da44a9bb186bcd409bff5f7bce233ba03407524177597392fcb351d56847",
-        "retrieved_on": "2026-07-16",
+        "bytes": 3073143,
+        "sha256": "e3cb5322787580ad08049f2de9ea9ee5934810733b1dcc43e2f6b769a34c12af",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "170 method/path operations",
           "HTTP Basic root security with one public security override",
@@ -16,7 +16,7 @@
         "openapi": "3.0.1",
         "title": "OpenAPI Definition",
         "api_version": "v1",
-        "official_path_count": 98,
+        "official_path_count": 99,
         "declared_server": [
           {
             "url": "https://api.fivetran.com"
@@ -37,7 +37,7 @@
         "url": "https://fivetran.com/docs/rest-api/getting-started.md",
         "bytes": 14720,
         "sha256": "ab4639153a280cb4cc721c742c298bad1a08d28fa7dfd6f3081bd9b087605e5d",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "base URL https://api.fivetran.com/v1/",
           "Authorization Basic base64(api_key:api_secret)"
@@ -49,7 +49,7 @@
         "url": "https://fivetran.com/docs/rest-api/getting-started/pagination.md",
         "bytes": 1975,
         "sha256": "120bca2319550098fb83df879bcc5a8e700e11772c424bac8bfe125d230f7eed",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "cursor request parameter",
           "data.next_cursor response continuation",
@@ -62,7 +62,7 @@
         "url": "https://fivetran.com/docs/rest-api/getting-started/rate-limiting.md",
         "bytes": 2991,
         "sha256": "a510e113223ecb2741d37ad052e94795b86562162edbb6eac401fa9d3884019d",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-07-20",
         "evidence": [
           "500 requests per hour for trial accounts",
           "20,000 requests per hour for paid accounts",
@@ -71,26 +71,26 @@
         "mutability": "Mutable vendor documentation; the hash lock prevents silent rate-limit evidence drift."
       }
     },
-    "official_operation_count": 170,
-    "admitted_operation_count": 167,
+    "official_operation_count": 171,
+    "admitted_operation_count": 168,
     "deprecated_operation_count": 1,
     "transport_exclusion_count": 2,
     "official_method_counts": {
       "DELETE": 29,
-      "GET": 67,
+      "GET": 68,
       "PATCH": 25,
       "POST": 49
     },
     "admitted_method_counts": {
       "DELETE": 29,
-      "GET": 67,
+      "GET": 68,
       "PATCH": 24,
       "POST": 47
     },
     "official_tag_counts": {
       "Account Management": 1,
       "Certificate Management": 17,
-      "Connection Management": 12,
+      "Connection Management": 13,
       "Connection Schema Management": 11,
       "Connector Metadata": 2,
       "Connector SDK Package Resource": 6,
@@ -114,7 +114,7 @@
     "admitted_tag_counts": {
       "Account Management": 1,
       "Certificate Management": 16,
-      "Connection Management": 12,
+      "Connection Management": 13,
       "Connection Schema Management": 11,
       "Connector Metadata": 2,
       "Connector SDK Package Resource": 4,
@@ -137,56 +137,58 @@
     },
     "pack_operation_counts": {
       "fivetran-public-metadata": 1,
-      "fivetran-connections-data-pipeline": 42,
+      "fivetran-connections-data-pipeline": 43,
       "fivetran-identity-access": 45,
       "fivetran-networking-deployment": 45,
       "fivetran-transformations-observability": 34
     },
     "composition_bytes": {
-      "fivetran-public-metadata": 2169,
-      "fivetran-connections-data-pipeline": 90347,
-      "fivetran-identity-access": 82228,
-      "fivetran-networking-deployment": 84879,
-      "fivetran-transformations-observability": 63418
+      "fivetran-public-metadata": 2176,
+      "fivetran-connections-data-pipeline": 92753,
+      "fivetran-identity-access": 82354,
+      "fivetran-networking-deployment": 85033,
+      "fivetran-transformations-observability": 63495
     },
     "body_mode_counts": {
-      "none": 103,
+      "none": 104,
       "raw_json": 64
     },
     "success_status_counts": {
-      "200": 146,
+      "200": 147,
       "201": 21
     },
     "empty_success_operation_count": 2,
     "accept_counts": {
       "application/json": 149,
-      "application/json;version=2": 18
+      "application/json;version=2": 19
     },
     "effective_accept_counts": {
       "application/json": 148,
-      "application/json;version=2": 18,
+      "application/json;version=2": 19,
       "application/octet-stream": 1
     },
     "risk_counts": {
       "admin": 35,
       "destructive": 65,
-      "read": 67
+      "read": 68
     },
     "approval_counts": {
-      "always": 167
+      "always": 100,
+      "never": 68
     },
     "idempotency_counts": {
       "idempotent": 29,
       "non_idempotent": 71,
-      "safe": 67
+      "safe": 68
     },
     "pagination": {
-      "automatic_operation_count": 30,
+      "automatic_operation_count": 31,
       "manual_gap_count": 2,
       "automatic_operation_keys": [
         "GET /v1/connections",
         "GET /v1/connections/{connectionId}/certificates",
         "GET /v1/connections/{connectionId}/fingerprints",
+        "GET /v1/connections/{connectionId}/sync-history",
         "GET /v1/connector-sdk/packages",
         "GET /v1/destinations",
         "GET /v1/destinations/{destinationId}/certificates",
@@ -220,12 +222,12 @@
         "GET /v1/external-secrets-managers/{esmId}/entities"
       ],
       "result_path_counts": {
-        "data.items": 32
+        "data.items": 33
       }
     },
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled fivetran connection: API key as username and API secret as password",
-      "basic_auth_operation_count": 166,
+      "basic_auth_operation_count": 167,
       "public_no_auth_operation_count": 1,
       "credential_fields_in_pack": 0
     },
@@ -235,8 +237,8 @@
       "official_request_body_required_count": 0,
       "effective_request_body_required_count": 64,
       "exact_content_type_operation_count": 64,
-      "declared_accept_operation_count": 167,
-      "exact_accept_operation_count": 166,
+      "declared_accept_operation_count": 168,
+      "exact_accept_operation_count": 167,
       "accept_override_operation_keys": [
         "GET /v1/connector-sdk/packages/{package_id}/download"
       ],
@@ -244,12 +246,14 @@
         "POST /v1/connections/{connectionId}/fingerprints",
         "POST /v1/destinations/{destinationId}/fingerprints"
       ],
-      "version_2_accept_operation_count": 18,
+      "version_2_accept_operation_count": 19,
       "pagination_owned_parameters": [
         "GET /v1/connections/{connectionId}/certificates:cursor",
         "GET /v1/connections/{connectionId}/certificates:limit",
         "GET /v1/connections/{connectionId}/fingerprints:cursor",
         "GET /v1/connections/{connectionId}/fingerprints:limit",
+        "GET /v1/connections/{connectionId}/sync-history:cursor",
+        "GET /v1/connections/{connectionId}/sync-history:limit",
         "GET /v1/connections:cursor",
         "GET /v1/connections:limit",
         "GET /v1/connector-sdk/packages:cursor",
@@ -389,12 +393,12 @@
       {
         "severity": "high",
         "finding": "Seven GET responses can contain recoverable connection tokens, system-key secrets, or webhook secrets.",
-        "resolution": "Kept the capabilities approval-gated but suppressed all seven from bundled rendering workflows."
+        "resolution": "Kept the capabilities directly callable but suppressed all seven from bundled rendering workflows."
       },
       {
         "severity": "high",
         "finding": "Destination, log-service, and external-secrets-manager detail responses can also carry password-formatted or structurally unbounded provider configuration.",
-        "resolution": "Expanded sensitive workflow suppression to all 12 credential-bearing or credential-capable GET operations while retaining their gated capabilities."
+        "resolution": "Expanded sensitive workflow suppression to all 12 credential-bearing or credential-capable GET operations while retaining their direct capabilities."
       },
       {
         "severity": "medium",
@@ -403,12 +407,12 @@
       },
       {
         "severity": "medium",
-        "finding": "Thirty cursor collections expose caller cursor and limit fields that could conflict with automatic traversal.",
+        "finding": "Thirty-one cursor collections expose caller cursor and limit fields that could conflict with automatic traversal.",
         "resolution": "Binding-owned cursor and limit are omitted from caller args; the page size is pinned to the documented maximum of 1000."
       },
       {
         "severity": "medium",
-        "finding": "Eighteen connection and destination routes require the version=2 Accept parameter rather than plain application/json.",
+        "finding": "Nineteen connection and destination routes require the version=2 Accept parameter rather than plain application/json.",
         "resolution": "Preserved each OpenAPI Accept default as a fixed per-operation header and made it non-overridable."
       },
       {
@@ -424,7 +428,7 @@
       {
         "severity": "medium",
         "finding": "Action-shaped POSTs such as resync, rotation, credential reset, move, cancellation, upgrade, and transformation runs can be materially destructive.",
-        "resolution": "Classified the reviewed action set as destructive; all PATCH and DELETE operations are also destructive and every capability requires approval."
+        "resolution": "Classified the reviewed action set as destructive; all PATCH and DELETE operations are also destructive and every mutation requires approval."
       },
       {
         "severity": "medium",
@@ -611,6 +615,35 @@
           "connectionId"
         ],
         "pagination": null,
+        "manual_pagination": null
+      },
+      {
+        "recipe_id": "connection-sync-history-fivetran",
+        "operation_id": "connection_sync_history",
+        "key": "GET /v1/connections/{connectionId}/sync-history",
+        "pack": "fivetran-connections-data-pipeline",
+        "op": "connection.connection_sync_history",
+        "public": false,
+        "required_args": [
+          "connectionId"
+        ],
+        "supplied_args": [
+          "connectionId"
+        ],
+        "pagination": {
+          "style": "query_token",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 1000,
+            "max": 1000
+          },
+          "token_from": "data.next_cursor",
+          "token_to": {
+            "placement": "query",
+            "param": "cursor"
+          }
+        },
         "manual_pagination": null
       },
       {
@@ -1603,7 +1636,7 @@
         "manual_pagination": null
       }
     ],
-    "operation_ids_sha256": "566ffb04e426163814b06b0aaac59d29c11948e84e39beaf3234b812cdc1b252"
+    "operation_ids_sha256": "e84ea3e34dad24758055508fadfcfc5bb7084f1b757720e88e95d68ae88543e8"
   },
   "official_operations": [
     {
@@ -2798,6 +2831,40 @@
       "exclusion_reason": null,
       "pack": "fivetran-connections-data-pipeline",
       "op": "connection.sync_connection"
+    },
+    {
+      "key": "GET /v1/connections/{connectionId}/sync-history",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/sync-history",
+      "operation_id": "connection_sync_history",
+      "tag": "Connection Management",
+      "summary": "Retrieve Connection Sync History",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_sync_history"
     },
     {
       "key": "POST /v1/connections/{connectionId}/test",
@@ -9408,7 +9475,7 @@
       "tag": "Public Endpoints",
       "public": true,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "declared_accept": "application/json",
@@ -9443,7 +9510,7 @@
       "tag": "Account Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "declared_accept": "application/json",
@@ -9482,7 +9549,7 @@
       "tag": "Connection Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9591,7 +9658,7 @@
       "tag": "Connection Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9645,7 +9712,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9740,7 +9807,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9808,7 +9875,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9903,7 +9970,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -9971,7 +10038,7 @@
       "tag": "Connection Schema Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10025,7 +10092,7 @@
       "tag": "Connection Schema Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10107,7 +10174,7 @@
       "tag": "Connection Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10151,6 +10218,143 @@
         }
       ]
     },
+    "GET /v1/connections/{connectionId}/sync-history": {
+      "key": "GET /v1/connections/{connectionId}/sync-history",
+      "operation_id": "connection_sync_history",
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_sync_history",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/sync-history",
+      "tag": "Connection Management",
+      "public": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "connectionId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "connectionId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "duration",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.duration",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "start_time",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.start_time",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "end_time",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.end_time",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": "data.items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "data.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/connector-sdk/packages": {
       "key": "GET /v1/connector-sdk/packages",
       "operation_id": "list_connector_sdk_packages",
@@ -10161,7 +10365,7 @@
       "tag": "Connector SDK Package Resource",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10242,7 +10446,7 @@
       "tag": "Connector SDK Package Resource",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10296,7 +10500,7 @@
       "tag": "Connector SDK Package Resource",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10357,7 +10561,7 @@
       "tag": "Destination Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10438,7 +10642,7 @@
       "tag": "Destination Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10492,7 +10696,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10587,7 +10791,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10655,7 +10859,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10750,7 +10954,7 @@
       "tag": "Certificate Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10818,7 +11022,7 @@
       "tag": "Log Service Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10899,7 +11103,7 @@
       "tag": "Log Service Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -10953,7 +11157,7 @@
       "tag": "Log Service Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [],
       "declared_accept": "application/json",
@@ -10992,7 +11196,7 @@
       "tag": "Handling External Secrets Manager (ESM) resources",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11073,7 +11277,7 @@
       "tag": "Handling External Secrets Manager (ESM) resources",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11149,7 +11353,7 @@
       "tag": "Handling External Secrets Manager (ESM) resources",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11203,7 +11407,7 @@
       "tag": "Handling External Secrets Manager (ESM) resources",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11279,7 +11483,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11360,7 +11564,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11414,7 +11618,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11523,7 +11727,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11577,7 +11781,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11631,7 +11835,7 @@
       "tag": "Group Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11740,7 +11944,7 @@
       "tag": "Hybrid Deployment Agent Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11835,7 +12039,7 @@
       "tag": "Hybrid Deployment Agent Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11889,7 +12093,7 @@
       "tag": "Connector Metadata",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -11970,7 +12174,7 @@
       "tag": "Connector Metadata",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12024,7 +12228,7 @@
       "tag": "Private Link Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12105,7 +12309,7 @@
       "tag": "Private Link Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12159,7 +12363,7 @@
       "tag": "Proxy Agent Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12240,7 +12444,7 @@
       "tag": "Proxy Agent Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12294,7 +12498,7 @@
       "tag": "Proxy Agent Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12389,7 +12593,7 @@
       "tag": "Role Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12470,7 +12674,7 @@
       "tag": "System Key Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12551,7 +12755,7 @@
       "tag": "System Key Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12605,7 +12809,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12686,7 +12890,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12740,7 +12944,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12835,7 +13039,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12903,7 +13107,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -12998,7 +13202,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13066,7 +13270,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13175,7 +13379,7 @@
       "tag": "Team Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13243,7 +13447,7 @@
       "tag": "Transformation Projects Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13324,7 +13528,7 @@
       "tag": "Transformation Projects Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13378,7 +13582,7 @@
       "tag": "Transformation Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13501,7 +13705,7 @@
       "tag": "Transformation Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13555,7 +13759,7 @@
       "tag": "Transformation Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13664,7 +13868,7 @@
       "tag": "Transformation Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13718,7 +13922,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13813,7 +14017,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13867,7 +14071,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -13962,7 +14166,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14030,7 +14234,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14125,7 +14329,7 @@
       "tag": "User Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14193,7 +14397,7 @@
       "tag": "Webhook Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {
@@ -14274,7 +14478,7 @@
       "tag": "Webhook Management",
       "public": false,
       "risk": "read",
-      "approval": "always",
+      "approval": "never",
       "idempotency": "safe",
       "parameters": [
         {

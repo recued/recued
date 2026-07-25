@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import {
   createAuditLogStore,
   createCheckpointStore,
@@ -12,6 +12,7 @@ import type { Checkpoint, Commit } from '@recued/contracts';
 import { D165_CONTRACT_SCHEMA, setVendorAliasRegistryResolver } from '@recued/contracts';
 import { getArg } from '../cli/parse.js';
 import type { BootTrace } from '../cli/boot-trace.js';
+import { openDatabase } from '../open-database.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
@@ -23,7 +24,14 @@ import {
 } from '../memory-schema.js';
 import { createEventBus } from '../events/bus.js';
 import { createBundleStore } from '../bundle-store.js';
+import { createServerBundleStore } from '../server-bundle-store.js';
 import { createKeyManager } from '../key-manager.js';
+import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
+import { createFileServerKeyStore } from '../keys/file-store.js';
+import {
+  IDENTITY_PASSPHRASE_ENV_VAR,
+  resolveIdentityKeysPath,
+} from '../identity/boot.js';
 import { resolveLLMConfigFromEnv } from '../llm-env.js';
 import { resolveVaultFromEnv, mergeVault } from '../vault-env.js';
 import {
@@ -31,7 +39,7 @@ import {
   listVaultPublishers,
   loadVaultAsObject,
 } from '../server-vault.js';
-import { createBlobStore } from '../storage/index.js';
+import { createEncryptedBlobStore } from '../storage/index.js';
 import { createSharedStore } from '../storage/shared-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createEnrichmentStore } from '../storage/enrichment-store.js';
@@ -94,7 +102,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = new Database(dbPath);
+  const db = await openDatabase(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   options.bootTrace?.mark('db-opened');
@@ -120,10 +128,23 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   ensureCheckpointSchema(db);
 
   const bundleStore = createBundleStore(db);
+  const serverBundleStore = createServerBundleStore(dbPath);
+  const initialServerBundle = serverBundleStore.load();
   const keys = createKeyManager({
     loadBundle: () => bundleStore.load(),
     saveBundle: (bundle) => bundleStore.save(bundle),
+    loadServerBundle: () => serverBundleStore.load(),
+    initialServerBundle,
+    saveServerBundle: (bundle) => serverBundleStore.save(bundle),
   });
+  if (initialServerBundle) {
+    const passphrase = env[IDENTITY_PASSPHRASE_ENV_VAR];
+    const keyStore = await createFileServerKeyStore({
+      filePath: resolveIdentityKeysPath(dbPath),
+      ...(passphrase ? { passphrase } : {}),
+    });
+    await autoUnlockServerVaultFromKeyfile({ keys, keyStore });
+  }
   const llmSubstrate = composeLlmSubstrate({
     db,
     keys,
@@ -203,12 +224,12 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const blobRoot = join(dirname(resolve(dbPath)), 'blobs');
   const sharedStore = createSharedStore({
     db,
-    blobs: createBlobStore(blobRoot),
+    blobs: createEncryptedBlobStore(blobRoot, keys.keyProvider('blob-store')),
   });
   const formResponseStore = createFormResponseStore(db);
   const annotationStore = createAnnotationStore({
     db,
-    blobs: createBlobStore(blobRoot),
+    blobs: createEncryptedBlobStore(blobRoot, keys.keyProvider('blob-store')),
   });
 
   let executorConfigRef: ServerExecutorConfig | undefined;

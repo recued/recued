@@ -6,7 +6,7 @@
  *  shape (URL / Bearer header / `{user}` body); and the no-fetch short-circuit
  *  on a blank token / id.
  *
- *  Spec: `docs/d-192-kinds-taxonomy.md` §3a (M-1). */
+ *  Spec: D-192 §3a (M-1). */
 
 import { describe, expect, it, vi } from 'vitest';
 

@@ -35,8 +35,8 @@
  *  the AI call + hand the resulting tool_uses to the framework
  *  primitive."
  *
- *  Spec: docs/d-164-prompt-cache-consolidation-pending-design.md § 6
- *  (Batch tool calling — framework affordance); docs/d-160-spec.md
+ *  Spec: D-164 § 6
+ *  (Batch tool calling — framework affordance); D-160
  *  (the framework the primitive ships into). */
 
 /** A single tool_use the framework should dispatch. The framework treats

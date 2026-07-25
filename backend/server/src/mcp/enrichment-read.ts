@@ -45,7 +45,7 @@
  *  LLM dep; `EnrichmentStore` reads are pure SQL. Test ratchet at
  *  P7.D close enforces structurally.
  *
- *  Spec: docs/d-136-spec.md §A.13.3 + §A.13.2 + §A.14.5. */
+ *  Spec: D-136 §A.13.3 + §A.13.2 + §A.14.5. */
 
 import {
   RpcError,

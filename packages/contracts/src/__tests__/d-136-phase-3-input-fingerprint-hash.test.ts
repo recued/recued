@@ -11,7 +11,7 @@
  *      individual hash entries)
  *    - upstream_chain composes single-contributor chain
  *
- *  Spec: `docs/d-136-spec.md` §A.3 + P3 phase plan. */
+ *  Spec: D-136 §A.3 + P3 phase plan. */
 
 import { describe, expect, it } from 'vitest';
 

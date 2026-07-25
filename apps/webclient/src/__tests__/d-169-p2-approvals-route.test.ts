@@ -25,6 +25,11 @@ import {
   APPROVALS_ROUTE_FOCUS_ATTR,
   APPROVALS_ROUTE_EMPTY_ATTR,
   APPROVALS_ROUTE_ERROR_ATTR,
+  APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR,
+  APPROVALS_ROUTE_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+  APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR,
+  APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR,
+  APPROVALS_ROUTE_SUMMARY_ATTR,
   APPROVALS_ROUTE_STYLES,
   APPROVALS_ROUTE_STYLES_MARKER,
   type ApprovalChangedSubscriber,
@@ -45,10 +50,16 @@ import {
   APPROVAL_CARD_STYLES,
   CHAT_PLAN_CARD_ATTR,
   CHAT_PLAN_CARD_ACTION_ATTR,
+  CHAT_PLAN_CARD_CHAT_LINK_ATTR,
+  CHAT_PLAN_CARD_RETRY_NOTICE_ATTR,
+  CHAT_PLAN_CARD_UNAVAILABLE_NOTICE_ATTR,
 } from '@recued/ui-shared/approval-card';
 import { ASKS_PANEL_STYLES } from '../approvals/asks-panel.js';
 import type { AsksListCaller, AsksSubmitAnswerCaller } from '../approvals/asks-panel.js';
-import type { PendingChatPlan } from '../approvals/pending-chat-plans-store.js';
+import type {
+  PendingChatPlan,
+  PendingChatPlanResolution,
+} from '../approvals/pending-chat-plans-store.js';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import type { ServerPendingApproval, ServerPendingAsk } from '@recued/contracts';
 import { RpcError } from '@recued/contracts';
@@ -66,6 +77,7 @@ interface FakeEl {
   type: string;
   disabled: boolean;
   hidden: boolean;
+  focused: boolean;
   attrs: Map<string, string>;
   children: FakeEl[];
   listeners: Map<string, Array<() => void>>;
@@ -75,6 +87,7 @@ interface FakeEl {
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   addEventListener(type: string, fn: () => void): void;
+  focus(): void;
   click(): void;
 }
 
@@ -92,6 +105,7 @@ const makeFakeEl = (tag: string): FakeEl => {
     type: '',
     disabled: false,
     hidden: false,
+    focused: false,
     attrs: new Map(),
     children: [],
     listeners: new Map(),
@@ -117,6 +131,9 @@ const makeFakeEl = (tag: string): FakeEl => {
       const list = el.listeners.get(type) ?? [];
       list.push(fn);
       el.listeners.set(type, list);
+    },
+    focus() {
+      el.focused = true;
     },
     click() {
       if (el.disabled) return;
@@ -642,6 +659,33 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     route.dispose();
   });
 
+  it('does not claim the queue is empty when Chat approvals could not load', async () => {
+    const chatPlans = {
+      list: (): ReadonlyArray<PendingChatPlan> => [],
+      state: () => ({
+        phase: 'error' as const,
+        error: new Error('snapshot unavailable'),
+      }),
+      subscribe: (): (() => void) => () => {},
+    };
+    const { root, route } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [] })),
+      runApprovalSubscribe: vi.fn(async () => ({ approvals: [], seq: 1 })),
+      runList: vi.fn(async () => ({ asks: [] })),
+      chatPlans,
+    });
+    await route.whenLoaded();
+
+    expect(firstByAttr(root, APPROVALS_ROUTE_SUMMARY_ATTR)?.textContent).toBe(
+      "Pending decisions couldn't be verified.",
+    );
+    expect(firstByAttr(root, APPROVALS_ROUTE_EMPTY_ATTR)?.hidden).toBe(true);
+    expect(firstByAttr(root, APPROVALS_ROUTE_ERROR_ATTR)?.textContent).toContain(
+      'snapshot unavailable',
+    );
+    route.dispose();
+  });
+
   it('R20 — merges gate + ask cards into ONE list, newest-first (no sections)', async () => {
     const { root, route } = mountFor({
       runApprovalList: vi.fn(async () => ({
@@ -812,6 +856,7 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     tool: 'mail-send',
     tier: 2,
     args: { to: 'a@b.com' },
+    payload_available: true,
     proposed_at: 1_700_000_000_500,
     ...over,
   });
@@ -820,10 +865,42 @@ describe('R20 — chat plan-approvals in #approvals', () => {
   // route's change listener (production: the chat.plan_proposed/resolved bus).
   const makeFakeChatPlans = (initial: PendingChatPlan[] = []) => {
     let plans: PendingChatPlan[] = [...initial];
+    let resolution: PendingChatPlanResolution | null = null;
     const listeners = new Set<() => void>();
+    const refresh = vi.fn(async (): Promise<void> => {});
+    const notify = (): void => {
+      for (const listener of [...listeners]) listener();
+    };
     return {
       store: {
         list: (): ReadonlyArray<PendingChatPlan> => plans,
+        latestResolution: (): PendingChatPlanResolution | null => resolution,
+        recordResolution: (
+          resolvedPlan: PendingChatPlan,
+          decision: 'approve' | 'reject',
+        ): void => {
+          plans = plans.filter(
+            (candidate) => candidate.plan_id !== resolvedPlan.plan_id,
+          );
+          resolution = {
+            plan_id: resolvedPlan.plan_id,
+            session_id: resolvedPlan.session_id,
+            turn_id: resolvedPlan.turn_id,
+            ...(resolvedPlan.message_id !== undefined
+              ? { message_id: resolvedPlan.message_id }
+              : {}),
+            tool: resolvedPlan.tool,
+            outcome: decision === 'approve' ? 'approved' : 'cancelled',
+            resolved_at: 1_700_000_001_000,
+          };
+          notify();
+        },
+        dismissResolution: (planId: string): void => {
+          if (resolution?.plan_id !== planId) return;
+          resolution = null;
+          notify();
+        },
+        refresh,
         subscribe: (listener: () => void): (() => void) => {
           listeners.add(listener);
           return () => listeners.delete(listener);
@@ -831,8 +908,31 @@ describe('R20 — chat plan-approvals in #approvals', () => {
       },
       set: (next: PendingChatPlan[]): void => {
         plans = next;
-        for (const l of [...listeners]) l();
+        notify();
       },
+      resolve: (
+        planId: string,
+        outcome: PendingChatPlanResolution['outcome'],
+      ): void => {
+        const resolvedPlan = plans.find(
+          (candidate) => candidate.plan_id === planId,
+        );
+        if (resolvedPlan === undefined) return;
+        plans = plans.filter((candidate) => candidate.plan_id !== planId);
+        resolution = {
+          plan_id: resolvedPlan.plan_id,
+          session_id: resolvedPlan.session_id,
+          turn_id: resolvedPlan.turn_id,
+          ...(resolvedPlan.message_id !== undefined
+            ? { message_id: resolvedPlan.message_id }
+            : {}),
+          tool: resolvedPlan.tool,
+          outcome,
+          resolved_at: 1_700_000_001_000,
+        };
+        notify();
+      },
+      refresh,
     };
   };
 
@@ -883,9 +983,72 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     route.dispose();
   });
 
+  it('identifies a fresh retry approval as new permission, not execution', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-fresh', { retry_of_plan_id: 'pl-uncertain' }),
+    ]);
+    const { root, route } = mountWithPlans(chatPlans);
+    await route.whenLoaded();
+
+    const card = collectByAttr(root, CHAT_PLAN_CARD_ATTR)[0]!;
+    expect(card.getAttribute('data-retry-of-plan-id')).toBe('pl-uncertain');
+    const notice = collectByAttr(
+      card,
+      CHAT_PLAN_CARD_RETRY_NOTICE_ATTR,
+    )[0]!;
+    expect(notice.textContent).toContain(
+      'approving this card grants new one-time permission but does not run it',
+    );
+
+    route.dispose();
+  });
+
+  it('keeps an unreadable recovered plan visible and rejectable, never approvable', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-unavailable', {
+        message_id: 'message-review',
+        args: null,
+        payload_available: false,
+      }),
+    ]);
+    const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
+    const { root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
+    await route.whenLoaded();
+
+    const card = collectByAttr(root, CHAT_PLAN_CARD_ATTR)[0]!;
+    expect(
+      collectByAttr(card, CHAT_PLAN_CARD_UNAVAILABLE_NOTICE_ATTR)[0]
+        ?.textContent,
+    ).toContain('cannot be approved');
+    const reviewLink = collectByAttr(
+      card,
+      CHAT_PLAN_CARD_CHAT_LINK_ATTR,
+    )[0]!;
+    expect(reviewLink.getAttribute('href')).toBe(
+      '#chat/session/s1/plan/pl-unavailable/answer/message-review',
+    );
+    expect(planCardAction(root, 'pl-unavailable', 'approve')?.disabled).toBe(
+      true,
+    );
+    expect(planCardAction(root, 'pl-unavailable', 'reject')?.disabled).toBe(
+      false,
+    );
+
+    planCardAction(root, 'pl-unavailable', 'approve')!.click();
+    await tick();
+    expect(runChatPlanResolve).not.toHaveBeenCalled();
+    planCardAction(root, 'pl-unavailable', 'reject')!.click();
+    await tick();
+    expect(runChatPlanResolve).toHaveBeenCalledWith({
+      plan_id: 'pl-unavailable',
+      decision: 'reject',
+    });
+    route.dispose();
+  });
+
   it('Approve → chat.plan.approve, Reject → chat.plan.cancel (via runChatPlanResolve)', async () => {
-    // Two plans so each verb hits a fresh card (a resolved card stays disabled
-    // until its chat.plan_resolved broadcast — see the double-fire test below).
+    // Two plans so each verb hits a fresh pending card before its successful
+    // decision is replaced by the ephemeral handoff receipt.
     const chatPlans = makeFakeChatPlans([plan('pl-a'), plan('pl-b')]);
     const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
     const { root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
@@ -908,8 +1071,10 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     route.dispose();
   });
 
-  it('keeps the plan card disabled after a successful resolve (no double-fire pre-broadcast)', async () => {
-    const chatPlans = makeFakeChatPlans([plan('pl-1')]);
+  it('replaces a successful approval with an exact Chat continuation receipt', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-1', { message_id: 'message-review' }),
+    ]);
     const runChatPlanResolve = vi.fn(async () => ({ ok: true }));
     const { root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
     await route.whenLoaded();
@@ -917,18 +1082,90 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     chatPlanAction(root, 'approve')!.click();
     await tick();
     expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
-
-    // chat.plan_resolved hasn't arrived → the plan is still shown, but the card
-    // stays disabled so a second click can't re-fire approve.
-    const approveBtn = chatPlanAction(root, 'approve');
-    expect(approveBtn?.disabled).toBe(true);
-    approveBtn!.click();
-    await tick();
-    expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
-
-    // The broadcast drops the plan → the card clears + the guard is pruned.
-    chatPlans.set([]);
     expect(collectByAttr(root, CHAT_PLAN_CARD_ATTR)).toHaveLength(0);
+    const receipt = firstByAttr(root, APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR)!;
+    expect(receipt.hidden).toBe(false);
+    expect(receipt.getAttribute('data-outcome')).toBe('approved');
+    expect(
+      collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
+        ?.getAttribute('href'),
+    ).toBe('#chat/session/s1/plan/pl-1/answer/message-review');
+    expect(
+      collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
+        ?.textContent,
+    ).toBe('Continue in Chat');
+    expect(
+      collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
+        ?.focused,
+    ).toBe(true);
+    expect(firstByAttr(root, APPROVALS_ROUTE_EMPTY_ATTR)?.hidden).toBe(true);
+    const announcer = firstByAttr(
+      root,
+      APPROVALS_ROUTE_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+    )!;
+    expect(announcer.getAttribute('role')).toBe('status');
+    expect(announcer.getAttribute('aria-live')).toBe('polite');
+    expect(announcer.textContent).toContain(
+      'Approved once for these exact details. The action has not run.',
+    );
+
+    firstByAttr(
+      root,
+      APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR,
+    )!.click();
+    expect(receipt.hidden).toBe(true);
+    expect(firstByAttr(root, APPROVALS_ROUTE_EMPTY_ATTR)?.hidden).toBe(false);
+    const heading = firstByAttr(root, APPROVALS_ROUTE_HEADING_ATTR)!;
+    expect(heading.getAttribute('tabindex')).toBe('-1');
+    expect(heading.focused).toBe(true);
+
+    route.dispose();
+  });
+
+  it('turns a paired-device rejection into a truthful receipt', async () => {
+    const chatPlans = makeFakeChatPlans([
+      plan('pl-remote', { message_id: 'message-remote' }),
+    ]);
+    const { root, route } = mountWithPlans(chatPlans);
+    await route.whenLoaded();
+
+    chatPlans.resolve('pl-remote', 'cancelled');
+
+    expect(collectByAttr(root, CHAT_PLAN_CARD_ATTR)).toHaveLength(0);
+    const receipt = firstByAttr(root, APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR)!;
+    expect(receipt.getAttribute('data-outcome')).toBe('cancelled');
+    expect(
+      collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
+        ?.textContent,
+    ).toBe('Return to Chat');
+    expect(
+      collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
+        ?.getAttribute('href'),
+    ).toBe('#chat/session/s1/plan/pl-remote/answer/message-remote');
+    expect(firstByAttr(root, APPROVALS_ROUTE_EMPTY_ATTR)?.hidden).toBe(true);
+
+    route.dispose();
+  });
+
+  it('reconciles after a stale resolve failure before leaving the card retryable', async () => {
+    const chatPlans = makeFakeChatPlans([plan('pl-stale')]);
+    const runChatPlanResolve = vi.fn(async () => {
+      throw new Error('already resolved elsewhere');
+    });
+    const { root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
+    await route.whenLoaded();
+    chatPlans.refresh.mockClear();
+
+    chatPlanAction(root, 'approve')!.click();
+    await tick();
+
+    expect(chatPlans.refresh).toHaveBeenCalledTimes(1);
+    expect(collectByAttr(root, CHAT_PLAN_CARD_ATTR)).toHaveLength(1);
+    expect(
+      collectByAttr(root, CHAT_PLAN_CARD_ACTION_ATTR).every(
+        (action) => action.disabled === false,
+      ),
+    ).toBe(true);
 
     route.dispose();
   });

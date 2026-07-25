@@ -59,6 +59,14 @@ export {
   type WsConnect,
   type StdioClientHandle,
   type StdioSpawn,
+  type McpStreamProbeResult,
+  probeMcpStreamTools,
+  MCP_TOOL_LIST_PROBE_MAX_PAGES,
+  type McpToolListPageResult,
+  parseMcpToolListPage,
+  type StdioMcpLaunchSpec,
+  type StdioMcpLaunchSpecResult,
+  resolveStdioMcpLaunchSpec,
 } from './connection-mcp.js';
 export {
   createConnectionNotificationHandler,

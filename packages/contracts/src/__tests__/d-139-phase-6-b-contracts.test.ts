@@ -24,7 +24,7 @@
  *    - Launch-flag constant `CRM_COMMITMENT_TRACKER_LAUNCH_FLAG`
  *      matches the spec § P6.B sequencing literal.
  *
- *  Spec: docs/d-139-spec.md § A.9.2c + § A.9.5 + § P6.B acceptance. */
+ *  Spec: D-139 § A.9.2c + § A.9.5 + § P6.B acceptance. */
 
 import { describe, expect, it } from 'vitest';
 

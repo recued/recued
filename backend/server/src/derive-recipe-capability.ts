@@ -33,7 +33,7 @@
  *  makes the grant closure honest, it is checkable, and it holds for any recipe in any
  *  domain.
  *
- *  Pure: no I/O, no clock. Spec: `docs/d-207-spec.md` §5.1a / §5.1d. */
+ *  Pure: no I/O, no clock. Spec: D-207 §5.1a / §5.1d. */
 
 import type { RecipeDefinition } from '@recued/contracts';
 

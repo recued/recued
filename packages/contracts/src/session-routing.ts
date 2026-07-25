@@ -61,7 +61,7 @@
  *  — `RoutingClassifierInput`, `RoutingClassification`, the
  *  `RoutingClassifier` slot type, the `RoutingDisposition` closed list
  *  — but no classifier *implementation*: there is no `classifyRouting`
- *  function. Per the 2026-05-19 cognition downscope (recued-bench Path
+ *  function. Per the 2026-05-19 cognition downscope (internal benchmarks Path
  *  B Stage 4 verdict; cognition is pluggable, DEFAULT DISABLED) no
  *  cognition component runs in the default Recued runtime. What the
  *  substrate *does* ship for routing is the deterministic envelope:
@@ -113,7 +113,7 @@
  *  No tests in this file per the test-after-review workflow; tests
  *  land in a separate post-review step.
  *
- *  Spec: docs/d-153-spec.md § Routing — what happens when a new
+ *  Spec: D-153 § Routing — what happens when a new
  *  message arrives (lines 553-573); phase plan line 653; open
  *  questions #16 (input-pool cap shape) + #19 (lifecycle event
  *  broadcast). */

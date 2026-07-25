@@ -19,10 +19,11 @@
  *  calendar provider. The redacted packet substrate enforces the
  *  ceiling; this handler only consumes the redacted payload.
  *
- *  Spec: docs/d-149-spec.md § A.5.2 + § Must Hold I-12. */
+ *  Spec: D-149 § A.5.2 + § Must Hold I-12. */
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
 import {
   computeFreeWindows,
   type AvailabilityRawCalendarEvent,
@@ -80,9 +81,10 @@ const writeHtmlResponse = (res: ServerResponse, body: string, status = 200): voi
 // ────────────────────────────────────────────────────────────────
 
 /** Per-issued form-nonce stamp. The POST /book handler consumes
- *  these once + cross-checks against the registry. Keys are
- *  `${endpoint_id}|${form_nonce}`; values are the unix-ms stamp the
- *  GET handler issued the nonce at. */
+ *  these once + cross-checks against the registry. Backed by the shared
+ *  bounded store (`bounded-nonce-store.ts`), which keys on the nonce itself
+ *  and compares `endpoint_id` as a value — so a scope containing the old
+ *  `|` delimiter cannot collide with another. */
 export interface SchedulingFormNonceStore {
   /** Issue a fresh nonce + return the encoded form-nonce. */
   issue(endpoint_id: string, now: number): string;
@@ -96,24 +98,18 @@ export interface SchedulingFormNonceStore {
  *  loading the page. */
 export const SCHEDULING_FORM_NONCE_TTL_MS = 30 * 60 * 1000;
 
-const NONCE_BYTES = 24;
 
+/** ⚠ NO `maxPerScope`: the scope is `endpoint_id`, shared by every concurrent
+ *  visitor to that booking page. A per-scope cap here would let the Nth visitor
+ *  evict the first visitor's nonce. See `bounded-nonce-store.ts`. */
 export const createInMemorySchedulingFormNonceStore = (): SchedulingFormNonceStore => {
-  const inner = new Map<string, number>();
+  const store = createBoundedNonceStore<null>({
+    ttlMs: SCHEDULING_FORM_NONCE_TTL_MS,
+  });
   return {
-    issue(endpoint_id, now) {
-      const nonce = randomBytes(NONCE_BYTES).toString('hex');
-      inner.set(`${endpoint_id}|${nonce}`, now);
-      return nonce;
-    },
-    consume(endpoint_id, nonce, now) {
-      const key = `${endpoint_id}|${nonce}`;
-      const stamp = inner.get(key);
-      if (stamp === undefined) return false;
-      inner.delete(key);
-      if (now - stamp > SCHEDULING_FORM_NONCE_TTL_MS) return false;
-      return true;
-    },
+    issue: (endpoint_id, now) => store.issue(endpoint_id, now, null),
+    consume: (endpoint_id, nonce, now) =>
+      store.consume(endpoint_id, nonce, now) !== null,
   };
 };
 

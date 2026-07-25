@@ -25,6 +25,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isTypeScriptSourceOrTsx } from '../../../../test/source-file-extensions.js';
 
 const RECEPTION_ROOT = resolve(__dirname, '..', 'ports', 'reception');
 
@@ -74,7 +75,7 @@ const collectTsFiles = (dir: string): string[] => {
     }
     if (st.isDirectory()) {
       out.push(...collectTsFiles(path));
-    } else if (entry.endsWith('.ts') || entry.endsWith('.tsx')) {
+    } else if (isTypeScriptSourceOrTsx(entry)) {
       out.push(path);
     }
   }

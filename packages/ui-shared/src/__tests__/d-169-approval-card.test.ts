@@ -23,8 +23,11 @@ import {
   APPROVAL_CARD_STATUS_ATTR,
   type ApprovalCardModel,
   ASK_CARD_ATTR,
+  ASK_CARD_CONFIRM_ATTR,
+  ASK_CARD_DETAILS_ATTR,
   ASK_CARD_OPTION_ATTR,
   ASK_CARD_ERROR_ATTR,
+  ASK_CARD_SUMMARY_ATTR,
   type AskCardModel,
 } from '../approval-card/card.js';
 
@@ -181,6 +184,73 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     walk(withBlank);
     expect(allText.has('   ')).toBe(false);
     expect(allText.has('Approve sending the email?')).toBe(true);
+  });
+
+  it('projects generated write asks into a concise summary with collapsed technical details', () => {
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: [
+        'Recipe send-email wants to run mail-send on primary-mail (step send).',
+        'Write actions change data outside Recued, so Recued held it for you.',
+        '',
+        'Reason: outbound send requires approval',
+        '',
+        '  to: sam@example.test',
+        '  subject: Renewal update',
+        '  body: The revised proposal is ready.',
+        '  metadata.internal_id: opaque-1',
+        '',
+        'Approve?',
+      ].join('\n'),
+    }), () => {});
+
+    expect(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)).toHaveLength(1);
+    expect(collectByAttr(card, ASK_CARD_DETAILS_ATTR)).toHaveLength(1);
+    const renderedText: string[] = [];
+    const walk = (el: FakeEl): void => {
+      if (el.textContent) renderedText.push(el.textContent);
+      el.children.forEach(walk);
+    };
+    walk(card);
+    expect(renderedText).toContain('Approve write action');
+    expect(renderedText).toContain('sam@example.test');
+    expect(renderedText).toContain('Renewal update');
+    expect(renderedText).toContain('Internal id');
+  });
+
+  it('projects generated write asks that do not name a connection target', () => {
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: [
+        'Recipe send-email wants to run mail-send (step send).',
+        'Write actions change data outside Recued, so Recued held it for you.',
+        '',
+        '  to: sam@example.test',
+        '  subject: Renewal update',
+        '',
+        'Approve?',
+      ].join('\n'),
+    }), () => {});
+
+    expect(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)).toHaveLength(1);
+    expect(collectByAttr(card, ASK_CARD_DETAILS_ATTR)).toHaveLength(1);
+  });
+
+  it('requires a deliberate second click for an approving write answer', () => {
+    const onAnswer = vi.fn();
+    const card = render(model({ title: 'Approve mail-send (write)' }), onAnswer);
+    const buttons = optionButtons(card);
+    const confirm = collectByAttr(card, ASK_CARD_CONFIRM_ATTR)[0]!;
+
+    buttons[0]!.click();
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(buttons[0]!.textContent).toBe('Confirm Send');
+    expect(confirm.hidden).toBe(false);
+
+    buttons[0]!.click();
+    expect(onAnswer).toHaveBeenCalledWith('yes');
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(buttons[1]!.className).toContain('rx-ask-card-btn--reject');
   });
 
   it('fires onAnswer with the chosen option id on click', () => {

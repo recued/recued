@@ -53,7 +53,7 @@
  *  (no connection store / mail collection). `start()` logs + no-ops; the
  *  bus is never subscribed, so nothing fires.
  *
- *  Spec: docs/d-158-spec.md § P2 / A.4 / I-9; leaf: `channels/email.ts`
+ *  Spec: D-158 § P2 / A.4 / I-9; leaf: `channels/email.ts`
  *  (`extractAskId` / `parseEmailReply`); outbound peer: `wire-email-channel.ts`. */
 
 import {

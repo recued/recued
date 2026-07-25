@@ -68,6 +68,7 @@ export const SALT_LEN = 16;
  *  into the other. Per-pair only; never broadcast cross-cloud (D-097
  *  / D-168 — chat history stays local to the paired server). */
 export type SubDEKDomain =
+  | 'database'
   | 'server-data'
   | 'blob-store'
   | 'ext-cache'

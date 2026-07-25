@@ -56,6 +56,7 @@ const makeOptions = (): StartRetentionPrunersOptions =>
     // the missing-store gate, so the delegation tests pass undefined.
     checkpointStore: undefined,
     auditLog: undefined,
+    executionCaseLifecycle: undefined,
     notificationBlock: undefined,
   });
 

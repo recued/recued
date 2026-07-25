@@ -10,7 +10,7 @@
  *  to mint that refresh token live on the provider (`authorize_params`),
  *  not the form.
  *
- *  Spec: `docs/unified-pack-exploration/smb-finance-wedge.spec.md` §4. */
+ *  Spec: internal design notes §4. */
 
 import {
   GOOGLE_DRIVE_API_BASE,

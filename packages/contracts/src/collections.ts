@@ -160,13 +160,13 @@ export interface CollectionHealth {
    *  across the day boundary. */
   error_count_24h: number;
   state: CollectionState;
-  /** Phase 7 (D-110) — per-instance authentication state. Independent
-   *  from `state` because a mail / file instance can sit with an
-   *  expired OAuth token while the adapter itself is quiescent. The
-   *  extension's Server → Collections card renders this alongside
-   *  `state` so the re-auth CTA surfaces without waiting for the next
-   *  tick. Optional on the wire for backward compatibility — Phase D
-   *  collections that haven't been re-emitted carry no value. */
+  /** Phase 7 (D-110) — per-instance authentication/configuration state,
+   *  independent from `state` because a credential-backed collection can be
+   *  expired or unauthorized while its adapter is quiescent. D-110 file
+   *  adapters themselves are local/storage-only; OAuth cloud providers use
+   *  connection-backed D-192 Sources. Optional on the wire for backward
+   *  compatibility — Phase D collections that have not been re-emitted carry
+   *  no value. */
   auth_state?: CollectionAuthState;
   /** D-117 — events in the warehouse within the current expansion
    *  window. Present only when `platform === 'calendar'`; consumers
@@ -234,10 +234,12 @@ export interface FileCollectionCaps {
    *  as pointers into the source and the collection carries metadata
    *  only. */
   mirror: 'optional' | 'required' | 'disabled';
-  /** Credential style. `'keys'` covers S3-style access/secret pairs;
-   *  `'oauth'` is token-refresh-based (Dropbox, Google Drive when
-   *  they land); `'none'` is for adapters that rely on the host
-   *  process identity (`fs`, `ext-downloads`). */
+  /** Credential style. D-110 file adapters permit `'keys'` (S3-style
+   *  access/secret pairs) or `'none'` (host identity for `fs` and
+   *  `ext-downloads`). The file registry rejects `'oauth'`: OAuth providers
+   *  use connection-backed D-192 Sources and packs. The OAuth member remains
+   *  in this shared legacy shape because pre-unification mail/webhook rows use
+   *  `FileCollectionCaps` as their placeholder caps. */
   auth: 'none' | 'oauth' | 'keys';
   /** How the adapter names records. Consumers (recipes, kernel
    *  ingredients) normalise paths against this — an `fs` `posix`
@@ -278,8 +280,8 @@ export interface FileRecordStat {
  *
  *  Values are intentionally narrow so the Server → Collections card
  *  can render each as a discrete pill. Transitions are non-linear:
- *  a `healthy` OAuth instance can move directly to `expired` on the
- *  next refresh failure without an intermediate `degraded` state.
+ *  a `healthy` credential-backed instance can move directly to `expired` on
+ *  its next credential check without an intermediate `degraded` state.
  *
  *  Effective caps at dispatch time are `caps AND auth_state ===
  *  'healthy'` — any other state shorts every write + delete to a
@@ -295,8 +297,10 @@ export type CollectionAuthState =
  *  Every string that ships in a DB row must parse to one of these. We
  *  keep it closed: new adapters require an upstream contribution so
  *  we can audit the probe + security posture; plugin adapters are
- *  explicitly non-goal per D-110. Kept in `contracts` so the
- *  extension UI + server validator share the same canonical list. */
+ *  explicitly non-goal per D-110. OAuth-provider connections are excluded:
+ *  they register D-192 Sources and use installed packs for operations. Kept
+ *  in `contracts` so the extension UI + server validator share the same
+ *  canonical list. */
 export type FileAdapterType = 'fs' | 's3' | 'ext-downloads';
 
 /** D-117 — union of every per-platform capability shape. Calendar

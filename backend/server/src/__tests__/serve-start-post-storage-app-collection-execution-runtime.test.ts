@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { stripSourceComments } from './helpers/source-guards.js';
+import { resolveServerBundlePath } from '../server-bundle-store.js';
 
 const bridgeMocks = vi.hoisted(() => ({
   composeStorageContext: vi.fn(),
@@ -275,6 +276,9 @@ describe('startPostBaseStorageVaultRuntime', () => {
       order.push('app');
       expect(actualOptions.db).toBe(db);
       expect(actualOptions.dbPath).toBe(options.base.dbPath);
+      expect(actualOptions.serverBundleStore.path).toBe(
+        resolveServerBundlePath(options.base.dbPath),
+      );
       expect(actualOptions.recipeStore).toBe(storage.recipeStore);
       expect(actualOptions.chatLateBound).toBe(lateBound);
       return app;
@@ -555,6 +559,9 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
     expect(helperSource).toMatch(/options\.backgroundServices \?\? defaultBackgroundServices/);
     expect(helperSource).toMatch(/options\.schedulerRegistry \?\? defaultSchedulerRegistry/);
     expect(helperSource).toMatch(/startPostBaseStorageVaultRuntime/);
+    expect(helperSource).toMatch(/reconcileServerBundleSwap\(base\.dbPath, /);
+    expect(helperSource).toMatch(/createServerBundleStore\(base\.dbPath\)/);
+    expect(helperSource).toMatch(/serverBundleStore\.load\(\)/);
     expect(helperSource).toMatch(/await composeStorageContext\(\{/);
     expect(helperSource).toMatch(/await startPostStorageAppCollectionExecutionRuntime\(\{/);
     expect(helperSource).toMatch(/compose-app-context\.js/);
@@ -572,6 +579,13 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
     const postAppBridgeSource = readFileSync(postAppBridgePath, 'utf8');
 
     const storageIndex = helperSource.indexOf('await composeStorageContext({');
+    const bundleRecoveryIndex = helperSource.indexOf(
+      'reconcileServerBundleSwap(base.dbPath,',
+    );
+    const bundleSidecarIndex = helperSource.indexOf(
+      'createServerBundleStore(base.dbPath)',
+    );
+    const bundleLoadIndex = helperSource.indexOf('serverBundleStore.load()');
     const vaultInitIndex = helperSource.indexOf(
       "base.bootTrace.mark('vault-init-start')",
     );
@@ -587,6 +601,12 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
       'composeCollectionContext(options.collection)',
     );
 
+    expect(bundleRecoveryIndex).toBeGreaterThanOrEqual(0);
+    expect(bundleSidecarIndex).toBeGreaterThan(bundleRecoveryIndex);
+    expect(bundleLoadIndex).toBeGreaterThan(bundleSidecarIndex);
+    expect(storageIndex).toBeGreaterThan(bundleLoadIndex);
+    expect(bundleSidecarIndex).toBeGreaterThanOrEqual(0);
+    expect(storageIndex).toBeGreaterThan(bundleSidecarIndex);
     expect(storageIndex).toBeGreaterThanOrEqual(0);
     expect(vaultInitIndex).toBeGreaterThan(storageIndex);
     expect(postStorageIndex).toBeGreaterThan(storageIndex);

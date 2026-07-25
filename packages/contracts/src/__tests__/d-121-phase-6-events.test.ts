@@ -61,6 +61,7 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // (per-pair global chat-model default changed; non-session-scoped,
       // re-renders every non-overridden session's badge + Settings).
       'chat.connection_mcp_annotation_changed',
+      'chat.data_diagnosis_resolved',
       'chat.default_model_pref_changed',
       'chat.disambiguation_proposed',
       'chat.inbound_token_changed',

@@ -31,7 +31,7 @@
  *  rpc only surfaces packs the user can act on, so a broken manifest
  *  would render an Install button the user could never resolve.
  *
- *  Spec: `docs/d-145-spec.md` § PA10 (pack-shipped Standing
+ *  Spec: D-145 § PA10 (pack-shipped Standing
  *  Instructions). */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -48,6 +48,7 @@ import {
 } from '@recued/contracts';
 
 import { getInstalledPack, isPackInstalledAtVersion, listInstalledPacks } from './pack-inventory.js';
+import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { ContractStore } from './storage/contract-store.js';
 import type { WsClient } from './ws-server.js';
@@ -140,7 +141,9 @@ export const listInstalledPackManifests = (
  *  row at the SAME `version` the manifest pinned — version drift on
  *  any recipe flips `installed` back to false, so the Settings UI
  *  surfaces the Install button + a manifest re-install picks up the
- *  new recipe versions.
+ *  new recipe versions. When inventory proves a NEWER pack is already
+ *  installed, the older bundled manifest is treated as satisfied rather than
+ *  exposing a downgrade action.
  *
  *  Codex review fold (twin packs P1) — ownership-aware check. Vendor
  *  twin packs (`recued-core.hubspot` / `recued-core.salesforce` share
@@ -166,45 +169,64 @@ export const listInstalledPackManifests = (
  *  37/47 EMPTY-`recipes[]` v2 packs (composition / CLI / workflow):
  *  `recipes.length > 0` short-circuits them to a permanent
  *  `installed: false`, hiding their installed state. So:
- *    - recipe-bearing pack (`recipes.length > 0`) → the recipe check
- *      (UNCHANGED — twins, version drift, manual-install all preserved);
- *    - empty-recipes pack → the `installed_pack` inventory registry
- *      AT the manifest version (`isPackInstalledAtVersion`), the
+ *    - recipe-bearing pack (`recipes.length > 0`) → the recipe check remains
+ *      the ownership authority (twins/manual installs preserved), AND when an
+ *      installed-pack inventory row exists its version must be this incoming
+ *      version or newer;
+ *      this catches metadata/composition-only pack bumps whose recipe pins did
+ *      not change (D-211 Slice 5's update review would otherwise stay hidden);
+ *    - empty-recipes pack → the `installed_pack` inventory registry at this
+ *      manifest version OR NEWER, the
  *      canonical signal for them (the composition provisioner /
  *      `packs.install` rpc / boot wire all record a version-stamped row).
- *      Version-matched so a bumped-on-disk pack re-shows Install, exactly
- *      like the recipe branch's drift detection. Absent contract store
+ *      Direction-aware so a bumped-on-disk pack re-shows Install while an
+ *      older bundle never offers to downgrade a newer install. Absent contract store
  *      (dbless) → `false`, the prior behavior.
- *  This is strictly narrower than a registry-OR-recipe-check union,
- *  which would double-count and mark BOTH twins installed. */
+ *  The inventory check is a conjunction, never a registry-OR-recipe-check
+ *  union, so it cannot double-count and mark BOTH twins installed. An absent
+ *  inventory row preserves the legacy recipe-only result. */
 const projectManifest = (
   manifest: BulkPackManifest,
   recipeStore: RecipeStore,
   contractStore: ContractStore | undefined,
 ): PackListEntry => {
+  const installedPack = contractStore === undefined
+    ? null
+    : getInstalledPack(contractStore, manifest.slug);
+  const recipesInstalled = manifest.recipes.length > 0
+    && manifest.recipes.every((ref) => {
+      const stored = recipeStore.getStored(ref.slug);
+      return (
+        stored !== null
+        && stored.version === ref.version
+        && stored.pack_slug === manifest.slug
+      );
+    });
+  const ownsRecipeContent = manifest.recipes.length > 0
+    && recipeStore.listForPack(manifest.slug).length > 0;
+  const newerInstalledPack = installedPack?.version !== undefined
+    && installedPack.version > manifest.version;
   const installed =
     manifest.recipes.length > 0
-      ? manifest.recipes.every((ref) => {
-          const stored = recipeStore.getStored(ref.slug);
-          return (
-            stored !== null
-            && stored.version === ref.version
-            && stored.pack_slug === manifest.slug
-          );
-        })
-      : contractStore !== undefined
-        && isPackInstalledAtVersion(contractStore, manifest.slug, manifest.version);
+      ? newerInstalledPack
+        ? ownsRecipeContent
+        : recipesInstalled
+          && (
+            installedPack === null
+            || installedPack.version === manifest.version
+          )
+      : installedPack !== null
+        && installedPack.version !== undefined
+        && installedPack.version >= manifest.version;
   // D-182 — is the pack genuinely installed IGNORING the version (owned at ANY
   // version), as distinct from `installed` (owned AT the disk-manifest version)?
-  // The two diverge when a bundled pack is installed at a DIFFERENT version than
-  // the server's bundle — most often the marketplace version is HIGHER than the
-  // server bundle (the catalog is re-seeded from `community/packs` on marketplace
-  // deploy; a user's server bundles `community/packs` at its release, which lags).
-  // Then `installed` is false (version mismatch) but the pack IS installed; the
-  // Discover join needs this to keep showing "installed"/"update" (via the
-  // inventory's real version) rather than flipping to "available". Ownership (not
-  // just presence) keeps a STALE vendor-twin row — whose recipes another pack
-  // owns — from reading as installed.
+  // The two diverge when a pack owns content but does not satisfy the incoming
+  // manifest (most importantly: installed version LOWER than incoming, or recipe
+  // refs replaced). A HIGHER installed version satisfies an older bundle so the
+  // panel never offers a downgrade; `installed_versions` still carries the real
+  // version for Discover's marketplace compare. Ownership (not just presence)
+  // keeps a STALE vendor-twin row — whose recipes another pack owns — from
+  // reading as installed.
   // Probe the ACTUALLY-OWNED rows (`listForPack`), NOT the disk manifest's recipe
   // refs: a higher marketplace version can add / drop / REPLACE recipe slugs, so
   // the installed rows may share NO slug with the (lagging) disk manifest —
@@ -213,9 +235,12 @@ const projectManifest = (
   // any version" (a stale twin owns none of its shared recipes -> false).
   const installedAnyVersion =
     manifest.recipes.length > 0
-      ? recipeStore.listForPack(manifest.slug).length > 0
-      : contractStore !== undefined
-        && getInstalledPack(contractStore, manifest.slug) !== null;
+      ? ownsRecipeContent
+      : installedPack !== null;
+  const ownerOperationReview =
+    contractStore !== undefined && installedAnyVersion && !installed
+      ? reviewOwnerOperationsForPackUpdate(contractStore, manifest)
+      : [];
   return {
     slug: manifest.slug,
     publisher: manifest.publisher,
@@ -225,6 +250,9 @@ const projectManifest = (
     pre_install: manifest.pre_install === true,
     installed,
     installed_any_version: installedAnyVersion,
+    ...(ownerOperationReview.length > 0
+      ? { owner_operation_review: ownerOperationReview }
+      : {}),
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
     body_visibility_grant_count:

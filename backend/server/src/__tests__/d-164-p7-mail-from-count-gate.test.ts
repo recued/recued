@@ -89,6 +89,7 @@ describe('D-164 P7 backend mail from-count lookup', () => {
     const out = await probeMail(() => registry(fakeMail(() => 3)));
     expect(out?.data).toEqual({
       name: 'Pat Lee',
+      count: '3',
       count_phrase: '3 emails',
     });
   });
@@ -127,7 +128,7 @@ describe('D-164 P7 backend mail from-count lookup', () => {
       ),
     );
     expect(seen.sort()).toEqual(['pat@old.com', 'pat@x.com']);
-    expect(out?.data).toEqual({ name: 'Pat Lee', count_phrase: '5 emails' });
+    expect(out?.data).toEqual({ name: 'Pat Lee', count: '5', count_phrase: '5 emails' });
   });
 
   it('defers (null) when ANY linked address is non-ASCII — a partial count would undercount the person total', async () => {
@@ -259,7 +260,7 @@ describe('D-164 P7 backend mail from-count — sender-only over a real MailColle
       { from: 'PAT@X.COM', to: ['other@x.com'] }, // Pat (caps) as sender — counts (ASCII-folded)
     ]);
     const out = await probeMail(() => registry(collection));
-    expect(out?.data).toEqual({ name: 'Pat Lee', count_phrase: '2 emails' });
+    expect(out?.data).toEqual({ name: 'Pat Lee', count: '2', count_phrase: '2 emails' });
   });
 
   it('sums sender mail across a MERGED-AWAY address over the real table (person-scoped total)', async () => {
@@ -275,7 +276,7 @@ describe('D-164 P7 backend mail from-count — sender-only over a real MailColle
         { 'pat@x.com': ['pat@old.com'] },
       ),
     );
-    expect(out?.data).toEqual({ name: 'Pat Lee', count_phrase: '2 emails' });
+    expect(out?.data).toEqual({ name: 'Pat Lee', count: '2', count_phrase: '2 emails' });
   });
 
   it('defers (null) when the contact appears ONLY as a recipient (zero sender count)', async () => {

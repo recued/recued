@@ -31,9 +31,9 @@
  *      close memo § decision 5).
  *    - Re-enrollment under the same connection name finds the
  *      PushTopics still present and short-circuits the SOAP path.
- *      Documented in `docs/deploy.md` (P5.2).
+ *      Documented in internal design notes (P5.2).
  *
- *  Spec: `docs/d-130-spec.md` § A.4 + § Phase 5. */
+ *  Spec: D-130 § A.4 + § Phase 5. */
 
 import {
   SALESFORCE_ACCOUNT_FIELDS,

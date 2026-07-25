@@ -78,10 +78,20 @@ const firstPartyRegistryWithPromptCache = (deps: GateDeps): MiddlewareRegistry =
   return registry;
 };
 
-// D-187 — the matrix `(messenger, user_self)` cell is retired; a no-op scan
-// stands in to show the short-circuit read authorization ignores any store
-// overlay for the owner (owner reads are never-class — always admit).
+// D-187 — the retired matrix contributes no row. D-211 may still return one
+// actorless exact-operation owner default from this same scan seam.
 const ignoredScan: ScanFn = () => [];
+const globalHoldScan: ScanFn = (scope, prefix) =>
+  scope === 'owner_operation'
+    && prefix.join('/') === 'recued/prompt-cache-short-circuit-read/recued/prompt-cache-short-circuit-read'
+    ? [{
+        segments: [
+          'recued/prompt-cache-short-circuit-read',
+          'recued/prompt-cache-short-circuit-read',
+        ],
+        value: { approval: 'always' },
+      }]
+    : [];
 
 interface CapturedSend {
   recipient: string;
@@ -213,26 +223,30 @@ describe('D-164 P10 createShortCircuitReadAuthorization unit pins', () => {
     expect(createShortCircuitReadAuthorization()('voice-call' as never)).toBe(false);
   });
 
-  it('D-187: ignores a throwing contract-scan getter — the read short-circuit is scan-independent now', () => {
-    // D-187 slice 4 — the seam no longer consults `getContractScan` (the matrix is
-    // retired). An unrestricted user_self read is authorized by op-risk (read → never →
-    // admit), so a broken contract store no longer fails the short-circuit closed.
+  it('fails the deterministic short-circuit closed when global owner defaults cannot be read', () => {
     const authorize = createShortCircuitReadAuthorization(() => {
       throw new Error('contract store unavailable');
     });
-    expect(authorize('messenger-slack')).toBe(true);
+    expect(authorize('messenger-slack')).toBe(false);
   });
 
-  it('D-187: a store-edited messenger cell no longer denies the OWNER reads — owner reads always admit', () => {
+  it('D-187: a legacy messenger policy cell no longer denies owner reads', () => {
     // D-187 slice 4 — the matrix is retired; the seam authorizes an unrestricted user_self
-    // read by op-risk (read → never → admit), so a store-edited cell can no longer lock
-    // down the OWNER's own reads through this seam. Access control is for CONTRACTED actors;
-    // the owner is fully trusted for their own warehouse. The (ignored) deny scan is passed
-    // to show it has no effect.
+    // read by op-risk (read → never → admit), so a retired matrix cell cannot lock
+    // down the owner's own reads. D-211's separate global exact-op row is covered
+    // below. The empty scan here shows the retired cell contributes nothing.
     const authorize = createShortCircuitReadAuthorization(() => ignoredScan);
 
     expect(authorize('messenger-slack')).toBe(true);
     expect(authorize('chat')).toBe(true);
+  });
+
+  it('applies the same global owner approval to chat and messenger short-circuit reads', () => {
+    const authorize = createShortCircuitReadAuthorization(() => globalHoldScan);
+
+    expect(authorize('chat')).toBe(false);
+    expect(authorize('messenger-slack')).toBe(false);
+    expect(authorize('messenger-telegram')).toBe(false);
   });
 
   it('always attaches the deps-level authorizer instead of relying on chat-only fallback', () => {

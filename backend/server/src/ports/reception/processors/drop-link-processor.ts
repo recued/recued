@@ -78,7 +78,7 @@
  *  marked processed — only the contact edge is withheld. We never use the
  *  visitor email to find a DIFFERENT contact (D-149 N.6 / I-9).
  *
- *  Spec: docs/d-172-spec.md § A.5 / N.3 / I-1 / I-2; docs/d-149-spec.md
+ *  Spec: D-172 § A.5 / N.3 / I-1 / I-2; D-149
  *  § A.5.4 / N.6 / I-9 / Must Hold I-12. */
 
 import { canonicalizeEmail, type DropLinkConfig } from '@recued/contracts';

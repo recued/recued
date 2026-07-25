@@ -39,7 +39,7 @@
  *  `@recued/middleware` (the framework). The framework MUST NOT import
  *  it back — a framework never imports a bundle.
  *
- *  See: docs/d-164-prompt-cache-consolidation-pending-design.md
+ *  See: D-164
  *  § 1 The middleware / § 2 Intention router / § 3 The deterministic
  *  gate / § Packaging.
  */
@@ -71,6 +71,7 @@ export {
   parseReferentList,
   type AnaphoraRewriteInput,
   createContactAttributePresenceProbe,
+  createContactAttributeListPresenceProbe,
   createCalendarNextMeetingProbe,
   createContactHasEmailProbe,
   createMailFromCountProbe,
@@ -79,13 +80,20 @@ export {
   type CalendarNextMeeting,
   type CalendarNextMeetingLookup,
   type ContactAttributeLookup,
+  type ContactAttributeReference,
   type ContactAttributeRow,
+  type ContactAttributeListProbeDescriptor,
   type DataPresenceProbe,
   type DataPresenceQuery,
   type DataSnapshot,
   type GateDeps,
   type HasCrmContactSource,
+  type KnownEntityNameLookup,
+  type KnownEntityNameCandidate,
+  type KnownEntityNameProposal,
+  type KnownEntityReferenceEvidence,
   type MailFromCountLookup,
+  type NoEmailTemplateSelector,
   type GateOutcome,
   type GatePassThroughReason,
   type ShortCircuitFamily,
@@ -97,15 +105,27 @@ export {
 export {
   createTemplateRenderer,
   matchContactAttributeTemplate,
+  matchContactAttributeListTemplate,
   matchCalendarNextMeetingTemplate,
   matchMailFromCountTemplate,
   matchContactHasEmailTemplate,
   CONTACT_ATTRIBUTE_TEMPLATES,
+  CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE,
+  CONTACT_ATTRIBUTE_LIST_MAX,
+  CONTACT_ATTRIBUTE_LIST_MIN,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATE_DESCRIPTORS,
+  CONTACT_ATTRIBUTE_LIST_TEMPLATES_BY_LOCALE,
   CALENDAR_NEXT_MEETING_TEMPLATE,
+  CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE,
   MAIL_FROM_COUNT_TEMPLATE,
+  MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE,
   CONTACT_HAS_EMAIL_TEMPLATE,
+  CONTACT_HAS_EMAIL_TEMPLATES_BY_LOCALE,
   CONTACT_HAS_NO_EMAIL_TEMPLATE,
+  CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE,
+  resolveContactHasNoEmailTemplate,
   type ContactAttribute,
+  type ContactAttributeListTemplateDescriptor,
 } from './templates/index.js';
 
 export {
@@ -128,6 +148,10 @@ export {
   type PrefetchCandidate,
   type PrefetchDeps,
 } from './prefetch/index.js';
+
+/** Public deterministic NER seam for consumers that need the same slot and
+ * locale semantics as the prompt-cache gate (D-214 graded retrieval). */
+export { extract as extractPromptCacheNer } from './ner/index.js';
 
 /** The stable middleware id — registry key + `PromptPart.source` stamp. */
 export const PROMPT_CACHE_MIDDLEWARE_ID = 'prompt-cache';

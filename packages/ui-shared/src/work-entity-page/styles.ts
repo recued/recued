@@ -113,6 +113,27 @@ export const WORK_ENTITY_PAGE_STYLES = `
   color: var(--rx-fg, var(--fg));
   font: inherit;
 }
+.work-entity-list-search {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+}
+.work-entity-list-filter-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 150px;
+  font-size: 12px;
+  color: var(--rx-muted, var(--fg-muted));
+}
+.work-entity-list-filter {
+  padding: 6px 8px;
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 4px;
+  background: var(--rx-input-bg, var(--surface));
+  color: var(--rx-fg, var(--fg));
+  font: inherit;
+}
 
 .work-entity-list {
   list-style: none;
@@ -168,6 +189,94 @@ export const WORK_ENTITY_PAGE_STYLES = `
   text-align: center;
   color: var(--rx-muted, var(--fg-muted));
 }
+
+.work-entity-booking-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px;
+}
+.work-entity-booking-detail-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.work-entity-booking-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.work-entity-booking-back,
+.work-entity-booking-manage,
+.work-entity-booking-edit {
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 6px;
+  padding: 7px 11px;
+  background: var(--rx-input-bg, var(--surface));
+  color: var(--rx-fg, var(--fg));
+  cursor: pointer;
+  font: inherit;
+}
+.work-entity-booking-edit {
+  border-color: var(--rx-accent, var(--accent));
+  background: var(--rx-accent, var(--accent));
+  color: var(--on-accent);
+}
+.work-entity-booking-manage:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+.work-entity-booking-manage-notice {
+  margin: -8px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--rx-muted, var(--fg-muted));
+}
+.work-entity-booking-manage-notice--error {
+  color: var(--rx-danger, var(--danger));
+}
+.work-entity-booking-detail h1,
+.work-entity-booking-detail h2,
+.work-entity-booking-kicker { margin: 0; }
+.work-entity-booking-kicker {
+  color: var(--rx-muted, var(--fg-muted));
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.work-entity-booking-state {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-sunk);
+}
+.work-entity-booking-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.work-entity-booking-facts div {
+  padding: 10px;
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 6px;
+}
+.work-entity-booking-facts dt {
+  color: var(--rx-muted, var(--fg-muted));
+  font-size: 12px;
+}
+.work-entity-booking-facts dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.work-entity-booking-history-section { display: flex; flex-direction: column; gap: 10px; }
+.work-entity-booking-history { list-style: none; margin: 0; padding: 0; }
+.work-entity-booking-history li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rx-divider, var(--border));
+}
+.work-entity-booking-history-empty { color: var(--rx-muted, var(--fg-muted)); }
 
 .work-entity-dialog-backdrop {
   position: fixed;

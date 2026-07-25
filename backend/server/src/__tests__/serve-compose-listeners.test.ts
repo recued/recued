@@ -1930,6 +1930,34 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
   });
 });
 
+describe('composeListeners — MCP manual-probe transport wiring', () => {
+  it('reuses the websocket and stdio capabilities composed for live execution', async () => {
+    const options = makeOptions();
+    const wsConnect = vi.fn();
+    const spawnStdioMcp = vi.fn();
+    (options.app as unknown as Record<string, unknown>).connectionStoreRef = {
+      tag: 'connection-store',
+    };
+    (options.execution.executorConfig as unknown as Record<string, unknown>)
+      .connectionMcp = { wsConnect, spawnStdioMcp };
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await composeListeners(options);
+      const calls = listenerMocks.createServerHandlerSet.mock
+        .calls as unknown as Array<[Record<string, unknown>]>;
+      const connectionDeps = calls[0]![0].connectionDeps as {
+        wsConnect?: unknown;
+        spawnStdioMcp?: unknown;
+      };
+
+      expect(connectionDeps.wsConnect).toBe(wsConnect);
+      expect(connectionDeps.spawnStdioMcp).toBe(spawnStdioMcp);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});
+
 describe('compose-listeners source boundary', () => {
   it('owns webhook listeners, handler-set assembly, and path listener coordinator construction', () => {
     const source = readFileSync(listenerContextPath, 'utf8');
@@ -1949,7 +1977,10 @@ describe('compose-listeners source boundary', () => {
     expect(source).not.toMatch(/composeSchedulers|composeHousekeepingScheduler/);
     expect(source).not.toMatch(/createLifecycle|LockHeldError|process\.on|process\.exit/);
     expect(source).not.toMatch(/backgroundServices|stopAll|shutdown/);
-    expect(source).not.toMatch(/mcp-server|StdioClientTransport|stdio/);
+    // This layer may thread the already-composed MCP stream capabilities into
+    // connection probing, but it must not construct an MCP server/client
+    // transport itself.
+    expect(source).not.toMatch(/mcp-server|StdioClientTransport/);
   });
 });
 

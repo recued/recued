@@ -15,7 +15,7 @@
  *  legacy `audit.*` read-rpc family (including the old write-to-disk
  *  `audit.export` compliance dump).
  *
- *  Spec: docs/d-120-spec.md (Phase 7 — Memory rename + unified export).
+ *  Spec: D-120 (Phase 7 — Memory rename + unified export).
  */
 
 import type Database from 'better-sqlite3';

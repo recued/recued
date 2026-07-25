@@ -39,7 +39,7 @@
  *  but NOT on an `ask` pause (no call has happened yet; it audits when it
  *  actually runs after resume).
  *
- *  Spec: docs/d-165-spec.md § Runtime flow / Invariants 1 + 4 + 5.
+ *  Spec: D-165 § Runtime flow / Invariants 1 + 4 + 5.
  */
 
 import {
@@ -64,6 +64,8 @@ import {
   cliPrincipalFromExecutionSource,
   projectResolvedArgs,
   projectToResolution,
+  readOwnerOperationOverride,
+  operationSpecHash,
   resolveCatalogOperationPolicy,
   resolveCliReachabilityPolicy,
   resolveTrustCeiling,
@@ -82,9 +84,11 @@ import type {
   OpenProjectionComputation,
   OperationPaginationSpec,
   OperationRiskTier,
+  OwnerOverridePolicy,
   PaginationStyle,
   PathScopeCheck,
   PreflightApprovedTarget,
+  PreflightOverrideOffer,
   ProviderApiSurface,
   ResolutionContext,
   RestExecutionBinding,
@@ -110,9 +114,9 @@ interface CatalogCall {
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
 
-/** D-177 catalog-gate loop — true for the tiers a session grant may absorb an
- *  `ask` for (D7): `write` / `admin`. `read` never asks (passes the gate);
- *  `destructive` never grants. Pre-gates the grant lookup + mint so a
+/** D-177/D-211 catalog-gate loop — true for the tiers a session grant may
+ *  absorb an `ask` for: read / write / admin. `destructive` never grants.
+ *  Approval provenance separately rejects every `always`. Pre-gates lookup so a
  *  non-grantable catalog op never consults grants. */
 const isSessionGrantableTier = (tier: string): boolean =>
   (SESSION_GRANT_RISK_TIERS as readonly string[]).includes(tier);
@@ -278,6 +282,11 @@ const auditBase = (
   connection_name: call.connection_name,
   risk_tier: resolution.effective_risk_tier,
   approval: resolution.approval,
+  // D-211 §2 — surface the fail-closed clamp of a hand-stored below-floor
+  // owner-override approval on the durable audit row.
+  ...(resolution.approval_clamped_from !== undefined
+    ? { approval_clamped_from: resolution.approval_clamped_from }
+    : {}),
   ...(call.surface_kind ? { surface_kind: call.surface_kind } : {}),
   ...(ctx.recipe?.recipe_id ? { recipe_id: ctx.recipe.recipe_id } : {}),
   ...(stepMeta?.step_id ? { step_id: stepMeta.step_id } : {}),
@@ -545,29 +554,33 @@ const catalogInvocationTimeoutMs = (
   return typeof defaultTimeout === 'number' ? defaultTimeout : undefined;
 };
 
-/** D-166 Slice 4d.4 — the dispatch roles whose composed `contract.override`
- *  policy `projectToResolution` consumes to TIGHTEN a catalog resolution. The
- *  override scope `applies_to` five roles, but only these three feed a field that
- *  has a slot on `CatalogOperationResolution`:
- *    - `grant_resolution`     → the deny-flag (`denied: true` → `allowed: false`),
- *    - `approval_composition` → `approval` (escalate-only),
- *    - `risk_override`        → `max_risk_without_approval` (no-approval ceiling).
- *  `timeout_override` / `cache_ttl_override` carry fields with no resolution slot
- *  yet (D-166 Invariants 6/7 — "not yet wired"); composing them would be dead work
- *  `projectToResolution` discards, so they are omitted until the resolution shape
- *  gains those slots (the same deferral `projectToResolution` itself documents). */
+/** D-166 Slice 4d.4 — the dispatch roles whose composed actor-scoped
+ *  `contract.override` policy tightens a catalog resolution. D-211's global
+ *  owner operation replacement is resolved before this unchanged layer.
+ *  The override scope applies to five roles, but only these three feed a field
+ *  that has a slot on `CatalogOperationResolution`:
+ *    - `grant_resolution` → the deny-flag (`denied: true` → `allowed: false`),
+ *    - `approval_composition` → stricter actor-scoped approval,
+ *    - `risk_override`    → `max_risk_without_approval` (no-approval ceiling).
+ *  `timeout_override` / `cache_ttl_override` carry fields
+ *  with no resolution slot yet (D-166 Invariants 6/7 — "not yet wired");
+ *  composing them would be dead work `projectToResolution` discards, so they
+ *  are omitted until the resolution shape gains those slots (the same deferral
+ *  `projectToResolution` itself documents). */
 const OVERRIDE_TIGHTENING_ROLES = [
   'grant_resolution',
   'approval_composition',
   'risk_override',
 ] as const satisfies readonly DispatchRole[];
 
-/** TIGHTEN the connection-keyed profile-floor `resolution` with the user's
- *  `contract.override` rows for this `(actor, ingredient_id, operation_id)`.
- *  Additive — the override layer only ever RESTRICTS (force deny / escalate
- *  approval), never loosens the floor: `projectToResolution` returns the base
- *  unchanged unless an override is strictly stricter, and the deny-flag projection
- *  can only emit `allowed: false`. Pure modulo the injected `ctx.contractScan`.
+/** TIGHTEN the connection-keyed profile-floor `resolution` with the
+ *  TIGHTEN-ONLY half of the user's `contract.override` rows for this
+ *  `(actor, ingredient_id, operation_id)`.
+ *
+ *  The separate global D-211 owner row replaces pack defaults BEFORE
+ *  resolution. This layer then composes all legacy actor-scoped restrictions
+ *  through the lattice AFTER resolution, preserving the prior flow.
+ *  Pure modulo the injected `ctx.contractScan`.
  *
  *  A no-op (returns the base resolution untouched) when:
  *    - no `ctx.contractScan` (dbless / unit harness — no contract store wired), or
@@ -1767,12 +1780,33 @@ export const runCatalogOperation = async (
     ? resolveTrustCeiling(ctx.execution_source, ctx.contract_snapshot)
     : CONTRACTED_DEFAULT_TRUST_CEILING;
 
-  // Resolve the per-kind authorization floor (Invariant 1) + the source-trust
-  // ceiling relax (D-209 Slice B), then TIGHTEN it with the user's
-  // `contract.override` rows for this (actor, ingredient, operation) — D-166 Slice
-  // 4d.4. The override layer only ever restricts; an absent scan seam / actor
-  // (dbless paths) leaves the floor untouched.
-  const resolution = applyOverrideTightening(
+  // D-211 §2 — the owner's global REPLACE-IF-PRESENT ruling for this op,
+  // read from the actorless exact-operation row BEFORE resolution. It travels
+  // outside the legacy lattice; `applyOverrideTightening` below keeps the
+  // actor-scoped restriction fields separate. The global row is keyed on the
+  // fully-qualified `operation_id` (the declared spec's id — same key the
+  // rpc write-site validates), using the raw call key for an
+  // undeclared op (which the resolver denies regardless). NOTE: an override
+  // row has ZERO effect on reachability/grants — it only feeds the resolver's
+  // risk/approval replace step.
+  const qualifiedOpId =
+    manifest.operations?.[call.operation_id]?.operation_id ?? call.operation_id;
+  const ownerOverride = readOwnerOperationOverride({
+    scan: ctx.contractScan,
+    ingredient_id: slug,
+    operation_id: qualifiedOpId,
+  });
+
+  // Resolve the per-kind authorization floor (Invariant 1) + the owner's
+  // D-211 replace-if-present ruling + the source-trust ceiling relax (D-209
+  // Slice B), then TIGHTEN it with the tighten-only half of the user's
+  // `contract.override` rows for this (actor, ingredient, operation) — D-166
+  // Slice 4d.4. The tighten layer only ever restricts. An absent scan seam
+  // leaves both layers unapplied; an absent actor skips only the legacy
+  // actor-scoped tightening while the global owner row still resolves.
+  const resolveWithOwnerOverride = (
+    candidate: OwnerOverridePolicy | undefined,
+  ): CatalogOperationResolution => applyOverrideTightening(
     ctx,
     isCliOp
       ? resolveCliReachabilityPolicy({
@@ -1784,6 +1818,7 @@ export const runCatalogOperation = async (
           reachable: cliReachable,
           ceiling: dispatchCeiling,
           ...(manifest.default_policy ? { default_policy: manifest.default_policy } : {}),
+          ...(candidate !== undefined ? { owner_override: candidate } : {}),
         })
       : resolveCatalogOperationPolicy({
           operations: manifest.operations ?? {},
@@ -1795,9 +1830,55 @@ export const runCatalogOperation = async (
           catalog_slug: slug,
           ceiling: dispatchCeiling,
           ...(manifest.default_policy ? { default_policy: manifest.default_policy } : {}),
+          ...(candidate !== undefined ? { owner_override: candidate } : {}),
         }),
     slug,
   );
+  const resolution = resolveWithOwnerOverride(ownerOverride);
+
+  // D-211 Slice 2 — offer a standing ruling only when simulating that exact
+  // write proves the label truthful after provider deny, trust relaxation, and
+  // profile tightening. A floor-clamped or otherwise ineffective change is
+  // never offered.
+  const declaredOp = manifest.operations?.[call.operation_id];
+  let ownerOverrideOffer: PreflightOverrideOffer | undefined;
+  if (resolution.verdict === 'ask') {
+    if (declaredOp !== undefined && resolution.effective_risk_tier === 'read') {
+      const candidate: OwnerOverridePolicy = {
+        ...ownerOverride,
+        approval: 'never',
+      };
+      const simulated = resolveWithOwnerOverride(candidate);
+      if (simulated.verdict === 'admit' && simulated.approval === 'never') {
+        ownerOverrideOffer = {
+          kind: 'never_ask',
+          ingredient_id: slug,
+          operation_id: resolution.operation_id,
+          op_hash: operationSpecHash(declaredOp),
+          approval: 'never',
+        };
+      }
+    } else if (
+      resolution.effective_risk_tier === 'write'
+      && declaredOp?.risk_tier === 'write'
+      && declaredOp.approval === 'always'
+    ) {
+      const candidate: OwnerOverridePolicy = {
+        ...ownerOverride,
+        approval: 'ask',
+      };
+      const simulated = resolveWithOwnerOverride(candidate);
+      if (simulated.verdict === 'ask' && simulated.approval === 'ask') {
+        ownerOverrideOffer = {
+          kind: 'relax_to_ask',
+          ingredient_id: slug,
+          operation_id: resolution.operation_id,
+          op_hash: operationSpecHash(declaredOp),
+          approval: 'ask',
+        };
+      }
+    }
+  }
 
   // ── deny ── audit the rejection, then fail the step.
   if (resolution.verdict === 'deny') {
@@ -1812,7 +1893,7 @@ export const runCatalogOperation = async (
   // ── closed request schema ── opt-in curated operations reject malformed,
   // missing, or undeclared args before an approval pause/session-grant match
   // can confer authority and before any provider boundary is crossed.
-  const op = manifest.operations?.[call.operation_id];
+  const op = declaredOp;
   const requestSchemaViolation = closedRequestSchemaViolation(
     op?.request_schema,
     asRecord(input.args),
@@ -2065,6 +2146,13 @@ export const runCatalogOperation = async (
         ...(openPreview !== undefined
           ? { open_projection_preview: openPreview }
           : {}),
+        ...(ownerOverrideOffer !== undefined
+          ? { owner_override_offer: ownerOverrideOffer }
+          : {}),
+        ...(resolution.approval_clamped_from !== undefined
+          ? { approval_clamped_from: resolution.approval_clamped_from }
+          : {}),
+        authorization_provenance: resolution.authorization_provenance,
       },
     );
   };
@@ -2092,7 +2180,7 @@ export const runCatalogOperation = async (
   if (resolution.verdict === 'ask' && !resumeApproved) {
     // Consult a live session grant before raising (N.4, ask-branch only): a
     // match ADMITS the dispatch instead of pausing. Gated on a grantable tier
-    // (write / admin) and the hashes (a non-canonicalizable payload can't
+    // (read / write / admin) and the hashes (a non-canonicalizable payload can't
     // grant-match). A throwing match is a no-match (hold — fail closed). The
     // host's `match` adds the run's channel / actor / session + recipe
     // identity to the per-op envelope.
@@ -2122,6 +2210,8 @@ export const runCatalogOperation = async (
           operation_id: resolution.operation_id,
           ...(call.connection_name ? { connection_name: call.connection_name } : {}),
           risk_tier: resolution.effective_risk_tier as RiskTier,
+          pre_lift_approval:
+            resolution.authorization_provenance.pre_lift_approval,
           arg_shape_hash: hashes.arg_shape_hash,
           canonical_payload_hash: hashes.canonical_payload_hash,
           ...(fireOpenHash !== undefined
@@ -2252,6 +2342,10 @@ export const runCatalogOperation = async (
     && stepMeta.preflight_session_grant.risk_tier === resolution.effective_risk_tier
     && ctx.catalogSessionGrants?.mint !== undefined
     && isSessionGrantableTier(resolution.effective_risk_tier)
+    && (
+      resolution.authorization_provenance.pre_lift_approval === 'never'
+      || resolution.authorization_provenance.pre_lift_approval === 'ask'
+    )
   ) {
     const hashes = getCatalogHashes();
     const openComputation = markerMode === 'open' ? openProjectionOnce() : undefined;
@@ -2262,6 +2356,8 @@ export const runCatalogOperation = async (
           operation_id: resolution.operation_id,
           ...(call.connection_name ? { connection_name: call.connection_name } : {}),
           risk_tier: resolution.effective_risk_tier as RiskTier,
+          pre_lift_approval:
+            resolution.authorization_provenance.pre_lift_approval,
           arg_shape_hash: hashes.arg_shape_hash,
           canonical_payload_hash: hashes.canonical_payload_hash,
           ttl_ms: stepMeta.preflight_session_grant.ttl_ms,

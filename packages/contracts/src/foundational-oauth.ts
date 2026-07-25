@@ -74,16 +74,15 @@ export const GRAPH_CALENDAR_SCOPE = 'Calendars.ReadWrite';
 export const GRAPH_OFFLINE_SCOPE = 'offline_access';
 /** Microsoft `/me` identity scope (userPrincipalName at enroll). */
 export const GRAPH_USER_READ_SCOPE = 'User.Read';
-/** Microsoft Graph files read — the D-192 OneDrive file-source mirror's
- *  metadata-read floor (the `/me/drive/root/delta` walk). Read-only: the file
- *  SOURCE family mirrors file metadata only, never fetching bytes. */
+/** Microsoft Graph files read — covers the D-192 OneDrive metadata walk and
+ *  lazy explicit byte reads. It grants no file mutation authority. */
 export const GRAPH_FILES_READ_SCOPE = 'Files.Read';
 /** Microsoft Graph SharePoint sites read — the D-192 SharePoint file-source
  *  mirror's metadata-read floor. `Files.Read` is scoped to the signed-in user's
  *  OWN OneDrive, so a SharePoint document library (reached via
  *  `/drives/{drive_id}/root/delta`) needs a broader grant: `Sites.Read.All`
- *  reads items across the site collections the user can access. Read-only —
- *  no `Sites.ReadWrite.All`; bytes are never fetched. */
+ *  reads items across the site collections the user can access. It covers
+ *  metadata sync and lazy explicit reads, with no `Sites.ReadWrite.All`. */
 export const GRAPH_SITES_READ_ALL_SCOPE = 'Sites.Read.All';
 
 // ── Scope sets ───────────────────────────────────────────────────────

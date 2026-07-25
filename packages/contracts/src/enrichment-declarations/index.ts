@@ -7,7 +7,7 @@
  *  entry in `enrichment-registry.ts` + a benchmark scenario in C.3
  *  + a producer-version hash bump.
  *
- *  Spec: `docs/d-145-spec.md` § A.7.5. */
+ *  Spec: D-145 § A.7.5. */
 
 import type { EnrichmentDeclaration } from '../enrichment-declaration.js';
 import { D145_PRODUCER_TOPICS } from '../enrichment-declaration.js';

@@ -29,7 +29,7 @@
  *       report it under `skipped_circuit` until the user calls
  *       `resetCircuit`, which mints a fresh `process_id` and rearms.
  *
- *  Spec: docs/d-115-spec.md §3.1 (scheduler core).
+ *  Spec: D-115 §3.1 (scheduler core).
  */
 
 import type { AutoRunSpec, RecipeStatus } from '@recued/contracts';

@@ -26,7 +26,7 @@
  *      "fallback": <fallback_step echo when source !== 'enrichment'>
  *    }
  *
- *  Spec: docs/d-125-spec.md §"Phase 6: Enrichment substrate convention". */
+ *  Spec: D-125 §"Phase 6: Enrichment substrate convention". */
 
 import {
   ENRICHMENT_TRUST_MIN_DEFAULT,

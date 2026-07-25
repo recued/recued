@@ -38,7 +38,7 @@
  *       topics with `aggregates_from.includes('connection.<kind>')`
  *       enqueue chain heads.
  *
- *  Spec: `docs/d-136-spec.md` §A.5 + §A.9. */
+ *  Spec: D-136 §A.5 + §A.9. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

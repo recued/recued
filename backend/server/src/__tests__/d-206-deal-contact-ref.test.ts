@@ -21,7 +21,7 @@
  *  The gate under test is the REAL `createReadGrantChecker` — only the grant-ROW store is
  *  stubbed. A test that stubbed `isCollectionReadGranted` itself would prove nothing.
  *
- *  Spec: `docs/d-206-spec.md`; the fence: `docs/d-205-contact-surface.md` §3. */
+ *  Spec: D-206; the fence: D-205 §3. */
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

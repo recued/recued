@@ -76,7 +76,7 @@
  *  into a fully-locked `<iframe sandbox="" srcdoc=…>`, never the live
  *  DOM.
  *
- *  Spec: docs/d-149-spec.md § A.9 (Settings UX) + § A.20.1-A.20.6. */
+ *  Spec: D-149 § A.9 (Settings UX) + § A.20.1-A.20.6. */
 
 import { e, timeAgo } from '@recued/ui-shared/template';
 import {

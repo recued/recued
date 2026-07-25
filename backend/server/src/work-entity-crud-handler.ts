@@ -23,7 +23,7 @@
  *  `work_entity.source.*`): the MCP catalog is a closed `recued_*`
  *  allowlist, so an rpc method name can never bridge onto it.
  *
- *  Spec: docs/d-174-spec.md D11 + docs/d-145-spec.md § A.1 / A.2. */
+ *  Spec: D-174 D11 + D-145 § A.1 / A.2. */
 
 import {
   RpcError,
@@ -249,6 +249,15 @@ export const handleWorkEntityList = async (
   args: WorkEntityListRpcRequest,
 ): Promise<WorkEntityListRpcResponse> => {
   const kind = requireKind('work_entity.list', args.kind);
+  if (
+    kind !== 'booking'
+    && (args.search !== undefined || args.booking_lifecycle_states !== undefined)
+  ) {
+    throw new RpcError(
+      'bad_request',
+      'work_entity.list: search and booking_lifecycle_states are booking-only filters',
+    );
+  }
   // Build the store-layer query from the wire request. The resolver
   // applies the default `live` + `stale_unreachable` + enabled-Source
   // filters; `count` reuses the same filters but drops limit/offset.
@@ -257,6 +266,10 @@ export const handleWorkEntityList = async (
   if (args.sync_states !== undefined) filters.sync_states = args.sync_states;
   if (args.include_deleted !== undefined) filters.include_deleted = args.include_deleted;
   if (args.include_disabled !== undefined) filters.include_disabled = args.include_disabled;
+  if (kind === 'booking' && args.search !== undefined) filters.search = args.search;
+  if (kind === 'booking' && args.booking_lifecycle_states !== undefined) {
+    filters.booking_lifecycle_states = args.booking_lifecycle_states;
+  }
   try {
     const listQuery: WorkEntityListQuery = { ...filters };
     if (args.limit !== undefined) listQuery.limit = args.limit;
@@ -313,10 +326,21 @@ export const handleWorkEntityGet = async (
             .listByOwner(kind, entity.id)
             .map((edge) => edgeToView(edge, deps.contactDisplay))
         : undefined;
+    const booking_history =
+      kind === 'booking'
+      && entity._kind === 'booking'
+      && entity.counterparty_contact_id !== undefined
+        ? deps.store.getBookingHistory({
+            counterparty_contact_id: entity.counterparty_contact_id,
+            exclude_booking_id: entity.id,
+            limit: 10,
+          })
+        : undefined;
     return {
       entity,
       ...(source_freshness !== undefined ? { source_freshness } : {}),
       ...(relationship_edges !== undefined ? { relationship_edges } : {}),
+      ...(booking_history !== undefined ? { booking_history } : {}),
     };
   } catch (err) {
     return mapCrudError('work_entity.get', err);

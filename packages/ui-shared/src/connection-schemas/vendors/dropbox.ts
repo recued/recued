@@ -18,7 +18,7 @@
  *  `config.import_scope` (Fork A) is the optional path glob that scopes the
  *  metadata mirror to a subtree — see `packages/contracts/src/import-scope.ts`.
  *
- *  Spec: `docs/d-192-file-source-family.md`; mirrors `google.ts`. */
+ *  Spec: D-192; mirrors `google.ts`. */
 
 import {
   DROPBOX_API_BASE,
@@ -71,7 +71,8 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     help:
       'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror the whole '
-      + 'account. Metadata only — file contents are never fetched.',
+      + 'account. Sync mirrors metadata only; contents are fetched lazily only '
+      + 'when you explicitly read a file.',
   },
   {
     key: 'auth.type',
@@ -87,8 +88,8 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     help:
       'From your Dropbox app — dropbox.com/developers/apps → your app → '
-      + 'Settings → App key. Grant it the `files.metadata.read` + '
-      + '`account_info.read` scopes on the Permissions tab.',
+      + 'Settings → App key. Grant it the `files.metadata.read`, '
+      + '`files.content.read`, and `account_info.read` scopes on the Permissions tab.',
   },
   {
     key: 'auth.client_secret',
@@ -140,7 +141,7 @@ export const dropboxSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'Dropbox',
   description:
-    'Cloud file storage — mirror file/folder metadata into your warehouse (bytes never fetched). OAuth 2.0 via your own Dropbox app.',
+    'Cloud file storage — mirror file/folder metadata into your warehouse; file bytes stay remote and are fetched only for an explicit read. OAuth 2.0 via your own Dropbox app.',
   fields: DROPBOX_FIELDS,
   initialValues: DROPBOX_SCHEMA_INITIAL_VALUES,
 };

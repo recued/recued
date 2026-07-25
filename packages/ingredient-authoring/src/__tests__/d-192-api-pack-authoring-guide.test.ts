@@ -1,4 +1,4 @@
-/** `docs/authoring/api-pack-authoring-guide.md` — the guide's own example, executed.
+/** internal design notes — the guide's own example, executed.
  *
  *  A documentation example that has never been run is a `hand_written` authority: it looks
  *  authoritative, nothing validates it, and it rots silently. This suite is the validation
@@ -21,7 +21,7 @@ import { validateWorkEntitySources } from '@recued/ingredients/validate-work-ent
 import { decomposeComposition } from '../decomposer.js';
 import { validateComposition } from '../validators.js';
 
-/** ⬇ VERBATIM from docs/authoring/api-pack-authoring-guide.md §2 + §4. */
+/** ⬇ VERBATIM from internal design notes §2 + §4. */
 const guideComposition = (): Record<string, any> => ({
   schema_version: 1,
   slug: 'acme-catalog',
@@ -89,7 +89,7 @@ const guideComposition = (): Record<string, any> => ({
   }],
 });
 
-/** ⬇ VERBATIM from docs/authoring/api-pack-authoring-guide.md §1. */
+/** ⬇ VERBATIM from internal design notes §1. */
 const guidePack = (): Record<string, unknown> => ({
   manifest_version: 2,
   artifact_type: 'pack',
@@ -119,7 +119,7 @@ const sourceErrors = (c: Record<string, any>) => {
   return out;
 };
 
-describe('docs/authoring/api-pack-authoring-guide.md — the guide validates', () => {
+describe('the API pack authoring guide — the guide validates', () => {
   it('the pack envelope passes the REAL publish gate', () => {
     const parsed = parseBulkPackManifest(guidePack()) as { ok: boolean };
 
@@ -187,7 +187,7 @@ const recipeErrors = (output: unknown): string[] =>
     .issues.filter((i) => i.severity === 'error')
     .map((i) => i.code);
 
-describe('docs/authoring/api-pack-authoring-guide.md §8b — output.render', () => {
+describe('the API pack authoring guide §8b — output.render', () => {
   it('the §8b example validates VERBATIM', () => {
     // ⬇ VERBATIM from §8b.
     expect(

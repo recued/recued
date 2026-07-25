@@ -32,7 +32,7 @@
  *      revoked. Per I-10 the caller is responsible for the per-IP
  *      rate-limit check BEFORE invoking this method.
  *
- *  Spec: docs/d-149-spec.md § A.3 + § A.18.2 + § Must Hold I-1 / I-5 /
+ *  Spec: D-149 § A.3 + § A.18.2 + § Must Hold I-1 / I-5 /
  *  I-10. */
 
 import type Database from 'better-sqlite3';

@@ -19,7 +19,7 @@
  *  per spec decision §6 — a topic that ever produces under both modes
  *  shares one trust state.
  *
- *  Spec: `docs/d-132-spec.md` §A.10 (Reactive AI producer gate). */
+ *  Spec: D-132 §A.10 (Reactive AI producer gate). */
 
 import type Database from 'better-sqlite3';
 import type { EnrichmentTopic } from '@recued/contracts';

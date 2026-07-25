@@ -29,10 +29,9 @@
  *  spans BOTH prongs: a page block-walk OR a data-source query that fails
  *  mid-cycle (404 gone / 403 unreadable) is SKIPPED and sinks `complete`
  *  (fail-closed — the runner never absence-deletes an unwalked subtree); either
- *  `search` failing aborts the cycle. Bytes are NEVER fetched (the North star);
- *  the mirror stores metadata + the block id / property locator (Notion file URLs
- *  are ~1h-signed, so byte-fetch — a family-wide, reserved `storage_ref:'remote'`
- *  concern — must re-resolve, never trust a stored URL).
+ *  `search` failing aborts the cycle. Sync never fetches bodies; the mirror
+ *  stores metadata + the block id / property locator. An explicit byte read
+ *  re-resolves Notion's ~1h-signed file URL and never trusts a stored URL.
  *
  *  KNOWN LIMITS (declared, not bugs): sharing-bounded coverage; NO size / mime /
  *  content-revision (Notion file objects carry none — `mtime` is the block's /
@@ -42,7 +41,7 @@
  *  third surface still deferred (low value; the two prongs here cover both file
  *  HOMES). Auth: the stable internal-integration bearer (no rotation).
  *
- *  Design: `docs/d-192-file-source-family.md`; taxonomy §0 / §3b. */
+ *  Design: D-192; taxonomy §0 / §3b. */
 
 import { createHash } from 'node:crypto';
 

@@ -5,7 +5,7 @@
  *  precedence, constructors, lazy trigger decisions, and summarizer output
  *  narrowing.
  *
- *  Spec: docs/d-153-spec.md lines 587-597. */
+ *  Spec: D-153 lines 587-597. */
 
 import { describe, expect, it } from 'vitest';
 

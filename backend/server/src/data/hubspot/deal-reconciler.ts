@@ -15,7 +15,7 @@
  *       `EnrichmentMeta` snapshot the cascade engine + Memory tab
  *       both read.
  *
- *  Spec: `docs/d-129-spec.md` § A.3. */
+ *  Spec: D-129 § A.3. */
 
 import {
   HUBSPOT_DEAL_PROPERTIES,

@@ -5,7 +5,7 @@
  *  off the returned shape. Mirrors the PA6 work-entity-page
  *  state.ts pattern.
  *
- *  Spec: docs/d-145-spec.md § A.5 (Email compose UI). */
+ *  Spec: D-145 § A.5 (Email compose UI). */
 
 import {
   EMPTY_MAIL_COMPOSE_VALUES,

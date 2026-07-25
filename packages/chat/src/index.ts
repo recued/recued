@@ -5,7 +5,7 @@
  *  `SessionStateStore`, and the `chat` channel itself — the in-app
  *  webclient conversation surface over the D-121 broadcast bus.
  *
- *  Spec: docs/d-160-spec.md § N.5 / A.5.
+ *  Spec: D-160 § N.5 / A.5.
  */
 
 export type {

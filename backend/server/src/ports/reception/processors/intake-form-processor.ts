@@ -43,8 +43,8 @@
  *  left `pending` (not `failed`) — it is valid, undispatched work, not a
  *  poison row.
  *
- *  Spec: docs/d-149-spec.md § A.5.3 + § Must Hold I-12; docs/d-173-spec.md
- *  § A.7 / D3 / I-1; docs/d-210-spec.md Phase C. */
+ *  Spec: D-149 § A.5.3 + § Must Hold I-12; D-173
+ *  § A.7 / D3 / I-1; D-210 Phase C. */
 
 import {
   COMMITMENT_STATEMENT_MAX,
