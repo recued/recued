@@ -1,0 +1,2640 @@
+import { randomBytes } from 'node:crypto';
+import { join, dirname } from 'node:path';
+
+import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
+import { createCliBinaryReachabilityProbe } from '../cli-binary-reachability.js';
+import { composeWebhookAndHookListeners } from '../composition/bin/wire-webhook-and-hook-listeners.js';
+import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
+import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
+import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
+import { materializeMailBody } from '../mail-body-read-handler.js';
+import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
+import { composeMessengerLiveControl } from '../composition/bin/wire-messenger-live-control.js';
+import { composeSessionGrantPasses } from '../composition/bin/wire-session-grant-passes.js';
+import { composeReceptionInboxDeps } from '../composition/bin/wire-reception-inbox-deps.js';
+import { countCalendarOverlap } from '../collections/calendar/overlap-counter.js';
+import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
+import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
+import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
+import {
+  findReceptionHoldItem,
+  handleReceptionInboxApprove,
+} from '../reception-inbox-handler.js';
+import { resolvePublicBaseUrl } from '../ask-landing-answer-link.js';
+import { createWebhookProfileListener } from '../webhook-profile-listener.js';
+import { createWebhookProfileRuntimeRegistry } from '../webhook-profile-runtime.js';
+import {
+  createBuiltinWebhookDeliveryProfileAdapters,
+} from '../webhook-delivery-profile-presets.js';
+import { BUILTIN_WEBHOOK_PROFILE_POLICIES } from '../webhook-profile-policy.js';
+import {
+  createWebhookClockHealthAuthority,
+  resolveWebhookClockAuthorityUrl,
+} from '../webhook-clock-health.js';
+import { createWebhookTestDeliveryService } from '../webhook-test-delivery.js';
+import { createWebhookManagedRegistrationService } from '../webhook-registration-reconciler.js';
+import {
+  createBuiltinWebhookRegistrationProfileRegistry,
+} from '../webhook-registration-profile-presets.js';
+import { createWebhookOutboxRuntime } from '../webhook-outbox-dispatcher.js';
+import { createWebhookRecipeOutboxSink } from '../webhook-recipe-consumer.js';
+import {
+  createOperationBoundWebhookFixtureAdapters,
+  createWebhookCallbackBindingRuntimeRegistry,
+  createWebhookOperationBindingResolver,
+} from '../webhook-operation-binding.js';
+import {
+  createExecuteWebhookRecipeRunner,
+  reconcileWebhookAwaitingApprovalDispatches,
+} from '../webhook-recipe-runner.js';
+import {
+  composeInstallConfigResolver,
+  composeRecipeOpResolver,
+} from '../recipe-capability-wiring.js';
+import type { WebhookDoorEnrollDeps } from '../webhook-door-enroll.js';
+import { createReceptionInboxSubviewStore } from '../storage/reception-inbox-subview-store.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { liveVendorRegistry } from '../connection-convention-families.js';
+import { createReceptionCalendarEventSeam } from '../ports/reception/projection/reception-calendar-event.js';
+import { createReceptionBookingMintSeam } from '../ports/reception/projection/reception-booking-mint.js';
+import { deriveFormSubmissionPiiKeyFromSubDek } from '../ports/reception/form-pii.js';
+import { createReceptionAttachFileSeam } from '../ports/reception/projection/reception-attach-file.js';
+import { composeTelegramCallbackAck } from '../composition/bin/wire-telegram-callback-ack.js';
+import {
+  createProductionPathListenerCoordinator,
+  type ProductionPathListenerCoordinator,
+} from '../network/path-listener-coordinator.js';
+import { resolveLanAddress } from '../network/resolve-lan-address.js';
+import {
+  createServerHandlerSet,
+  type ServerConfig,
+  type ServerHandlerSet,
+} from '../server.js';
+import {
+  loadWebclientBundleFromDisk,
+  resolveWebclientBundleDir,
+  WebclientBundleLoadError,
+} from '../webclient-bundle-loader.js';
+import type { SystemStatusDeps } from '../system-status-handler.js';
+import {
+  listRecipeRunnability,
+  listRecipesWorsenedByPackUninstall,
+  makeRecipeRunnabilityBroadcaster,
+  type RecipeRunnabilityHandlerDeps,
+} from '../recipe-runnability-handler.js';
+import { privateByoDropIds } from '../pack-inventory.js';
+import type { ContractBroadcastEvent } from '../contract-handler.js';
+import type { HistoryDeps } from '../history-handler.js';
+import type { WsServerHandle } from '../ws-server.js';
+import type { BridgeDispatcher } from '../bridges/dispatcher.js';
+import { createBridgeRegistry } from '../bridges/registry.js';
+import type { BootedServerIdentity } from '../identity/boot.js';
+import {
+  createVendorOAuthFlowStore,
+  createVendorOAuthResultStore,
+} from '../connection-vendor-oauth-flow.js';
+import { createWorkEntityResolver } from '../work-entity-resolver.js';
+import {
+  buildLoadFileCollectionRecord,
+  createFileViewResolverFromRegistry,
+} from '../file-view-resolver.js';
+import { createPreviewConnectionExecute } from '../ingredient-authoring/preview-execute.js';
+import type { IngredientDraftRpcDeps } from '../ingredient-authoring/draft-preview-rpc.js';
+import type { Lifecycle } from '../lifecycle/index.js';
+import type { ArchiveRpcDeps } from '../archive/archive-handler.js';
+import { createHostnameSniBindingLookup } from '../hostname/index.js';
+import type { CollectionContext } from './compose-collection-context.js';
+import type { ExecutionContext } from './compose-execution-context.js';
+import type { AppContext } from './compose-app-context.js';
+import { composeEventTriggers } from '../composition/bin/wire-event-triggers.js';
+import { composeWatchManager } from '../composition/bin/wire-watch-manager.js';
+import {
+  getDefaultWatchSourceRegistry,
+  messengerSourceKey,
+} from '../watch/source-registry.js';
+import { emitAutomationRule } from '../events/emit-sites.js';
+import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
+import type { PollManagerHandle } from '../watch/poll-manager.js';
+import {
+  catalogSlugForVendor,
+  unionRequiredScopesForConnection,
+  verifyWebclientBundle,
+  type ConnectionDataPurgeSummary,
+  type IngredientManifest,
+  type ReceptionInboxScanStatus,
+  type WatchSourceStatusEntry,
+  type WebclientBundleFile,
+  webhookProfile,
+  webhookProfileRequiresPairedConnection,
+  getMessengerVendorDeclaration,
+  listMessengerVendors,
+} from '@recued/contracts';
+import {
+  purgeConnectionData as runPurgeConnectionData,
+  previewConnectionPurgeCount as runPreviewConnectionPurgeCount,
+} from '../source-mirror/connection-purge.js';
+import { listInstalledPackManifests } from '../pack-list-handler.js';
+import type { InitialAcmeDomainIssuer } from '../keys/rotation/acme-domain-renewer.js';
+import { buildApplyOrchestratorDeps, buildReleaseCheckDeps, buildUpdateModeDeps } from '../update/release-config.js';
+import { updateAutoApplyRegistry } from '../update/auto-apply-registry.js';
+import { runUpdateBootReconcile as runUpdateBootReconcileImpl } from '../update/boot-reconcile.js';
+import type { RpcContext } from './compose-rpc-context.js';
+import type { StorageContext } from './compose-storage-context.js';
+
+type CollectionDeps = NonNullable<ServerConfig['collectionDeps']>;
+
+export interface ListenerServerFacade {
+  wsServer: ServerHandlerSet['wsHandle'];
+  port: number;
+  close(): Promise<void>;
+}
+
+export interface ComposeListenersResult {
+  serverHandlerSet: ServerHandlerSet;
+  listenerCoordinator: ProductionPathListenerCoordinator;
+  lanBindAddress: string;
+  /** True iff a verified webclient bundle loaded at boot, so `/webclient/*`
+   *  (and the LAN bare-`/` redirect) actually serve. The boot banner uses it
+   *  to decide whether to advertise the local webclient URL. */
+  webclientServed: boolean;
+  server: ListenerServerFacade;
+  /** Reactive-substrate slice 1 — live event-trigger dispatcher
+   *  (undefined on dbless boots). The post-listener runtime registers
+   *  its stop closure with the background-services registry. */
+  eventTriggerDispatcher: EventTriggerDispatcher | undefined;
+  /** Poll-manager / G6 — live watch manager (undefined on dbless
+   *  boots). Same lifecycle posture as the dispatcher: the
+   *  post-listener runtime registers its stop closure; maintenance
+   *  exit recomputes via the late-bound getter. */
+  watchManager: PollManagerHandle | undefined;
+  /** D-178 slice 4b — on-boot update reconcile (commit / auto-revert +
+   *  ledger→audit replay). Undefined on a delegated channel / dbless boot.
+   *  The post-housekeeping tail invokes it AFTER markBooted so a healthy
+   *  boot of a staged release commits. Best-effort (never throws). */
+  runUpdateBootReconcile: (() => Promise<void>) | undefined;
+}
+
+export interface ComposeListenersOptions {
+  port: number;
+  webhookPort: number;
+  storage: Pick<
+    StorageContext,
+    | 'pairing'
+    | 'serverInstanceId'
+    | 'pairedInstances'
+    | 'recoveryKeyCheck'
+    // Slice 3b — keyfile ServerKeyStore getter for /auth/pair server-vault
+    // enrollment (read live; the signing identity boots lazily).
+    | 'signingIdentity'
+    | 'auditLog'
+    // D-175 P5 — account-binding manager backs the `account.*` pair-RPC.
+    | 'accountBindingManager'
+    // D-175 P8 — Pro convenience provisioner backs `pro_convenience.status`.
+    | 'proConvenienceProvisioner'
+    // R27 delta-B — DDNS pause/resume handler deps back `ddns.*`.
+    | 'ddnsHandlerDeps'
+    | 'fileStack'
+    | 'workEntityStoreRef'
+    | 'formResponseStoreRef'
+    | 's2sPreviewStoreRef'
+    // D-170 — local manifest body store + recipe store back the
+    // `ingredient.install` / `ingredient.uninstall` rpc (provisioning +
+    // pin-guard). N.4 / N.15 — `draftStore` backs the draft rpc + preview.
+    | 'localManifestStore'
+    | 'draftStore'
+    | 'recipeStore'
+    | 'hostnameRegistryStore'
+    // D-173 INT-3 — Reception Inbox boot-wiring. `db` backs the SQLite
+    // subview store (D10); `checkpointStore` is the held-state + N.5 narrow
+    // writer; `eventBus` carries the `reception_inbox` broadcast.
+    | 'db'
+    | 'checkpointStore'
+    | 'eventBus'
+    // D-210 step 2a / A.8 slice 4c — the record read surface
+    // (`reception.record.list`) reads ONE table now: bookings and intakes are
+    // both `reception_form_submission` rows, so the booking-store ref that used
+    // to sit beside this is gone.
+    | 'intakeFormSubmissionStoreRef'
+    // D-210 slice 3 — the endpoint registry, read by the booking-mint seam for
+    // the endpoint's owner-authored `display_name` (the booking's title; the
+    // visitor-derived alternatives all carry their name / free text).
+    | 'publicEndpointRegistryStoreRef'
+  >;
+  app: Pick<
+    AppContext,
+    | 'authDeps'
+    | 'llmManager'
+    | 'cacheDeps'
+    // D-172 — the CAS root; the messenger media scratch dir is derived as a
+    // data-volume sibling so large downloads stream to disk, not tmpfs.
+    | 'cacheBlobs'
+    // D-198 Slice 2 — the owner-authored `user_memory` store backs the
+    // `memory.create/get/update/delete` write half of the Memory lens.
+    | 'userMemoryStore'
+    // D-198 Slice 4 — the redaction-marker store backs `memory.delete`'s
+    // non-`user_self` "forget" path (overlay, never mutates the audit log).
+    | 'memoryRedactionStore'
+    | 'sharedDeps'
+    | 'annotationDeps'
+    | 'annotationStoreRef'
+    | 'enrichmentStoreRef'
+    | 'crmRecordMirrorStoreRef'
+    // D-192 Fork B — the remote-file meta-store feeds the `data.mirror.search`
+    // files picker (CAS collection + vendor mirror, one resolver).
+    | 'fileMetaStoreRef'
+    // D-192 remote byte-fetch — the file-source connection resolver, so the
+    // `data.file.read` path can authenticate a lazy vendor byte fetch.
+    | 'fileSourceConnResolverRef'
+    // D-192 remote byte-fetch — the shared `remote` bundle builder for the
+    // `data.file.read` pair-RPC (the same one the recipe/ai/mail channels use).
+    | 'getRemoteFileReadDeps'
+    | 'fileSourceSyncStateRef'
+    // D-205 #2c — per-Source CONTACT sync health, for `contact.source.list` (the
+    // Sources strip on `#data/contact`). The first reader of the runner's counts.
+    | 'contactSourceSyncStateRef'
+    // D-192 read resolution — per-Source sync cursor/health rows; the
+    // work-entity CRUD rpc's freshness metadata reads them through the
+    // resolver.
+    | 'workEntitySourceSyncStateRef'
+    // D-192 P5 — work-graph edges for the CRUD rpc's `get` decoration.
+    | 'workEntityEdgeStoreRef'
+    // D-192 — the post-commit work-entity Source reconcile the install/uninstall
+    // deps drive (enroll-before-install registration).
+    | 'reconcileWorkEntitySourcesRef'
+    | 'enrichmentCascadeRef'
+    | 'connectionStoreRef'
+    | 'contractGrantStoreRef'
+    | 'connectionCatalogBindingStoreRef'
+    | 'contractStoreRef'
+    | 'sellerStoreRef'
+    | 'sellerOrderStoreRef'
+    | 'webhookIngressStoreRef'
+    | 'webhookDeliveryStoreRef'
+    | 'webhookConsumerStoreRef'
+    | 'sellerClaimStoreRef'
+    | 'receptionManageCredentialStoreRef'
+    | 'chatInboundTokenStoreRef'
+    | 'contactStoreRef'
+    // D-139 P5 — the engagement-evidence resolver bundle backs the
+    // `data.contact.engagements.list` pair-RPC (and the MCP read).
+    | 'contactEngagementsResolveDepsRef'
+    | 'chatDeps'
+    | 'keys'
+    // R21.1 — gates the event-trigger dispatcher + watch poll-manager on
+    // vault-unlocked (drop fan-out / disarm loops while sealed).
+    | 'isVaultUnlocked'
+    // Reactive-substrate slice 1 — the event-trigger dispatcher
+    // subscribes enabled trigger patterns on the warehouse bus.
+    | 'warehouseBus'
+    // D-160 A.8 step 6 — the messenger turn wiring drives
+    // `runMessengerTurn` + shares the orchestrator's session store.
+    | 'chatOrchestratorRef'
+    // D-188 — master pause flag closes the inbound webhook listeners.
+    | 'serverState'
+  >;
+  collection: Pick<
+    CollectionContext,
+    | 'collectionRegistry'
+    | 'webhookWatcherQueue'
+    | 'watcherDispatcher'
+    | 'calendarStack'
+    | 'mailStack'
+    | 'serviceStack'
+    | 'supervisionStack'
+    | 'channelDispatchers'
+    | 'oauthClientConfigDeps'
+    | 'oauthAppConfigDeps'
+    // D-174 #22 — the bus + cascade-wired work-entity dispatcher instance
+    // (constructed in compose-collection-context); reused by the
+    // `work_entity.{upsert,delete}` pair-RPC so writes emit warehouse
+    // events on the SAME path the ingredient channel uses.
+    | 'workEntityDispatchers'
+    // D-160 A.8 step 6 — inbound messenger media lands in the D-172
+    // `received` collection (`origin: 'messenger_media'`).
+    | 'inboundFileCollection'
+    // D-172 resumable uploads — the webclient upload service backs the
+    // `upload.*` rpc + the binary `/ws/upload` socket + the sweep task.
+    | 'uploadService'
+    // M4 archive download — the webclient download service backs the binary
+    // `/ws/download` socket.
+    | 'downloadService'
+    // M4b.1 archive upload — backs `server.archive.upload.*` + the binary
+    // `/ws/archive-upload` socket.
+    | 'archiveUploadService'
+  >;
+  execution: Pick<
+    ExecutionContext,
+    | 'executeDeps'
+    | 'notificationBlock'
+    // D-210 Phase C — the decorated resumer, for the inbox's no-ask release.
+    | 'preflightResumer'
+    | 'messengerChannels'
+    | 'executorConfig'
+    | 'connectionOperationProfileStore'
+    | 'reconcileConnectionProfile'
+    // D-209 #1 W2b — the webhook door mint writes into the SAME contract
+    // stores the Gateway reads (threaded, never rebuilt here).
+    | 'contractDefinitionStore'
+    | 'grantEntryStore'
+  >;
+  rpc: Pick<
+    RpcContext,
+    | 'housekeepingRpcDeps'
+    | 'upstreamMergeDeps'
+    | 'contactMergeDeps'
+    | 'engagementHealthDeps'
+    | 'notificationsDeps'
+    | 'packInstallDeps'
+    | 'packListDeps'
+    | 'packUninstallDeps'
+    | 'observabilityBundle'
+    | 'recipeTrustStore'
+    | 'autoRunDeps'
+  >;
+  runtimeConfig: ServerConfig['runtimeConfig'];
+  bootstrapDeps: ServerConfig['bootstrapDeps'];
+  scheduleDeps: ServerConfig['scheduleDeps'];
+  dishDeps: ServerConfig['dishDeps'];
+  migrateDeps: ServerConfig['migrateDeps'];
+  pressureDeps: ServerConfig['pressureDeps'];
+  lifecycle: Lifecycle | undefined;
+  /** Scope-B (D-108/D-109) — the live `server.archive.*` runtime deps,
+   *  assembled upstream where the lifecycle (restart drain) + db + version
+   *  + exit coexist. Absent (db-less / no-lifecycle harness) → the rpc
+   *  stays unwired (`makeArchiveHandlers(undefined).slice === undefined`). */
+  archiveDeps?: ArchiveRpcDeps;
+  clientTokens: ServerConfig['clientTokens'];
+  exposureDeps: ServerConfig['exposureDeps'];
+  tlsDomainDeps: ServerConfig['tlsDomainDeps'];
+  tokenRotationEmitter:
+    | NonNullable<ServerConfig['tokenRotationDeps']>['emitter']
+    | undefined;
+  rotationEngine:
+    | NonNullable<ServerConfig['tlsRenewDeps']>['engine']
+    | undefined;
+  passportFetchDeps: ServerConfig['passportFetchDeps'];
+  passportUserRpcDeps: ServerConfig['passportUserRpcDeps'];
+  keyRotateDeps: ServerConfig['keyRotateDeps'];
+  proAuthMachine:
+    | NonNullable<ServerConfig['proAuthDeps']>['machine']
+    | undefined;
+  initialAcmeDomainIssuer?: () => InitialAcmeDomainIssuer | undefined;
+  receptionRpcDeps: ServerConfig['receptionRpcDeps'];
+  receptionPortDeps: ServerConfig['receptionPortDeps'];
+  mcpHttpDeps: ServerConfig['mcpHttpDeps'];
+  llmGatewayDeps: ServerConfig['llmGatewayDeps'];
+  /** D-148 § A.12 / D-165 enroll-host #1 — booted server identity. Wires
+   *  the vendor OAuth substrate: `startVendorOAuth` signs the `state`
+   *  token with it and the `/oauth/complete` handler verifies the echoed
+   *  state against the same key. Threaded by the pre-listener runtime
+   *  (identity is booted before listeners compose; see
+   *  `startBootRecoveryAndAdapters`). Absent (db-less / pre-boot harness)
+   *  → the whole vendor OAuth substrate stays unwired, exactly like
+   *  passport.fetch (start rpc → `not_configured`; `oauth` path role
+   *  absent → path-router 404). */
+  signingIdentity?: BootedServerIdentity;
+  /** D-169 P0 follow-on (Codex 2026-05-28 Angle 2 fold) — publish the
+   *  live bridge dispatcher to the executor's late-bound ref BEFORE
+   *  the listener starts accepting scheduler dispatches. Wired by
+   *  the boot site (`startPostStorageAppCollectionExecutionRuntime`)
+   *  to `lateBound.publishBridgeDispatcher`; without this in-chain
+   *  publish, cron + auto_run can fire a DOM step into the dom slot
+   *  before the dispatcher is wired, mis-classifying the unwired
+   *  state as `ROLE_RESTRICTION` "no bridge connected." */
+  publishBridgeDispatcher?: (dispatcher: BridgeDispatcher | undefined) => void;
+}
+
+export const composeListeners = async (
+  options: ComposeListenersOptions,
+): Promise<ComposeListenersResult> => {
+  const {
+    port,
+    webhookPort,
+    storage,
+    app,
+    collection,
+    execution,
+    rpc,
+    runtimeConfig,
+    bootstrapDeps,
+    scheduleDeps,
+    dishDeps,
+    migrateDeps,
+    pressureDeps,
+    lifecycle,
+    archiveDeps,
+    clientTokens,
+    exposureDeps,
+    tlsDomainDeps,
+    tokenRotationEmitter,
+    rotationEngine,
+    passportFetchDeps,
+    passportUserRpcDeps,
+    keyRotateDeps,
+    proAuthMachine,
+    initialAcmeDomainIssuer,
+    receptionRpcDeps,
+    receptionPortDeps,
+    mcpHttpDeps,
+    llmGatewayDeps,
+  } = options;
+
+  // WatchSource generalization — the push-source governance registry
+  // (process-wide default; salesforce CometD boot + the reception
+  // substrate reach the same instance module-globally).
+  const watchSourceRegistry = getDefaultWatchSourceRegistry();
+  // Push sources (webhook / messenger / reception / salesforce CometD)
+  // are pull-based in the registry, so a fire only bumps `last_event_at`
+  // — the #automation surface wouldn't refresh until a manual reload.
+  // Wire the notifier here (where `storage.eventBus` exists): a
+  // `markEvent` window rate-caps to ≤1 `automation_rule_changed('watch')`
+  // per second and the client re-pulls `watch.list`, recomputing
+  // `active`/`last_event_at` fresh. Reuses the `'watch'` mechanism —
+  // push rows render in the watch section and the client ignores the
+  // mechanism beyond a hint.
+  watchSourceRegistry.setChangeNotifier(() =>
+    emitAutomationRule(storage.eventBus, 'watch'),
+  );
+
+  const { webhookListener, hookListener, connectionWebhookListener } =
+    await composeWebhookAndHookListeners({
+      webhookPort,
+      collectionRegistry: collection.collectionRegistry,
+      webhookWatcherQueue: collection.webhookWatcherQueue,
+      // D-128 P3 vendor-connection webhook receiver + the webhook
+      // push-source provider (WatchSource generalization — this wires
+      // the receiver module that existed unwired since D-128).
+      ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
+      ...(app.enrichmentStoreRef ? { enrichmentStore: app.enrichmentStoreRef } : {}),
+      // D-190 — mirror records on HubSpot HTTP-webhook-accelerated changes too,
+      // matching the reconciliation cycle + the Salesforce CometD funnel.
+      ...(app.crmRecordMirrorStoreRef ? { crmRecordMirror: app.crmRecordMirrorStoreRef } : {}),
+      warehouseBus: app.warehouseBus,
+      sourceRegistry: watchSourceRegistry,
+      // D-188 — close inbound webhook intake while the server is paused.
+      ...(app.serverState
+        ? { isPaused: (): boolean => app.serverState!.isPaused() }
+        : {}),
+    });
+
+  // D-169 P0 — in-process bridge registry. Slice 4's multi-bridge
+  // dispatcher pre-filters on each connected bridge's most-recent
+  // `granted_origins`; this slice wires the producer side
+  // (`bridge.capabilityProfile.push` rpc). The registry is in-RAM —
+  // bridge identities persist in `client_tokens`, capability state
+  // re-pushes on every reconnect (cold-boot recovery without a
+  // durable store).
+  const bridgeRegistry = createBridgeRegistry();
+
+  // D-148 P9 § A.13 — vendor webhook port (Slack + Telegram bot
+  // callbacks). Shares the same `webhook_port > 0` gate; absent
+  // connectionStore (daemon-only) ⇒ port stays unwired and the
+  // `/webhooks/*` branch in server.ts never engages. The substrate
+  // slice (commit 81554dc8) shipped the port handler + per-vendor
+  // descriptors + idempotency ledger.
+  //
+  // D-163 inbound-answer-dispatcher slice — wire the dispatch seams
+  // through `composeInboundAnswerDispatcher` so verified `block_actions`
+  // / `callback_query` payloads route through the matching
+  // `RemoteChannel.parseInboundReply` into `block.submitAnswer`. Non-
+  // callback payloads (Slack `event_callback`, plain Telegram messages)
+  // still fall through to the substrate slice's log + drop behavior.
+  // The dispatcher always returns both seams — degraded inputs (absent
+  // block, absent channel) collapse the corresponding dispatcher to log
+  // + drop, so the webhook port has a stable seam regardless.
+  // D-163 polish — Telegram `answerCallbackQuery` ack. Composed when
+  // the connection store is wired so the inbound-answer dispatcher can
+  // clear the user's inline-keyboard spinner after `submitAnswer`
+  // records the press. Absent connection store ⇒ ack is undefined and
+  // the dispatcher skips the call (Telegram's client-side ~5s timeout
+  // clears the spinner on its own — annoying-not-broken).
+  const telegramAck = app.connectionStoreRef
+    ? composeTelegramCallbackAck({
+        connectionStore: app.connectionStoreRef,
+        ...(app.keys ? { keys: app.keys } : {}),
+      })
+    : undefined;
+  // D-160 A.8 step 6 downstream consumer — the messenger turn wiring.
+  // A verified non-callback user message in the bound conversation
+  // queues `runMessengerTurn`; the reply posts back over the vendor
+  // transport. Degrades to undefined (seam absent — pre-slice posture)
+  // without the orchestrator or connection store. Logged to the
+  // console deliberately: the binding-gate refusal (a stranger
+  // messaging the bot) is an operator-relevant security line.
+  const messengerTurnIngest = composeMessengerTurnIngest({
+    ...(app.chatOrchestratorRef ? { orchestrator: app.chatOrchestratorRef } : {}),
+    ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
+    ...(app.keys ? { keys: app.keys } : {}),
+    ...(collection.inboundFileCollection
+      ? { fileCollection: collection.inboundFileCollection }
+      : {}),
+    // Media downloads stream to a data-volume scratch dir (sibling of the CAS
+    // root), NOT a tmpfs `/tmp` — so a large download never routes through RAM
+    // (D-172 streaming ingest). Same-volume as the CAS keeps putFile's
+    // temp→rename atomic.
+    ...(app.cacheBlobs
+      ? { downloadDir: join(dirname(app.cacheBlobs.root), 'messenger_media_tmp') }
+      : {}),
+    log: (level, msg, data) => {
+      const fn = level === 'warn' ? console.warn : console.log;
+      fn(`[messenger] ${msg}`, data ?? '');
+    },
+  });
+  // D-181 slice 6b — the messenger live-control surface (`/recued running` +
+  // interactive kill/cancel/promote buttons). Reads the SAME live in-flight
+  // registry the `execution.*` rpc wraps; resolves the canonical vendor
+  // credential like the turn. Degrades to undefined (the seam stays absent —
+  // no `/recued` command, no control buttons) without the registry or the
+  // connection store.
+  // D-186 — the "Active passes" seam backing `/recued passes`: list + early-
+  // revoke active session grants through the SAME `contract-handler` helpers
+  // (+ the SAME `contract.contract_definition_changed` broadcast on revoke) the
+  // `session_grant.{list,revoke}` rpc uses, so the messenger surface never
+  // drifts from the webclient "Active passes" bubble. Absent without the
+  // contract store (graceful — the run-control half is unaffected).
+  const sessionGrantPasses = app.contractStoreRef
+    ? composeSessionGrantPasses({
+        contractStore: app.contractStoreRef,
+        broadcast: (event) => rpc.observabilityBundle.eventsDeps.bus.emit(event),
+      })
+    : undefined;
+  const messengerLiveControl = composeMessengerLiveControl({
+    ...(execution.executeDeps.inFlightRegistry
+      ? { registry: execution.executeDeps.inFlightRegistry }
+      : {}),
+    ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
+    ...(app.keys ? { keys: app.keys } : {}),
+    ...(sessionGrantPasses ? { passes: sessionGrantPasses } : {}),
+    log: (level, msg, data) => {
+      const fn = level === 'warn' ? console.warn : console.log;
+      fn(`[messenger] ${msg}`, data ?? '');
+    },
+  });
+  const { messengerDispatchers } = composeInboundAnswerDispatcher({
+    ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
+    // D-192 CORE #6 seam 7 (Group D) — the vendor→RemoteChannel registry, the
+    // SAME instances the notification block registered (lock-step). Always an
+    // object (empty when no connection store) so it threads directly.
+    messengerChannels: execution.messengerChannels,
+    ...(telegramAck ? { telegramAck } : {}),
+    ...(messengerTurnIngest ? { messengerTurnIngest } : {}),
+    ...(messengerLiveControl ? { messengerLiveControl } : {}),
+    // WatchSource messenger push source — verified non-callback user
+    // messages emit `data.messenger.<vendor>.message.created`.
+    warehouseBus: app.warehouseBus,
+    markSourceEvent: (source_key, at) => watchSourceRegistry.markEvent(source_key, at),
+  });
+
+  // D-158 P2b — the inbound reply-by-email funnel: the watcher-driven peer
+  // of the Slack / Telegram webhook dispatcher above. Email has no webhook —
+  // a reply lands in the notification account's own mirrored mailbox — so
+  // this subscribes to the warehouse bus and decodes each newly-synced mail
+  // record as a possible answer to an open ask. Inert unless the block +
+  // bus + connection store (to resolve the notification.email account) +
+  // blob store (to materialize the reply body) are all composed.
+  const emailReplyConnStore = app.connectionStoreRef;
+  const emailReplyBlobs = app.cacheBlobs;
+  const inboundEmailAnswer = composeInboundEmailAnswer({
+    ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
+    bus: app.warehouseBus,
+    ...(emailReplyConnStore
+      ? {
+          resolveEmailAccountSlug: (): string | null => {
+            const record = emailReplyConnStore.get('notification', 'email');
+            if (record === null) return null;
+            try {
+              const cfg = JSON.parse(record.config_json) as {
+                sender_mail_instance?: unknown;
+              };
+              return typeof cfg.sender_mail_instance === 'string' &&
+                cfg.sender_mail_instance.length > 0
+                ? cfg.sender_mail_instance
+                : null;
+            } catch {
+              return null;
+            }
+          },
+        }
+      : {}),
+    ...(emailReplyBlobs
+      ? {
+          readInboundMail: async (slug, record_id) => {
+            const mailCollection = collection.collectionRegistry.get('mail', slug);
+            if (mailCollection === undefined) return null;
+            const rec = mailCollection.get(record_id);
+            if (rec === null) return null;
+            const body = await materializeMailBody(rec, emailReplyBlobs);
+            const hf = rec.hot_fields;
+            return {
+              subject: typeof hf.subject === 'string' ? hf.subject : '',
+              folder: typeof hf.folder === 'string' ? hf.folder : '',
+              from: typeof hf.from === 'string' ? hf.from : '',
+              body_text: body ?? '',
+            };
+          },
+        }
+      : {}),
+    log: (level, msg, data) => {
+      const fn = level === 'warn' ? console.warn : console.log;
+      fn(`[email-reply] ${msg}`, data ?? '');
+    },
+  });
+  inboundEmailAnswer.start();
+
+  const vendorWebhookListener = composeVendorWebhookPort({
+    webhookPort,
+    ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
+    // D-192 seam 11 — vendor → dispatcher, built once over the registry. A new
+    // chat transport threads through here with no edit.
+    messengerDispatchers,
+    // D-188 — close the vendor webhook port (chat-transport intake) while paused.
+    ...(app.serverState
+      ? { isPaused: (): boolean => app.serverState!.isPaused() }
+      : {}),
+  });
+
+  // WatchSource messenger push-source provider — one governance row per
+  // enrolled messenger-capable notification connection (slack /
+  // telegram; the row name IS the vendor per D-163 I-4). Active when
+  // the vendor webhook port is composed — per-message auth lives at the
+  // port (HMAC / secret-token), so reachability is just network
+  // plumbing the operator owns.
+  if (app.connectionStoreRef) {
+    const messengerConnectionStore = app.connectionStoreRef;
+    const messengerPortLive = vendorWebhookListener !== undefined;
+    watchSourceRegistry.register('messenger', {
+      list() {
+        const rows: WatchSourceStatusEntry[] = [];
+        // D-192 seam 12 — every declared chat transport, so a new one appears in
+        // the watch-source list with no edit here.
+        for (const vendor of listMessengerVendors()) {
+          if (messengerConnectionStore.get('notification', vendor) === null) continue;
+          rows.push({
+            source_key: messengerSourceKey(vendor),
+            mechanism: 'messenger',
+            // The declaration already carries the string a human should read.
+            label: `${getMessengerVendorDeclaration(vendor)?.display_name ?? vendor} inbound messages`,
+            emits: [`data.messenger.${vendor}.message.created`],
+            active: messengerPortLive,
+            inactive_reason: messengerPortLive ? null : 'inbound webhook port not configured',
+            last_event_at: null,
+          });
+        }
+        return rows;
+      },
+    });
+  }
+
+  const collectionDeps: CollectionDeps = {
+    registry: collection.collectionRegistry,
+    // D-192 Fork B — surface vendor-mirrored files (`file_meta_ref`) in the
+    // `data.mirror.search` files picker alongside the CAS collection.
+    ...(app.fileMetaStoreRef ? { fileMetaStore: app.fileMetaStoreRef } : {}),
+    ...(app.fileSourceSyncStateRef ? { fileSourceSyncState: app.fileSourceSyncStateRef } : {}),
+    ...(storage.fileStack ? { fileEnroll: storage.fileStack.enrollDeps } : {}),
+    ...(collection.calendarStack
+      ? { calendarEnroll: collection.calendarStack.enrollDeps }
+      : {}),
+    ...(collection.serviceStack
+      ? { serviceEnroll: collection.serviceStack.enrollDeps }
+      : {}),
+    ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
+    ...(app.annotationStoreRef
+      ? {
+          annotationCascade: (col: string, id: string) =>
+            app.annotationStoreRef!.cascadeDelete(col, id),
+        }
+      : {}),
+    ...(app.enrichmentCascadeRef
+      ? {
+          enrichmentCascadeOnDelete: (scope, id) =>
+            app.enrichmentCascadeRef!.cascadeForSourceDelete(scope, id),
+          enrichmentCascadeOnUpdate: (scope, id) =>
+            app.enrichmentCascadeRef!.cascadeForSourceUpdate(scope, id),
+        }
+      : {}),
+  };
+
+  // D-169 P1 Codex Angle 6/7 fold — `system.status` rpc deps. The
+  // bridge side-panel section #1 reads its rich status snapshot from
+  // here on mount + each periodic refresh; without composing this slot
+  // the rpc surfaces `not_configured` and the panel never populates
+  // (P1 acceptance gap). Lazy-bound wsHandle: `createServerHandlerSet`
+  // takes deps as input + returns the handle, so we hold a ref + thunk
+  // through it; the post-construct line below assigns the live handle.
+  let wsHandleForStatusRef: WsServerHandle | undefined;
+  const serverStartedAtSeconds = Math.floor(Date.now() / 1000);
+  const SERVER_VERSION_DEFINE =
+    (globalThis as { __RECUED_SERVER_VERSION__?: string }).__RECUED_SERVER_VERSION__;
+  const systemStatusDeps: SystemStatusDeps = {
+    getServerDisplayName: () =>
+      execution.executeDeps?.serverName ?? 'recued',
+    getServerVersion: () => SERVER_VERSION_DEFINE ?? 'unknown',
+    getUptimeSeconds: () =>
+      Math.max(0, Math.floor(Date.now() / 1000) - serverStartedAtSeconds),
+    getWsServer: () => wsHandleForStatusRef,
+    // Approximate last-sync as the most-recent `connected_at` across
+    // the live WS roster — a fresh inbound message extends connected_at
+    // on every register frame the dispatcher receives. Sufficient
+    // resolution for the side-panel's "Last sync 5m ago" UX without
+    // threading a per-message timestamp tracker through the dispatcher
+    // (a follow-on slice can replace with that finer signal).
+    getLastSyncAt: () => {
+      if (!wsHandleForStatusRef) return null;
+      const rows = wsHandleForStatusRef.listConnectedInstances();
+      if (rows.length === 0) return null;
+      let max = 0;
+      for (const r of rows) {
+        if (r.connected_at > max) max = r.connected_at;
+      }
+      return max > 0 ? max * 1000 : null;
+    },
+    // Pending-asks counter rides off the notification block when wired
+    // (block-internal `countOutstandingAsks`); absent → `null` (the
+    // side panel renders "—" without faking zeros).
+    ...(execution.notificationBlock
+      ? {
+          countPendingAsks: () =>
+            execution.notificationBlock!.countOutstandingAsks().then(
+              (n) => n,
+              () => null,
+            ),
+        }
+      : {}),
+    // Durable paired-device count — includes offline pairs per spec
+    // § N.5 #1. Joins `client_tokens` (non-revoked) when wired; absent
+    // → falls back to the live connected count (degraded shape, still
+    // functional). Counts ALL kinds (`bridge` + `webclient` + `cli`).
+    ...(clientTokens
+      ? {
+          getPairedClientCount: () =>
+            clientTokens.list({ include_revoked: false }).length,
+        }
+      : {}),
+  };
+
+  // D-178 — release update-check orchestrator deps. Shares the booted db
+  // (rollout salt + anti-replay floor in `server_state`); current version
+  // from the build-time define. Undefined on an unsupported platform.
+  const releaseCheckDeps = buildReleaseCheckDeps({
+    db: storage.db,
+    currentVersion: SERVER_VERSION_DEFINE ?? 'unknown',
+  });
+  const updateModeDeps = buildUpdateModeDeps(storage.db);
+  // D-178 slice 4b — apply/rollback orchestrator. Built only on a self-applying
+  // channel (binary / docker-thin); the restart port rides the SAME lifecycle
+  // drain → supervisor handoff the bootstrap `requestRestart` rpc uses, read
+  // lazily so compose-lifecycle's late `onRestartRequested` assignment is in
+  // place by apply time.
+  //
+  // D-178 P1 — `isQuiesced` is now a REAL signal (I-5: no active runs, engine
+  // idle). Two sources, both fail-closed:
+  //   - the housekeeping engine-busy signal (auto-run scheduler in-flight +
+  //     adapter drains), late-bound by the housekeeping composer via
+  //     `bindBusySignal` (no shared signal exists yet at this boot point) — until
+  //     bound, the auto path defers rather than restarting;
+  //   - the live in-flight registry, which tracks the runs the engine-busy
+  //     signal does NOT see (owner / MCP / chat / reactive / scheduled runs
+  //     between `registerRun` and `completeRun`).
+  // The owner rpc forces `trigger: 'manual'`, which never consults `isQuiesced`,
+  // so manual apply works throughout the boot window. Consulted only on `auto`
+  // triggers (the `update-auto-apply` housekeeping task).
+  //
+  // The check→restart admission window is now closed at the DRAIN: the
+  // lifecycle restart drain (`compose-lifecycle.ts`'s `getInFlightCount`)
+  // awaits BOTH the cron in-flight counter AND this registry's
+  // `activeRunCount()` (wired in `start-post-app-collection-execution-runtime`
+  // via `getActiveRunCount`), so a run admitted between the quiesce check and
+  // the restart still blocks the `await_inflight` step. Benefits every restart
+  // trigger, not just auto-apply. (D-153's no-auto-resume + checkpointing
+  // already made a mid-run restart safe; the drain now also waits it out.)
+  let isEngineBusy: (() => boolean) | undefined;
+  const inFlightRegistry = execution.executeDeps.inFlightRegistry;
+  const isQuiescedNow = (): boolean => {
+    if (!isEngineBusy || isEngineBusy()) return false;
+    if (inFlightRegistry && inFlightRegistry.activeRunCount() > 0) return false;
+    return true;
+  };
+  const updateApplyDeps =
+    releaseCheckDeps
+      ? buildApplyOrchestratorDeps({
+          db: storage.db,
+          releaseCheckDeps,
+          requestRestart: () => bootstrapDeps?.onRestartRequested?.('update apply'),
+          isQuiesced: isQuiescedNow,
+          // D-152 § A.16 — lets a self-update extract the matched webclient to the
+          // SAME dir the loader below reads (RECUED_WEBCLIENT_DIR / CAS sibling).
+          cacheBlobsRoot: app.cacheBlobs?.root,
+        })
+      : undefined;
+  // D-178 P1 — publish the auto-apply entry for the housekeeping composer (which
+  // owns the engine-busy signal). It registers the `update-auto-apply` idle task
+  // + calls `bindBusySignal` to back the `isQuiesced` port above. Cleared
+  // (published `undefined`) on a delegated channel so a prior boot's entry can't
+  // leak into a re-compose.
+  updateAutoApplyRegistry.publish(
+    updateApplyDeps && releaseCheckDeps
+      ? {
+          applyDeps: updateApplyDeps,
+          modeStore: updateModeDeps.store,
+          channel: updateModeDeps.channel,
+          ...(updateModeDeps.envMode !== undefined ? { envMode: updateModeDeps.envMode } : {}),
+          bindBusySignal: (fn) => {
+            isEngineBusy = fn;
+          },
+        }
+      : undefined,
+  );
+  // D-178 slice 4b items 3-4 — the on-boot reconcile thunk (commit / auto-revert
+  // + ledger→audit replay). Run AFTER markBooted (the server is serving, so a
+  // staged release that reached here booted healthy → commit). Best-effort:
+  // wrapped so a reconcile failure never blocks the boot it runs after.
+  const runUpdateBootReconcile =
+    updateApplyDeps && releaseCheckDeps
+      ? async (): Promise<void> => {
+          try {
+            await runUpdateBootReconcileImpl({
+              ports: updateApplyDeps.ports,
+              channel: releaseCheckDeps.channel === 'edge' ? 'edge' : 'stable',
+              currentVersion: SERVER_VERSION_DEFINE ?? 'unknown',
+              ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+              notify: (m) => console.error(`[update] ${m}`),
+            });
+          } catch (err) {
+            console.error('[update] boot reconcile failed', err);
+          }
+        }
+      : undefined;
+
+  // D-169 P2 — historical-view rpc deps. Reads only; sources are
+  // already-in-scope state: the D-120 audit log backs `execution.recent`
+  // + `notification.recent` (`notification_fired` rows), and the
+  // notification block's `listOpenAsks` backs `notification.pending_asks`.
+  // Each source is wired only when present; an absent source resolves its
+  // read to `[]` (the handler self-gates), matching the `system.status`
+  // null-counter posture.
+  const historyDeps: HistoryDeps = {
+    ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+    ...(execution.notificationBlock
+      ? {
+          listOpenAsks: () => execution.notificationBlock!.listOpenAsks(),
+          // D-169 P2 Slice 3 — the bridge approval card's submit funnel.
+          // The wire layer owns the `via` channel decision (the interactive
+          // answer arrives on the `ui` inbound path; the first-class
+          // `bridge` channel is notify-only), so the handler stays
+          // channel-agnostic.
+          submitAnswer: (ask_id: string, option_id: string) =>
+            execution.notificationBlock!.submitAnswer({
+              ask_id,
+              option: option_id,
+              via: 'ui',
+            }),
+        }
+      : {}),
+  };
+
+  // D-173 INT-3 — Reception Inbox boot-wiring. Converges Lane P (the
+  // ArgEditSchema resolver over the installed catalog's lowered
+  // `editable_args`) + Lane I (the inbox handlers + the N.5 boundary writer)
+  // into a working review-then-approve inbox. `submitAnswer` is the SAME
+  // notification-block resume funnel `historyDeps` uses (pre-bound to the
+  // `ui` channel); the gate handles (`auditLog` / `checkpointStore` /
+  // `localManifestStore`) gate the slice (absent → `not_configured`). The
+  // returned `projectReception` effect (`runReceptionProjection`-backed) is
+  // the ready seam the P3 dispatch-routing slice binds as the catalog op's
+  // connection-adapter effect.
+  // D-173 P4.3 — the local-calendar create seam for the inbox-side
+  // `projectReception` effect (the `calendar.event` branch).
+  //
+  // ⚠ Since D-210 A.2 that branch serves an INTAKE targeting a calendar, NOT a
+  // reservation — a booking is never in the calendar, so the scheduling booking
+  // store is no longer one of this seam's deps. Absent → a calendar projection
+  // fail-closes. Mirrors the executor-config kernel binding.
+  const receptionCalendarSeam = collection.calendarStack
+    ? createReceptionCalendarEventSeam({
+        calendarCreate: collection.calendarStack.kernelDispatchers.calendarCreate,
+      })
+    : undefined;
+
+  // D-210 A.2 / slice 3b — the SCHEDULING booking write path: the reservation's
+  // whole materialization, replacing the calendar event it used to hang off.
+  // Needs BOTH the work-entity store (the row) and the scheduling booking store
+  // (the sealed slot + provenance); absent → a reservation projection
+  // fail-closes rather than silently dropping an approved booking.
+  //
+  // The counterparty (sealed email → contact id) and the title (endpoint
+  // `display_name`) are each independently optional, so a partial substrate
+  // costs the booking a FIELD, never the row.
+  const receptionBookingSeam =
+    storage.workEntityStoreRef && storage.intakeFormSubmissionStoreRef
+      ? createReceptionBookingMintSeam({
+          writeBooking: (writeInput, now) =>
+            storage.workEntityStoreRef!.writeBooking(writeInput, now),
+          readBooking: (id) => storage.workEntityStoreRef!.readBooking(id),
+          findBooking: (request_id) =>
+            storage.intakeFormSubmissionStoreRef!.findById(request_id),
+          markProcessed: (input) => storage.intakeFormSubmissionStoreRef!.markProcessed(input),
+          ...(storage.publicEndpointRegistryStoreRef
+            ? {
+                findEndpoint: (endpoint_id) =>
+                  storage.publicEndpointRegistryStoreRef!.findById(endpoint_id),
+              }
+            : {}),
+          ...(app.keys
+            ? {
+                // ⚠ D-210 A.8 slice 4b-ii — the FORM key. Renaming the mint's dep
+                // did NOT make this a type error: a conditional SPREAD skips
+                // tsc's excess-property check, so the old key would have been
+                // silently dropped and every booking would have quietly lost its
+                // counterparty contact. ⇒ the spread trap, caught by grep.
+                getFormSubmissionPiiKey: () =>
+                  deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
+              }
+            : {}),
+          ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+        })
+      : undefined;
+
+  // D-173 P5 — the file-attach seam for the inbox-side `projectReception`
+  // effect (the drop branch: a task with the file attached). Built only when
+  // the annotation store is up; absent → a work-entity projection carrying a
+  // `file_id` fail-closes. Mirrors the executor-config kernel binding.
+  const receptionAttachSeam = app.annotationDeps
+    ? createReceptionAttachFileSeam({
+        attachDeps: {
+          annotationDeps: app.annotationDeps,
+          registry: collection.collectionRegistry,
+        },
+      })
+    : undefined;
+
+  // D-177 N.14.8 fork 3 — ONE instance: the inbox WRITES rejects through it and
+  // the suggestion read COUNTS them through it. Two instances would be two
+  // handles on the same table, but naming it once makes the shared-ness the
+  // code's claim rather than SQLite's coincidence.
+  const receptionInboxSubviewStore = createReceptionInboxSubviewStore(storage.db);
+
+  const receptionInboxBundle = composeReceptionInboxDeps({
+    auditLog: storage.auditLog,
+    checkpointStore: storage.checkpointStore,
+    localManifestStore: storage.localManifestStore,
+    eventBus: storage.eventBus,
+    subviewStore: receptionInboxSubviewStore,
+    // D-173 D7 — "confirmed at approval": the OWNER-facing overlap count over
+    // every calendar they have, so a held booking can say what else is on then.
+    // Absent (no calendar stack) ⇒ no count surfaces, and the inbox renders
+    // nothing rather than a misleading zero.
+    //
+    // ⛔ Owner-facing only. The VISITOR slot picker keeps the null reader
+    // (`wire-reception-substrate.ts`) — free/busy-vs-your-calendar stays out of
+    // scope for visitors per D7, and event intervals are a free/busy
+    // disclosure. Same data, opposite audience; never cross-wire these.
+    ...(collection.calendarStack
+      ? {
+          countCalendarOverlap: (window_start: number, window_end: number) => {
+            const stack = collection.calendarStack!;
+            // Rebuilt per call — calendars can be enrolled or started after
+            // boot, and a stale map would silently drop one from the count.
+            const live = new Map(stack.listLive().map((c) => [c.slug, c.table]));
+            return countCalendarOverlap(
+              {
+                instances: stack.instances,
+                // An enrolled instance with no live collection (never synced /
+                // failed to start) resolves to null ⇒ counted as UNREADABLE,
+                // never as zero. The gap between `instances` and `listLive()`
+                // is exactly the calendar we cannot speak for.
+                getTable: (slug) => live.get(slug) ?? null,
+              },
+              window_start,
+              window_end,
+            );
+          },
+        }
+      : {}),
+    // D-210 Phase C — the no-ask release leg. Independent of the block:
+    // a notify-mode hold has no ask to answer, so this is the ONLY way it
+    // can be approved or rejected from the inbox.
+    ...(execution.preflightResumer
+      ? { preflightResumer: execution.preflightResumer }
+      : {}),
+    ...(execution.notificationBlock
+      ? {
+          submitAnswer: (ask_id: string, option_id: string) =>
+            execution.notificationBlock!.submitAnswer({
+              ask_id,
+              option: option_id,
+              via: 'ui',
+            }),
+          // D-177 N.14 — the allow-for-this-form offer, read off the REAL
+          // ask (as raised, never recomputed): present iff the ask is
+          // still open, actually carries the `allow_session` option, and
+          // its payload holds the offer bounds. Feeds the InboxItem hint
+          // + the approve path's act-site re-verify.
+          readAskAllowOffer: async (ask_id: string) => {
+            const ask = await execution.notificationBlock!.getAsk(ask_id);
+            if (ask === null || ask.status !== 'open') return undefined;
+            if (!ask.options.some((o) => o.id === 'allow_session')) {
+              return undefined;
+            }
+            const offer = (
+              ask.handler_payload as {
+                session_grant?: { ttl_ms?: unknown; max_uses?: unknown };
+              }
+            ).session_grant;
+            if (
+              offer === undefined
+              || typeof offer.ttl_ms !== 'number'
+              || typeof offer.max_uses !== 'number'
+            ) {
+              return undefined;
+            }
+            return { ttl_ms: offer.ttl_ms, max_uses: offer.max_uses };
+          },
+        }
+      : {}),
+    ...(storage.workEntityStoreRef ? { workEntityStore: storage.workEntityStoreRef } : {}),
+    ...(storage.formResponseStoreRef
+      ? { formResponseStore: storage.formResponseStoreRef }
+      : {}),
+    ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+    ...(receptionCalendarSeam ? { createCalendarEvent: receptionCalendarSeam } : {}),
+    ...(receptionBookingSeam ? { createBooking: receptionBookingSeam } : {}),
+    ...(receptionAttachSeam ? { attachFile: receptionAttachSeam } : {}),
+    // D-173 P5 (scan-gate part B) — surface a drop attachment's LIVE
+    // data.file.received scan_status (the ClamAV pack writes the verdict via
+    // core.storage.file.set-scan-status) in the inbox, instead of the static
+    // `unscanned` the source resolver stamps. Narrow read over the registry;
+    // a missing collection / record yields undefined → the default `unscanned`
+    // stands and the advisory gate still warns.
+    readFileScanStatus: (file_id: string): ReceptionInboxScanStatus | undefined => {
+      const fileCollection = collection.collectionRegistry.get('file', 'received') as
+        | { get(id: string): { hot_fields?: { scan_status?: ReceptionInboxScanStatus } } | null }
+        | undefined;
+      return fileCollection?.get(file_id)?.hot_fields?.scan_status;
+    },
+  });
+
+  // D-158 P2b-ii — notification ask-landing route deps. Built only when the
+  // block is up; closes over the block's getAsk / submitAnswer / verification-
+  // phrase reads + a per-process single-use form-nonce store.
+  // `createServerHandlerSet` mounts the `/ask/<ask_id>` handler on the `ask`
+  // path role when present (else absent → path-router 404s). Honors the same
+  // `RECUED_RECEPTION_TRUST_PROXY` gate reception uses for the same-origin
+  // scheme tightening.
+  //
+  // ⚠ ORDER IS LOAD-BEARING since D-210 A.8 3d-2b: this block reads
+  // `receptionInboxBundle` for the held-op detail resolver, so it must stay
+  // BELOW that composition. It used to sit above it (nearer the other port
+  // deps), which is why the move happened rather than a lazily-captured
+  // binding — a closure over a `let` assigned later would have compiled and
+  // silently resolved `undefined` at every early request.
+  const askTrustForwardedProto =
+    process.env.RECUED_RECEPTION_TRUST_PROXY === 'true' ||
+    process.env.RECUED_RECEPTION_TRUST_PROXY === '1';
+
+  // D-210 A.8 3d-2b — what this approval actually commits to, rendered above
+  // the options. Bound only when the inbox is wired: absent ⇒ the page
+  // renders exactly as it did pre-3d-2b.
+  //
+  // ⚠ The ANNOTATION is the point, not decoration. This reaches the deps
+  // through a conditional SPREAD, and a spread skips TypeScript's
+  // excess-property check — so renaming `resolveDetails` on
+  // `AskLandingPortHandlerDeps` would leave this site spreading a key
+  // nothing reads, at tsc ZERO, with the feature silently dead. That is the
+  // same shape that left `receptionManageMintDeps` dead on the wire.
+  // `Pick<…, 'resolveDetails'>` fails the build the moment the key moves.
+  //
+  // ⚠ `editable` and `submitEditedApproval` are bound TOGETHER off the same
+  // bundle (D-210 A.8 3d-2c). They must never come apart: controls the
+  // submit path cannot honour would let the owner retime a slot, approve,
+  // and have the original value land at `success: true`.
+  const askDetailDeps: Pick<
+    NonNullable<ServerConfig['askLandingPortDeps']>,
+    'resolveDetails' | 'submitEditedApproval'
+  > =
+    receptionInboxBundle !== undefined
+      ? {
+          resolveDetails: createAskLandingDetailResolver({
+            findHoldItem: (hold_id: string) =>
+              findReceptionHoldItem(receptionInboxBundle.receptionInboxDeps, hold_id),
+            editable: true,
+          }),
+          submitEditedApproval: createAskLandingEditApproval({
+            findHoldItem: (hold_id: string) =>
+              findReceptionHoldItem(receptionInboxBundle.receptionInboxDeps, hold_id),
+            approve: async ({ hold_id, edits, ask_id }) => {
+              // The ask capability is the authority — NOT a synthesised
+              // instance_id. `resolveApprover` takes this arm and the audit
+              // detail names it.
+              const out = await handleReceptionInboxApprove(
+                receptionInboxBundle.receptionInboxDeps,
+                { hold_id, edits },
+                { ask_landing: { ask_id } },
+              );
+              return {
+                released: out.released,
+                ...(out.reason !== undefined ? { reason: out.reason } : {}),
+              };
+            },
+          }),
+        }
+      : {};
+
+  const askLandingPortDeps: ServerConfig['askLandingPortDeps'] =
+    execution.notificationBlock
+      ? {
+          getAsk: (ask_id: string) => execution.notificationBlock!.getAsk(ask_id),
+          submitAnswer: (reply) => execution.notificationBlock!.submitAnswer(reply),
+          getVerificationPhrase: async () =>
+            (await execution.notificationBlock!.getNotificationSettings())
+              .verification_phrase,
+          nonceStore: createInMemoryAskLandingNonceStore(),
+          trustForwardedProto: askTrustForwardedProto,
+          ...askDetailDeps,
+        }
+      : undefined;
+
+  // D-165 enroll-host #1 (vendor OAuth popup) — slice 2b Piece W.
+  // Construct the shared start↔complete stores ONCE so the start rpc
+  // (`connectionDeps.vendorOAuthStart`) and the `/oauth/complete` port
+  // handler (`oauthCompletePortDeps`) hand the pending flow + the
+  // exchanged credential through the SAME in-memory maps: start `put`s a
+  // flow, complete `take`s it + `put`s the result, the result-claim rpc
+  // `take`s that. Gated on the booted signing identity — the start rpc
+  // signs the `state` token and the complete handler verifies the echoed
+  // state against the same key, so without identity neither side can
+  // function. Absent → the substrate stays unwired (start rpc →
+  // `not_configured`; the `oauth` path role is never mounted → 404),
+  // mirroring `composePassportFetchSubstrate`'s identity gate.
+  const vendorOAuthIdentity = options.signingIdentity?.identity;
+  const vendorOAuth = vendorOAuthIdentity
+    ? {
+        identity: vendorOAuthIdentity,
+        flowStore: createVendorOAuthFlowStore(),
+        resultStore: createVendorOAuthResultStore(),
+        // The signed state carries this; the cloud callback page forwards
+        // the code to `<server_url>/oauth/complete`, and it forms the
+        // direct-redirect choice. Read live per-call so a mid-run env
+        // change is honoured; canonicalisation happens in the rpc / core.
+        serverPublicUrl: (): string | null =>
+          process.env.RECUED_PUBLIC_BASE_URL?.trim() || null,
+      }
+    : undefined;
+
+  // D-170 N.4 / N.15 — draft store + test-before-save preview deps. The draft
+  // store is always present (per-pair db). The preview's READ-execution seam
+  // is the SAME connection store + api-handler deps the live executor wires —
+  // so a previewed read is the call the installed catalog would make — and
+  // degrades cleanly to a non-executing redacted plan when either is absent
+  // (dbless / key-uninitialised). The mutation gate lives in the preview
+  // itself; this seam is reached only for reads. `ingredient.saveAsNew` rides
+  // the same dependency family and uses the local manifest store for the local
+  // publish half without a new server.ts forward.
+  const previewConnectionStore = app.connectionStoreRef;
+  const previewConnectionApi = execution.executorConfig.connectionApi;
+  const ingredientDraftDeps: IngredientDraftRpcDeps = {
+    draftStore: storage.draftStore,
+    localManifestStore: storage.localManifestStore,
+    ...(previewConnectionStore
+      ? { connectionLookup: (kind, name) => previewConnectionStore.get(kind, name) }
+      : {}),
+    ...(previewConnectionStore && previewConnectionApi
+      ? {
+          previewExecute: createPreviewConnectionExecute({
+            store: previewConnectionStore,
+            connectionApi: previewConnectionApi,
+          }),
+        }
+      : {}),
+  };
+
+  // R2 build step 4c.1 — `recipe.runnability` read surface. The gatherer
+  // reverse-maps each bound `api` connection's vendor op grants to canonical
+  // capabilities, so it needs the live connection store + the LIVE operation-
+  // profile instance the gateway reads; the local-manifest store (when present)
+  // feeds the merged vendor registry so a 3rd-party CRM pack resolves too.
+  // recipeStore is always present; the rpc gates on the connection store (absent in
+  // a dbless harness) → `not_configured`, like `recipe.list`. R1 is family-coarse,
+  // so the uninstall reverse-walk needs only the manifest store + the pack's
+  // refcount-aware local-catalog drop-ids (`privateByoDropIds`) to simulate the
+  // post-uninstall registry shrink — the former grant/profile/binding deps are gone.
+  const contractStore = app.contractStoreRef;
+  const recipeRunnabilityDeps: RecipeRunnabilityHandlerDeps | undefined =
+    app.connectionStoreRef
+      ? {
+          connectionStore: app.connectionStoreRef,
+          recipeStore: storage.recipeStore,
+          ...(storage.localManifestStore
+            ? { localManifestStore: storage.localManifestStore }
+            : {}),
+          ...(contractStore
+            ? {
+                localCatalogDropIdsForPack: (pack_slug: string) =>
+                  privateByoDropIds(contractStore, pack_slug),
+              }
+            : {}),
+        }
+      : undefined;
+
+  // R2 build step 4c.4 — one broadcaster over the SAME deps as the read surface,
+  // bound to the bus. The connection (enroll/delete/grant/revoke) + pack
+  // (install/uninstall) handlers call `recomputeAndEmit()` after their mutation
+  // commits → a `recipe_runnability_changed` snapshot fans to paired clients.
+  // Gated on the bus; best-effort by construction (the broadcaster swallows).
+  const recipeRunnabilityBroadcaster =
+    recipeRunnabilityDeps && storage.eventBus
+      ? makeRecipeRunnabilityBroadcaster(recipeRunnabilityDeps, (event) => {
+          storage.eventBus.emit(event);
+        })
+      : undefined;
+
+  // Reactive-substrate slice 1 — boot the event-trigger substrate
+  // (store + warehouse-bus dispatcher) and hand its rpc deps to the
+  // handler set below. Returns undefined on dbless boots → the
+  // `triggers.*` rpc surface stays `not_configured`.
+  const eventTriggersBundle = composeEventTriggers({
+    db: storage.db,
+    warehouseBus: app.warehouseBus,
+    executeDeps: execution.executeDeps,
+    auditLog: storage.auditLog,
+    eventBus: storage.eventBus,
+    localManifestStore: storage.localManifestStore,
+    // R21.1 — reactive fan-out drops while the vault is sealed.
+    isVaultUnlocked: app.isVaultUnlocked,
+  });
+
+  // Poll-manager / G6 — the watch substrate composes on top of the
+  // trigger store (its demand source). Demand-changing seams hook
+  // recompute below: trigger CRUD (late-bound `onRulesChanged`),
+  // recipe-store mutations (declarative reconcile first, so a freshly
+  // installed recipe's triggers exist before demand derivation), and
+  // connection enroll/delete (the profile reseed hooks registered at
+  // boot run first — registration order — so the poll path sees the
+  // updated grants).
+  const watchBundle = composeWatchManager({
+    sourceRegistry: watchSourceRegistry,
+    db: storage.db,
+    warehouseBus: app.warehouseBus,
+    executeDeps: execution.executeDeps,
+    triggersStore: eventTriggersBundle?.store,
+    eventBus: storage.eventBus,
+    localManifestStore: storage.localManifestStore,
+    // R21.1 — poll loops disarm while the vault is sealed.
+    isVaultUnlocked: app.isVaultUnlocked,
+  });
+  if (eventTriggersBundle && watchBundle) {
+    eventTriggersBundle.triggersDeps.onRulesChanged = () => watchBundle.manager.recompute();
+  }
+  if (eventTriggersBundle || watchBundle) {
+    execution.executeDeps.recipeStore.setOnMutated(() => {
+      eventTriggersBundle?.reconcile();
+      watchBundle?.manager.recompute();
+    });
+  }
+  if (watchBundle && execution.executeDeps.connectionStore) {
+    execution.executeDeps.connectionStore.addOnUpsert(() => watchBundle.manager.recompute());
+    execution.executeDeps.connectionStore.addOnDelete(() => watchBundle.manager.recompute());
+  }
+
+  // D-201 Slice 8J — production installs one closed delivery-profile preset
+  // registry. Clock-dependent mechanism presets are omitted unless the
+  // boot-pinned HTTPS authority exists; their wrappers re-check that authority
+  // for every delivery, handshake, and profile-aware test build.
+  const webhookClockAuthorityUrl = resolveWebhookClockAuthorityUrl(
+    process.env.RECUED_WEBHOOK_CLOCK_AUTHORITY_URL,
+  );
+  const webhookClockAuthority = webhookClockAuthorityUrl === null
+    ? null
+    : createWebhookClockHealthAuthority({
+        authorityUrl: webhookClockAuthorityUrl,
+      });
+  const webhookProfiles = createWebhookProfileRuntimeRegistry(
+    createBuiltinWebhookDeliveryProfileAdapters(webhookClockAuthority),
+  );
+  // D-179 — a recipe's install config lives on its `is_default` dish. ONE
+  // construction, shared by the webhook RUNNER's execute merge and the webhook
+  // DOOR's capability derivation below, so the closure the owner's door grants
+  // is derived from the exact config the run will use (the same bind-vs-run
+  // rule `wire-reception-substrate.ts` pins for the reception door).
+  const resolveWebhookInstallConfig = composeInstallConfigResolver(
+    execution.executeDeps.dishStore,
+  );
+
+  // D-209 #1 W2b — the webhook DOOR substrate: what `recipe.save` /
+  // `packs.install` mint a webhook-declaring recipe's derived door with, and
+  // what `packs.uninstall` retires them against. The contract stores are the
+  // SAME instances the Gateway reads its verdicts from (threaded down from
+  // the execution context, never rebuilt here) — a grant the mint writes must
+  // be a grant the gate can see. Absent on partial harnesses ⇒ no door mints
+  // and the dispatch path stays fail-closed at the contract floor.
+  const webhookDoorDeps: WebhookDoorEnrollDeps | undefined =
+    execution.contractDefinitionStore !== undefined
+      && execution.grantEntryStore !== undefined
+      && app.webhookConsumerStoreRef !== undefined
+      ? {
+          definitionStore: execution.contractDefinitionStore,
+          grantEntryStore: execution.grantEntryStore,
+          consumerStore: app.webhookConsumerStoreRef,
+          now: () => Date.now(),
+          resolveConfig: resolveWebhookInstallConfig,
+          ...((): Pick<WebhookDoorEnrollDeps, 'resolveOp'> => {
+            const resolveOp = composeRecipeOpResolver(execution.executeDeps);
+            return resolveOp ? { resolveOp } : {};
+          })(),
+        }
+      : undefined;
+
+  const webhookRuntimeComposable = app.webhookIngressStoreRef !== undefined
+    && app.webhookDeliveryStoreRef !== undefined
+    && app.webhookConsumerStoreRef !== undefined
+    && storage.auditLog !== undefined;
+  const webhookOutboxRuntime = webhookRuntimeComposable
+    ? createWebhookOutboxRuntime(
+        app.webhookDeliveryStoreRef!,
+        createWebhookRecipeOutboxSink(
+          app.webhookConsumerStoreRef!,
+          createExecuteWebhookRecipeRunner({
+            executeDeps: execution.executeDeps,
+            auditLog: storage.auditLog!,
+            // D-179 — the runner must pass the install config explicitly
+            // because its idempotency `run_id` suppresses `handleExecute`'s
+            // dish merge (see `ExecuteWebhookRecipeRunnerDeps.resolveConfig`).
+            resolveConfig: resolveWebhookInstallConfig,
+            // D-209 #1 W3 — the door snapshot resolves from the SAME store the
+            // Gateway reads (a grant the mint wrote must be a grant the gate can
+            // see). A partial harness without one resolves every stamped door
+            // DEAD (empty allowlist → denies) — fail-closed, never fail-open.
+            definitionStore:
+              execution.contractDefinitionStore ?? { get: () => null },
+          }),
+        ),
+        {
+          reconcileWaitingDispatches: async () => {
+            await reconcileWebhookAwaitingApprovalDispatches(
+              app.webhookConsumerStoreRef!,
+              storage.auditLog!,
+            );
+          },
+          canDispatch: () => app.isVaultUnlocked()
+            && !(app.serverState?.isPaused() ?? false),
+          log: (level, message, metadata) => {
+            const sink = level === 'error' ? console.error : console.warn;
+            sink(`[webhook-outbox] ${message}`, metadata);
+          },
+        },
+      )
+    : undefined;
+
+  const webhookPublicReachabilityEnabled = (): boolean => {
+    const raw = process.env.RECUED_PUBLIC_REACHABLE;
+    return raw === 'true' || raw === '1';
+  };
+  const webhookPublicBaseUrl = (): string | null => {
+    const base = resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL);
+    if (base === null) return null;
+    try {
+      const parsed = new URL(base);
+      if (parsed.protocol !== 'https:'
+        || parsed.username.length > 0
+        || parsed.password.length > 0
+        || base.includes('?')
+        || base.includes('#')
+        || parsed.search.length > 0
+        || parsed.hash.length > 0) {
+        return null;
+      }
+      // A path prefix is allowed for an operator-owned reverse proxy, but the
+      // projected vendor URL must never inherit URL credentials/query/fragment.
+      parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+      return parsed.href.replace(/\/+$/, '');
+    } catch {
+      return null;
+    }
+  };
+  const webhookEndpointUrl = (publicId: string): string | null => {
+    const base = webhookPublicBaseUrl();
+    if (base === null) return null;
+    const endpoint = `${base}/v1/webhooks/${publicId}`;
+    return Buffer.byteLength(endpoint, 'utf8') <= 4_096 ? endpoint : null;
+  };
+  // D-201 Slice 6B3 — operation-bound provider calls resolve the same durable
+  // owner binding as inbound dispatch, then inject the callback only inside the
+  // final trusted catalog dispatch. The reserved first-party fixture adapter
+  // proves both attach and detach; any other profile/catalog/operation tuple
+  // fails closed until trusted code is registered.
+  if (app.webhookIngressStoreRef && app.webhookConsumerStoreRef) {
+    execution.executeDeps.operationBoundWebhook = createWebhookOperationBindingResolver({
+      ingressStore: app.webhookIngressStoreRef,
+      consumerStore: app.webhookConsumerStoreRef,
+      adapters: createWebhookCallbackBindingRuntimeRegistry(
+        createOperationBoundWebhookFixtureAdapters(),
+      ),
+      resolveCanonicalEndpoint: (ingress) => webhookEndpointUrl(ingress.public_id),
+    });
+  }
+  const webhookPublicExposureEnabled = async (): Promise<boolean> => {
+    try {
+      const machine = exposureDeps?.getMachine();
+      return machine !== undefined
+        && (await machine.current()).resolution.webhooks.public;
+    } catch {
+      return false;
+    }
+  };
+  const webhookPublicListenerBound = (): boolean => {
+    try {
+      return listenerCoordinator.status().some(
+        (status) => status.listener === 'public' && status.listening,
+      );
+    } catch {
+      return false;
+    }
+  };
+  const webhookTestDelivery = app.webhookIngressStoreRef !== undefined
+    && app.webhookDeliveryStoreRef !== undefined
+    ? createWebhookTestDeliveryService({
+        ingressStore: app.webhookIngressStoreRef,
+        deliveryStore: app.webhookDeliveryStoreRef,
+        profiles: webhookProfiles,
+      })
+    : undefined;
+  const webhookProfileListener = webhookPort > 0
+    && webhookOutboxRuntime !== undefined
+    && app.webhookIngressStoreRef !== undefined
+    && app.webhookDeliveryStoreRef !== undefined
+    ? createWebhookProfileListener({
+        ingressStore: app.webhookIngressStoreRef,
+        deliveryStore: app.webhookDeliveryStoreRef,
+        profiles: webhookProfiles,
+        isOutboxDispatcherStarted: webhookOutboxRuntime.isStarted,
+        ...(app.serverState
+          ? { isPaused: (): boolean => app.serverState!.isPaused() }
+          : {}),
+        isIntakeReachable: async () => app.isVaultUnlocked()
+          && webhookPublicBaseUrl() !== null
+          && webhookPublicReachabilityEnabled()
+          && webhookPublicListenerBound()
+          && await webhookPublicExposureEnabled(),
+        resolveCanonicalPublicUrl: ({ ingress }) =>
+          webhookPublicReachabilityEnabled()
+            ? webhookEndpointUrl(ingress.public_id)
+            : null,
+        onHandshakeReadinessProven: (ingressId) => {
+          app.webhookIngressStoreRef!.confirmHandshakeReadiness(ingressId);
+        },
+        log: (level, message, metadata) => {
+          const sink = level === 'error' ? console.error : console.warn;
+          sink(`[webhook-profile] ${message}`, metadata);
+        },
+      })
+    : undefined;
+
+  const webhookRuntimeReadiness = async (
+    ingress: import('@recued/contracts').WebhookIngressRecord,
+    profile: import('@recued/contracts').WebhookProfileDescriptor,
+  ) => {
+    const endpointUrl = webhookEndpointUrl(ingress.public_id);
+    const endpointTransportReady = endpointUrl !== null
+      && BUILTIN_WEBHOOK_PROFILE_POLICIES.get(profile.profile_id)
+        .endpointSupported(endpointUrl);
+    // An unavailable exposure authority is a closed listener, never an
+    // invitation to infer reachability from the URL alone.
+    const webhookPublicExposed = await webhookPublicExposureEnabled();
+    const publicListenerBound = webhookPublicListenerBound();
+    let clockReady = true;
+    if (profile.mechanism_kind === 'timestamped_hmac') {
+      try {
+        clockReady = webhookClockAuthority !== null
+          && (await webhookClockAuthority.check()).healthy;
+      } catch {
+        clockReady = false;
+      }
+    }
+    const pairedConnectionRequired = webhookProfileRequiresPairedConnection(
+      profile,
+      ingress.registration_mode,
+    );
+    return {
+      endpoint_url: endpointUrl,
+      profile_runtime_available: webhookProfiles.get(profile.profile_id) !== null,
+      paired_connection_available: !pairedConnectionRequired
+        || (ingress.paired_connection_id !== null
+          && (app.connectionStoreRef?.get('api', ingress.paired_connection_id) ?? null) !== null),
+      listener_available: webhookProfileListener !== undefined
+        && (webhookOutboxRuntime?.isStarted() ?? false)
+        && publicListenerBound,
+      public_reachability_enabled: webhookPublicReachabilityEnabled()
+        && webhookPublicExposed,
+      tls_ready: endpointTransportReady,
+      clock_ready: clockReady,
+      test_delivery_supported: ingress.environment === 'test'
+        && (webhookTestDelivery?.supports(profile.profile_id) ?? false),
+      vault_unlocked: app.isVaultUnlocked(),
+      server_unpaused: !(app.serverState?.isPaused() ?? false),
+    };
+  };
+
+  // D-201 Slice 8J — managed registration stays a separate trusted preset
+  // registry from delivery admission. Generic composition does not select a
+  // vendor, connection shape, endpoint lifecycle, or ownership rule itself.
+  const webhookRegistrationRuntime = app.webhookIngressStoreRef
+    && app.connectionStoreRef
+    && app.keys
+    ? createBuiltinWebhookRegistrationProfileRegistry({
+        connectionStore: app.connectionStoreRef,
+        ingressStore: app.webhookIngressStoreRef,
+        connectionKeyProvider: app.keys.keyProvider('connection'),
+      })
+    : null;
+  const webhookManagedRegistration = app.webhookIngressStoreRef
+    && webhookRegistrationRuntime
+    ? createWebhookManagedRegistrationService({
+        store: app.webhookIngressStoreRef,
+        adapters: webhookRegistrationRuntime,
+        profilePolicies: BUILTIN_WEBHOOK_PROFILE_POLICIES,
+        resolveCanonicalEndpoint: (ingress) =>
+          webhookEndpointUrl(ingress.public_id),
+      })
+    : undefined;
+  const webhookProfileCapabilities = Object.freeze(webhookProfiles.list().map((adapter) => {
+    const descriptor = webhookProfile(adapter.profile_id);
+    if (!descriptor) {
+      throw new Error(`webhook profile capability: unknown profile '${adapter.profile_id}'`);
+    }
+    return Object.freeze({
+      profile_id: adapter.profile_id,
+      registration_modes: Object.freeze(descriptor.registration_modes.filter((mode) =>
+        mode !== 'managed_endpoint'
+          || (webhookRegistrationRuntime !== null
+            && webhookRegistrationRuntime.get(adapter.profile_id) !== null))),
+      deduplication: Object.freeze({
+        ...descriptor.deduplication,
+        identity: Object.freeze({ ...descriptor.deduplication.identity }),
+      }),
+    });
+  }));
+
+  // D-152 § A.16 — load the LAN-only webclient bundle from disk (the
+  // production wiring the substrate deferred). The release tarball extracts
+  // to `<data-volume>/webclient/` (a CAS-root sibling, same convention as the
+  // messenger media scratch dir above); `RECUED_WEBCLIENT_DIR` overrides for
+  // dev / non-standard layouts. The resulting handler is threaded onto the
+  // LAN listener only (public `/webclient/*` stays 404 — structural LAN-only
+  // design). Outcomes:
+  //   - no dir / no manifest → `null`, mount stays dormant (the common case:
+  //     the webclient is primarily served from app.recued.com).
+  //   - manifest present-but-untrusted (unreadable / malformed / wrong shape),
+  //     OR sha / one-to-one drift → logged `webclient_bundle_unverified`,
+  //     mount stays dormant (a tampered or partial bundle never serves).
+  //   - verified bundle → passed to `createServerHandlerSet`.
+  // We verify HERE with the same contract validator the handler factory uses,
+  // rather than letting the factory throw mid-construction: a bad bundle is
+  // dropped BEFORE the call, so `createServerHandlerSet` runs exactly once on
+  // every path. The loader already re-hashed each file from disk into its
+  // `sha256` slot, so this `verifyWebclientBundle` pass compares real bytes
+  // against the shipped manifest.
+  const webclientBundleDir = resolveWebclientBundleDir(
+    app.cacheBlobs?.root,
+    process.env.RECUED_WEBCLIENT_DIR,
+  );
+  let webclientBundle: { files: ReadonlyArray<WebclientBundleFile> } | undefined;
+  if (webclientBundleDir) {
+    try {
+      const loaded = await loadWebclientBundleFromDisk(webclientBundleDir);
+      if (loaded) {
+        const verified = verifyWebclientBundle(loaded.manifest, loaded.files);
+        if (verified.ok) {
+          webclientBundle = { files: loaded.files };
+        } else {
+          console.warn(
+            `[webclient] webclient_bundle_unverified: ${verified.issues
+              .map((i) => i.code)
+              .join(',')} (dir=${webclientBundleDir}) — not mounting /webclient`,
+          );
+        }
+      }
+    } catch (err) {
+      // Present-but-untrusted manifest (unreadable / malformed / wrong shape) —
+      // distinct from "absent" (→ null above). Warn loudly, stay dormant.
+      if (err instanceof WebclientBundleLoadError) {
+        console.warn(
+          `[webclient] webclient_bundle_unverified: ${err.reason} (dir=${webclientBundleDir}) — not mounting /webclient`,
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const serverHandlerSet = createServerHandlerSet({
+    ...(webclientBundle ? { webclientBundle } : {}),
+    executeDeps: execution.executeDeps,
+    pairing: storage.pairing,
+    // Slice 3b — first-boot server-vault enrollment at /auth/pair. Both
+    // are live: `app.keys` is the KeyManager; the keyStore getter reads
+    // the (lazily-booted) signing identity at call time.
+    ...(app.keys ? { keys: app.keys } : {}),
+    getServerKeyStore: () => storage.signingIdentity?.keyStore,
+    scheduleDeps,
+    ...(dishDeps ? { dishDeps } : {}),
+    ...(eventTriggersBundle
+      ? { triggersDeps: eventTriggersBundle.triggersDeps }
+      : {}),
+    // "Watch this element" — scaffold + save a local notify recipe; the
+    // reconciler (above, on recipeStore.setOnMutated) materializes the watch
+    // trigger DISARMED (the user arms it in #automation — D-179 P5c). Gated
+    // on the event-trigger bundle being present: without the reconciler a
+    // saved recipe would never materialize a trigger row at all.
+    ...(eventTriggersBundle
+      ? { elementWatchDeps: { recipeStore: execution.executeDeps.recipeStore } }
+      : {}),
+    ...(rpc.autoRunDeps ? { autoRunDeps: rpc.autoRunDeps } : {}),
+    ...(watchBundle ? { watchDeps: watchBundle.watchDeps } : {}),
+    // Scope-B (D-108/D-109) — the live `server.archive.*` runtime,
+    // assembled upstream (start-lifecycle-recovery-pre-listener-runtime)
+    // where the restart-drain lifecycle + db + version + exit coexist.
+    ...(archiveDeps ? { archiveDeps } : {}),
+    // D-172 resumable uploads — wire the webclient upload service (built in
+    // compose-collection-context where the CAS + file collection are born) so
+    // the `upload.*` rpc + the binary `/ws/upload` socket dispatch. Absent on a
+    // db-less / no-CAS boot ⇒ the rpc 501s + `/ws/upload` 503-closes.
+    ...(collection.uploadService
+      ? { uploadDeps: { service: collection.uploadService } }
+      : {}),
+    // M4 archive download — the binary `/ws/download` socket streams a finished
+    // export off disk. Built alongside the upload service (data dir lives there);
+    // absent on a db-less boot ⇒ `/ws/download` 503-closes.
+    ...(collection.downloadService
+      ? { downloadDeps: { service: collection.downloadService } }
+      : {}),
+    // M4b.1 archive upload (no-SSH migrate) — the binary `/ws/archive-upload`
+    // socket lands a resumable upload + STAGES it under `exports/` for
+    // `server.archive.import`. Db-gated like the download service; absent on a
+    // db-less boot ⇒ the rpc 501s + `/ws/archive-upload` 503-closes.
+    ...(collection.archiveUploadService
+      ? { archiveUploadDeps: { service: collection.archiveUploadService } }
+      : {}),
+    cacheDeps: app.cacheDeps,
+    sharedDeps: app.sharedDeps,
+    authDeps: app.authDeps,
+    migrateDeps,
+    llmConfigManager: app.llmManager,
+    sellerStore: app.sellerStoreRef,
+    sellerOrderStore: app.sellerOrderStoreRef,
+    ...(app.webhookIngressStoreRef
+      ? {
+          webhookIngressDeps: {
+            store: app.webhookIngressStoreRef,
+            profileCapabilities: webhookProfileCapabilities,
+            profilePolicies: BUILTIN_WEBHOOK_PROFILE_POLICIES,
+            ...(app.webhookDeliveryStoreRef
+              ? { deliveryStore: app.webhookDeliveryStoreRef }
+              : {}),
+            ...(app.webhookConsumerStoreRef
+              ? {
+                  countConsumerBindings: (ingressId: string): number =>
+                    app.webhookConsumerStoreRef!.listBindings()
+                      .filter((binding) => binding.ingress_id === ingressId).length,
+                }
+              : {}),
+            ...(webhookTestDelivery ? { testDelivery: webhookTestDelivery } : {}),
+            ...(webhookManagedRegistration
+              ? { managedRegistration: webhookManagedRegistration }
+              : {}),
+            ...(app.connectionStoreRef
+              ? {
+                  pairedConnectionAvailable: (pairedConnectionId: string): boolean =>
+                    app.connectionStoreRef!.get('api', pairedConnectionId) !== null,
+                }
+              : {}),
+            runtimeReadiness: webhookRuntimeReadiness,
+          },
+        }
+      : {}),
+    sellerContractStore: app.contractStoreRef,
+    sellerInboundTokenStore: app.chatInboundTokenStoreRef,
+    sellerClaimStore: app.sellerClaimStoreRef,
+    runtimeConfig,
+    bootstrapDeps,
+    serverId: storage.serverInstanceId,
+    pairedInstances: storage.pairedInstances,
+    ...(storage.auditLog ? { pairRevokeAuditLog: storage.auditLog } : {}),
+    // D-175 P5 — recued.com account binding pair-RPC. The manager is
+    // built in compose-storage-context against the booted signing
+    // identity (proof + binding-credential storage) + the signed audit
+    // sink; forward it as the handler dep.
+    accountBindingDeps: { manager: storage.accountBindingManager },
+    // D-175 P8 — Pro convenience status pair-RPC. The provisioner reads
+    // the binding (secret-free) + gates on the Pro entitlement seam
+    // (pending until the cloud entitlement-mint endpoint lands).
+    proConvenienceDeps: { provisioner: storage.proConvenienceProvisioner },
+    // R27 delta-B — DDNS pause/resume pair-RPC. The deps (local publish flag +
+    // handle-state target + lazily-bound cloud-pause client) are built in
+    // compose-storage-context against the booted signing identity.
+    ddnsDeps: storage.ddnsHandlerDeps,
+    // Supervision feature — owner-only `supervision.*` (cli-daemon keep-alive).
+    // The stack (store + supervisor + getManifest) is composed in
+    // compose-collection-context; absent on a db-less boot.
+    supervisionDeps: collection.supervisionStack?.rpcDeps,
+    // D-178 — owner-only release update-check. The trusted release pubkey is
+    // empty pre-GA, so this resolves to `not-configured` until the signing
+    // identity is wired (slice 3+); undefined on an unsupported platform.
+    ...(releaseCheckDeps
+      ? {
+          updateDeps: {
+            releaseCheckDeps,
+            modeDeps: updateModeDeps,
+            ...(updateApplyDeps ? { applyDeps: updateApplyDeps } : {}),
+          },
+        }
+      : {}),
+    recoveryKeyCheck: storage.recoveryKeyCheck,
+    ...(clientTokens ? { clientTokens } : {}),
+    pressureDeps,
+    oauthClientConfigDeps: collection.oauthClientConfigDeps,
+    ...(collection.oauthAppConfigDeps
+      ? { oauthAppConfigDeps: collection.oauthAppConfigDeps }
+      : {}),
+    lifecycleHandlers: lifecycle?.handlerSlice,
+    lifecycleState: lifecycle ? () => lifecycle.machine.state : undefined,
+    collectionDeps,
+    webhookListener,
+    ...(webhookProfileListener ? { webhookProfileListener } : {}),
+    ...(hookListener ? { hookListener } : {}),
+    ...(vendorWebhookListener ? { vendorWebhookListener } : {}),
+    ...(connectionWebhookListener ? { connectionWebhookListener } : {}),
+    watcherRpcDeps: { watcherDispatcher: collection.watcherDispatcher },
+    triggerTestRpcDeps: { watcherDispatcher: collection.watcherDispatcher },
+    recipeListDeps: rpc.observabilityBundle.recipeListDeps,
+    recipeSaveDeps: {
+      store: rpc.observabilityBundle.recipeListDeps.store,
+      ...(app.webhookConsumerStoreRef
+        ? { webhookConsumerStore: app.webhookConsumerStoreRef }
+        : {}),
+      // D-209 #1 W2b — a webhook-declaring save mints the recipe's door
+      // after the cross-store save commits; status/arm read it back.
+      ...(webhookDoorDeps ? { webhookDoor: webhookDoorDeps } : {}),
+    },
+    ...(recipeRunnabilityDeps ? { recipeRunnabilityDeps } : {}),
+    approvalDeps: rpc.observabilityBundle.approvalDeps,
+    ...(app.annotationDeps ? { annotationDeps: app.annotationDeps } : {}),
+    ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+    ...(rpc.contactMergeDeps ? { contactMergeDeps: rpc.contactMergeDeps } : {}),
+    ...(app.connectionStoreRef
+      ? {
+          connectionDeps: {
+            store: app.connectionStoreRef,
+            ...(app.keys && app.keys.state() !== 'uninitialized'
+              ? { getEncryptionKey: app.keys.keyProvider('connection') }
+              : {}),
+            ...(app.enrichmentCascadeRef
+              ? {
+                  cascadeForConnectionDelete: (
+                    kind: 'api' | 'mcp' | 'notification',
+                    name: string,
+                    vendor?: string,
+                  ): void => {
+                    app.enrichmentCascadeRef!.cascadeForConnectionDelete(
+                      kind,
+                      name,
+                      vendor,
+                    );
+                  },
+                }
+              : {}),
+            // D-192 source-data-removal — the opt-in teardown purge. Pre-bind
+            // the per-Source purge stores so `handleConnectionDelete` fans the
+            // hard-delete over the connection's registry Sources when the user
+            // checks "also remove the mirrored data". Wired only when the whole
+            // warehouse quorum is present (dbless / partial harnesses skip it —
+            // the delete then leaves the mirror data in place). `auditLog`
+            // records the `source_data_purged` provenance row.
+            ...(storage.db &&
+            storage.workEntityStoreRef &&
+            app.fileMetaStoreRef &&
+            app.annotationStoreRef &&
+            app.enrichmentStoreRef &&
+            app.workEntityEdgeStoreRef
+              ? {
+                  purgeConnectionData: (purgeInput: {
+                    connection_name: string;
+                    vendor?: string;
+                    messenger_vendor?: string;
+                  }): ConnectionDataPurgeSummary =>
+                    runPurgeConnectionData(purgeInput, {
+                      db: storage.db!,
+                      workEntityStore: storage.workEntityStoreRef!,
+                      fileMetaStore: app.fileMetaStoreRef!,
+                      annotationStore: app.annotationStoreRef!,
+                      enrichmentStore: app.enrichmentStoreRef!,
+                      edges: app.workEntityEdgeStoreRef!,
+                      // D-192 slice 3b — the D-190 CRM mirror (per-connection
+                      // prefix cut). Optional: absent for non-CRM warehouses.
+                      ...(app.crmRecordMirrorStoreRef
+                        ? { crmRecordMirror: app.crmRecordMirrorStoreRef }
+                        : {}),
+                      // D-192 slice 4 — the D-138 contact store, for the messenger
+                      // contact-link retract leg. Optional (dbless skips it).
+                      ...(app.contactStoreRef ? { contactStore: app.contactStoreRef } : {}),
+                    }),
+                }
+              : {}),
+            // D-192 source-data-removal slice 3c — the read-only "[N] records"
+            // removal-preview count (the COUNT twin of the purge above). Smaller
+            // quorum: the work-entity registry + file mirror COUNTs (+ the
+            // optional CRM mirror) — no db / annotation / edge stores, since it
+            // never deletes. Absent → the preview rpc returns 0.
+            ...(storage.workEntityStoreRef && app.fileMetaStoreRef
+              ? {
+                  previewConnectionPurgeCount: (previewInput: {
+                    connection_name: string;
+                    vendor?: string;
+                    messenger_vendor?: string;
+                  }): number =>
+                    runPreviewConnectionPurgeCount(previewInput, {
+                      workEntityStore: storage.workEntityStoreRef!,
+                      fileMetaStore: app.fileMetaStoreRef!,
+                      ...(app.crmRecordMirrorStoreRef
+                        ? { crmRecordMirror: app.crmRecordMirrorStoreRef }
+                        : {}),
+                      // D-192 slice 4 — the D-138 contact store, for the messenger
+                      // contact-link count leg (mirrors the purge quorum).
+                      ...(app.contactStoreRef ? { contactStore: app.contactStoreRef } : {}),
+                    }),
+                }
+              : {}),
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+            // D-165 follow-on — operation-group grant management. Wires the
+            // durable grant store + the LIVE profile instance the gateway reads
+            // (`execution.connectionOperationProfileStore`) so a grant/revoke
+            // re-derives that exact profile (write→ask reachable next dispatch).
+            // `getCatalogManifest` resolves a connection's vendor to its catalog
+            // (`CATALOG_VENDOR_SLUGS`: hubspot / salesforce); a vendor with no
+            // catalog returns undefined → the grant rpcs reject it.
+            ...(app.contractGrantStoreRef && execution.connectionOperationProfileStore
+              ? {
+                  operationGrants: {
+                    store: app.contractGrantStoreRef,
+                    profileStore: execution.connectionOperationProfileStore,
+                    getCatalogManifest: (vendor) => {
+                      const slug = catalogSlugForVendor(vendor);
+                      return slug
+                        ? execution.executorConfig.manifests.get(slug)
+                        : undefined;
+                    },
+                    // D-170 gap #2 — resolve a connection bound to a private/local
+                    // composition catalog → its manifest (the install-recorded binding
+                    // by connection name + the SAME live manifest registry the gateway
+                    // resolves through), so the grant rpcs admit a local-catalog
+                    // connection + the re-seed derives its profile.
+                    ...(app.connectionCatalogBindingStoreRef
+                      ? {
+                          resolveLocalCatalog: (name: string) => {
+                            const slug =
+                              app.connectionCatalogBindingStoreRef!.resolveCatalogSlug(name);
+                            return slug
+                              ? execution.executorConfig.manifests.get(slug)
+                              : undefined;
+                          },
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+            // D-194 #6 — the connection-precise "Used by packs" set for the
+            // connection-detail list. Reads the SAME grant store as
+            // `operationGrants`, but needs no catalog/profile machinery — just the
+            // pack ids granted on a connection name. Guarded on the grant store
+            // alone so it lights up even where the profile store is absent.
+            ...(app.contractGrantStoreRef
+              ? {
+                  boundPackSlugsForConnection: (name: string) =>
+                    app.contractGrantStoreRef!.listPacksForConnection(name),
+                }
+              : {}),
+            // D-192 S5 — the live merged vendor registry (built-ins + installed
+            // packs) so `handleConnectionList` can stamp each api row's
+            // `supports_engagement_health`, lighting up the engagement-health
+            // toggle for a pack-declared CRM (e.g. Dynamics), not just the
+            // built-in hubspot/salesforce. Wired unconditionally: an absent
+            // manifest store degrades to the built-ins (the same registry the
+            // engagement-health data rpc gates on).
+            resolveVendorRegistry: () => liveVendorRegistry(storage.localManifestStore),
+            // D-165 enroll-host #1 — vendor OAuth-start. Rides the shared
+            // `vendorOAuth` stores constructed above so the start rpc and the
+            // `/oauth/complete` handler operate over one flow + result map.
+            // Gated on the booted signing identity (the state signer); absent
+            // → the start rpc rejects `not_configured`. `vendorOAuthResult`
+            // (slice 3) rides the SAME shared `resultStore` the
+            // `/oauth/complete` port handler writes, so the owner-bound
+            // `takeVendorOAuthResult` rpc consumes exactly what the completion
+            // stashed — gated on the `claim_secret` the start rpc handed the
+            // originating client.
+            ...(vendorOAuth
+              ? {
+                  vendorOAuthStart: {
+                    identity: vendorOAuth.identity,
+                    flowStore: vendorOAuth.flowStore,
+                    serverPublicUrl: vendorOAuth.serverPublicUrl,
+                    // Fork 1 — request a registered vendor's installed packs'
+                    // required scopes on top of its const floor (lazy: only
+                    // evaluated when the client passes no explicit set).
+                    installedPackScopeUnion: (vendor) =>
+                      unionRequiredScopesForConnection(
+                        listInstalledPackManifests(app.contractStoreRef),
+                        vendor,
+                      ),
+                  },
+                  vendorOAuthResult: {
+                    resultStore: vendorOAuth.resultStore,
+                  },
+                }
+              : {}),
+            // R2 build step 4c.4 — enroll/delete/grant/revoke fan a fresh
+            // runnability snapshot after the mutation commits.
+            ...(recipeRunnabilityBroadcaster
+              ? { recipeRunnabilityBroadcast: recipeRunnabilityBroadcaster }
+              : {}),
+          },
+        }
+      : {}),
+    // D-166 override-write path — `collection.contract.*` override authoring.
+    // Same `app.contractStoreRef` the gateway's override-tightening scan reads
+    // (wired into the execution context at 4d.4), so an authored override
+    // tightens the next dispatch with no reseed. `getManifest` resolves a
+    // catalog-form manifest by the override's `ingredient_id` slug for the
+    // declared-operation validation gate. Absent (no db) → the three methods
+    // return `not_configured`.
+    ...(app.contractStoreRef
+      ? {
+          contractDeps: {
+            store: app.contractStoreRef,
+            // D-177 N.14.8 fork 3 (owner: "surface") — the suggestion card's
+            // counter-evidence: how often the owner REFUSED this door over the
+            // learner's own lookback. Evidence only; it gates nothing.
+            countDoorRejects: (door_contract_id, since_ms) =>
+              receptionInboxSubviewStore.countRejectsForDoor(door_contract_id, since_ms),
+            getManifest: (slug: string) => execution.executorConfig.manifests.get(slug),
+            // Slice A2 — enumerate the registry for `listCatalogOperations`. The
+            // handler filters to catalog-form + projects; this just yields every
+            // loaded manifest (slugs() → get(), dropping any null).
+            listManifests: () => {
+              const registry = execution.executorConfig.manifests;
+              return registry.slugs().flatMap((slug) => {
+                const manifest = registry.get(slug);
+                return manifest ? [manifest] : [];
+              });
+            },
+            // D-171 — emit `contract_definition` lifecycle (mint / revoke) on the
+            // D-121 bus so paired clients' Contracts inspector + the MCP-door
+            // Advanced cap/expiry summary re-list off the authoritative signal
+            // (dropping the `chat.inbound_token_changed` proxy). The bus stamps
+            // the cursor; `eventsDeps.bus` is always composed in production.
+            // D-177 N.13 (P6c): the suggestion accept/dismiss rides the same
+            // seam for its `delegation_rule_suggestion_resolved` fan-out.
+            broadcast: (event: ContractBroadcastEvent) => {
+              rpc.observabilityBundle.eventsDeps.bus.emit(event);
+            },
+            // D-177 N.13 (P6c) — reserve-class `delegation_rule_minted` audit
+            // on the suggestion accept (best-effort, same posture as the
+            // session-grant resolver's mint audit).
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+            // D-177 rule 5 (5.c, slice C) — the scoped accept rpc's LIVE
+            // connection-candidate validation source.
+            getConnectionStore: () => app.connectionStoreRef,
+          },
+        }
+      : {}),
+    // D-182 §7.2 — `cli.reachability.*` grid rpc. The SAME `app.contractStoreRef`
+    // the gateway's cli-reachability resolver reads (wired into the execution
+    // context above), so granting a cell authorizes the next dispatch with no
+    // reseed. The audit log records the grant/revoke (reserve-class). Absent
+    // (no db) → the two methods return `not_configured`.
+    ...(app.contractStoreRef
+      ? {
+          cliReachabilityDeps: {
+            store: app.contractStoreRef,
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+            // D-182 §7.2 (increment 4) — the installed manifest snapshot the
+            // `cli.reachability.universe` read derives the Local-tools grid's
+            // tool rows + risk columns from. Read live off the executor config's
+            // registry so an install/uninstall is reflected without a reseed.
+            getManifests: (): IngredientManifest[] => {
+              const reg = execution.executorConfig.manifests;
+              return reg
+                .slugs()
+                .map((slug) => reg.get(slug))
+                .filter((m): m is IngredientManifest => m !== null);
+            },
+            // D-182 — proactive cli-tool readiness: the Local-tools surface shows
+            // "not installed" before a run, matching the run-time CLI_TOOL_NOT_FOUND
+            // verdict. Spawn-free binary-on-PATH check, never runs the tool.
+            probeCliToolReachable: createCliBinaryReachabilityProbe(),
+          },
+        }
+      : {}),
+    hostnameDeps: {
+      store: storage.hostnameRegistryStore,
+      serverIdentityId: storage.serverInstanceId,
+      ...(initialAcmeDomainIssuer ? { initialAcmeIssuer: initialAcmeDomainIssuer } : {}),
+    },
+    // LAN-URL kickstart — `network.local_urls` reports the loopback + LAN URLs.
+    // `getPort` reads the LIVE listener port at call time via the `server`
+    // facade's post-bind getter (defined below), so a configured bind_port of 0
+    // (OS-assigned) resolves to the ACTUAL bound port, not `:0`.
+    networkDeps: { getPort: () => server.port },
+    ...(rpc.engagementHealthDeps
+      ? { engagementHealthDeps: rpc.engagementHealthDeps }
+      : {}),
+    ...(rpc.upstreamMergeDeps ? { upstreamMergeDeps: rpc.upstreamMergeDeps } : {}),
+    ...(app.enrichmentStoreRef
+      ? { enrichmentDeps: { store: app.enrichmentStoreRef } }
+      : {}),
+    notificationDeps: { dispatchers: collection.channelDispatchers ?? {} },
+    mailGetDeps: { registry: collection.collectionRegistry },
+    ...(rpc.housekeepingRpcDeps
+      ? { housekeepingDeps: rpc.housekeepingRpcDeps }
+      : {}),
+    ...(rpc.notificationsDeps
+      ? { notificationsDeps: rpc.notificationsDeps }
+      : {}),
+    // D-169 P1 — `system.status` rpc. The deps construct above
+    // assembles every source from already-in-scope state; the thunk-
+    // backed `getWsServer` resolves once the post-construct ref below
+    // fires.
+    systemStatusDeps,
+    // D-169 P2 — historical-view rpc deps (built above from in-scope
+    // audit log + notification block). Always passed; the slice self-gates
+    // per-source on the deps.
+    historyDeps,
+    ...(rpc.packInstallDeps
+      ? {
+          packInstallDeps: {
+            ...rpc.packInstallDeps,
+            // D-209 #1 W2b — a successful install mints one webhook door per
+            // webhook-declaring recipe (installs default ARMED; the install
+            // consent screen is the gesture).
+            ...(webhookDoorDeps ? { webhookDoor: webhookDoorDeps } : {}),
+            // D-170 (packs.install composition branch) — thread the local
+            // manifest store + live registry so an app_pack carrying a
+            // `composition` content (N.17) provisions it alongside its recipes
+            // and the gateway resolves its operations (N.16). Gated on the
+            // contract store (the inventory home — already required for the
+            // D-165 P3.1 inventory recording the composer threads onto
+            // `packInstallDeps.contractStore`); reuses the exact handles the
+            // `ingredient.install` rpc deps below take, so both authoring paths
+            // resolve through the same registry instance.
+            ...(app.contractStoreRef
+              ? {
+                  localManifestStore: storage.localManifestStore,
+                  registry: execution.executorConfig.manifests,
+                }
+              : {}),
+            // D-170 gap #2 live-reconcile — (re)derive the bound connection's
+            // operation profile the moment the composition's binding + grants
+            // commit, so a connect-BEFORE-install dispatch works at once.
+            ...(execution.reconcileConnectionProfile
+              ? { reconcileConnectionProfile: execution.reconcileConnectionProfile }
+              : {}),
+            // D-192 — register/unregister pack-declared work-entity Sources for the
+            // bound connection the moment the binding commits / drops (enroll-before-
+            // install; mirrors reconcileConnectionProfile).
+            ...(app.reconcileWorkEntitySourcesRef
+              ? { reconcileWorkEntitySources: app.reconcileWorkEntitySourcesRef }
+              : {}),
+            // R2 build step 4c.4 — a successful install fans a fresh runnability
+            // snapshot (new recipes + their provisioned grants).
+            ...(recipeRunnabilityBroadcaster
+              ? { recipeRunnabilityBroadcast: recipeRunnabilityBroadcaster }
+              : {}),
+            // R2 build step 4c.2 — the install result's born-blocked/-degraded
+            // disclosure reads the SAME runnability service the broadcaster + rpc
+            // use. Gated on the same deps (absent → the result omits the born
+            // fields, like `recipe.runnability` returning `not_configured`).
+            ...(recipeRunnabilityDeps
+              ? { computeRunnability: () => listRecipeRunnability(recipeRunnabilityDeps).recipes }
+              : {}),
+          },
+        }
+      : {}),
+    ...(rpc.packListDeps
+      ? { packListDeps: rpc.packListDeps }
+      : {}),
+    ...(rpc.packUninstallDeps
+      ? {
+          packUninstallDeps: {
+            ...rpc.packUninstallDeps,
+            // D-209 #1 W2b — uninstall retires the pack's webhook doors
+            // alongside their trigger rows (mint/retire symmetry).
+            ...(webhookDoorDeps
+              ? { webhookDoorDefinitionStore: webhookDoorDeps.definitionStore }
+              : {}),
+            // D-170 (packs.install composition branch) — same local manifest
+            // store + registry as `packInstallDeps`, so uninstalling a pack the
+            // install path provisioned a composition for also deletes its local
+            // catalog body + deregisters it (the install/uninstall symmetry).
+            ...(app.contractStoreRef
+              ? {
+                  localManifestStore: storage.localManifestStore,
+                  registry: execution.executorConfig.manifests,
+                }
+              : {}),
+            // D-170 gap #2 live-reconcile — drop the formerly-bound connection's
+            // now-orphan profile the moment its binding is removed (symmetry with
+            // install; a registered-vendor connection keeps its vendor profile).
+            ...(execution.reconcileConnectionProfile
+              ? { reconcileConnectionProfile: execution.reconcileConnectionProfile }
+              : {}),
+            // D-192 — register/unregister pack-declared work-entity Sources for the
+            // bound connection the moment the binding commits / drops (enroll-before-
+            // install; mirrors reconcileConnectionProfile).
+            ...(app.reconcileWorkEntitySourcesRef
+              ? { reconcileWorkEntitySources: app.reconcileWorkEntitySourcesRef }
+              : {}),
+            // R2 build step 4c.4 — a successful uninstall fans a fresh runnability
+            // snapshot (survivors that lost their last provider go blocked).
+            ...(recipeRunnabilityBroadcaster
+              ? { recipeRunnabilityBroadcast: recipeRunnabilityBroadcaster }
+              : {}),
+            // R2 build step 4c.3 + §1.6 follow-on — the "disables N recipes"
+            // disclosure reverse-walks the SAME runnability deps the broadcaster +
+            // rpc use; gated identically (absent → the result omits `would_disable`
+            // / `would_degrade`, like `not_configured`). The walk derives the
+            // pack's bound + grant-target connections from its own stores.
+            ...(recipeRunnabilityDeps
+              ? {
+                  computeWouldWorsen: (pack_slug: string) =>
+                    listRecipesWorsenedByPackUninstall(recipeRunnabilityDeps, pack_slug),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    // D-170 — `ingredient.install` / `ingredient.uninstall` rpc. Provisioning
+    // writes bodies to the local manifest store + inventory to the SAME
+    // `contract.*` store the gateway resolves through, then registers the
+    // catalog into the live registry (N.16). The pin-guard scans the recipe
+    // store. Gated on the contract store + local manifest store; absent (db-
+    // less) → both methods return `not_configured`.
+    ...(app.contractStoreRef
+      ? {
+          ingredientAuthoringDeps: {
+            localManifestStore: storage.localManifestStore,
+            contractStore: app.contractStoreRef,
+            registry: execution.executorConfig.manifests,
+            recipeStore: storage.recipeStore,
+            compiledRecipeStore: storage.recipeStore,
+            recipeTrustStore: rpc.recipeTrustStore,
+            // D-170 gap #2 live-reconcile — install seeds the bound connection's
+            // profile post-commit; uninstall drops it. Lets a connect-BEFORE-
+            // install (or an uninstall) take effect at dispatch immediately.
+            ...(execution.reconcileConnectionProfile
+              ? { reconcileConnectionProfile: execution.reconcileConnectionProfile }
+              : {}),
+            // D-192 — register/unregister pack-declared work-entity Sources for the
+            // bound connection the moment the binding commits / drops (enroll-before-
+            // install; mirrors reconcileConnectionProfile).
+            ...(app.reconcileWorkEntitySourcesRef
+              ? { reconcileWorkEntitySources: app.reconcileWorkEntitySourcesRef }
+              : {}),
+            ...(app.sellerStoreRef
+              ? { sellerStore: app.sellerStoreRef }
+              : {}),
+            ...(app.chatInboundTokenStoreRef
+              ? { inboundTokenStore: app.chatInboundTokenStoreRef }
+              : {}),
+          },
+        }
+      : {}),
+    // D-170 N.4 / N.15 / #2 — `ingredient.draft.*`,
+    // `ingredient.preview`, and `ingredient.compose.decompose` rpc deps. Built
+    // above with the preview READ-execution seam. The decompose method operates
+    // on drafts, so it rides this same dependency family and the single
+    // server.ts forward for `ingredientDraftDeps`.
+    ...{ ingredientDraftDeps },
+    bridgeCapabilityDeps: { registry: bridgeRegistry },
+    // D-169 P0 follow-on — same registry instance threaded through the
+    // WS upgrade's `bridgeRegistry.attach()` call (gated on
+    // `client_kind === 'bridge'`). Keeps attach + push pinned to one
+    // map so capability pushes land via `updateCapabilities` instead of
+    // the no-op pre-attach branch.
+    bridgeRegistry,
+    // D-169 P0 follow-on — optional audit log for the multi-bridge
+    // dispatcher's `lastSuccessfulBridgeDispatch` recency ordering +
+    // `bridge_dispatch_succeeded` activity emit. When absent (db-less
+    // harness) the dispatcher's iteration order degrades to WS
+    // attachment recency alone — same posture as `pairRevokeAuditLog`.
+    ...(storage.auditLog
+      ? { bridgeDispatcherAuditLog: storage.auditLog }
+      : {}),
+    // D-187 AMENDMENT — `mcp.visibility.{read,write}` rpc operates on the OWNER
+    // contract's `enrichment.<topic>` grant rows via the unified grant store (a
+    // stateless wrap of the shared contract store).
+    ...(app.contractStoreRef
+      ? {
+          mcpVisibilityDeps: {
+            store: createContractGrantEntryStore(app.contractStoreRef),
+          },
+        }
+      : {}),
+    // Grant-foundation slice 3 — `contract.grant.{read,read_by_entry,write}` over the
+    // unified grant store (a stateless wrap of the shared contract store).
+    ...(app.contractStoreRef
+      ? {
+          contractGrantDeps: {
+            store: createContractGrantEntryStore(app.contractStoreRef),
+          },
+        }
+      : {}),
+    exposureDeps,
+    ...(tlsDomainDeps ? { tlsDomainDeps } : {}),
+    ...(tokenRotationEmitter
+      ? { tokenRotationDeps: { emitter: tokenRotationEmitter } }
+      : {}),
+    ...(rotationEngine ? { tlsRenewDeps: { engine: rotationEngine } } : {}),
+    ...(passportFetchDeps ? { passportFetchDeps } : {}),
+    ...(passportUserRpcDeps ? { passportUserRpcDeps } : {}),
+    ...(keyRotateDeps ? { keyRotateDeps } : {}),
+    ...(proAuthMachine ? { proAuthDeps: { machine: proAuthMachine } } : {}),
+    ...(storage.workEntityStoreRef
+      ? {
+          workEntitySourceDeps: {
+            resolver: createWorkEntityResolver(storage.workEntityStoreRef),
+          },
+        }
+      : {}),
+    // D-205 #2c — `contact.source.list`: the Sources health strip on `#data/contact`.
+    // Needs BOTH the Source registry (for `source_label` / `enabled`, off the work-
+    // entity store like its `work_entity.source.list` sibling) and the contact
+    // sync-state rows (for the health + the runner's cycle counts). Either absent →
+    // the method returns `not_configured` and the strip simply does not render.
+    ...(storage.workEntityStoreRef && app.contactSourceSyncStateRef
+      ? {
+          contactSourceDeps: {
+            resolver: createWorkEntityResolver(storage.workEntityStoreRef),
+            syncState: app.contactSourceSyncStateRef,
+          },
+        }
+      : {}),
+    // D-205 #5 — selective CRM promotion. The strangers are ALREADY on disk: the
+    // reconcilers mirror every CRM contact into `crm_record_mirror` regardless of
+    // whether Recued knows the person, and the contact sync already COUNTS them
+    // (`last_cycle.skipped`). So this is a picker over data we already hold, not an
+    // import. Both stores required — no mirror means no CRM, hence no strangers.
+    ...(app.contactStoreRef && app.crmRecordMirrorStoreRef
+      ? {
+          contactImportDeps: {
+            store: app.contactStoreRef,
+            mirror: app.crmRecordMirrorStoreRef,
+          },
+        }
+      : {}),
+    // D-174 #22 — work-entity warehouse CRUD pair-RPC (Data route).
+    // Reads through a resolver over the store; writes through the SAME
+    // bus + cascade-wired dispatcher instance compose-collection-context
+    // built (so `work_entity.{upsert,delete}` emit warehouse events on
+    // the ingredient channel's path). Gated on both the store + the
+    // dispatchers (the latter is undefined when the store is absent).
+    ...(storage.workEntityStoreRef && collection.workEntityDispatchers
+      ? {
+          workEntityCrudDeps: {
+            store: storage.workEntityStoreRef,
+            // D-192 read resolution — the sync-state dep lights up the
+            // resolver's `sourceFreshness`, so `work_entity.{list,get}`
+            // responses carry per-Source freshness metadata.
+            resolver: createWorkEntityResolver(
+              storage.workEntityStoreRef,
+              app.workEntitySourceSyncStateRef !== undefined
+                ? { syncState: app.workEntitySourceSyncStateRef }
+                : {},
+            ),
+            dispatchers: collection.workEntityDispatchers,
+            // D-192 P5 — `get` responses carry the row's work-graph
+            // edges; contact edges forward-resolve to the survivor's
+            // display identity at read time.
+            ...(app.workEntityEdgeStoreRef !== undefined
+              ? { edges: app.workEntityEdgeStoreRef }
+              : {}),
+            ...(app.contactStoreRef !== undefined
+              ? { contactDisplay: app.contactStoreRef }
+              : {}),
+          },
+        }
+      : {}),
+    // Accepted Reception forms are canonical owner data independent of any
+    // downstream materialization plan. Expose their immutable store through a
+    // dedicated registered-client read slice for Data → Form responses.
+    ...(storage.formResponseStoreRef
+      ? { formResponseDeps: { store: storage.formResponseStoreRef } }
+      : {}),
+    // D-198 — `memory.*` owner-trusted pair-RPCs (Memory lens). Slice 1
+    // `memory.list` reuses the audit store's `listRecent` origin filter; Slice
+    // 2 adds the owner-authored `user_memory` store (create/get/update/delete +
+    // the read union) and the realtime bus so a write silently refreshes paired
+    // lenses. Absent `auditLog` → the whole slice drops (`not_configured`).
+    ...(storage.auditLog
+      ? {
+          memoryRpcDeps: {
+            auditLog: storage.auditLog,
+            ...(app.userMemoryStore ? { userMemoryStore: app.userMemoryStore } : {}),
+            ...(app.memoryRedactionStore ? { redactionStore: app.memoryRedactionStore } : {}),
+            ...(storage.eventBus ? { bus: storage.eventBus } : {}),
+          },
+        }
+      : {}),
+    // D-174 #22 — `data.timeline` read pair-RPC (Data route drill-down).
+    // Mirrors the recipe-channel `timeline-read` deps construction
+    // (wire-executor-config.ts): db + auditLog + annotationStore are
+    // required; enrichment + mcp-visibility stores fold in when present.
+    // `gateMcpPrivate` is intentionally OMITTED → paired-client reads see
+    // private rows (the MCP channel keeps its own gated handler).
+    ...(storage.db && storage.auditLog && app.annotationStoreRef
+      ? {
+          timelineRpcDeps: {
+            timelineDeps: {
+              db: storage.db,
+              auditLog: storage.auditLog,
+              annotationStore: app.annotationStoreRef,
+              ...(app.enrichmentStoreRef
+                ? { enrichmentStore: app.enrichmentStoreRef }
+                : {}),
+              // D-192 Fork B (B2) — surface a file record (CAS or vendor-mirror)
+              // as the timeline's raw-record source, so the webclient Data→Files
+              // drill-down shows the file's metadata. The loader is file-scoped
+              // (returns null for other collections, unchanged). This is the
+              // FIRST implementation of the long-unwired `loadCollectionRecord`.
+              loadCollectionRecord: buildLoadFileCollectionRecord(
+                createFileViewResolverFromRegistry(
+                  collection.collectionRegistry,
+                  app.fileMetaStoreRef,
+                  app.fileSourceSyncStateRef,
+                ),
+              ),
+            },
+          },
+        }
+      : {}),
+    // D-172 Half-A "open" — `data.file.read` owner read pair-RPC (Files tab
+    // open/download). Same lazy `fileReadDeps` shape as compose-collection-
+    // context's mail-send closure (registry + blobs + auditLog); yields
+    // undefined on a dbless / no-CAS boot so the handler returns not_configured
+    // rather than half-reading. Owner-trusted (registered-client boundary in the
+    // handler) — the contract/egress gate is only for the AI/recipe channels.
+    fileReadRpcDeps: {
+      getFileReadDeps: () => {
+        if (!app.cacheBlobs) return undefined;
+        // D-192 remote byte-fetch — when the file-source mirror + its connection
+        // resolver are wired, a `file:remote:*` id lazily fetches the vendor's
+        // bytes (S3 GetObject, …) instead of returning 501. The bundle is built
+        // once in compose-app-context (shared by every file-read channel — recipe
+        // / ai / mail / this pair-RPC).
+        const remote = app.getRemoteFileReadDeps();
+        return {
+          registry: collection.collectionRegistry,
+          blobs: app.cacheBlobs,
+          ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+          ...(remote ? { remote } : {}),
+        };
+      },
+    },
+    // D-139 P5 — `data.contact.engagements.list` resolver pair-RPC. Reuses
+    // the shared resolver bundle built once in compose-app-context so the
+    // WS-rpc + MCP channels resolve identically. Absent (dbless boot /
+    // missing stores) → the slice drops + the rpc returns `not_configured`.
+    ...(app.contactEngagementsResolveDepsRef
+      ? { contactEngagementsRpcDeps: app.contactEngagementsResolveDepsRef }
+      : {}),
+    ...(storage.s2sPreviewStoreRef
+      ? {
+          s2sPreviewDeps: {
+            store: storage.s2sPreviewStoreRef,
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+            now: () => Date.now(),
+            randomToken: () => randomBytes(32).toString('hex'),
+          },
+        }
+      : {}),
+    ...(receptionRpcDeps ? { receptionRpcDeps } : {}),
+    // D-188 — augment the reception port deps with the master pause flag so
+    // a paused server closes the public reception door (intake bypasses the
+    // op-admission gate). Injected here, where `app.serverState` is in scope.
+    ...(receptionPortDeps
+      ? {
+          receptionPortDeps: app.serverState
+            ? { ...receptionPortDeps, isPaused: (): boolean => app.serverState!.isPaused() }
+            : receptionPortDeps,
+        }
+      : {}),
+    // D-173 INT-3 — Reception Inbox rpc deps (the convergence). Absent
+    // bundle (gate handles unwired) → the slice drops + `reception.inbox.*`
+    // returns `not_configured`.
+    ...(receptionInboxBundle
+      ? { receptionInboxDeps: receptionInboxBundle.receptionInboxDeps }
+      : {}),
+    // D-210 step 2a — the reception RECORD read surface. Gated on EITHER store: the handler
+    // answers with the kind it has, because a missing booking store must not hide the
+    // submissions. Neither present ⇒ omitted ⇒ the method is not registered at all, which is
+    // the honest answer on a db-less boot (a registered method over no store would answer
+    // `[]`, and on THIS surface `[]` reads as "you have received nothing").
+    // ⚠ D-210 A.8 slice 4b-ii — BOTH arms read the MERGED store now; the handler
+    // tells the two flows apart with `record_kind`, not by which store it holds.
+    // 🔴 Pointing `getBookingStore` at the old ref here would have compiled
+    // fine (a conditional SPREAD skips tsc's excess-property check) and the
+    // owner's booking list would have silently read an EMPTY table.
+    ...(storage.intakeFormSubmissionStoreRef
+      ? {
+          receptionRecordDeps: {
+            getBookingStore: () => storage.intakeFormSubmissionStoreRef,
+            getSubmissionStore: () => storage.intakeFormSubmissionStoreRef,
+          },
+        }
+      : {}),
+    // D-210 Appendix B — `reception.manage.mint`. Needs all three: the manage
+    // credential store (to issue), the booking store (event → booking `findById`),
+    // and the annotation store (the `scheduled-from` walk, same reader the
+    // notify-booking-visitor dispatcher uses). Any absent ⇒ the method is not
+    // registered rather than half-wired.
+    ...(app.receptionManageCredentialStoreRef
+      && storage.intakeFormSubmissionStoreRef
+      && app.annotationStoreRef
+      ? {
+          receptionManageMintDeps: {
+            getCredentialStore: () => app.receptionManageCredentialStoreRef!,
+            getBookingStore: () => storage.intakeFormSubmissionStoreRef!,
+            listInboundLinks: (filter: { to_collection: string; to_id: string }) =>
+              app.annotationStoreRef!.listLinks(filter),
+            now: () => Date.now(),
+          },
+        }
+      : {}),
+    // D-165 enroll-host #1 (vendor OAuth popup) — slice 2b Piece W. The
+    // seam in `createServerHandlerSet` mounts the `createVendorOAuthComplete
+    // PortHandler` on the `oauth` path role when these deps are present
+    // (else the role is absent → path-router 404s `/oauth/complete`). Shares
+    // the start↔complete stores + signing identity with `vendorOAuthStart`
+    // above. `onCompleted` fires AFTER a successful completion response is
+    // written, fanning the `{ flow_id }`-only completion broadcast (NEVER the
+    // refresh_token — the bus reaches every paired client) so the dialog
+    // claims the credential point-to-point via `takeVendorOAuthResult`.
+    ...(vendorOAuth
+      ? {
+          oauthCompletePortDeps: {
+            identity: vendorOAuth.identity,
+            flowStore: vendorOAuth.flowStore,
+            resultStore: vendorOAuth.resultStore,
+            serverPublicUrl: vendorOAuth.serverPublicUrl,
+            onCompleted: (flow_id: string) => {
+              rpc.observabilityBundle.eventsDeps.bus.emit({
+                kind: 'connection.vendor_oauth_completed',
+                flow_id,
+              });
+            },
+          },
+        }
+      : {}),
+    // D-158 P2b-ii — mounts the `/ask/<ask_id>` notification ask-landing
+    // handler on the `ask` path role when the block is up (else absent →
+    // path-router 404s `/ask/*`).
+    ...(askLandingPortDeps ? { askLandingPortDeps } : {}),
+    eventsDeps: rpc.observabilityBundle.eventsDeps,
+    ...(rpc.observabilityBundle.auditExportDeps
+      ? { auditExportDeps: rpc.observabilityBundle.auditExportDeps }
+      : {}),
+    ...(rpc.observabilityBundle.executionFeedDeps
+      ? { executionFeedDeps: rpc.observabilityBundle.executionFeedDeps }
+      : {}),
+    ...(rpc.observabilityBundle.statusPageDeps
+      ? { statusPageDeps: rpc.observabilityBundle.statusPageDeps }
+      : {}),
+    ...(app.chatDeps ? { chatDeps: app.chatDeps } : {}),
+    ...(mcpHttpDeps ? { mcpHttpDeps } : {}),
+    ...(llmGatewayDeps ? { llmGatewayDeps } : {}),
+  });
+
+  // D-169 P0 follow-on (Codex 2026-05-28 Angle 2 fold) — publish the
+  // live bridge dispatcher to the executor's late-bound ref BEFORE the
+  // listener coordinator starts + before schedulers spin up. The
+  // post-extraction chain calls `startPostListenerRuntime` AFTER this
+  // helper returns; without an in-chain publish, cron + auto_run could
+  // dispatch a DOM step before `lateBound.publishBridgeDispatcher` fires
+  // and the runner adapter mis-classifies the unwired state as
+  // "no bridge connected." Publishes `undefined` when the registry isn't
+  // wired (composeExecutionContext always passes `getBridgeDispatcher`
+  // so the ref's getter returns this exact value verbatim).
+  options.publishBridgeDispatcher?.(serverHandlerSet.wsHandle.bridgeDispatcher);
+
+  // D-169 P1 — Bind the live WS handle into the system-status thunk
+  // ref. Construct order: deps → createServerHandlerSet → wsHandle
+  // available. The thunk reads through this ref on every status fetch,
+  // so the side-panel's first mount tick sees the live serving count
+  // even if the panel opens before the listener accepts traffic.
+  wsHandleForStatusRef = serverHandlerSet.wsHandle;
+
+  // Resolve LAN bind address per § A.7.5 (auto-detect; loopback fallback
+  // when ambiguous so the Reachability Doctor / Settings UX can prompt
+  // for an override). Production deployments typically bind a single
+  // RFC1918 interface; multi-interface hosts (Docker / VPN / Wi-Fi) land
+  // on `ambiguous_lan_candidates` + loopback.
+  const lanResolution = resolveLanAddress();
+  const lanBindAddress = lanResolution.address;
+  console.log(
+    `[network] LAN bind: ${lanBindAddress} (source=${lanResolution.source}; candidates=${lanResolution.candidates.length})`,
+  );
+
+  // Cert holder starts empty — TLS-on-public is configured at a later
+  // bind phase (Pro ACME flow / BYO upload via § A.6.3 TLSDomainStore).
+  // Public listener binds plaintext when the holder is empty (upstream
+  // proxy mode) or never binds if no path's `public` bit is true.
+  const certChain = createCertChainHolder(null);
+  const publicPort = runtimeConfig
+    ? (runtimeConfig.get('public_port') as number)
+    : DEFAULT_PUBLIC_PORT;
+  const tlsDomainStore = tlsDomainDeps?.getStore();
+  const hostnameBindingLookup = tlsDomainStore
+    ? createHostnameSniBindingLookup(storage.hostnameRegistryStore)
+    : undefined;
+
+  const listenerCoordinator = createProductionPathListenerCoordinator({
+    handlers: serverHandlerSet.handlers,
+    upgradeHandlers: serverHandlerSet.upgradeHandlers,
+    legacyAliases: serverHandlerSet.legacyAliases,
+    // D-148 FU#7 — bare-302 root redirect handler. The coordinator
+    // threads this onto the public listener via `PathListenerSetOptions.rootHandler`
+    // on every rebuild; LAN listener never sees it (the path-router
+    // gates it with `listener === 'public'`). Absent → public-listener
+    // bare `/` 404s as it did pre-FU#7.
+    ...(serverHandlerSet.rootHandler
+      ? { rootHandler: serverHandlerSet.rootHandler }
+      : {}),
+    // Offline-pairing convenience — the LAN bare-`/` handler (mirror of
+    // `rootHandler`, LAN-scoped). Present only when a verified webclient
+    // bundle loaded at boot; the coordinator threads it onto the LAN
+    // listener so a self-hoster's `http://localhost:<port>/` 302-redirects
+    // to `/webclient/` to pair offline. Absent → LAN bare `/` 404s.
+    ...(serverHandlerSet.lanRootHandler
+      ? { lanRootHandler: serverHandlerSet.lanRootHandler }
+      : {}),
+    // R26.2 Delta 3 — the webclient bundle handler is now a normal
+    // `webclient` entry in `serverHandlerSet.handlers` (forwarded via the
+    // `handlers` line above), gated by the per-listener
+    // `resolution.webclient` grid bit. No separate threading + no
+    // structural LAN-only carve-out.
+    cert_chain: certChain,
+    ...(hostnameBindingLookup ? { hostname_binding_lookup: hostnameBindingLookup } : {}),
+    ...(tlsDomainStore
+      ? { tls_domain_lookup: (servername: string) => tlsDomainStore.lookup(servername) }
+      : {}),
+    lan_port: port,
+    // Public listener port defaults to 443 unless overridden in
+    // recued.config. The persisted exposure state's `public` bits are
+    // false at first boot (lan_only), so this listener doesn't actually
+    // bind until the user toggles.
+    public_port: publicPort,
+    log: (level, msg, data) => {
+      const fn =
+        level === 'error'
+          ? console.error
+          : level === 'warn'
+            ? console.warn
+            : console.log;
+      fn(`[listener] ${msg}`, data ?? '');
+    },
+  });
+
+  // Start only after every handler and listener dependency has composed. If a
+  // later constructor above throws, no polling timer survives failed startup.
+  webhookOutboxRuntime?.start();
+
+  // Surface a `RunningServer`-shaped facade so the remaining serve
+  // orchestration keeps reading `server.wsServer` / `server.port` /
+  // `server.close` unchanged. The port getter observes the coordinator
+  // after exposure finalization starts the LAN listener.
+  const server: ListenerServerFacade = {
+    wsServer: serverHandlerSet.wsHandle,
+    get port(): number {
+      const lanStatus = listenerCoordinator
+        .status()
+        .find((s) => s.listener === 'lan');
+      return lanStatus?.port ?? port;
+    },
+    close: async (): Promise<void> => {
+      await webhookOutboxRuntime?.stop();
+      // Drop the warehouse-bus subscription behind the inbound reply-by-email
+      // funnel before tearing the HTTP surface down.
+      inboundEmailAnswer.dispose();
+      serverHandlerSet.close();
+      await listenerCoordinator.stop();
+    },
+  };
+
+  return {
+    serverHandlerSet,
+    listenerCoordinator,
+    lanBindAddress,
+    webclientServed: webclientBundle != null,
+    server,
+    eventTriggerDispatcher: eventTriggersBundle?.dispatcher,
+    watchManager: watchBundle?.manager,
+    runUpdateBootReconcile,
+  };
+};

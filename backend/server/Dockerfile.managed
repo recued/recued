@@ -1,0 +1,119 @@
+# syntax=docker/dockerfile:1.7
+# ─────────────────────────────────────────────────────────────────
+# recued-server — thin `:managed` self-updating image (D-178, I-9)
+#
+# The `:managed` image is a DUMB, FROZEN verify-and-exec launcher. Unlike the
+# baked `:vX.Y.Z` / `:stable` images (which are the whole server and update by
+# pull-and-recreate), this image's server BINARY lives on the DATA VOLUME at
+# `/data/bin/recued` and self-updates in place (the running server's
+# `update.apply` downloads → verifies → swaps the volume binary → exits; the
+# launcher re-verifies and re-execs on restart).
+#
+# What's baked here, and only here:
+#   - the launcher bundle (`dist/managed-launcher.js`) — the entrypoint;
+#   - an INITIAL server binary seed (`/opt/recued-seed/`) the launcher copies
+#     onto an empty volume on first boot.
+#
+# The launcher NEVER self-updates (I-9). Re-pull this image only when the
+# manifest's `min_launcher_version` says the verification contract changed —
+# digest-anchored, per the signed manifest.
+#
+# R26.2 Delta 3 — the embedded webclient is NOT baked here (deliberately).
+# Unlike the baked `:vX.Y.Z` image (which bakes a version-matched webclient via
+# RECUED_WEBCLIENT_DIR), this image's server binary self-updates IN PLACE on the
+# data volume — a webclient baked into this frozen launcher would go stale after
+# the first self-update, REINTRODUCING the version skew the embed exists to
+# dissolve. So the managed webclient travels WITH the signed release artifact:
+# the manifest carries a `webclient` artifact (D-178 + D-152 § A.16) that
+# `update.apply` downloads, minisign-verifies, and extracts to the webclient dir
+# after the binary swap (backend/server/src/update/webclient-sync.ts), keeping it
+# version-matched across self-updates. With RECUED_WEBCLIENT_DIR unset (below),
+# that dir resolves to a `webclient` sibling of the CAS root on the data volume —
+# the SAME dir the server's boot loader reads — so no operator action is needed
+# beyond a signed release feed being configured.
+#
+# Exit-code contract: the launcher runs the server under the `docker-thin`
+# supervisor (STANDARD codes — restart stays 3, NOT the plain-docker 3→1 remap)
+# so the launcher loop distinguishes restart-intent / crash / clean / lock-held.
+# ─────────────────────────────────────────────────────────────────
+
+# ── Stage 1: deps ────────────────────────────────────────────────
+FROM node:22-slim AS deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/recued
+COPY package.json package-lock.json ./
+COPY tsconfig.base.json ./
+COPY backend/server/package.json ./backend/server/
+COPY packages/ ./packages/
+COPY apps/ ./apps/
+RUN npm ci --ignore-scripts
+RUN npm rebuild better-sqlite3
+
+# ── Stage 2: build ───────────────────────────────────────────────
+FROM deps AS build
+COPY backend/server/ ./backend/server/
+COPY community/ ./community/
+WORKDIR /opt/recued/backend/server
+RUN node scripts/build.mjs
+
+# ── Stage 3: runtime (thin launcher + seed) ──────────────────────
+FROM node:22-slim AS runtime
+RUN groupadd --system --gid 1001 recued \
+    && useradd --system --uid 1001 --gid recued \
+               --home /var/lib/recued recued \
+    && mkdir -p /data /opt/recued-seed \
+    && chown -R recued:recued /data /opt/recued-seed
+
+WORKDIR /opt/recued
+
+# The launcher bundle (the entrypoint). Self-contained — bundles @recued/release
+# (the frozen minisign verifier); needs no node_modules of its own.
+COPY --from=build --chown=recued:recued \
+     /opt/recued/backend/server/dist/managed-launcher.js ./managed-launcher.js
+
+# The INITIAL server binary seed. The server runs as a node bundle, so the seed
+# is the bundle + its native node_modules closure; the launcher copies the
+# wrapper script `recued` onto the volume on first boot. (Once the static-binary
+# artifact is the seed, this is a single executable + its `.minisig`.)
+COPY --from=build --chown=recued:recued \
+     /opt/recued/backend/server/dist ./seed-dist
+COPY --from=build --chown=recued:recued \
+     /opt/recued/node_modules ./node_modules
+# `recued` seed wrapper: a tiny exec shim the launcher copies to /data/bin and
+# runs as the "binary". Self-update later replaces it with the downloaded one.
+#
+# GA TODO (gated on the signing identity — pre-GA the launcher's verify is
+# bypassed on the empty pinned key): once `TRUSTED_RELEASE_PUBKEY` is non-empty,
+# also bake `/opt/recued-seed/recued.minisig` (the seed binary's detached
+# signature from the signed release) — otherwise `seedIfAbsent` copies an
+# unsigned seed and the launcher's first-boot re-verify refuses to launch. The
+# seed should become the SIGNED static-binary artifact + its `.minisig`, not
+# this node-exec shim.
+RUN printf '#!/usr/bin/env sh\nexec node /opt/recued/seed-dist/bin.js "$@"\n' \
+      > /opt/recued-seed/recued \
+    && chmod +x /opt/recued-seed/recued \
+    && chown recued:recued /opt/recued-seed/recued
+
+USER recued
+
+ENV RECUED_SUPERVISOR_MODE=docker-thin \
+    RECUED_BIN_DIR=/data/bin \
+    RECUED_SEED_BIN=/opt/recued-seed/recued \
+    NODE_ENV=production
+
+EXPOSE 7717 7718 7719
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:7717/health || exit 1
+
+ENTRYPOINT ["node", "/opt/recued/managed-launcher.js"]
+CMD ["--db", "/data/recued.db", "--config", "/etc/recued/config.toml"]
+
+LABEL org.opencontainers.image.title="recued-server (managed)" \
+      org.opencontainers.image.description="Thin self-updating launcher — binary on the data volume (D-178)" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source="https://github.com/recued/recued" \
+      org.opencontainers.image.url="https://recued.com"

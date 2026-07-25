@@ -1,0 +1,151 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "paths": {
+      "@recued/contracts": [
+        "./packages/contracts/src"
+      ],
+      "@recued/crypto": [
+        "./packages/crypto/src"
+      ],
+      "@recued/crypto/canonical-json": [
+        "./packages/crypto/src/canonical-json"
+      ],
+      "@recued/crypto/hash": [
+        "./packages/crypto/src/hash"
+      ],
+      "@recued/fts": [
+        "./packages/fts/src"
+      ],
+      "@recued/warehouse-events": [
+        "./packages/warehouse-events/src"
+      ],
+      "@recued/ingredients": [
+        "./packages/ingredients/src"
+      ],
+      "@recued/ingredients/*": [
+        "./packages/ingredients/src/*"
+      ],
+      "@recued/ingredient-authoring": [
+        "./packages/ingredient-authoring/src"
+      ],
+      "@recued/recipes": [
+        "./packages/recipes/src"
+      ],
+      "@recued/transforms": [
+        "./packages/transforms/src"
+      ],
+      "@recued/transforms/*": [
+        "./packages/transforms/src/*"
+      ],
+      "@recued/approvals": [
+        "./packages/approvals/src"
+      ],
+      "@recued/cache": [
+        "./packages/cache/src"
+      ],
+      "@recued/config": [
+        "./packages/config/src"
+      ],
+      "@recued/llm": [
+        "./packages/llm/src"
+      ],
+      "@recued/marketplace": [
+        "./packages/marketplace/src"
+      ],
+      "@recued/renderer": [
+        "./packages/renderer/src"
+      ],
+      "@recued/scheduler": [
+        "./packages/scheduler/src"
+      ],
+      "@recued/instances": [
+        "./packages/instances/src"
+      ],
+      "@recued/storage": [
+        "./packages/storage/src"
+      ],
+      "@recued/storage-gate": [
+        "./packages/storage-gate/src"
+      ],
+      "@recued/engine": [
+        "./packages/engine/src"
+      ],
+      "@recued/gateway": [
+        "./packages/gateway/src"
+      ],
+      "@recued/middleware": [
+        "./packages/middleware/src"
+      ],
+      "@recued/middleware/*": [
+        "./packages/middleware/src/*"
+      ],
+      "@recued/middleware-recued": [
+        "./packages/middleware-recued/src"
+      ],
+      "@recued/middleware-recued/*": [
+        "./packages/middleware-recued/src/*"
+      ],
+      "@recued/middleware-prompt-cache": [
+        "./packages/middleware-recued/prompt-cache/src"
+      ],
+      "@recued/middleware-prompt-cache/*": [
+        "./packages/middleware-recued/prompt-cache/src/*"
+      ],
+      "@recued/notification": [
+        "./packages/notification/src"
+      ],
+      "@recued/provenance": [
+        "./packages/provenance/src"
+      ],
+      "@recued/transport": [
+        "./packages/transport/src"
+      ],
+      "@recued/chat": [
+        "./packages/chat/src"
+      ],
+      "@recued/messenger": [
+        "./packages/messenger/src"
+      ],
+      "@recued/server": [
+        "./backend/server/src"
+      ],
+      "@recued/server-network": [
+        "./packages/server-network/src"
+      ],
+      "@recued/server-tls": [
+        "./packages/server-tls/src"
+      ],
+      "@recued/ui-shared": [
+        "./packages/ui-shared/src"
+      ],
+      "@recued/ui-shared/*": [
+        "./packages/ui-shared/src/*"
+      ]
+    }
+  },
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "**/__tests__/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
+  ]
+}

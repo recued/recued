@@ -1,0 +1,18 @@
+{
+  // Editor / local type-check lane for the webclient Playwright e2e (specs +
+  // render harness). NOT part of any CI gate — Playwright transpiles specs
+  // without type-checking, and the repo's `typecheck:tests` globs only
+  // `**/src/**/*.test.ts`, so these `e2e/*.spec.ts` files are outside it. This
+  // config just lets `tsc -p apps/webclient/e2e` verify the assertions here.
+  // Extends the repo base for the `@recued/*` path aliases the harness imports.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["*.spec.ts", "harness/*.ts"]
+}

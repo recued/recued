@@ -1,0 +1,168 @@
+/** D-145 PA6 — list-view rendering.
+ *
+ *  Pin per § Phase PA6 (List/search view per Source):
+ *    - Renders search input bound to search_query.
+ *    - Renders one row per entity with primary text + meta.
+ *    - Source label appears per-row only in show_source_label mode.
+ *    - data-action="open-edit-work-entity" + data-entity-id + data-source-id.
+ *    - Empty state distinguishes "no rows" vs "no match for query".
+ *    - XSS-safe (title / body escape).
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  type SourceDropdownOption,
+  type WorkEntity,
+  type WorkEntityListRow,
+} from '@recued/contracts';
+
+import { renderWorkEntityListView } from '../work-entity-page/list-view.js';
+
+const NOW = 1_700_000_000_000;
+
+const taskRow = (over: Partial<WorkEntity & { _kind: 'task' }>): WorkEntity =>
+  ({
+    _kind: 'task',
+    id: over.id ?? 'task-1',
+    title: 'A task',
+    body: undefined,
+    done: false,
+    due_at: undefined,
+    priority: undefined,
+    created_at: NOW,
+    updated_at: NOW,
+    completed_at: undefined,
+    assigned_contact_id: undefined,
+    parent_calendar_event_id: undefined,
+    linked_mail_thread_id: undefined,
+    parent_project_id: undefined,
+    blocks_task_ids: [],
+    source_id: 'recued.task',
+    last_seen_at: NOW,
+    sync_state: 'live',
+    conflict_policy: 'manual_merge',
+    ...over,
+  } as WorkEntity);
+
+const sourceOpt = (over: Partial<SourceDropdownOption> = {}): SourceDropdownOption => ({
+  id: 'recued.task',
+  label: 'Recued built-in (task)',
+  source_kind: 'builtin',
+  write_capable: true,
+  mcp_exposed: true,
+  ...over,
+});
+
+const row = (over: Partial<WorkEntity & { _kind: 'task' }>): WorkEntityListRow => ({
+  entity: taskRow(over),
+  source: sourceOpt(),
+});
+
+describe('D-145 PA6 — renderWorkEntityListView (list)', () => {
+  it('renders a search input bound to search_query', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [],
+      show_source_label: false,
+      search_query: 'milk',
+    });
+    expect(html).toContain('data-action="search-work-entities"');
+    expect(html).toContain('value="milk"');
+  });
+
+  it('renders one row per entity with primary text + data attributes', () => {
+    const rows: WorkEntityListRow[] = [
+      row({ id: 'a', title: 'Buy milk' }),
+      row({ id: 'b', title: 'Email Bob' }),
+    ];
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows,
+      show_source_label: false,
+      search_query: '',
+    });
+    expect(html).toContain('data-entity-id="a"');
+    expect(html).toContain('data-entity-id="b"');
+    expect(html).toMatch(/data-action="open-edit-work-entity"/);
+    expect(html).toContain('Buy milk');
+    expect(html).toContain('Email Bob');
+  });
+
+  it('omits Source label per row when show_source_label is false', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [row({ id: 'a', title: 'Buy milk' })],
+      show_source_label: false,
+      search_query: '',
+    });
+    expect(html).not.toContain('class="work-entity-list-row-source"');
+  });
+
+  it('renders Source label per row when show_source_label is true', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [row({ id: 'a', title: 'Buy milk' })],
+      show_source_label: true,
+      search_query: '',
+    });
+    expect(html).toContain('class="work-entity-list-row-source"');
+    expect(html).toContain('Recued built-in (task)');
+  });
+
+  it('every row carries data-source-id from the entity row (not the source option)', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [
+        {
+          entity: taskRow({ id: 'a', source_id: 'hubspot.acme.task' }),
+          source: sourceOpt({ id: 'hubspot.acme.task' }),
+        },
+      ],
+      show_source_label: true,
+      search_query: '',
+    });
+    expect(html).toContain('data-source-id="hubspot.acme.task"');
+  });
+
+  it('escapes HTML in entity title + body', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [
+        row({
+          id: 'a',
+          title: '<script>1</script>',
+          body: '<img onerror=alert(1)>',
+        }),
+      ],
+      show_source_label: false,
+      search_query: '',
+    });
+    expect(html).not.toContain('<script>1</script>');
+    expect(html).not.toContain('<img onerror');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('renders default empty-state copy when no rows + no query', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [],
+      show_source_label: false,
+      search_query: '',
+      empty_state_copy: 'Nothing yet.',
+    });
+    expect(html).toContain('work-entity-list-empty-default');
+    expect(html).toContain('Nothing yet.');
+  });
+
+  it('renders no-match empty state when query is non-empty + zero rows', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [],
+      show_source_label: false,
+      search_query: 'zzz',
+    });
+    expect(html).toContain('work-entity-list-empty-no-match');
+    expect(html).toContain('<strong>zzz</strong>');
+  });
+});

@@ -1,0 +1,2898 @@
+{
+  "vendor": "Shortcut",
+  "url": "https://developer.shortcut.com/api/rest/v3/shortcut.openapi.json",
+  "sha256": "5dc76ee427183ce0edb7489a9c6a13d1406bafe80dc324c6f331c751658d974f",
+  "openapi": "3.0.0",
+  "title": "Shortcut API",
+  "version": "3.0",
+  "byte_length": 568006,
+  "path_count": 85,
+  "operation_count": 143,
+  "selected_operation_count": 142,
+  "excluded_operation_count": 1,
+  "selected_method_counts": {
+    "DELETE": 21,
+    "GET": 70,
+    "POST": 25,
+    "PUT": 26
+  },
+  "selected_pack_counts": {
+    "shortcut-planning": 57,
+    "shortcut-stories": 44,
+    "shortcut-workspace": 41
+  },
+  "selected_family_counts": {
+    "categories": 7,
+    "custom-fields": 4,
+    "documents": 8,
+    "entity-templates": 7,
+    "epic-workflow": 1,
+    "epics": 17,
+    "external-link": 1,
+    "files": 4,
+    "groups": 5,
+    "health": 1,
+    "integrations": 3,
+    "iterations": 8,
+    "key-results": 2,
+    "labels": 7,
+    "linked-files": 5,
+    "member": 1,
+    "members": 2,
+    "milestones": 6,
+    "objectives": 9,
+    "projects": 6,
+    "repositories": 2,
+    "search": 7,
+    "stories": 23,
+    "story-links": 4,
+    "workflows": 2
+  },
+  "deprecated_operation_count": 6,
+  "corroborating_contract": {
+    "repository": "https://github.com/useshortcut/shortcut-client-js",
+    "commit": "b220117055bea7cc1a6514073f0947e5bf4ec117",
+    "url": "https://raw.githubusercontent.com/useshortcut/shortcut-client-js/b220117055bea7cc1a6514073f0947e5bf4ec117/schema/shortcut.swagger.json",
+    "sha256": "bf1bb6257994d96168e7cd03bdf7ade359143fa8ab05f23fc3d21d74793d5fd4",
+    "format": "2.0",
+    "byte_length": 515977,
+    "path_count": 84,
+    "operation_count": 141,
+    "selected_route_overlap_count": 139,
+    "license": "MIT"
+  },
+  "admission": {
+    "api_reference": "https://developer.shortcut.com/api/rest/v3",
+    "authentication_reference": "https://help.shortcut.com/hc/en-us/articles/205701199-Shortcut-API-Tokens",
+    "search_reference": "https://help.shortcut.com/hc/en-us/articles/360000046646-Search-Operators",
+    "official_client": "https://github.com/useshortcut/shortcut-client-js"
+  },
+  "contract_gaps": {
+    "multipart_upload": "The sole excluded operation is POST /api/v3/files. It requires multipart/form-data with one to four binary parts, which the static JSON REST composition cannot serialize. File metadata CRUD and JSON createLinkedFile for externally hosted artifacts remain admitted.",
+    "search_ceiling": "Shortcut search documents a maximum of 1000 matches. The six typed search operations use the returned next URL only as an opaque next query token and replay it on the same admitted method and origin.",
+    "generic_search": "GET /api/v3/search returns separate entity envelopes with independent nested next links, so it remains a one-request operation rather than pretending one cursor can walk all entity kinds.",
+    "source_scope": "The Story Source binds !is:archived and detail=full. It is filtered, declares no deletion inference, and uses paginated StorySearchResult rows plus Get Story detail reads.",
+    "mutable_primary_url": "The official developer-hosted OpenAPI URL is mutable; its exact bytes are hash-pinned. The official JavaScript client repository provides a commit-pinned Swagger corroboration for 139 of the 142 admitted current routes and all Source field paths.",
+    "token_scope": "A Shortcut API token grants complete access to one workspace. The connection owns Shortcut-Token; no operation or recipe exposes it as an argument."
+  },
+  "source_field_proof": {
+    "list_schema": "StorySearchResult",
+    "read_schema": "Story",
+    "static_list_args": {
+      "query.query": "!is:archived",
+      "query.detail": "full"
+    },
+    "fields": {
+      "id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        }
+      },
+      "updated_at": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      },
+      "name": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "completed": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        }
+      },
+      "deadline": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      },
+      "completed_at": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      },
+      "description": {
+        "openapi_list": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "app_url": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "story_type": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "workflow_state_id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        }
+      },
+      "project_id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": true
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": true
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": true
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": true
+        }
+      },
+      "archived": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "sdk_swagger_list": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        },
+        "sdk_swagger_read": {
+          "present": true,
+          "required": true,
+          "type": "boolean",
+          "nullable": false
+        }
+      }
+    }
+  },
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/api/v3/categories",
+      "operation_id": "listCategories",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/categories",
+      "operation_id": "createCategory",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.create_category",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/categories/{category-public-id}",
+      "operation_id": "deleteCategory",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.delete_category",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/categories/{category-public-id}",
+      "operation_id": "getCategory",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/categories/{category-public-id}",
+      "operation_id": "updateCategory",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.update_category",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/categories/{category-public-id}/milestones",
+      "operation_id": "listCategoryMilestones",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.list_category_milestones",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/categories/{category-public-id}/objectives",
+      "operation_id": "listCategoryObjectives",
+      "family": "categories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "category.list_category_objectives",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/custom-fields",
+      "operation_id": "listCustomFields",
+      "family": "custom-fields",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "custom_field.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/custom-fields/{custom-field-public-id}",
+      "operation_id": "deleteCustomField",
+      "family": "custom-fields",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "custom_field.delete_custom_field",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/custom-fields/{custom-field-public-id}",
+      "operation_id": "getCustomField",
+      "family": "custom-fields",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "custom_field.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/custom-fields/{custom-field-public-id}",
+      "operation_id": "updateCustomField",
+      "family": "custom-fields",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "custom_field.update_custom_field",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/documents",
+      "operation_id": "listDocs",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.list_docs",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/documents",
+      "operation_id": "createDoc",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.create_doc",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/documents/{doc-public-id}",
+      "operation_id": "deleteDoc",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.delete_doc",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/documents/{doc-public-id}",
+      "operation_id": "getDoc",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.get_doc",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/documents/{doc-public-id}",
+      "operation_id": "updateDoc",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.update_doc",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/documents/{doc-public-id}/epics",
+      "operation_id": "listDocumentEpics",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.list_document_epics",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/documents/{doc-public-id}/epics/{epic-public-id}",
+      "operation_id": "unlinkDocumentFromEpic",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.unlink_document_from_epic",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/documents/{doc-public-id}/epics/{epic-public-id}",
+      "operation_id": "linkDocumentToEpic",
+      "family": "documents",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "document.link_document_to_epic",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/entity-templates",
+      "operation_id": "listEntityTemplates",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.list_entity_templates",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/entity-templates",
+      "operation_id": "createEntityTemplate",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.create_entity_template",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/entity-templates/{entity-template-public-id}",
+      "operation_id": "deleteEntityTemplate",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.delete_entity_template",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/entity-templates/{entity-template-public-id}",
+      "operation_id": "getEntityTemplate",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.get_entity_template",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/entity-templates/{entity-template-public-id}",
+      "operation_id": "updateEntityTemplate",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.update_entity_template",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/entity-templates/disable",
+      "operation_id": "disableStoryTemplates",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.disable_story_templates",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/entity-templates/enable",
+      "operation_id": "enableStoryTemplates",
+      "family": "entity-templates",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "entity_template.enable_story_templates",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epic-workflow",
+      "operation_id": "getEpicWorkflow",
+      "family": "epic-workflow",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic_workflow.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics",
+      "operation_id": "listEpics",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.list_epics",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/epics",
+      "operation_id": "createEpic",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.create",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/epics/{epic-public-id}",
+      "operation_id": "deleteEpic",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.delete_epic",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}",
+      "operation_id": "getEpic",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/epics/{epic-public-id}",
+      "operation_id": "updateEpic",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.update_epic",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/comments",
+      "operation_id": "listEpicComments",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.list_epic_comments",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/epics/{epic-public-id}/comments",
+      "operation_id": "createEpicComment",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.create_epic_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/epics/{epic-public-id}/comments/{comment-public-id}",
+      "operation_id": "deleteEpicComment",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.delete_epic_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/comments/{comment-public-id}",
+      "operation_id": "getEpicComment",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.get_epic_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/epics/{epic-public-id}/comments/{comment-public-id}",
+      "operation_id": "createEpicCommentComment",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.create_epic_comment_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/epics/{epic-public-id}/comments/{comment-public-id}",
+      "operation_id": "updateEpicComment",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.update_epic_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/documents",
+      "operation_id": "listEpicDocuments",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.list_epic_documents",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/health",
+      "operation_id": "getEpicHealth",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.health.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/epics/{epic-public-id}/health",
+      "operation_id": "createEpicHealth",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.create_epic_health",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/health-history",
+      "operation_id": "listEpicHealths",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.list_epic_healths",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/{epic-public-id}/stories",
+      "operation_id": "listEpicStories",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.story.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/epics/paginated",
+      "operation_id": "listEpicsPaginated",
+      "family": "epics",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "epic.list_paginated",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/external-link/stories",
+      "operation_id": "getExternalLinkStories",
+      "family": "external-link",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "external_link.get_external_link_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/files",
+      "operation_id": "listFiles",
+      "family": "files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "file.list_files",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/files",
+      "operation_id": "uploadFiles",
+      "family": "files",
+      "deprecated": false,
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "multipart",
+      "selected": false,
+      "companion_operation_id": "createLinkedFile",
+      "reason": "multipart/form-data file upload cannot be represented by the current static JSON REST composition; createLinkedFile remains available for URL-backed artifacts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/files/{file-public-id}",
+      "operation_id": "deleteFile",
+      "family": "files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "file.delete_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/files/{file-public-id}",
+      "operation_id": "getFile",
+      "family": "files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "file.get_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/files/{file-public-id}",
+      "operation_id": "updateFile",
+      "family": "files",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "file.update_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/groups",
+      "operation_id": "listGroups",
+      "family": "groups",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "group.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/groups",
+      "operation_id": "createGroup",
+      "family": "groups",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "group.create_group",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/groups/{group-public-id}",
+      "operation_id": "getGroup",
+      "family": "groups",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "group.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/groups/{group-public-id}",
+      "operation_id": "updateGroup",
+      "family": "groups",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "group.update_group",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/groups/{group-public-id}/stories",
+      "operation_id": "listGroupStories",
+      "family": "groups",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "group.list_group_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/health/{health-public-id}",
+      "operation_id": "updateHealth",
+      "family": "health",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "health.update_health",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/integrations/webhook",
+      "operation_id": "createGenericIntegration",
+      "family": "integrations",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "integration.create_generic_integration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/integrations/webhook/{integration-public-id}",
+      "operation_id": "deleteGenericIntegration",
+      "family": "integrations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "integration.delete_generic_integration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/integrations/webhook/{integration-public-id}",
+      "operation_id": "getGenericIntegration",
+      "family": "integrations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "integration.get_generic_integration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/iterations",
+      "operation_id": "listIterations",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/iterations",
+      "operation_id": "createIteration",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.create_iteration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/iterations/{iteration-public-id}",
+      "operation_id": "deleteIteration",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.delete_iteration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/iterations/{iteration-public-id}",
+      "operation_id": "getIteration",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/iterations/{iteration-public-id}",
+      "operation_id": "updateIteration",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.update_iteration",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/iterations/{iteration-public-id}/stories",
+      "operation_id": "listIterationStories",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.list_iteration_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/iterations/disable",
+      "operation_id": "disableIterations",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.disable_iterations",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/iterations/enable",
+      "operation_id": "enableIterations",
+      "family": "iterations",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "iteration.enable_iterations",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/key-results/{key-result-public-id}",
+      "operation_id": "getKeyResult",
+      "family": "key-results",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "key_result.get_key_result",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/key-results/{key-result-public-id}",
+      "operation_id": "updateKeyResult",
+      "family": "key-results",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "key_result.update_key_result",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/labels",
+      "operation_id": "listLabels",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/labels",
+      "operation_id": "createLabel",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.create_label",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/labels/{label-public-id}",
+      "operation_id": "deleteLabel",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.delete_label",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/labels/{label-public-id}",
+      "operation_id": "getLabel",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/labels/{label-public-id}",
+      "operation_id": "updateLabel",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.update_label",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/labels/{label-public-id}/epics",
+      "operation_id": "listLabelEpics",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.list_label_epics",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/labels/{label-public-id}/stories",
+      "operation_id": "listLabelStories",
+      "family": "labels",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "label.list_label_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/linked-files",
+      "operation_id": "listLinkedFiles",
+      "family": "linked-files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "linked_file.list_linked_files",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/linked-files",
+      "operation_id": "createLinkedFile",
+      "family": "linked-files",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "linked_file.create_linked_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/linked-files/{linked-file-public-id}",
+      "operation_id": "deleteLinkedFile",
+      "family": "linked-files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "linked_file.delete_linked_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/linked-files/{linked-file-public-id}",
+      "operation_id": "getLinkedFile",
+      "family": "linked-files",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "linked_file.get_linked_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/linked-files/{linked-file-public-id}",
+      "operation_id": "updateLinkedFile",
+      "family": "linked-files",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "linked_file.update_linked_file",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/member",
+      "operation_id": "getCurrentMemberInfo",
+      "family": "member",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "member.get_current_member_info",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/members",
+      "operation_id": "listMembers",
+      "family": "members",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "member.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/members/{member-public-id}",
+      "operation_id": "getMember",
+      "family": "members",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "member.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/milestones",
+      "operation_id": "listMilestones",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.list_milestones",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/milestones",
+      "operation_id": "createMilestone",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.create_milestone",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/milestones/{milestone-public-id}",
+      "operation_id": "deleteMilestone",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.delete_milestone",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/milestones/{milestone-public-id}",
+      "operation_id": "getMilestone",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.get_milestone",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/milestones/{milestone-public-id}",
+      "operation_id": "updateMilestone",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.update_milestone",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/milestones/{milestone-public-id}/epics",
+      "operation_id": "listMilestoneEpics",
+      "family": "milestones",
+      "deprecated": true,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "milestone.list_milestone_epics",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/objectives",
+      "operation_id": "listObjectives",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.list_objectives",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/objectives",
+      "operation_id": "createObjective",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.create_objective",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/objectives/{objective-public-id}",
+      "operation_id": "deleteObjective",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.delete_objective",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/objectives/{objective-public-id}",
+      "operation_id": "getObjective",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.get_objective",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/objectives/{objective-public-id}",
+      "operation_id": "updateObjective",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.update_objective",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/objectives/{objective-public-id}/epics",
+      "operation_id": "listObjectiveEpics",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.list_objective_epics",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/objectives/{objective-public-id}/health",
+      "operation_id": "getObjectiveHealth",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.get_objective_health",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/objectives/{objective-public-id}/health",
+      "operation_id": "createObjectiveHealth",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.create_objective_health",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/objectives/{objective-public-id}/health-history",
+      "operation_id": "listObjectiveHealths",
+      "family": "objectives",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "objective.list_objective_healths",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/projects",
+      "operation_id": "listProjects",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/projects",
+      "operation_id": "createProject",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.create_project",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/projects/{project-public-id}",
+      "operation_id": "deleteProject",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.delete_project",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/projects/{project-public-id}",
+      "operation_id": "getProject",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/projects/{project-public-id}",
+      "operation_id": "updateProject",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.update_project",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/projects/{project-public-id}/stories",
+      "operation_id": "listStories",
+      "family": "projects",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-planning",
+      "op": "project.list_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/repositories",
+      "operation_id": "listRepositories",
+      "family": "repositories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "repository.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/repositories/{repo-public-id}",
+      "operation_id": "getRepository",
+      "family": "repositories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "repository.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search",
+      "operation_id": "search",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "search.search",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/documents",
+      "operation_id": "searchDocuments",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "search.search_documents",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/epics",
+      "operation_id": "searchEpics",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "epic.search",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/iterations",
+      "operation_id": "searchIterations",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "search.search_iterations",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/milestones",
+      "operation_id": "searchMilestones",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "search.search_milestones",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/objectives",
+      "operation_id": "searchObjectives",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "search.search_objectives",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/search/stories",
+      "operation_id": "searchStories",
+      "family": "search",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.search",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories",
+      "operation_id": "createStory",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.create",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/stories/{story-public-id}",
+      "operation_id": "deleteStory",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.delete",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}",
+      "operation_id": "getStory",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/stories/{story-public-id}",
+      "operation_id": "updateStory",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.update",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}/comments",
+      "operation_id": "listStoryComment",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.list_story_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/{story-public-id}/comments",
+      "operation_id": "createStoryComment",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.comment.create",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}",
+      "operation_id": "deleteStoryComment",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.delete_story_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}",
+      "operation_id": "getStoryComment",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.get_story_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}",
+      "operation_id": "updateStoryComment",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.update_story_comment",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}/reactions",
+      "operation_id": "deleteStoryReaction",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.delete_story_reaction",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}/reactions",
+      "operation_id": "createStoryReaction",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.create_story_reaction",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/{story-public-id}/comments/{comment-public-id}/unlink-from-slack",
+      "operation_id": "unlinkCommentThreadFromSlack",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.unlink_comment_thread_from_slack",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}/history",
+      "operation_id": "storyHistory",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.story_history",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}/sub-tasks",
+      "operation_id": "listStorySubTasks",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.list_story_sub_tasks",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/{story-public-id}/tasks",
+      "operation_id": "createTask",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.create_task",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/stories/{story-public-id}/tasks/{task-public-id}",
+      "operation_id": "deleteTask",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.delete_task",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/stories/{story-public-id}/tasks/{task-public-id}",
+      "operation_id": "getTask",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.get_task",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/stories/{story-public-id}/tasks/{task-public-id}",
+      "operation_id": "updateTask",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.update_task",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/stories/bulk",
+      "operation_id": "deleteMultipleStories",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.delete_multiple_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/bulk",
+      "operation_id": "createMultipleStories",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.create_multiple_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/stories/bulk",
+      "operation_id": "updateMultipleStories",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.update_multiple_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/from-template",
+      "operation_id": "createStoryFromTemplate",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.create_story_from_template",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/stories/search",
+      "operation_id": "queryStories",
+      "family": "stories",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story.query_stories",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v3/story-links",
+      "operation_id": "createStoryLink",
+      "family": "story-links",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story_link.create_story_link",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v3/story-links/{story-link-public-id}",
+      "operation_id": "deleteStoryLink",
+      "family": "story-links",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story_link.delete_story_link",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/story-links/{story-link-public-id}",
+      "operation_id": "getStoryLink",
+      "family": "story-links",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story_link.get_story_link",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v3/story-links/{story-link-public-id}",
+      "operation_id": "updateStoryLink",
+      "family": "story-links",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "selected": true,
+      "pack": "shortcut-stories",
+      "op": "story_link.update_story_link",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/workflows",
+      "operation_id": "listWorkflows",
+      "family": "workflows",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "workflow.list",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v3/workflows/{workflow-public-id}",
+      "operation_id": "getWorkflow",
+      "family": "workflows",
+      "deprecated": false,
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "selected": true,
+      "pack": "shortcut-workspace",
+      "op": "workflow.read",
+      "reason": "official Shortcut REST v3 operation with buildable static JSON transport"
+    }
+  ]
+}

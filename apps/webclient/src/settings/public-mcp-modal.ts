@@ -1,0 +1,207 @@
+/** D-148 § A.7.2 — `/mcp.public` acknowledgement modal renderer (W3.8).
+ *
+ *  AI-agent ingress (MCP) is a structurally riskier exposure class
+ *  than human-WS / vendor-webhook — prompt-injection surface,
+ *  per-pair token scoping, different rate-limit posture. The spec
+ *  gates flipping `resolution.mcp.public === true` behind a free-text
+ *  confirmation phrase: the user must type the literal string
+ *  `enable public MCP`. A checkbox would normalize the gesture; the
+ *  phrase keeps it deliberate.
+ *
+ *  This module is the modal renderer + the per-flow state machine.
+ *  It does NOT fire the rpc; it shapes the payload and validates the
+ *  typed phrase locally so the UI gives immediate feedback. The
+ *  server is still authoritative (the same phrase-validator runs in
+ *  the exposure state machine).
+ *
+ *  Modal kinds:
+ *    - `acknowledge` — user is enabling public MCP; modal explains
+ *      the risk + collects the phrase.
+ *    - `revoke` — user is disabling a previously-acknowledged state;
+ *      no phrase needed (demotion is always allowed per § A.7.2).
+ *
+ *  Modal states:
+ *    - `idle` — modal closed
+ *    - `open` — modal rendered; user is reading the explanation +
+ *      typing the phrase
+ *    - `submitting` — rpc in flight; submit button disabled
+ *    - `error` — rpc rejected (e.g., phrase mismatch); user can
+ *      correct + retry
+ */
+
+import {
+  PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE,
+  isAcknowledgementWellFormed,
+  isValidPublicMcpAcknowledgementPhrase,
+  type NetworkErrorCode,
+  type PublicMcpAcknowledgement,
+} from '@recued/contracts';
+import { buildPublicMcpDispatch, type ExposurePublicMcpDispatch } from './exposure-surface.js';
+
+/** Modal kind — distinguishes the enable flow (phrase required) from
+ *  the revoke flow (no phrase). */
+export type PublicMcpModalKind = 'acknowledge' | 'revoke';
+
+/** Modal state — one discriminated value per UI phase. */
+export type PublicMcpModalState =
+  | { kind: 'idle' }
+  | {
+      kind: 'open';
+      mode: PublicMcpModalKind;
+      typed_phrase: string;
+      /** True iff `typed_phrase` matches the canonical literal exactly
+       *  (whitespace-insensitive at edges). Drives the submit button's
+       *  enabled state. */
+      phrase_valid: boolean;
+    }
+  | {
+      kind: 'submitting';
+      mode: PublicMcpModalKind;
+      typed_phrase: string;
+    }
+  | {
+      kind: 'error';
+      mode: PublicMcpModalKind;
+      typed_phrase: string;
+      error: NetworkErrorCode;
+    };
+
+/** Modal copy. Bullet list mirrors the spec § A.7.2 flow (a-e). */
+export const PUBLIC_MCP_MODAL_COPY = {
+  acknowledge: {
+    title: 'Enable public MCP?',
+    subtitle:
+      'AI agents at remote endpoints can read warehouse topics scoped to the granted MCP token.',
+    bullets: [
+      'AI agents at remote endpoints can read warehouse topics scoped to the granted MCP token.',
+      'Prompt-injection is a substrate risk — a topic\'s content can manipulate agent behavior.',
+      'Per-pair MCP visibility tokens (D-137) gate which topics are exposed.',
+      'Recommendation: keep MCP LAN-only unless a specific use case requires public access.',
+    ],
+    phrase_prompt: `Type "${PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE}" to confirm`,
+    submit_label: 'Acknowledge + enable public MCP',
+    cancel_label: 'Cancel — keep MCP LAN-only',
+  },
+  revoke: {
+    title: 'Revoke public MCP?',
+    subtitle:
+      'Removes the acknowledgement record + forces `/mcp.public` off. Demotion is always allowed without friction.',
+    bullets: [
+      'Removing the acknowledgement drops the audit row signature trail to a "revoked" state.',
+      'AI agents reaching `/mcp` from outside the LAN will be refused at the listener.',
+      'You can re-acknowledge later by typing the phrase again.',
+    ],
+    phrase_prompt: '',
+    submit_label: 'Revoke acknowledgement',
+    cancel_label: 'Cancel — keep public MCP enabled',
+  },
+} as const;
+
+export const openPublicMcpModal = (mode: PublicMcpModalKind): PublicMcpModalState => ({
+  kind: 'open',
+  mode,
+  typed_phrase: '',
+  phrase_valid: mode === 'revoke',
+});
+
+/** Type a character (or paste a longer string) into the phrase field.
+ *  Recomputes `phrase_valid` against the canonical literal.
+ *
+ *  Codex W3.8 P2 #2 fold — typing on `'error'` transitions back to
+ *  `'open'` so the user can correct a rejected phrase without
+ *  re-opening the modal. The substrate's `failPublicMcpModal` parks
+ *  the state in `'error'` after an rpc rejection; without this branch
+ *  the field would become read-only + `submitPublicMcpModal` would
+ *  reject the retry, dead-ending the documented retry path. */
+export const typePublicMcpPhrase = (
+  state: PublicMcpModalState,
+  next_phrase: string,
+): PublicMcpModalState => {
+  if (state.kind !== 'open' && state.kind !== 'error') return state;
+  if (state.mode === 'revoke') {
+    return {
+      kind: 'open',
+      mode: state.mode,
+      typed_phrase: next_phrase,
+      phrase_valid: true,
+    };
+  }
+  return {
+    kind: 'open',
+    mode: state.mode,
+    typed_phrase: next_phrase,
+    phrase_valid: isValidPublicMcpAcknowledgementPhrase(next_phrase),
+  };
+};
+
+export const closePublicMcpModal = (): PublicMcpModalState => ({ kind: 'idle' });
+
+/** Submit attempt — produces either the dispatch + the next state OR
+ *  a local-error result (e.g. typed phrase still invalid). Surfacing
+ *  the local error keeps the rpc round-trip short-circuited. */
+export type PublicMcpSubmitOutcome =
+  | {
+      ok: true;
+      dispatch: ExposurePublicMcpDispatch;
+      next: PublicMcpModalState;
+    }
+  | { ok: false; error: 'phrase_required' | 'phrase_mismatch' };
+
+export const submitPublicMcpModal = (
+  state: PublicMcpModalState,
+  args: { reason?: string } = {},
+): PublicMcpSubmitOutcome => {
+  if (state.kind !== 'open') {
+    return { ok: false, error: 'phrase_required' };
+  }
+  if (state.mode === 'acknowledge') {
+    if (state.typed_phrase.trim().length === 0) {
+      return { ok: false, error: 'phrase_required' };
+    }
+    if (!state.phrase_valid) {
+      return { ok: false, error: 'phrase_mismatch' };
+    }
+    const dispatch = buildPublicMcpDispatch({
+      acknowledge: true,
+      free_text_confirmation: state.typed_phrase,
+      ...(args.reason !== undefined ? { reason: args.reason } : {}),
+    });
+    return {
+      ok: true,
+      dispatch,
+      next: { kind: 'submitting', mode: state.mode, typed_phrase: state.typed_phrase },
+    };
+  }
+  const dispatch = buildPublicMcpDispatch({
+    acknowledge: false,
+    ...(args.reason !== undefined ? { reason: args.reason } : {}),
+  });
+  return {
+    ok: true,
+    dispatch,
+    next: { kind: 'submitting', mode: state.mode, typed_phrase: state.typed_phrase },
+  };
+};
+
+/** Move the modal into the error state after an rpc rejection. */
+export const failPublicMcpModal = (
+  state: PublicMcpModalState,
+  error: NetworkErrorCode,
+): PublicMcpModalState => {
+  if (state.kind !== 'submitting' && state.kind !== 'open') return state;
+  return {
+    kind: 'error',
+    mode: state.mode,
+    typed_phrase: state.typed_phrase,
+    error,
+  };
+};
+
+/** True iff the live `PublicMcpAcknowledgement` is currently valid (per
+ *  the contracts predicate). Used by the page-shell to pick which
+ *  modal mode to open on the "Manage public MCP" button. */
+export const isPublicMcpAcknowledgementActive = (
+  ack: PublicMcpAcknowledgement,
+): boolean => ack.acknowledged && isAcknowledgementWellFormed(ack);
+
+export { PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE };

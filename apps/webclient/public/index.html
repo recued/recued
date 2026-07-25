@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f8fafc" />
+    <title>Recued</title>
+    <!-- D-148 § A.4 — PWA install manifest. The webclient is the
+         display + HID surface to the user's recued-server; an install
+         lets Mary "add to home screen" so the next launch goes straight
+         into the paired UX without the URL bar. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <!-- D-174 — the canonical design tokens are the single source of truth in
+         @recued/ui-shared (tokens.css). build.mjs copies it into build/ and we
+         <link> it here (render-blocking → no FOUC); bootstrapReceptionRoute then
+         injects PRIMITIVE_STYLES on mount. Only the boot-splash styles below are
+         shell-local. -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <!-- Theme: apply the user's pinned light/dark choice to <html> before
+         first paint so there's no flash. 'system' (or no stored value)
+         leaves no data-theme attribute, so tokens.css's
+         prefers-color-scheme media query governs. The bundle's theme
+         controller (shell/theme-controller.ts) keeps this in sync + owns
+         the toggle. Kept tiny + inline + dependency-free on purpose. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('recued.theme');
+          if (t === 'light' || t === 'dark') {
+            document.documentElement.setAttribute('data-theme', t);
+          }
+        } catch (e) {
+          /* storage blocked (private mode) — fall back to System. */
+        }
+      })();
+    </script>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); }
+      body { font-family: -apple-system, system-ui, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+      #webclient-root { min-height: 100vh; }
+      .webclient-boot-splash {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        min-height: 100vh; gap: 12px; color: var(--fg-muted); font-size: 13px;
+      }
+      .webclient-boot-splash-brand { font-size: 18px; font-weight: 700; color: var(--brand); }
+    </style>
+  </head>
+  <body>
+    <!-- Mount root for bootstrapWebclient({ root: … }). The boot splash
+         below is replaced by the first mountReceptionRoute() pass; if
+         the bundle fails to load (404 / parse error), the inline
+         fallback script below upgrades the splash to a visible error
+         so the user isn't stranded on "Loading…" indefinitely. -->
+    <div id="webclient-root">
+      <div class="webclient-boot-splash" id="webclient-boot-splash">
+        <div class="webclient-boot-splash-brand">Recued</div>
+        <div id="webclient-boot-splash-message">Loading…</div>
+      </div>
+    </div>
+    <!-- D-148 § A.4 — service-worker registration. Inline so the
+         registration starts as soon as the HTML parses, independent of
+         the (larger) ESM bundle landing. The bundle re-imports
+         `registerServiceWorker` from `@recued/webclient` for the
+         programmatic API (e.g. `unregister()` on the Settings → Privacy
+         "Clear this browser" path). -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker
+            .register('./sw.js', { scope: './' })
+            .catch(function () {
+              /* SW registration failures are non-fatal — the PWA still
+                 runs without offline caching. */
+            });
+        });
+      }
+    </script>
+    <!-- Main entry — a follow-up phase wires `webclient-main.ts`'s
+         `bootstrapWebclient({ root: … })` call here. The script tag
+         lands before the bundle exists so production builds drop the
+         compiled output at the same path. The `onerror` handler is the
+         Codex P1 fold — until the bundle ships, a 404 on this script
+         upgrades the splash to a visible "shell not ready" message
+         rather than stranding the user on "Loading…" forever. -->
+    <script
+      type="module"
+      src="./webclient-main.js"
+      onerror="(function(){var el=document.getElementById('webclient-boot-splash-message');if(el){el.textContent='Webclient bundle not loaded — the static shell is shipped without a build step yet. See apps/webclient/README for the build-out plan.';}})()"
+    ></script>
+  </body>
+</html>

@@ -1,0 +1,4252 @@
+{
+  "_extract": {
+    "sources": {
+      "openapi": {
+        "kind": "official_mutable_openapi_hash_locked",
+        "url": "https://api.hightouch.io/api/swagger.json",
+        "bytes": 159607,
+        "sha256": "ee840baa9cabd6a62b17e90c1738f3702744bf0da25782c1ee6934b6c55d2c58",
+        "retrieved_on": "2026-07-16",
+        "evidence": [
+          "39 bearer-secured method/path operations across 27 paths",
+          "exact parameters, required and optional JSON bodies, success response unions, and pagination defaults",
+          "declared Hightouch API server https://api.hightouch.com/api/v1"
+        ],
+        "mutability": "Mutable official document; byte length and SHA-256 are verified before generation so drift fails closed.",
+        "openapi": "3.0.0",
+        "title": "Hightouch API",
+        "api_version": "1.0.0",
+        "official_path_count": 27,
+        "declared_server": [
+          {
+            "url": "https://api.hightouch.com/api/v1"
+          }
+        ],
+        "security_schemes": {
+          "bearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "Bearer"
+          }
+        }
+      },
+      "api_guide_section": {
+        "kind": "official_api_guide_section_hash_locked",
+        "url": "https://hightouch.com/docs/developer-tools/api-guide",
+        "bytes": 3451,
+        "sha256": "689f868f013368a7a50b1cb29d284bf0592bd0bdf15cf64e0f7906243b5cad95",
+        "retrieved_on": "2026-07-16",
+        "evidence": [
+          "API keys must be created by a workspace Admin",
+          "API keys provide read/write access to sensitive Hightouch resources",
+          "200 requests per 10 seconds per workspace",
+          "TLS 1.2 or later is required"
+        ],
+        "mutability": "Extracted deterministically from the mutable official llms-full document; the normalized section is byte- and hash-locked.",
+        "extracted_from": "https://hightouch.com/docs/llms-full.txt",
+        "extraction_start_marker": "## API overview\n\n**URL:** https://hightouch.com/docs/developer-tools/api-guide",
+        "extraction_end_marker": "\n---\n"
+      }
+    },
+    "official_operation_count": 39,
+    "admitted_operation_count": 38,
+    "exclusion_count": 1,
+    "official_method_counts": {
+      "GET": 19,
+      "PATCH": 6,
+      "POST": 14
+    },
+    "admitted_method_counts": {
+      "GET": 19,
+      "PATCH": 6,
+      "POST": 13
+    },
+    "pack_operation_counts": {
+      "hightouch-data-resources": 12,
+      "hightouch-sync-runtime": 9,
+      "hightouch-identity-resolution": 4,
+      "hightouch-decisioning-campaigns": 9,
+      "hightouch-event-contracts": 4
+    },
+    "composition_bytes": {
+      "hightouch-data-resources": 37344,
+      "hightouch-sync-runtime": 28065,
+      "hightouch-identity-resolution": 8903,
+      "hightouch-decisioning-campaigns": 24687,
+      "hightouch-event-contracts": 11254
+    },
+    "body_mode_counts": {
+      "none": 21,
+      "raw_json": 18
+    },
+    "admitted_body_mode_counts": {
+      "none": 21,
+      "raw_json": 17
+    },
+    "official_body_count": 18,
+    "official_required_body_count": 14,
+    "official_optional_body_count": 4,
+    "admitted_optional_body_count": 3,
+    "risk_counts": {
+      "admin": 12,
+      "destructive": 7,
+      "read": 19
+    },
+    "approval_counts": {
+      "always": 38
+    },
+    "idempotency_counts": {
+      "idempotent": 6,
+      "non_idempotent": 13,
+      "safe": 19
+    },
+    "pagination": {
+      "automatic_operation_count": 9,
+      "automatic_operation_keys": [
+        "GET /decision-engine/flow/{flowId}/messages",
+        "GET /decision-engine/flows",
+        "GET /destinations",
+        "GET /events/contracts",
+        "GET /idr/{graphId}/runs",
+        "GET /models",
+        "GET /sources",
+        "GET /syncs",
+        "GET /syncs/{syncId}/runs"
+      ],
+      "page_size_counts": {
+        "20": 1,
+        "100": 8
+      },
+      "result_path_counts": {
+        "data": 9
+      }
+    },
+    "auth": {
+      "selected": "Admin-created Hightouch API key resolved only by the trusted bearer connection adapter",
+      "connection_descriptor": {
+        "api_base": "https://api.hightouch.com/api/v1",
+        "vendor": "hightouch",
+        "auth": {
+          "type": "bearer"
+        }
+      },
+      "explicitly_secured_operation_count": 39,
+      "credential_fields_in_pack_args": 0
+    },
+    "authority_notes": {
+      "exact_path_parameter_contract": true,
+      "operation_id_uniqueness": true,
+      "exact_json_content_type_operation_count": 17,
+      "optional_body_operation_keys": [
+        "POST /idr/{graphId}/queue-for-reprocessing",
+        "POST /idr/{graphId}/trigger",
+        "POST /syncs/{syncId}/trigger"
+      ],
+      "pagination_owned_parameters": [
+        "GET /decision-engine/flow/{flowId}/messages:limit",
+        "GET /decision-engine/flow/{flowId}/messages:offset",
+        "GET /decision-engine/flows:limit",
+        "GET /decision-engine/flows:offset",
+        "GET /destinations:limit",
+        "GET /destinations:offset",
+        "GET /events/contracts:limit",
+        "GET /events/contracts:offset",
+        "GET /idr/{graphId}/runs:limit",
+        "GET /idr/{graphId}/runs:offset",
+        "GET /models:limit",
+        "GET /models:offset",
+        "GET /sources:limit",
+        "GET /sources:offset",
+        "GET /syncs/{syncId}/runs:limit",
+        "GET /syncs/{syncId}/runs:offset",
+        "GET /syncs:limit",
+        "GET /syncs:offset"
+      ],
+      "repeated_array_parameters": [
+        "GET /models:tags"
+      ],
+      "exact_decimal_string_parameters": [
+        "GET /destinations/{destinationId}:destinationId",
+        "GET /models/{modelId}:modelId",
+        "GET /sources/{sourceId}:sourceId",
+        "GET /syncs/{syncId}/runs:runId",
+        "GET /syncs/{syncId}/runs:syncId",
+        "GET /syncs/{syncId}:syncId",
+        "GET /syncs:modelId",
+        "PATCH /destinations/{destinationId}:destinationId",
+        "PATCH /models/{modelId}:modelId",
+        "PATCH /sources/{sourceId}:sourceId",
+        "PATCH /syncs/{syncId}:syncId"
+      ],
+      "response_error_envelope_operation_ids": [
+        "CreateContract",
+        "CreateDestination",
+        "CreateMessage",
+        "CreateModel",
+        "CreateSource",
+        "CreateSync",
+        "GetContract",
+        "GetFlow",
+        "GetMessage",
+        "GetSendStatus",
+        "ListFlows",
+        "ListMessages",
+        "RunFlow",
+        "TriggerCampaign",
+        "TriggerRunCustom",
+        "UpdateContract",
+        "UpdateDestination",
+        "UpdateMessage",
+        "UpdateModel",
+        "UpdateSource",
+        "UpdateSync"
+      ],
+      "sensitive_response_operation_ids": [
+        "CreateDestination",
+        "CreateModel",
+        "CreateSource",
+        "GetDestination",
+        "GetModel",
+        "GetSource",
+        "ListDestination",
+        "ListModel",
+        "ListSource",
+        "UpdateDestination",
+        "UpdateModel",
+        "UpdateSource"
+      ],
+      "workflow_suppressed_sensitive_read_ids": [
+        "GetDestination",
+        "GetModel",
+        "GetSource",
+        "ListDestination",
+        "ListModel",
+        "ListSource"
+      ],
+      "hidden_retry_policy": "none"
+    },
+    "source_decision": {
+      "admitted": false,
+      "candidates": [
+        "task",
+        "note",
+        "project"
+      ],
+      "reason": "Hightouch destinations, sources, models, syncs, identity-resolution runs, campaigns, decision flows, messages, and event contracts are reverse-ETL, data-activation, job, or administration resources. The official contract does not prove a canonical task, note, or user-work project Source with a durable version and honest deletion or tombstone model."
+    },
+    "audit_findings_folded": [
+      {
+        "severity": "high",
+        "finding": "Hightouch API keys must be Admin-created and provide read/write access to sensitive workspace resources.",
+        "resolution": "Uses one encrypted bearer connection requirement, exposes no credential operation arguments, requires approval on every operation, and keeps provider outputs private."
+      },
+      {
+        "severity": "high",
+        "finding": "Destination and source contracts can return connection configuration, while model contracts can return compiled or raw SQL.",
+        "resolution": "Retains the approval-gated capabilities but suppresses all six sensitive GETs from bundled rendering workflows and labels all twelve affected responses as sensitive."
+      },
+      {
+        "severity": "high",
+        "finding": "Trigger operations can send campaigns or messages, synchronize data to downstream destinations, or start identity resolution and reprocessing.",
+        "resolution": "Classifies all eight trigger, run, and queue POSTs as destructive and non-idempotent, requires approval every run, and configures no hidden retry."
+      },
+      {
+        "severity": "medium",
+        "finding": "The official OpenAPI models several numeric identifiers as number/double, which JavaScript cannot preserve exactly at large magnitudes.",
+        "resolution": "Exposes every numeric identifier parameter as a validated decimal string, accepts exact integer strings in response schemas, and enables unsafe-integer string parsing on every response."
+      },
+      {
+        "severity": "medium",
+        "finding": "Nine collection routes expose caller limit and offset fields that would conflict with automatic traversal, and identity-run listing defaults to 20 while the other eight default to 100.",
+        "resolution": "Removes caller control of limit and offset, uses the exact documented default per route, advances offset by page size, and extracts data."
+      },
+      {
+        "severity": "medium",
+        "finding": "Four trigger endpoints document optional JSON bodies, while fourteen create or update endpoints require a body.",
+        "resolution": "Preserves the official distinction: optional body_raw can be omitted without sending a body, while required body_raw is schema-required; all payloads are bounded and verbatim."
+      },
+      {
+        "severity": "medium",
+        "finding": "Twenty-one operations document HTTP 200 as a union of success and provider error envelopes.",
+        "resolution": "Preserves all documented union branches in response schemas, warns callers and workflows to inspect the payload, and lets paginated result-path extraction fail closed when data is absent."
+      },
+      {
+        "severity": "medium",
+        "finding": "Model tags are a repeated query parameter rather than a comma-joined scalar.",
+        "resolution": "Admits tags as a bounded string array so the connection adapter emits one query occurrence per item."
+      },
+      {
+        "severity": "medium",
+        "finding": "The official OpenAPI and API guide are mutable web authorities.",
+        "resolution": "Hash-locks the complete OpenAPI and a deterministic normalized API-guide section; generation fails closed on byte, digest, identity, auth, inventory, or evidence drift."
+      },
+      {
+        "severity": "medium",
+        "finding": "POST /id_graphs/{graphId}/trigger is explicitly deprecated and the contract directs callers to POST /idr/{graphId}/trigger.",
+        "resolution": "Inventories the deprecated route but excludes it from the callable catalog; the documented TriggerIdrRun replacement retains the complete capability."
+      },
+      {
+        "severity": "medium",
+        "finding": "Hightouch control-plane and job resources resemble work objects but lack honest canonical task, note, or user-work project semantics and deletion evidence.",
+        "resolution": "Declares no work_entity_sources and records the semantic rejection in this fixture."
+      }
+    ],
+    "workflows": [
+      {
+        "recipe_id": "get-sync-hightouch",
+        "operation_id": "GetSync",
+        "key": "GET /syncs/{syncId}",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.get_sync",
+        "required_args": [
+          "syncId"
+        ],
+        "supplied_args": [
+          "syncId"
+        ],
+        "pagination": null,
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "list-sync-hightouch",
+        "operation_id": "ListSync",
+        "key": "GET /syncs",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.list_sync",
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "list-sync-runs-hightouch",
+        "operation_id": "ListSyncRuns",
+        "key": "GET /syncs/{syncId}/runs",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.list_sync_runs",
+        "required_args": [
+          "syncId"
+        ],
+        "supplied_args": [
+          "syncId"
+        ],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "get-send-status-hightouch",
+        "operation_id": "GetSendStatus",
+        "key": "GET /campaigns/{campaignId}/sends/{sendId}",
+        "pack": "hightouch-decisioning-campaigns",
+        "op": "campaign.get_send_status",
+        "required_args": [
+          "campaignId",
+          "sendId"
+        ],
+        "supplied_args": [
+          "campaignId",
+          "sendId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "get-flow-hightouch",
+        "operation_id": "GetFlow",
+        "key": "GET /decision-engine/flow/{flowId}",
+        "pack": "hightouch-decisioning-campaigns",
+        "op": "decision_engine.get_flow",
+        "required_args": [
+          "flowId"
+        ],
+        "supplied_args": [
+          "flowId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "list-flows-hightouch",
+        "operation_id": "ListFlows",
+        "key": "GET /decision-engine/flows",
+        "pack": "hightouch-decisioning-campaigns",
+        "op": "decision_engine.list_flows",
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "list-messages-hightouch",
+        "operation_id": "ListMessages",
+        "key": "GET /decision-engine/flow/{flowId}/messages",
+        "pack": "hightouch-decisioning-campaigns",
+        "op": "decision_engine.list_messages",
+        "required_args": [
+          "flowId"
+        ],
+        "supplied_args": [
+          "flowId"
+        ],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "get-message-hightouch",
+        "operation_id": "GetMessage",
+        "key": "GET /decision-engine/flow/{flowId}/messages/{messageId}",
+        "pack": "hightouch-decisioning-campaigns",
+        "op": "decision_engine.get_message",
+        "required_args": [
+          "flowId",
+          "messageId"
+        ],
+        "supplied_args": [
+          "flowId",
+          "messageId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "get-contract-hightouch",
+        "operation_id": "GetContract",
+        "key": "GET /events/contracts/{contractId}",
+        "pack": "hightouch-event-contracts",
+        "op": "event_contract.get_contract",
+        "required_args": [
+          "contractId"
+        ],
+        "supplied_args": [
+          "contractId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "list-contracts-hightouch",
+        "operation_id": "ListContracts",
+        "key": "GET /events/contracts",
+        "pack": "hightouch-event-contracts",
+        "op": "event_contract.list_contracts",
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "list-idr-runs-hightouch",
+        "operation_id": "ListIdrRuns",
+        "key": "GET /idr/{graphId}/runs",
+        "pack": "hightouch-identity-resolution",
+        "op": "identity_resolution.list_idr_runs",
+        "required_args": [
+          "graphId"
+        ],
+        "supplied_args": [
+          "graphId"
+        ],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 20
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "reprocess-status-hightouch",
+        "operation_id": "ReprocessStatus",
+        "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
+        "pack": "hightouch-identity-resolution",
+        "op": "identity_resolution.reprocess_status",
+        "required_args": [
+          "graphId",
+          "requestId"
+        ],
+        "supplied_args": [
+          "graphId",
+          "requestId"
+        ],
+        "pagination": null,
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "get-sync-sequence-run-hightouch",
+        "operation_id": "GetSyncSequenceRun",
+        "key": "GET /sync-sequences/runs/{syncSequenceRunId}",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync_sequence.get_sync_sequence_run",
+        "required_args": [
+          "syncSequenceRunId"
+        ],
+        "supplied_args": [
+          "syncSequenceRunId"
+        ],
+        "pagination": null,
+        "response_error_envelope": false
+      }
+    ],
+    "operation_ids_sha256": "a943f9b86b6940b517ff8ff88f86b01318a987ea5ae8b4d4eb2c86a723ba209f"
+  },
+  "official_operations": [
+    {
+      "key": "GET /destinations/{destinationId}",
+      "method": "GET",
+      "path": "/destinations/{destinationId}",
+      "operation_id": "GetDestination",
+      "namespace": "destination",
+      "summary": "Get Destination",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "destination.get_destination"
+    },
+    {
+      "key": "PATCH /destinations/{destinationId}",
+      "method": "PATCH",
+      "path": "/destinations/{destinationId}",
+      "operation_id": "UpdateDestination",
+      "namespace": "destination",
+      "summary": "Update Destination",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "destination.update_destination"
+    },
+    {
+      "key": "GET /destinations",
+      "method": "GET",
+      "path": "/destinations",
+      "operation_id": "ListDestination",
+      "namespace": "destination",
+      "summary": "List Destinations",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "destination.list_destination"
+    },
+    {
+      "key": "POST /destinations",
+      "method": "POST",
+      "path": "/destinations",
+      "operation_id": "CreateDestination",
+      "namespace": "destination",
+      "summary": "Create Destination",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "destination.create_destination"
+    },
+    {
+      "key": "GET /sources/{sourceId}",
+      "method": "GET",
+      "path": "/sources/{sourceId}",
+      "operation_id": "GetSource",
+      "namespace": "source",
+      "summary": "Get Source",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "source.get_source"
+    },
+    {
+      "key": "PATCH /sources/{sourceId}",
+      "method": "PATCH",
+      "path": "/sources/{sourceId}",
+      "operation_id": "UpdateSource",
+      "namespace": "source",
+      "summary": "Update Source",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "source.update_source"
+    },
+    {
+      "key": "GET /sources",
+      "method": "GET",
+      "path": "/sources",
+      "operation_id": "ListSource",
+      "namespace": "source",
+      "summary": "List Sources",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "source.list_source"
+    },
+    {
+      "key": "POST /sources",
+      "method": "POST",
+      "path": "/sources",
+      "operation_id": "CreateSource",
+      "namespace": "source",
+      "summary": "Create Source",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "source.create_source"
+    },
+    {
+      "key": "GET /models/{modelId}",
+      "method": "GET",
+      "path": "/models/{modelId}",
+      "operation_id": "GetModel",
+      "namespace": "model",
+      "summary": "Get Model",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.get_model"
+    },
+    {
+      "key": "PATCH /models/{modelId}",
+      "method": "PATCH",
+      "path": "/models/{modelId}",
+      "operation_id": "UpdateModel",
+      "namespace": "model",
+      "summary": "Update Model",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.update_model"
+    },
+    {
+      "key": "GET /models",
+      "method": "GET",
+      "path": "/models",
+      "operation_id": "ListModel",
+      "namespace": "model",
+      "summary": "List Models",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.list_model"
+    },
+    {
+      "key": "POST /models",
+      "method": "POST",
+      "path": "/models",
+      "operation_id": "CreateModel",
+      "namespace": "model",
+      "summary": "Create Model",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.create_model"
+    },
+    {
+      "key": "GET /syncs/{syncId}",
+      "method": "GET",
+      "path": "/syncs/{syncId}",
+      "operation_id": "GetSync",
+      "namespace": "sync",
+      "summary": "Get Sync",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.get_sync"
+    },
+    {
+      "key": "PATCH /syncs/{syncId}",
+      "method": "PATCH",
+      "path": "/syncs/{syncId}",
+      "operation_id": "UpdateSync",
+      "namespace": "sync",
+      "summary": "Update Sync",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.update_sync"
+    },
+    {
+      "key": "GET /syncs",
+      "method": "GET",
+      "path": "/syncs",
+      "operation_id": "ListSync",
+      "namespace": "sync",
+      "summary": "List Syncs",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.list_sync"
+    },
+    {
+      "key": "POST /syncs",
+      "method": "POST",
+      "path": "/syncs",
+      "operation_id": "CreateSync",
+      "namespace": "sync",
+      "summary": "Create Sync",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.create_sync"
+    },
+    {
+      "key": "GET /syncs/{syncId}/runs",
+      "method": "GET",
+      "path": "/syncs/{syncId}/runs",
+      "operation_id": "ListSyncRuns",
+      "namespace": "sync",
+      "summary": "List Sync Runs",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.list_sync_runs"
+    },
+    {
+      "key": "POST /syncs/{syncId}/trigger",
+      "method": "POST",
+      "path": "/syncs/{syncId}/trigger",
+      "operation_id": "TriggerRun",
+      "namespace": "sync",
+      "summary": "Trigger Sync",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.trigger_run"
+    },
+    {
+      "key": "POST /syncs/trigger",
+      "method": "POST",
+      "path": "/syncs/trigger",
+      "operation_id": "TriggerRunCustom",
+      "namespace": "sync",
+      "summary": "Trigger Sync From ID or Slug",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.trigger_run_custom"
+    },
+    {
+      "key": "POST /campaigns/{campaignId}/trigger",
+      "method": "POST",
+      "path": "/campaigns/{campaignId}/trigger",
+      "operation_id": "TriggerCampaign",
+      "namespace": "campaign",
+      "summary": "Trigger an API campaign send",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.trigger_campaign"
+    },
+    {
+      "key": "GET /campaigns/{campaignId}/sends/{sendId}",
+      "method": "GET",
+      "path": "/campaigns/{campaignId}/sends/{sendId}",
+      "operation_id": "GetSendStatus",
+      "namespace": "campaign",
+      "summary": "Get send delivery status",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.get_send_status"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}",
+      "operation_id": "GetFlow",
+      "namespace": "decision_engine",
+      "summary": "Get Decision Engine Flow",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_flow"
+    },
+    {
+      "key": "GET /decision-engine/flows",
+      "method": "GET",
+      "path": "/decision-engine/flows",
+      "operation_id": "ListFlows",
+      "namespace": "decision_engine",
+      "summary": "List Decision Engine Flows",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_flows"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}/messages",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "operation_id": "ListMessages",
+      "namespace": "decision_engine",
+      "summary": "List Decision Engine Messages",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_messages"
+    },
+    {
+      "key": "POST /decision-engine/flow/{flowId}/messages",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "operation_id": "CreateMessage",
+      "namespace": "decision_engine",
+      "summary": "Create Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.create_message"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}/messages/{messageId}",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "GetMessage",
+      "namespace": "decision_engine",
+      "summary": "Get Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_message"
+    },
+    {
+      "key": "PATCH /decision-engine/flow/{flowId}/messages/{messageId}",
+      "method": "PATCH",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "UpdateMessage",
+      "namespace": "decision_engine",
+      "summary": "Update Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.update_message"
+    },
+    {
+      "key": "POST /decision-engine/flow/{flowId}/run",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/run",
+      "operation_id": "RunFlow",
+      "namespace": "decision_engine",
+      "summary": "Trigger Decision Engine Flow Run",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.run_flow"
+    },
+    {
+      "key": "GET /events/contracts/{contractId}",
+      "method": "GET",
+      "path": "/events/contracts/{contractId}",
+      "operation_id": "GetContract",
+      "namespace": "event_contract",
+      "summary": "Get Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.get_contract"
+    },
+    {
+      "key": "PATCH /events/contracts/{contractId}",
+      "method": "PATCH",
+      "path": "/events/contracts/{contractId}",
+      "operation_id": "UpdateContract",
+      "namespace": "event_contract",
+      "summary": "Update an Event Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.update_contract"
+    },
+    {
+      "key": "GET /events/contracts",
+      "method": "GET",
+      "path": "/events/contracts",
+      "operation_id": "ListContracts",
+      "namespace": "event_contract",
+      "summary": "List Event Contracts",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.list_contracts"
+    },
+    {
+      "key": "POST /events/contracts",
+      "method": "POST",
+      "path": "/events/contracts",
+      "operation_id": "CreateContract",
+      "namespace": "event_contract",
+      "summary": "Create an Event Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.create_contract"
+    },
+    {
+      "key": "POST /idr/{graphId}/trigger",
+      "method": "POST",
+      "path": "/idr/{graphId}/trigger",
+      "operation_id": "TriggerIdrRun",
+      "namespace": "identity_resolution",
+      "summary": "Trigger IDR run",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.trigger_idr_run"
+    },
+    {
+      "key": "GET /idr/{graphId}/runs",
+      "method": "GET",
+      "path": "/idr/{graphId}/runs",
+      "operation_id": "ListIdrRuns",
+      "namespace": "identity_resolution",
+      "summary": "List IDR runs",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.list_idr_runs"
+    },
+    {
+      "key": "POST /idr/{graphId}/queue-for-reprocessing",
+      "method": "POST",
+      "path": "/idr/{graphId}/queue-for-reprocessing",
+      "operation_id": "QueueForReprocessing",
+      "namespace": "identity_resolution",
+      "summary": "Queue identifier values for reprocessing",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.queue_for_reprocessing"
+    },
+    {
+      "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
+      "method": "GET",
+      "path": "/idr/{graphId}/reprocess-status/{requestId}",
+      "operation_id": "ReprocessStatus",
+      "namespace": "identity_resolution",
+      "summary": "ReprocessStatus",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.reprocess_status"
+    },
+    {
+      "key": "POST /id_graphs/{graphId}/trigger",
+      "method": "POST",
+      "path": "/id_graphs/{graphId}/trigger",
+      "operation_id": "TriggerRunIdGraph",
+      "namespace": "identity_resolution",
+      "summary": "TriggerRunIdGraph",
+      "deprecated": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": false,
+      "exclusion": "deprecated_operation",
+      "exclusion_reason": "The official operation is explicitly deprecated and directs callers to POST /idr/{graphId}/trigger, which is admitted as TriggerIdrRun.",
+      "pack": null,
+      "op": null
+    },
+    {
+      "key": "POST /sync-sequences/{syncSequenceId}/trigger",
+      "method": "POST",
+      "path": "/sync-sequences/{syncSequenceId}/trigger",
+      "operation_id": "TriggerSequenceRun",
+      "namespace": "sync_sequence",
+      "summary": "Trigger Sync sequence",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync_sequence.trigger_sequence_run"
+    },
+    {
+      "key": "GET /sync-sequences/runs/{syncSequenceRunId}",
+      "method": "GET",
+      "path": "/sync-sequences/runs/{syncSequenceRunId}",
+      "operation_id": "GetSyncSequenceRun",
+      "namespace": "sync_sequence",
+      "summary": "Sync sequence status",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-sync-runtime",
+      "op": "sync_sequence.get_sync_sequence_run"
+    }
+  ],
+  "operation_contracts": {
+    "GET /campaigns/{campaignId}/sends/{sendId}": {
+      "key": "GET /campaigns/{campaignId}/sends/{sendId}",
+      "operation_id": "GetSendStatus",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.get_send_status",
+      "method": "GET",
+      "path": "/campaigns/{campaignId}/sends/{sendId}",
+      "namespace": "campaign",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "campaignId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "campaignId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "path",
+          "wire_name": "sendId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "sendId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "1d9ff5b0da34554cff38f84632ff915ae0cfc3089d66ef3dd3c78eb1447dd8c1"
+    },
+    "GET /decision-engine/flow/{flowId}": {
+      "key": "GET /decision-engine/flow/{flowId}",
+      "operation_id": "GetFlow",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_flow",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}",
+      "namespace": "decision_engine",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "370db0d2bf59d3069fbc28d6471e39e072cc0d3c10d77a41163dc7acc6c12c39"
+    },
+    "GET /decision-engine/flow/{flowId}/messages": {
+      "key": "GET /decision-engine/flow/{flowId}/messages",
+      "operation_id": "ListMessages",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_messages",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "namespace": "decision_engine",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "de78558501cb40e3624ce80867673a5437962446336d2ab4e5276d2511fc5024"
+    },
+    "GET /decision-engine/flow/{flowId}/messages/{messageId}": {
+      "key": "GET /decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "GetMessage",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_message",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "namespace": "decision_engine",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "path",
+          "wire_name": "messageId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "messageId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "dc23b6df115c2271066ec58f19d9625b6159c56f5d3594243db0297eb1b4509c"
+    },
+    "GET /decision-engine/flows": {
+      "key": "GET /decision-engine/flows",
+      "operation_id": "ListFlows",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_flows",
+      "method": "GET",
+      "path": "/decision-engine/flows",
+      "namespace": "decision_engine",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "a5aaec0baecd108865caa51d094be121dec55f0b996a8bb26d1ddcc478b73739"
+    },
+    "GET /destinations": {
+      "key": "GET /destinations",
+      "operation_id": "ListDestination",
+      "pack": "hightouch-data-resources",
+      "op": "destination.list_destination",
+      "method": "GET",
+      "path": "/destinations",
+      "namespace": "destination",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "slug",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.slug",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "d509f161884e1615b4e1d63a3b2b10b4d06b111272899da1fcfdcdbaff5ae98c"
+    },
+    "GET /destinations/{destinationId}": {
+      "key": "GET /destinations/{destinationId}",
+      "operation_id": "GetDestination",
+      "pack": "hightouch-data-resources",
+      "op": "destination.get_destination",
+      "method": "GET",
+      "path": "/destinations/{destinationId}",
+      "namespace": "destination",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "destinationId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "destinationId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "95f1e073e6feb6f42fa20c87fd3e74d2ddd84f2d239face917ef1e3e99edb02b"
+    },
+    "GET /events/contracts": {
+      "key": "GET /events/contracts",
+      "operation_id": "ListContracts",
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.list_contracts",
+      "method": "GET",
+      "path": "/events/contracts",
+      "namespace": "event_contract",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "ac9bdf818cc3767d28ac6833193f4cc566801ab8b365ce834d3bf94757039dd1"
+    },
+    "GET /events/contracts/{contractId}": {
+      "key": "GET /events/contracts/{contractId}",
+      "operation_id": "GetContract",
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.get_contract",
+      "method": "GET",
+      "path": "/events/contracts/{contractId}",
+      "namespace": "event_contract",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "contractId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "contractId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "fca255200be37f682f11c5220abe1e29e47b58d8ab2b6489dbcebdde675dbf58"
+    },
+    "GET /idr/{graphId}/reprocess-status/{requestId}": {
+      "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
+      "operation_id": "ReprocessStatus",
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.reprocess_status",
+      "method": "GET",
+      "path": "/idr/{graphId}/reprocess-status/{requestId}",
+      "namespace": "identity_resolution",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "graphId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "graphId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "path",
+          "wire_name": "requestId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "requestId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "d187d887d09bf1795cacdc9f123c62574ca8a3504333dcb297838e3559628335"
+    },
+    "GET /idr/{graphId}/runs": {
+      "key": "GET /idr/{graphId}/runs",
+      "operation_id": "ListIdrRuns",
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.list_idr_runs",
+      "method": "GET",
+      "path": "/idr/{graphId}/runs",
+      "namespace": "identity_resolution",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "graphId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "graphId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "runId",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.runId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "after",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.after",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "before",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.before",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 20
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "abba7b46bd6ea0e6132c67dca511600e2b56c8a09a47545b1299adbe5065f27d"
+    },
+    "GET /models": {
+      "key": "GET /models",
+      "operation_id": "ListModel",
+      "pack": "hightouch-data-resources",
+      "op": "model.list_model",
+      "method": "GET",
+      "path": "/models",
+      "namespace": "model",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "slug",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.slug",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "tags",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.tags",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "bdac74b61280517603e893bebd508ece16558a2d5ae9fb388bce84469789ee61"
+    },
+    "GET /models/{modelId}": {
+      "key": "GET /models/{modelId}",
+      "operation_id": "GetModel",
+      "pack": "hightouch-data-resources",
+      "op": "model.get_model",
+      "method": "GET",
+      "path": "/models/{modelId}",
+      "namespace": "model",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "89023431b582ef5a6bd3e947c539278b9ba5ddaa6933284722e7a4b0abd27fe5"
+    },
+    "GET /sources": {
+      "key": "GET /sources",
+      "operation_id": "ListSource",
+      "pack": "hightouch-data-resources",
+      "op": "source.list_source",
+      "method": "GET",
+      "path": "/sources",
+      "namespace": "source",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "slug",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.slug",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "39d493ca753bc1fc167e4636667b64dc938c9457504630b67e69d8ecfc5b7196"
+    },
+    "GET /sources/{sourceId}": {
+      "key": "GET /sources/{sourceId}",
+      "operation_id": "GetSource",
+      "pack": "hightouch-data-resources",
+      "op": "source.get_source",
+      "method": "GET",
+      "path": "/sources/{sourceId}",
+      "namespace": "source",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "sourceId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "sourceId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "d2fe8109f47ff08ff625aa2ea6f2468a1e5c6e6beaab180cd144909562d7d7a7"
+    },
+    "GET /sync-sequences/runs/{syncSequenceRunId}": {
+      "key": "GET /sync-sequences/runs/{syncSequenceRunId}",
+      "operation_id": "GetSyncSequenceRun",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync_sequence.get_sync_sequence_run",
+      "method": "GET",
+      "path": "/sync-sequences/runs/{syncSequenceRunId}",
+      "namespace": "sync_sequence",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncSequenceRunId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "syncSequenceRunId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "f22eeded04c7cc2a0489cde3f8c2d451b8778757450a61421163a04a8de849cd"
+    },
+    "GET /syncs": {
+      "key": "GET /syncs",
+      "operation_id": "ListSync",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.list_sync",
+      "method": "GET",
+      "path": "/syncs",
+      "namespace": "sync",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "slug",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.slug",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "modelId",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        },
+        {
+          "in": "query",
+          "wire_name": "after",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.after",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "before",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.before",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "2912ada6f9eb5cbe1a6747b326c21a6537c31af070e7ab00d14390e392a9db03"
+    },
+    "GET /syncs/{syncId}": {
+      "key": "GET /syncs/{syncId}",
+      "operation_id": "GetSync",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.get_sync",
+      "method": "GET",
+      "path": "/syncs/{syncId}",
+      "namespace": "sync",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "syncId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "52b0acd3f01a83426d061cafbb2605768de0d5ecc40df138d5c78143ce452ecd"
+    },
+    "GET /syncs/{syncId}/runs": {
+      "key": "GET /syncs/{syncId}/runs",
+      "operation_id": "ListSyncRuns",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.list_sync_runs",
+      "method": "GET",
+      "path": "/syncs/{syncId}/runs",
+      "namespace": "sync",
+      "risk": "read",
+      "approval": "always",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "syncId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        },
+        {
+          "in": "query",
+          "wire_name": "runId",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.runId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        },
+        {
+          "in": "query",
+          "wire_name": "after",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.after",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "before",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": "date-time",
+          "admitted_key": "query.before",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "within",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.within",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "2e3693eb4138c3f1b990b5db37e65612ea5d35987d400e1bd32d754c5ce17a1f"
+    },
+    "PATCH /decision-engine/flow/{flowId}/messages/{messageId}": {
+      "key": "PATCH /decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "UpdateMessage",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.update_message",
+      "method": "PATCH",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "namespace": "decision_engine",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "path",
+          "wire_name": "messageId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "messageId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "dc23b6df115c2271066ec58f19d9625b6159c56f5d3594243db0297eb1b4509c"
+    },
+    "PATCH /destinations/{destinationId}": {
+      "key": "PATCH /destinations/{destinationId}",
+      "operation_id": "UpdateDestination",
+      "pack": "hightouch-data-resources",
+      "op": "destination.update_destination",
+      "method": "PATCH",
+      "path": "/destinations/{destinationId}",
+      "namespace": "destination",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "destinationId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "destinationId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "04b547bb603a88648c227d47892d3afac92c9076c105a170f7887556613b0247"
+    },
+    "PATCH /events/contracts/{contractId}": {
+      "key": "PATCH /events/contracts/{contractId}",
+      "operation_id": "UpdateContract",
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.update_contract",
+      "method": "PATCH",
+      "path": "/events/contracts/{contractId}",
+      "namespace": "event_contract",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "contractId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "contractId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "fb1b5fb936d075422caea977994e374b0b527c8cdcb7b919870f857a77beb246"
+    },
+    "PATCH /models/{modelId}": {
+      "key": "PATCH /models/{modelId}",
+      "operation_id": "UpdateModel",
+      "pack": "hightouch-data-resources",
+      "op": "model.update_model",
+      "method": "PATCH",
+      "path": "/models/{modelId}",
+      "namespace": "model",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "b157d1afbd6fe6f2beb82b0f47a1108eae99e3603aa8a982f976c4a59f0e62ec"
+    },
+    "PATCH /sources/{sourceId}": {
+      "key": "PATCH /sources/{sourceId}",
+      "operation_id": "UpdateSource",
+      "pack": "hightouch-data-resources",
+      "op": "source.update_source",
+      "method": "PATCH",
+      "path": "/sources/{sourceId}",
+      "namespace": "source",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "sourceId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "sourceId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "37789ed307b0ca7fd2e39ab57679c896ecd5aadaf8ea233ce44972635f2f0991"
+    },
+    "PATCH /syncs/{syncId}": {
+      "key": "PATCH /syncs/{syncId}",
+      "operation_id": "UpdateSync",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.update_sync",
+      "method": "PATCH",
+      "path": "/syncs/{syncId}",
+      "namespace": "sync",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "syncId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "bb6712eb3914f40c2cb8193d045afd497a542a5f55a62dbe76c87ca2cff0013f"
+    },
+    "POST /campaigns/{campaignId}/trigger": {
+      "key": "POST /campaigns/{campaignId}/trigger",
+      "operation_id": "TriggerCampaign",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.trigger_campaign",
+      "method": "POST",
+      "path": "/campaigns/{campaignId}/trigger",
+      "namespace": "campaign",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "campaignId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "campaignId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "a5d155974a66ce527e799453765151a90b88edaf76fee03c7865c7e332dfb19a"
+    },
+    "POST /decision-engine/flow/{flowId}/messages": {
+      "key": "POST /decision-engine/flow/{flowId}/messages",
+      "operation_id": "CreateMessage",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.create_message",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "namespace": "decision_engine",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "dc23b6df115c2271066ec58f19d9625b6159c56f5d3594243db0297eb1b4509c"
+    },
+    "POST /decision-engine/flow/{flowId}/run": {
+      "key": "POST /decision-engine/flow/{flowId}/run",
+      "operation_id": "RunFlow",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.run_flow",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/run",
+      "namespace": "decision_engine",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "e3b6f6129c63067d0f0309be2dc051e1df78bbf92cd7d1e94f32741b308d2556"
+    },
+    "POST /destinations": {
+      "key": "POST /destinations",
+      "operation_id": "CreateDestination",
+      "pack": "hightouch-data-resources",
+      "op": "destination.create_destination",
+      "method": "POST",
+      "path": "/destinations",
+      "namespace": "destination",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "04b547bb603a88648c227d47892d3afac92c9076c105a170f7887556613b0247"
+    },
+    "POST /events/contracts": {
+      "key": "POST /events/contracts",
+      "operation_id": "CreateContract",
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.create_contract",
+      "method": "POST",
+      "path": "/events/contracts",
+      "namespace": "event_contract",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "fca255200be37f682f11c5220abe1e29e47b58d8ab2b6489dbcebdde675dbf58"
+    },
+    "POST /idr/{graphId}/queue-for-reprocessing": {
+      "key": "POST /idr/{graphId}/queue-for-reprocessing",
+      "operation_id": "QueueForReprocessing",
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.queue_for_reprocessing",
+      "method": "POST",
+      "path": "/idr/{graphId}/queue-for-reprocessing",
+      "namespace": "identity_resolution",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "graphId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "graphId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "f6745634df7ec0c19c9b83db452af18952f1c69471cc6c9da7827cce3a701827"
+    },
+    "POST /idr/{graphId}/trigger": {
+      "key": "POST /idr/{graphId}/trigger",
+      "operation_id": "TriggerIdrRun",
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.trigger_idr_run",
+      "method": "POST",
+      "path": "/idr/{graphId}/trigger",
+      "namespace": "identity_resolution",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "graphId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "graphId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "2f015c686b36dbd00588c7e58daf208f891b14667573321ab2cd152f68aa87d7"
+    },
+    "POST /models": {
+      "key": "POST /models",
+      "operation_id": "CreateModel",
+      "pack": "hightouch-data-resources",
+      "op": "model.create_model",
+      "method": "POST",
+      "path": "/models",
+      "namespace": "model",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "skipColumnQuery",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "official_format": null,
+          "admitted_key": "query.skipColumnQuery",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "b157d1afbd6fe6f2beb82b0f47a1108eae99e3603aa8a982f976c4a59f0e62ec"
+    },
+    "POST /sources": {
+      "key": "POST /sources",
+      "operation_id": "CreateSource",
+      "pack": "hightouch-data-resources",
+      "op": "source.create_source",
+      "method": "POST",
+      "path": "/sources",
+      "namespace": "source",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "37789ed307b0ca7fd2e39ab57679c896ecd5aadaf8ea233ce44972635f2f0991"
+    },
+    "POST /sync-sequences/{syncSequenceId}/trigger": {
+      "key": "POST /sync-sequences/{syncSequenceId}/trigger",
+      "operation_id": "TriggerSequenceRun",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync_sequence.trigger_sequence_run",
+      "method": "POST",
+      "path": "/sync-sequences/{syncSequenceId}/trigger",
+      "namespace": "sync_sequence",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncSequenceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "syncSequenceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "2f015c686b36dbd00588c7e58daf208f891b14667573321ab2cd152f68aa87d7"
+    },
+    "POST /syncs": {
+      "key": "POST /syncs",
+      "operation_id": "CreateSync",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.create_sync",
+      "method": "POST",
+      "path": "/syncs",
+      "namespace": "sync",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "bb6712eb3914f40c2cb8193d045afd497a542a5f55a62dbe76c87ca2cff0013f"
+    },
+    "POST /syncs/{syncId}/trigger": {
+      "key": "POST /syncs/{syncId}/trigger",
+      "operation_id": "TriggerRun",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.trigger_run",
+      "method": "POST",
+      "path": "/syncs/{syncId}/trigger",
+      "namespace": "sync",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "syncId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "syncId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "2f015c686b36dbd00588c7e58daf208f891b14667573321ab2cd152f68aa87d7"
+    },
+    "POST /syncs/trigger": {
+      "key": "POST /syncs/trigger",
+      "operation_id": "TriggerRunCustom",
+      "pack": "hightouch-sync-runtime",
+      "op": "sync.trigger_run_custom",
+      "method": "POST",
+      "path": "/syncs/trigger",
+      "namespace": "sync",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "138f1b5cc7c8b533c173d170b16830fce094512ab21171602d90bfac7b2bce7e"
+    }
+  }
+}

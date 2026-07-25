@@ -1,0 +1,1097 @@
+/** D-145 PA3 — Kernel CRUD ingredient dispatcher tests.
+ *
+ *  Per § Phase PA3 acceptance — per-ingredient input/output contracts,
+ *  Source dispatch correctness (Recued built-in vs Connection-Source),
+ *  commitment lifecycle state-machine validation, and capability-probe
+ *  flip behaviour. Tests exercise the dispatcher composer directly
+ *  (the kernel adapter's switch-case wrapper is exercised by
+ *  `d-145-phase-3-kernel.test.ts`). */
+
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  CONNECTION_SOURCE_ID,
+  RECUED_BUILTIN_SOURCE_ID,
+  taskIdFromIdempotencyKey,
+  WORK_ENTITY_KINDS,
+} from '@recued/contracts';
+
+import {
+  createWorkEntityStore,
+  ensureWorkEntitySchema,
+  type WorkEntityStore,
+} from '../storage/work-entity-store.js';
+import { createWorkEntityResolver } from '../work-entity-resolver.js';
+import {
+  CommitmentLifecycleError,
+  WorkEntityNotFoundError,
+  WorkEntityWriteCapabilityError,
+  createWorkEntityDispatchers,
+} from '../work-entity-ingredients.js';
+import type {
+  WorkEntitySourceWriteExecutor,
+  WorkEntityVendorWriteDispatchOutcome,
+  WorkEntityVendorWritePrepared,
+} from '../work-entity-write-executor.js';
+
+let dir: string;
+let db: Database.Database;
+let store: WorkEntityStore;
+let dispatchers: ReturnType<typeof createWorkEntityDispatchers>;
+
+const NOW = 1_700_000_000_000;
+
+/** The dispatch-visible slice of the fake's pass-through prepared
+ *  handle (the real executor's `prepared` is opaque to dispatchers, so
+ *  the fake threads the prepare input straight through). */
+interface FakePrepared {
+  source_id: string;
+  kind: string;
+  operation: 'create' | 'update' | 'delete' | 'complete';
+  patch: Record<string, unknown>;
+}
+
+/** Fake write executor for the dispatcher seam — every prepare is
+ *  vendor-relevant; dispatch is scripted per test. */
+const fakeWriteExecutor = (
+  onDispatch: (
+    input: FakePrepared,
+  ) => WorkEntityVendorWriteDispatchOutcome | Promise<WorkEntityVendorWriteDispatchOutcome>,
+): WorkEntitySourceWriteExecutor => ({
+  prepare: ({ source_id, kind, operation, patch }) => ({
+    ok: true,
+    vendor_relevant: true,
+    prepared: { source_id, kind, operation, patch } as unknown as WorkEntityVendorWritePrepared,
+  }),
+  dispatch: async (prepared) => onDispatch(prepared as unknown as FakePrepared),
+  // No source dependencies in this seam's fakes — the create-assist preflight
+  // resolves to no bound args.
+  resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
+  executeCreatePlan: async () => ({ ok: false, reason: 'no create plans in this seam fake' }),
+  tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
+});
+
+const registerBuiltins = (s: WorkEntityStore): void => {
+  for (const kind of WORK_ENTITY_KINDS) {
+    s.registerSource({
+      id: RECUED_BUILTIN_SOURCE_ID(kind),
+      top_tier_kind: kind,
+      source_kind: 'builtin',
+      source_label: 'Recued built-in',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+  }
+};
+
+const buildDispatchers = (
+  executor?: WorkEntitySourceWriteExecutor,
+  now: () => number = (): number => NOW,
+): ReturnType<typeof createWorkEntityDispatchers> => {
+  const resolver = createWorkEntityResolver(store);
+  return createWorkEntityDispatchers({
+    store,
+    resolver,
+    ...(executor ? { getWriteExecutor: () => executor } : {}),
+    now,
+  });
+};
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'd145-pa3-ingredients-'));
+  db = new Database(join(dir, 'test.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  ensureWorkEntitySchema(db);
+  store = createWorkEntityStore(db);
+  registerBuiltins(store);
+  dispatchers = buildDispatchers();
+});
+
+afterEach(() => {
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ────────────────────────────────────────────────────────────────
+// task-create / task-update / task-delete / task-mark-done
+// ────────────────────────────────────────────────────────────────
+
+describe('task-* ingredients', () => {
+  it('task-create writes against the Recued built-in by default', async () => {
+    const out = await dispatchers.taskCreate({ title: 'pick up groceries' });
+    expect(out.task.title).toBe('pick up groceries');
+    expect(out.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
+    expect(out.task.done).toBe(false);
+    expect(out.task.created_at).toBe(NOW);
+    expect(out.task.updated_at).toBe(NOW);
+  });
+
+  it('task-create idempotency atomically reuses one deterministic local task', async () => {
+    const key = 'recued-core/paid-document-fulfillment:submission-1';
+    store.registerSource({
+      id: 'hubspot.sticky.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Sticky HubSpot tasks',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'hubspot.sticky.task', NOW);
+    const first = await dispatchers.taskCreate({
+      title: 'Paid document submission-1',
+      idempotency_key: key,
+    });
+    const replay = await dispatchers.taskCreate({
+      title: 'copy changed on replay',
+      idempotency_key: key,
+    });
+
+    expect(first.task.id).toBe(
+      'task-idempotent-7265637565642d636f72652f706169642d646f63756d656e742d66756c66696c6c6d656e743a7375626d697373696f6e2d31',
+    );
+    expect(replay.task.id).toBe(first.task.id);
+    expect(replay.task.title).toBe('Paid document submission-1');
+    expect(replay.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
+    expect(replay.task.source_extension_blob).toMatchObject({
+      recued_task_idempotency_key: key,
+    });
+    expect(store.countTasks()).toBe(1);
+  });
+
+  it('task-create idempotency refuses invalid keys and vendor routing', async () => {
+    await expect(dispatchers.taskCreate({
+      title: 'bad key',
+      idempotency_key: 'spaces are not stable',
+    })).rejects.toThrow(/idempotency_key/);
+
+    store.registerSource({
+      id: 'hubspot.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    await expect(dispatchers.taskCreate({
+      title: 'wrong cloud',
+      idempotency_key: 'workflow:submission-1',
+      source_id: 'hubspot.acme.task',
+    })).rejects.toThrow(/Recued-local/);
+    expect(store.countTasks()).toBe(0);
+  });
+
+  it('task-create idempotency never adopts or overwrites an unrelated colliding row', async () => {
+    const key = 'workflow:submission-1';
+    const id = taskIdFromIdempotencyKey(key)!;
+    store.writeTask({
+      id,
+      source_id: RECUED_BUILTIN_SOURCE_ID('task'),
+      title: 'Unrelated existing task',
+    }, NOW);
+
+    await expect(dispatchers.taskCreate({
+      title: 'Attempted workflow task',
+      idempotency_key: key,
+    })).rejects.toThrow(/unrelated existing task/);
+    expect(store.readTask(id)?.title).toBe('Unrelated existing task');
+    expect(store.countTasks()).toBe(1);
+  });
+
+  it('task-create idempotency refuses to reuse a tombstoned coordinator task', async () => {
+    const key = 'workflow:submission-tombstoned';
+    const created = await dispatchers.taskCreate({
+      title: 'Coordinator task',
+      idempotency_key: key,
+    });
+    await dispatchers.taskDelete({ id: created.task.id });
+
+    await expect(dispatchers.taskCreate({
+      title: 'Coordinator replay',
+      idempotency_key: key,
+    })).rejects.toThrow(/tombstoned task/);
+    expect(store.readTask(created.task.id)).toMatchObject({
+      deleted_at: NOW,
+      sync_state: 'tombstoned',
+    });
+  });
+
+  it('task-create uses the per-kind default Source when pinned', async () => {
+    // Connection-Sources route every write through the write executor
+    // (Codex P1 fold, carried into the P4b seam) — supply a scripted
+    // one so the test exercises the default-Source-resolution semantic
+    // without tripping the capability gate.
+    store.registerSource({
+      id: 'hubspot.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'hubspot.acme.task', NOW);
+    dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
+      ok: true,
+      operation: 'create',
+      source_record_id: 'hs-task-1',
+    })));
+    const out = await dispatchers.taskCreate({ title: 'follow up' });
+    expect(out.task.source_id).toBe('hubspot.acme.task');
+    expect(out.task.source_record_id).toBe('hs-task-1');
+  });
+
+  it('task-create forwards container_names → resolveCreateDependencies.named + work_entity_write_preadmitted → prepare.preadmitted (D-192 6c.2c)', async () => {
+    store.registerSource({
+      id: 'asana.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Asana tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'asana.acme.task', NOW);
+    let capturedNamed: Record<string, string> | undefined;
+    let capturedPreadmitted: boolean | undefined;
+    const executor: WorkEntitySourceWriteExecutor = {
+      resolveCreateDependencies: async (input) => {
+        capturedNamed = input.named;
+        return { ok: true, createArgs: {}, plannedCreates: [] };
+      },
+      prepare: (input) => {
+        capturedPreadmitted = (input as { preadmitted?: boolean }).preadmitted;
+        return {
+          ok: true,
+          vendor_relevant: true,
+          prepared: {
+            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
+          } as unknown as WorkEntityVendorWritePrepared,
+        };
+      },
+      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-1' }),
+      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
+      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
+    };
+    dispatchers = buildDispatchers(executor);
+    const out = await dispatchers.taskCreate({
+      title: 'ship it',
+      container_names: { project: 'Roadmap' },
+      work_entity_write_preadmitted: true,
+    });
+    expect(out.task.source_record_id).toBe('asana-1');
+    expect(capturedNamed).toEqual({ project: 'Roadmap' });
+    expect(capturedPreadmitted).toBe(true);
+  });
+
+  it('task-create forwards origin_execution_source → prepare.execution_source (D-192 baseline-admission S2)', async () => {
+    store.registerSource({
+      id: 'asana.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Asana tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'asana.acme.task', NOW);
+    let capturedSource: unknown;
+    const executor: WorkEntitySourceWriteExecutor = {
+      resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
+      prepare: (input) => {
+        capturedSource = (input as { execution_source?: unknown }).execution_source;
+        return {
+          ok: true,
+          vendor_relevant: true,
+          prepared: {
+            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
+          } as unknown as WorkEntityVendorWritePrepared,
+        };
+      },
+      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-3' }),
+      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
+      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
+    };
+    dispatchers = buildDispatchers(executor);
+    // The DOOR identity `withCreateOrigin` would have set from StepMeta (here passed
+    // directly, since the dispatcher is called without the kernel adapter). The write
+    // executor's `admitVendorWrite` consumes exactly this to gate the vendor create.
+    const door = {
+      channel: 'mcp', actor: 'contracted_user',
+      agent_id: 'a', tool_call_id: 't', mcp_token_id: 'k', contract_id: 'door-1',
+    } as const;
+    await dispatchers.taskCreate({ title: 'ship it', origin_execution_source: door });
+    expect(capturedSource).toEqual(door);
+  });
+
+  it('task-create WITHOUT the re-run flag leaves prepare.preadmitted unset (normal writes gate)', async () => {
+    store.registerSource({
+      id: 'asana.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Asana tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'asana.acme.task', NOW);
+    let capturedPreadmitted: boolean | undefined = false;
+    const executor: WorkEntitySourceWriteExecutor = {
+      resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
+      prepare: (input) => {
+        capturedPreadmitted = (input as { preadmitted?: boolean }).preadmitted;
+        return {
+          ok: true,
+          vendor_relevant: true,
+          prepared: {
+            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
+          } as unknown as WorkEntityVendorWritePrepared,
+        };
+      },
+      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-2' }),
+      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
+      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
+    };
+    dispatchers = buildDispatchers(executor);
+    await dispatchers.taskCreate({ title: 'plain create' });
+    expect(capturedPreadmitted).toBeUndefined();
+  });
+
+  it('task-create with explicit source_id wins over default', async () => {
+    store.registerSource({
+      id: 'hubspot.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.setDefaultSource('task', 'hubspot.acme.task', NOW);
+    // Recued built-in is the explicit source so no vendor hook needed.
+    const out = await dispatchers.taskCreate({
+      title: 'local override',
+      source_id: RECUED_BUILTIN_SOURCE_ID('task'),
+    });
+    expect(out.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
+  });
+
+  it('task-create rejects unknown source_id', async () => {
+    await expect(
+      dispatchers.taskCreate({ title: 'bad', source_id: 'recued.nope' }),
+    ).rejects.toThrow(/not registered/);
+  });
+
+  it('task-create rejects empty-string source_id (Codex P2 fold)', async () => {
+    // Empty source_id used to silently fall through to the per-kind
+    // default. Recipe interpolation that resolves an unset variable
+    // should surface the bug at dispatch time instead.
+    await expect(
+      dispatchers.taskCreate({ title: 't', source_id: '' }),
+    ).rejects.toThrow(/non-empty/);
+  });
+
+  it('task-create rejects cross-kind Source', async () => {
+    await expect(
+      dispatchers.taskCreate({ title: 'bad', source_id: RECUED_BUILTIN_SOURCE_ID('note') }),
+    ).rejects.toThrow(/note/);
+  });
+
+  it('task-create rejects write to write_capable: false connection-Source', async () => {
+    store.registerSource({
+      id: 'hubspot.acme.task',
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    await expect(
+      dispatchers.taskCreate({ title: 'fail', source_id: 'hubspot.acme.task' }),
+    ).rejects.toThrow(WorkEntityWriteCapabilityError);
+  });
+
+  it('task-create accepts every optional field', async () => {
+    const out = await dispatchers.taskCreate({
+      title: 'big task',
+      body: 'detail',
+      due_at: NOW + 1000,
+      priority: 'high',
+      done: true,
+      assigned_contact_id: 'alice@example.com',
+      parent_calendar_event_id: 'evt-1',
+      linked_mail_thread_id: 'thread-1',
+      blocks_task_ids: ['task-2'],
+    });
+    expect(out.task.body).toBe('detail');
+    expect(out.task.due_at).toBe(NOW + 1000);
+    expect(out.task.priority).toBe('high');
+    expect(out.task.done).toBe(true);
+    expect(out.task.completed_at).toBe(NOW);
+    expect(out.task.assigned_contact_id).toBe('alice@example.com');
+    expect(out.task.blocks_task_ids).toEqual(['task-2']);
+  });
+
+  it('task-update patches named fields, preserves source identity', async () => {
+    const created = await dispatchers.taskCreate({ title: 'orig', priority: 'low' });
+    const updated = await dispatchers.taskUpdate({ id: created.task.id, title: 'new', priority: 'high' });
+    expect(updated.task.id).toBe(created.task.id);
+    expect(updated.task.title).toBe('new');
+    expect(updated.task.priority).toBe('high');
+    expect(updated.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
+  });
+
+  it('task-update preserves untouched fields', async () => {
+    const created = await dispatchers.taskCreate({ title: 'orig', body: 'keep' });
+    const updated = await dispatchers.taskUpdate({ id: created.task.id, title: 'new' });
+    expect(updated.task.body).toBe('keep');
+  });
+
+  it('task-update patches state without clearing progress', async () => {
+    const created = await dispatchers.taskCreate({
+      title: 'codex run',
+      state: 'queued',
+      progress: 25,
+    });
+    const updated = await dispatchers.taskUpdate({
+      id: created.task.id,
+      state: 'running',
+    });
+    expect(updated.task.state).toBe('running');
+    expect(updated.task.progress).toBe(25);
+  });
+
+  it('task-update treats explicit null on an unset field as absent (preserve, never reject/clear)', async () => {
+    // Regression (D-179 live-verification finding): the engine fills an
+    // ingredient's declared-but-unset input with its `null` manifest default,
+    // so an ad-hoc `task-update` of one field arrives with `null` on the rest.
+    // The legacy fields used `!== undefined`, so that `null` either rejected
+    // (`due_at must be a finite number` / `unknown priority 'null'`) or silently
+    // cleared the field. Aligned to `!= null` (matching create + state/progress):
+    // a null falls through to the existing value.
+    const created = await dispatchers.taskCreate({
+      title: 'codex run',
+      body: 'keep me',
+      due_at: NOW + 86_400_000,
+      priority: 'high',
+      assigned_contact_id: 'alice@example.com',
+      state: 'queued',
+    });
+    const updated = await dispatchers.taskUpdate({
+      id: created.task.id,
+      state: 'running',
+      // every other field arrives null, exactly as the manifest merge supplies it.
+      body: null as unknown as string,
+      due_at: null as unknown as number,
+      priority: null as unknown as import('@recued/contracts').TaskPriority,
+      assigned_contact_id: null as unknown as string,
+    });
+    expect(updated.task.state).toBe('running'); // the one supplied field applied
+    expect(updated.task.body).toBe('keep me'); // null → preserved, not cleared
+    expect(updated.task.due_at).toBe(NOW + 86_400_000); // null → preserved, not rejected
+    expect(updated.task.priority).toBe('high'); // null → preserved, not "unknown priority"
+    expect(updated.task.assigned_contact_id).toBe('alice@example.com'); // null → preserved
+  });
+
+  it('task-update on missing id throws WorkEntityNotFoundError', async () => {
+    await expect(
+      dispatchers.taskUpdate({ id: 'nope', title: 'x' }),
+    ).rejects.toThrow(WorkEntityNotFoundError);
+  });
+
+  it('task-delete tombstones by default', async () => {
+    const created = await dispatchers.taskCreate({ title: 't' });
+    const out = await dispatchers.taskDelete({ id: created.task.id });
+    expect(out).toEqual({ ok: true, id: created.task.id, tombstoned: true });
+    // Tombstoned rows survive but with sync_state flipped.
+    const row = store.readTask(created.task.id);
+    expect(row?.sync_state).toBe('tombstoned');
+    expect(row?.deleted_at).toBe(NOW);
+  });
+
+  it('task-delete hard-deletes when tombstone: false', async () => {
+    const created = await dispatchers.taskCreate({ title: 't' });
+    const out = await dispatchers.taskDelete({ id: created.task.id, tombstone: false });
+    expect(out.tombstoned).toBe(false);
+    expect(store.readTask(created.task.id)).toBeNull();
+  });
+
+  it('task-delete on missing id throws', async () => {
+    await expect(dispatchers.taskDelete({ id: 'nope' })).rejects.toThrow(WorkEntityNotFoundError);
+  });
+
+  it('task-mark-done flips done + stamps completed_at', async () => {
+    const created = await dispatchers.taskCreate({ title: 't' });
+    expect(created.task.done).toBe(false);
+    const later = NOW + 5000;
+    dispatchers = buildDispatchers(undefined, () => later);
+    const out = await dispatchers.taskMarkDone({ id: created.task.id });
+    expect(out.task.done).toBe(true);
+    expect(out.task.completed_at).toBe(later);
+  });
+
+  it('task-mark-done with done: false un-completes', async () => {
+    const created = await dispatchers.taskCreate({ title: 't', done: true });
+    expect(created.task.done).toBe(true);
+    const out = await dispatchers.taskMarkDone({ id: created.task.id, done: false });
+    expect(out.task.done).toBe(false);
+    expect(out.task.completed_at).toBeUndefined();
+  });
+
+  it('task-mark-done accepts explicit completed_at', async () => {
+    const created = await dispatchers.taskCreate({ title: 't' });
+    const stamp = NOW - 1000;
+    const out = await dispatchers.taskMarkDone({ id: created.task.id, completed_at: stamp });
+    expect(out.task.completed_at).toBe(stamp);
+  });
+
+  it('task-mark-done preserves state and progress through its upsert', async () => {
+    const created = await dispatchers.taskCreate({
+      title: 'codex run',
+      state: 'running',
+      progress: 80,
+    });
+    const out = await dispatchers.taskMarkDone({ id: created.task.id });
+    expect(out.task.done).toBe(true);
+    expect(out.task.state).toBe('running');
+    expect(out.task.progress).toBe(80);
+    expect(store.readTask(created.task.id)).toMatchObject({
+      state: 'running',
+      progress: 80,
+    });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// note-create / note-update / note-delete
+// ────────────────────────────────────────────────────────────────
+
+describe('note-* ingredients', () => {
+  it('note-create writes against the Recued built-in by default', async () => {
+    const out = await dispatchers.noteCreate({ body: 'remember this' });
+    expect(out.note.body).toBe('remember this');
+    expect(out.note.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('note'));
+    expect(out.note.last_user_action_at).toBe(NOW);
+  });
+
+  it('note-create accepts title + related_*_ids', async () => {
+    const out = await dispatchers.noteCreate({
+      body: 'meeting notes',
+      title: '2026 Q1 review',
+      related_contact_ids: ['alice@example.com'],
+      related_mail_thread_ids: ['thread-1'],
+      related_project_ids: ['project-1'],
+    });
+    expect(out.note.title).toBe('2026 Q1 review');
+    expect(out.note.related_contact_ids).toEqual(['alice@example.com']);
+    expect(out.note.related_mail_thread_ids).toEqual(['thread-1']);
+    expect(out.note.related_project_ids).toEqual(['project-1']);
+  });
+
+  it('note-update advances last_user_action_at', async () => {
+    const created = await dispatchers.noteCreate({ body: 'orig' });
+    const later = NOW + 7777;
+    dispatchers = buildDispatchers(undefined, () => later);
+    const out = await dispatchers.noteUpdate({ id: created.note.id, body: 'new' });
+    expect(out.note.body).toBe('new');
+    expect(out.note.last_user_action_at).toBe(later);
+  });
+
+  it('note-update preserves untouched fields', async () => {
+    const created = await dispatchers.noteCreate({
+      body: 'orig',
+      title: 'keep',
+      related_project_ids: ['p-1'],
+    });
+    const out = await dispatchers.noteUpdate({ id: created.note.id, body: 'new' });
+    expect(out.note.title).toBe('keep');
+    expect(out.note.related_project_ids).toEqual(['p-1']);
+  });
+
+  it('note-update on missing id throws', async () => {
+    await expect(dispatchers.noteUpdate({ id: 'nope', body: 'x' })).rejects.toThrow(WorkEntityNotFoundError);
+  });
+
+  it('note-delete tombstones by default', async () => {
+    const created = await dispatchers.noteCreate({ body: 'n' });
+    const out = await dispatchers.noteDelete({ id: created.note.id });
+    expect(out.tombstoned).toBe(true);
+    expect(store.readNote(created.note.id)?.sync_state).toBe('tombstoned');
+  });
+
+  it('note-delete hard-deletes when tombstone: false', async () => {
+    const created = await dispatchers.noteCreate({ body: 'n' });
+    const out = await dispatchers.noteDelete({ id: created.note.id, tombstone: false });
+    expect(out.tombstoned).toBe(false);
+    expect(store.readNote(created.note.id)).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// commitment-create / commitment-update / commitment-fulfill / commitment-cancel
+// ────────────────────────────────────────────────────────────────
+
+describe('commitment-* ingredients', () => {
+  it('commitment-create defaults lifecycle to pending + due_status to no_deadline', async () => {
+    const out = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 'pay invoice',
+      derivation: 'user_declared',
+    });
+    expect(out.commitment.lifecycle_state).toBe('pending');
+    expect(out.commitment.due_status).toBe('no_deadline');
+    expect(out.commitment.expiry_policy).toBe('escalate_overdue');
+  });
+
+  it('commitment-create with promised_for_at sets due_status to not_due', async () => {
+    const out = await dispatchers.commitmentCreate({
+      direction: 'inbound',
+      statement: 'deliver report',
+      derivation: 'mail_extracted',
+      promised_for_at: NOW + 1_000_000,
+    });
+    expect(out.commitment.due_status).toBe('not_due');
+    expect(out.commitment.promised_for_at).toBe(NOW + 1_000_000);
+  });
+
+  it('commitment-create accepts monetary_value', async () => {
+    const out = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 'payment',
+      derivation: 'user_declared',
+      monetary_value: { amount: '500.00', currency: 'USD' },
+      counterparty_contact_id: 'vendor@example.com',
+    });
+    expect(out.commitment.monetary_value).toEqual({ amount: '500.00', currency: 'USD' });
+  });
+
+  it('commitment-update patches metadata fields without touching lifecycle', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 'orig',
+      derivation: 'user_declared',
+    });
+    const updated = await dispatchers.commitmentUpdate({
+      id: created.commitment.id,
+      statement: 'new statement',
+    });
+    expect(updated.commitment.statement).toBe('new statement');
+    expect(updated.commitment.lifecycle_state).toBe('pending');
+  });
+
+  it('commitment-fulfill moves pending → fulfilled', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    const later = NOW + 100;
+    dispatchers = buildDispatchers(undefined, () => later);
+    const out = await dispatchers.commitmentFulfill({ id: created.commitment.id });
+    expect(out.commitment.lifecycle_state).toBe('fulfilled');
+    expect(out.commitment.lifecycle_changed_at).toBe(later);
+    expect(out.commitment.state_changed_at).toBe(later);
+  });
+
+  it('commitment-fulfill accepts explicit fulfilled_at', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    const stamp = NOW - 200;
+    const out = await dispatchers.commitmentFulfill({ id: created.commitment.id, fulfilled_at: stamp });
+    expect(out.commitment.lifecycle_changed_at).toBe(stamp);
+  });
+
+  it('commitment-cancel moves pending → cancelled', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'inbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    const out = await dispatchers.commitmentCancel({ id: created.commitment.id });
+    expect(out.commitment.lifecycle_state).toBe('cancelled');
+  });
+
+  it('commitment-fulfill rejects fulfilled commitment (terminal)', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    await dispatchers.commitmentFulfill({ id: created.commitment.id });
+    await expect(
+      dispatchers.commitmentFulfill({ id: created.commitment.id }),
+    ).rejects.toThrow(CommitmentLifecycleError);
+  });
+
+  it('commitment-cancel rejects cancelled commitment (terminal)', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    await dispatchers.commitmentCancel({ id: created.commitment.id });
+    await expect(
+      dispatchers.commitmentCancel({ id: created.commitment.id }),
+    ).rejects.toThrow(CommitmentLifecycleError);
+  });
+
+  it('commitment-fulfill rejects fulfilled→cancelled', async () => {
+    const created = await dispatchers.commitmentCreate({
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+    });
+    await dispatchers.commitmentFulfill({ id: created.commitment.id });
+    await expect(
+      dispatchers.commitmentCancel({ id: created.commitment.id }),
+    ).rejects.toThrow(CommitmentLifecycleError);
+  });
+
+  it('expired → fulfilled allowed under escalate_overdue (§ A.1.3 invariant)', async () => {
+    const created = store.writeCommitment({
+      source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+      lifecycle_state: 'expired',
+      expiry_policy: 'escalate_overdue',
+    });
+    const out = await dispatchers.commitmentFulfill({ id: created.id });
+    expect(out.commitment.lifecycle_state).toBe('fulfilled');
+  });
+
+  it('expired → fulfilled allowed under indefinite', async () => {
+    const created = store.writeCommitment({
+      source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+      lifecycle_state: 'expired',
+      expiry_policy: 'indefinite',
+    });
+    const out = await dispatchers.commitmentFulfill({ id: created.id });
+    expect(out.commitment.lifecycle_state).toBe('fulfilled');
+  });
+
+  it('expired → fulfilled rejected under strict_expire (terminal at deadline)', async () => {
+    const created = store.writeCommitment({
+      source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+      direction: 'outbound',
+      statement: 's',
+      derivation: 'user_declared',
+      lifecycle_state: 'expired',
+      expiry_policy: 'strict_expire',
+    });
+    await expect(
+      dispatchers.commitmentFulfill({ id: created.id }),
+    ).rejects.toThrow(/strict_expire/);
+  });
+
+  it('expired → cancelled allowed under any expiry_policy', async () => {
+    for (const policy of ['escalate_overdue', 'strict_expire', 'indefinite'] as const) {
+      const created = store.writeCommitment({
+        source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+        direction: 'outbound',
+        statement: `s-${policy}`,
+        derivation: 'user_declared',
+        lifecycle_state: 'expired',
+        expiry_policy: policy,
+      });
+      const out = await dispatchers.commitmentCancel({ id: created.id });
+      expect(out.commitment.lifecycle_state).toBe('cancelled');
+    }
+  });
+
+  it('commitment-fulfill on missing id throws WorkEntityNotFoundError', async () => {
+    await expect(
+      dispatchers.commitmentFulfill({ id: 'nope' }),
+    ).rejects.toThrow(WorkEntityNotFoundError);
+  });
+
+  it('commitment-create rejects invalid monetary_value amount', async () => {
+    await expect(
+      dispatchers.commitmentCreate({
+        direction: 'outbound',
+        statement: 's',
+        derivation: 'user_declared',
+        monetary_value: { amount: 'twelve', currency: 'USD' },
+      }),
+    ).rejects.toThrow(/decimal string/);
+  });
+
+  it('commitment-create rejects invalid currency', async () => {
+    await expect(
+      dispatchers.commitmentCreate({
+        direction: 'outbound',
+        statement: 's',
+        derivation: 'user_declared',
+        monetary_value: { amount: '1.00', currency: 'usd' },
+      }),
+    ).rejects.toThrow(/ISO 4217/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// project-create / project-update / project-archive
+// ────────────────────────────────────────────────────────────────
+
+describe('project-* ingredients', () => {
+  it('project-create defaults state to active + last_activity_at to now', async () => {
+    const out = await dispatchers.projectCreate({ title: 'Q1 launch' });
+    expect(out.project.state).toBe('active');
+    expect(out.project.last_activity_at).toBe(NOW);
+  });
+
+  it('project-create accepts state, target_completion_at, parent_project_id', async () => {
+    const parent = await dispatchers.projectCreate({ title: 'parent' });
+    const out = await dispatchers.projectCreate({
+      title: 'child',
+      state: 'paused',
+      target_completion_at: NOW + 90 * 86_400_000,
+      parent_project_id: parent.project.id,
+    });
+    expect(out.project.state).toBe('paused');
+    expect(out.project.target_completion_at).toBe(NOW + 90 * 86_400_000);
+    expect(out.project.parent_project_id).toBe(parent.project.id);
+  });
+
+  it('project-update patches title + state', async () => {
+    const created = await dispatchers.projectCreate({ title: 'orig' });
+    const out = await dispatchers.projectUpdate({
+      id: created.project.id,
+      title: 'new',
+      state: 'completed',
+    });
+    expect(out.project.title).toBe('new');
+    expect(out.project.state).toBe('completed');
+  });
+
+  it('project-update on missing id throws', async () => {
+    await expect(
+      dispatchers.projectUpdate({ id: 'nope' }),
+    ).rejects.toThrow(WorkEntityNotFoundError);
+  });
+
+  it('project-archive sets state to archived', async () => {
+    const created = await dispatchers.projectCreate({ title: 't' });
+    const out = await dispatchers.projectArchive({ id: created.project.id });
+    expect(out.project.state).toBe('archived');
+  });
+
+  it('project-archive is idempotent (already archived → no-op)', async () => {
+    const created = await dispatchers.projectCreate({ title: 't', state: 'archived' });
+    const out = await dispatchers.projectArchive({ id: created.project.id });
+    expect(out.project.state).toBe('archived');
+    expect(out.project.id).toBe(created.project.id);
+  });
+
+  it('project-archive on missing id throws', async () => {
+    await expect(
+      dispatchers.projectArchive({ id: 'nope' }),
+    ).rejects.toThrow(WorkEntityNotFoundError);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Source dispatch — connection-Source vendor probe seam
+// ────────────────────────────────────────────────────────────────
+
+describe('connection-Source vendor probe', () => {
+  beforeEach(() => {
+    store.registerSource({
+      id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+  });
+
+  it('flips write_capable to true on first successful vendor probe', async () => {
+    const calls: Array<{ operation: string }> = [];
+    dispatchers = buildDispatchers(fakeWriteExecutor(({ operation }) => {
+      calls.push({ operation });
+      return { ok: true, operation: 'create', source_record_id: 'hs-task-123' };
+    }));
+    const out = await dispatchers.taskCreate({
+      title: 'follow up',
+      source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+    });
+    expect(out.task.source_id).toBe(CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'));
+    expect(out.task.source_record_id).toBe('hs-task-123');
+    expect(calls).toEqual([{ operation: 'create' }]);
+    // Source row should now report write_capable: true.
+    const reg = store.getSource(CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'));
+    expect(reg?.write_capable).toBe(true);
+  });
+
+  it('preserves registered_at across capability flip', async () => {
+    const ORIGINAL = NOW - 86_400_000; // 1 day before NOW
+    store.registerSource({
+      id: CONNECTION_SOURCE_ID('hubspot', 'beta', 'task'),
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (beta)',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: ORIGINAL,
+    });
+    dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
+      ok: true,
+      operation: 'create',
+      source_record_id: 'hs-task-beta-1',
+    })));
+    await dispatchers.taskCreate({
+      title: 't',
+      source_id: CONNECTION_SOURCE_ID('hubspot', 'beta', 'task'),
+    });
+    const reg = store.getSource(CONNECTION_SOURCE_ID('hubspot', 'beta', 'task'));
+    expect(reg?.registered_at).toBe(ORIGINAL);
+    expect(reg?.write_capable).toBe(true);
+  });
+
+  it('keeps write_capable false when vendor probe fails', async () => {
+    dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
+      ok: false,
+      kind: 'error',
+      reason: 'scope_missing',
+      staged: false,
+    })));
+    await expect(
+      dispatchers.taskCreate({
+        title: 'fail',
+        source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      }),
+    ).rejects.toThrow(/scope_missing/);
+    const reg = store.getSource(CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'));
+    expect(reg?.write_capable).toBe(false);
+  });
+
+  it('rejects write_capable: false connection-Source when no write executor is wired', async () => {
+    // Default `dispatchers` from the outer beforeEach has no executor.
+    await expect(
+      dispatchers.taskCreate({
+        title: 'fail',
+        source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      }),
+    ).rejects.toThrow(WorkEntityWriteCapabilityError);
+  });
+
+  it('dispatches through the write executor on every write — even when already write_capable (Codex P1 fold)', async () => {
+    let called = 0;
+    // Pre-flip the Source so we exercise the "already write_capable"
+    // branch — the prior shape skipped the dispatch here, leaving the
+    // local row with source_record_id: null. Codex P1 closed: every
+    // connection-Source write must dispatch so the local mirror
+    // carries the vendor-native id.
+    store.registerSource({
+      id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    dispatchers = buildDispatchers(fakeWriteExecutor(() => {
+      called += 1;
+      return { ok: true, operation: 'create', source_record_id: `hs-${called}` };
+    }));
+    const out1 = await dispatchers.taskCreate({
+      title: 'first',
+      source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+    });
+    expect(called).toBe(1);
+    expect(out1.task.source_record_id).toBe('hs-1');
+    const out2 = await dispatchers.taskCreate({
+      title: 'second',
+      source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+    });
+    expect(called).toBe(2);
+    expect(out2.task.source_record_id).toBe('hs-2');
+  });
+
+  it('rejects already-write-capable connection-Source when the write executor is missing (invariant)', async () => {
+    // write_capable: true with no executor is an invariant violation —
+    // how did the flag flip without one? Substrate refuses the write
+    // rather than silently producing a row with no upstream id.
+    store.registerSource({
+      id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    // No executor supplied to dispatchers (default outer beforeEach setup).
+    await expect(
+      dispatchers.taskCreate({
+        title: 'fail',
+        source_id: CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
+      }),
+    ).rejects.toThrow(WorkEntityWriteCapabilityError);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// registerSource UPSERT semantics — load-bearing for the probe
+// ────────────────────────────────────────────────────────────────
+
+describe('registerSource UPSERT semantics', () => {
+  it('preserves registered_at on re-register (idempotent boot)', () => {
+    const ORIGINAL = NOW - 1000;
+    store.registerSource({
+      id: 'recued.task',
+      top_tier_kind: 'task',
+      source_kind: 'builtin',
+      source_label: 'Recued built-in',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: ORIGINAL,
+    });
+    const reg = store.getSource('recued.task');
+    expect(reg?.registered_at).toBe(NOW); // beforeEach's registerBuiltins ran first at NOW
+    // Now flip write_capable; registered_at should NOT advance.
+    store.registerSource({
+      id: 'recued.task',
+      top_tier_kind: 'task',
+      source_kind: 'builtin',
+      source_label: 'Recued built-in',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: NOW + 999,
+    });
+    const flipped = store.getSource('recued.task');
+    expect(flipped?.registered_at).toBe(NOW);
+    expect(flipped?.write_capable).toBe(false);
+  });
+
+  it('rejects re-register with mismatched top_tier_kind', () => {
+    expect(() =>
+      store.registerSource({
+        id: 'recued.task',
+        top_tier_kind: 'note',
+        source_kind: 'builtin',
+        source_label: 'Recued built-in',
+        write_capable: true,
+        mcp_exposed: false,
+        registered_at: NOW,
+      }),
+    ).toThrow(/already registered/);
+  });
+});

@@ -1,0 +1,209 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official Confluence REST API v2 OpenAPI document; covers all 76 Confluence method/path bindings shipped by confluence pack v2 after applying Atlassian OAuth cloud-proxy routing. resource.list is an Atlassian OAuth platform operation outside this Confluence pin and is tested separately.",
+    "url": "https://developer.atlassian.com/cloud/confluence/openapi-v2.json",
+    "sha256": "145fc22be9184b41a7619585f065fe927519a733df37cb9b0c447e6c1d818f79",
+    "fetched_at": "2026-07-14",
+    "servers": [
+      {
+        "url": "https://{your-domain}/wiki/api/v2",
+        "variables": {
+          "your-domain": {
+            "default": "no-default",
+            "description": "Specific domain of the Confluence site being used. Must be provided."
+          }
+        }
+      }
+    ]
+  },
+  "paths": {
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/pages": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/blogposts": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/content/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/operations": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{space-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{space-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/title": {
+      "put": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/attachments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/footer-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/inline-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/children": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/ancestors": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/descendants": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/operations": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/versions": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/attachments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/footer-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/inline-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/versions": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{blogpost-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/versions": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{attachment-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/footer-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/labels": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/pages": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/blogposts": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/attachments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{comment-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{id}/children": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{id}/versions": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments": {
+      "get": {},
+      "post": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments/{comment-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments/{id}/children": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/tasks": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/tasks/{id}": {
+      "get": {},
+      "put": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/attachments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/footer-comments": {
+      "get": {}
+    },
+    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/labels": {
+      "get": {}
+    }
+  }
+}

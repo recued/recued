@@ -1,0 +1,3927 @@
+/** D-137 P1 — AI Chat substrate contracts.
+ *
+ *  Chat is Mary's primary UI for talking to her own Recued server. The
+ *  chat agent is **internal-channel** per the MCP-as-Agent-Channel
+ *  invariant (`project_mcp_channel_invariant.md`); it accesses engine
+ *  primitives via direct function-call through `InternalToolRegistry`
+ *  (§ A.1.1), NOT through the MCP wire. The MCP server stays the
+ *  canonical surface for **external** AI agents (Claude Desktop, peer
+ *  Recued servers, generic third-party MCP clients).
+ *
+ *  P1 ships the closed-list type registry only — six Tier 1 canonical
+ *  primitive names, seven broadcast event kinds, ten rpc method names,
+ *  the per-pair chat table inventory (Must Hold: per-pair-only,
+ *  no cross-cloud sync),
+ *  audit codes (chat_session_created / chat_message_sent / chat_tool_-
+ *  call / chat_plan_proposed / chat_plan_approved / chat_plan_cancelled
+ *  / chat_plan_consumed / chat_session_deleted / chat_export), and the
+ *  foundational
+ *  `ChatSession` / `ChatMessage` / `ToolEntry` / `InternalToolRegistry`
+ *  shapes. P1 is intentionally narrow: rpc handlers + orchestrator
+ *  wiring + webclient UI land in subsequent slices on top of this
+ *  substrate (Wave 1.2-1.4 per the path-routing amendment handover).
+ *
+ *  Per § Must Hold (D-137-equivalent): chat tables are per-pair only;
+ *  no cross-cloud sync (D-097 / D-168 — D-168 retired the legacy
+ *  SYNC_OBJECTS substrate). */
+
+import type { ContractSnapshot, ExecutionSource } from './commits.js';
+import { INGREDIENT_KINDS, type IngredientKind } from './ingredient.js';
+import type { DependencyReadAdmission } from './work-entity-dependency-admission.js';
+// ⚠ The tool enums below are DERIVED from this list. A hand-copy here is the
+// worst kind of stale: the backend guard is derived, so a new kind WORKS —
+// the model simply is never told it exists, and no test of the backend can
+// see the omission.
+import { WORK_ENTITY_KINDS } from './work-entities.js';
+
+// ────────────────────────────────────────────────────────────────
+// D-137 § A.1.1 — InternalToolRegistry: tier discriminator + closed
+// Tier 1 canonical primitive name list. Tier 2 (installed recipes) +
+// Tier 3 (connection.mcp.* passthroughs) are open-by-construction —
+// their entries come from the recipe + connection registries at runtime
+// rather than being hard-coded here.
+// ────────────────────────────────────────────────────────────────
+
+/** Tool tier discriminator. Three tiers per § A.1.1:
+ *
+ *    - **Tier 1** — hard-coded canonical primitives (engine layer).
+ *      Six closed-list entries at P1; new entries = substrate change.
+ *    - **Tier 2** — installed recipes (recipe-engine layer). Open via
+ *      the recipe registry; surfaces under `<publisher>/<slug>`.
+ *    - **Tier 3** — `connection.mcp.*` passthroughs (outbound MCP
+ *      layer). Open via Mary's connection records; surfaces under
+ *      `<connection_name>.<tool_name>`.
+ *
+ *  Tier dispatch is the orchestrator's concern; the LLM sees a
+ *  unified `available_tools` list (§ A.6). */
+export type ToolTier = 1 | 2 | 3;
+
+export const TOOL_TIERS: ReadonlyArray<ToolTier> = [1, 2, 3] as const;
+export const TOOL_TIER_SET: ReadonlySet<ToolTier> = new Set(TOOL_TIERS);
+export const isToolTier = (value: unknown): value is ToolTier =>
+  typeof value === 'number' && TOOL_TIER_SET.has(value as ToolTier);
+
+/** D-137 P1 § A.1.1 + § P1 phase — closed list of Tier 1 canonical
+ *  primitive tool names. Adding a name = substrate code change in this
+ *  file (NOT config). Each entry has a hard-coded handler that
+ *  dispatches into an engine primitive via direct function-call (no
+ *  MCP loopback per § A.2). Action tools (`mail.send`, `deal.update`,
+ *  etc.) are deferred to P3 with plan-approval per § A.11.
+ *
+ *  D-137 P2 widens the closed list with `deal.search` — the CRM-side
+ *  scope-search primitive that fans out across HubSpot deals +
+ *  Salesforce opportunities + the `data.enrichment.deal.*` derived
+ *  layer. Adding the entry here is the *substrate* widening; the
+ *  per-primitive descriptor + dispatch handler land alongside in P2.
+ *
+ *  D-192 read resolution widens with `work.search` + `work.read` — the
+ *  work-entity (task / project / note / commitment) read pair over the
+ *  Source-mirror warehouse: local rich meta is the discovery layer,
+ *  bounded targeted vendor reads escalate per the declared
+ *  `read_resolution` policy, and results carry per-Source freshness +
+ *  `fidelity` markers verbatim (spec § Read resolution policy). */
+export type Tier1ToolName =
+  | 'contact.search'
+  | 'mail.search'
+  | 'calendar.search'
+  | 'memory.search'
+  | 'memory.write'
+  | 'enrichment.search'
+  | 'deal.search'
+  | 'account.search'
+  | 'work.search'
+  | 'work.read'
+  | 'recipe.run';
+
+export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
+  'contact.search',
+  'mail.search',
+  'calendar.search',
+  'memory.search',
+  'memory.write',
+  'enrichment.search',
+  'deal.search',
+  'account.search',
+  'work.search',
+  'work.read',
+  'recipe.run',
+] as const;
+
+export const TIER1_TOOL_NAME_SET: ReadonlySet<Tier1ToolName> =
+  new Set(TIER1_TOOL_NAMES);
+
+export const isTier1ToolName = (value: unknown): value is Tier1ToolName =>
+  typeof value === 'string' &&
+  TIER1_TOOL_NAME_SET.has(value as Tier1ToolName);
+
+/** Per-Tier-1 implicit topic tags (§ A.1.1). Augmentation input for
+ *  the `filter-tools` pre-synthesis catalog narrowing (§ A.6.1 —
+ *  intended, no live consumer yet).
+ *  Each tag list is closed at substrate level — recipe / connection
+ *  registries don't widen Tier 1 tags. */
+export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<string>>> = {
+  'contact.search': ['contact', 'people', 'lookup', 'identity'],
+  'mail.search': ['mail', 'email', 'message', 'lookup'],
+  'calendar.search': ['calendar', 'event', 'meeting', 'lookup'],
+  'memory.search': ['memory', 'history', 'audit', 'recall'],
+  'memory.write': ['memory', 'remember', 'save', 'note'],
+  'enrichment.search': ['enrichment', 'derived', 'inference', 'lookup'],
+  'deal.search': ['deal', 'crm', 'opportunity', 'pipeline', 'lookup'],
+  'account.search': ['account', 'company', 'organization', 'crm', 'lookup'],
+  'work.search': [...WORK_ENTITY_KINDS, 'todo', 'lookup'],
+  'work.read': [...WORK_ENTITY_KINDS, 'detail', 'lookup'],
+  'recipe.run': ['recipe', 'invoke', 'action', 'workflow'],
+} as const;
+
+/** Per-Tier-1 read-vs-write classification. `recipe.run` is `unknown`
+ *  because the underlying recipe may be either; the dispatch envelope
+ *  re-classifies based on the resolved recipe's manifest before P3's
+ *  plan-approval gate. All search primitives are `read`.
+ *
+ *  `memory.write` (D-198) is deliberately `unknown` — NOT `write`. A `write`
+ *  classification forces the P3 plan-approval gate on every dispatch
+ *  (`requiresPlanApproval`), but a memory write is SOFT (D-198 §3): reversible
+ *  (owner redact), grant-gated (`core.memory.write`, owner-on / door-off), and
+ *  for a granted CUSTOMER there is no owner present to satisfy an approval card.
+ *  `unknown` with no write-risk hint bypasses plan-approval per that gate's own
+ *  design, and the grant is the enforcement boundary (handler-side
+ *  `isOpGranted`), exactly as §3 specifies ("gated by the contract grant"). */
+export const TIER1_CLASSIFICATIONS: Readonly<
+  Record<Tier1ToolName, 'read' | 'write' | 'unknown'>
+> = {
+  'contact.search': 'read',
+  'mail.search': 'read',
+  'calendar.search': 'read',
+  'memory.search': 'read',
+  // D-198 — soft, reversible, grant-gated write; `unknown` (no write-risk hint)
+  // opts out of plan-approval so a granted customer can contribute autonomously.
+  'memory.write': 'unknown',
+  'enrichment.search': 'read',
+  'deal.search': 'read',
+  'account.search': 'read',
+  'work.search': 'read',
+  'work.read': 'read',
+  'recipe.run': 'unknown',
+} as const;
+
+/** D-164 § 6 — per-Tier-1 batch-dispatch safety. Source for
+ *  `ToolEntry.concurrency_safe` on Tier 1 entries; the framework's
+ *  `dispatchToolCalls` primitive (D-164 P5) keys parallel vs sequential
+ *  on the per-call flag, and the catalog substrate's section assemblers
+ *  read this field off `ToolEntry` directly.
+ *
+ *  Every `*.search` primitive is local warehouse read + idempotent →
+ *  safe to batch in parallel. `recipe.run` is the umbrella dispatcher
+ *  for any installed recipe; per-recipe concurrency can't be known at
+ *  the umbrella surface, so the umbrella declares sequential as the
+ *  safe default — a future per-recipe flag could opt back in. */
+export const TIER1_CONCURRENCY_SAFE: Readonly<
+  Record<Tier1ToolName, boolean>
+> = {
+  'contact.search': true,
+  'mail.search': true,
+  'calendar.search': true,
+  'memory.search': true,
+  // D-198 — append-only: each write mints its own `umem_` row, so two writes in
+  // one turn ("remember A", "remember B") never race a shared key. Batch-safe.
+  'memory.write': true,
+  'enrichment.search': true,
+  'deal.search': true,
+  'account.search': true,
+  // Local-warehouse reads by default; the bounded escalation path is
+  // idempotent vendor GETs — safe to batch alongside the other reads.
+  'work.search': true,
+  'work.read': true,
+  'recipe.run': false,
+} as const;
+
+/** § A.1.1 — registry entry shape. The LLM sees `name` / `description`
+ *  / `arg_schema` (plus optionally a redacted `topic_tags` slice for
+ *  catalog-explain UI); tier provenance is the orchestrator's concern.
+ *  The dispatch contract per `InternalToolRegistry.dispatch` normalises
+ *  errors per recipe-engine conventions. */
+export interface ToolEntry {
+  /** Stable identifier. Tier 1: `Tier1ToolName`. Tier 2: `<publisher>/
+   *  <slug>` from the recipe manifest. Tier 3: `<connection_name>.
+   *  <tool_name>` from the MCP server's `tools/list`. */
+  name: string;
+  tier: ToolTier;
+  /** LLM-readable description per § A.13 authoring guide. Sourced per
+   *  tier: T1 = hard-coded in registry; T2 = recipe manifest; T3 =
+   *  MCP `tools/list` response. */
+  description: string;
+  /** JSON Schema (Draft-07 or 2020-12). Treated as opaque at the
+   *  registry layer; the dispatcher's tier-specific path validates. */
+  arg_schema: unknown;
+  topic_tags: ReadonlyArray<string>;
+  classification: 'read' | 'write' | 'unknown';
+  /** D-164 § 6 — batch-dispatch safety. When the LLM emits a
+   *  multi-tool turn, the framework's `dispatchToolCalls` primitive
+   *  (D-164 P5) runs the batch in parallel iff EVERY emitted call's
+   *  tool has `concurrency_safe: true`; any false collapses the batch
+   *  to sequential. Sourced per tier:
+   *    - **Tier 1** — `TIER1_CONCURRENCY_SAFE` (closed list; every
+   *      `*.search` is `true`, `recipe.run` is `false`).
+   *    - **Tier 2** — sealed `false` for every installed recipe today.
+   *      Catalog-time classification is hardcoded `'unknown'` (per
+   *      `buildTier2ToolEntry`) and the dispatch envelope re-classifies
+   *      at invocation; until recipe-manifest concurrency metadata
+   *      lands, mutation recipes through the D-157 gateway can't race
+   *      their own side-effects and read recipes have no manifest-side
+   *      opt-in.
+   *    - **Tier 3** — sealed `false` for every projected vendor tool.
+   *      External APIs carry their own rate-limit budgets; the future
+   *      override hook on `ConnectionMcpToolOverride` (or upstream
+   *      `tools/list` metadata) flips known-safe entries.
+   *  The catalog substrate's section assemblers
+   *  (`packages/middleware-recued/prompt-cache/src/catalog/sections/`)
+   *  read this field directly off the registry-sourced entry. */
+  concurrency_safe: boolean;
+  /** T2 only — per recipe manifest. */
+  risk_tier?: string;
+  /** T3 only — from MCP `tools/list` annotations OR Mary's per-tool
+   *  classification override (§ A.10). */
+  destructive_hint?: boolean;
+  /** T2 only — derived from the recipe's step graph. Mary's per-kind
+   *  catalog scope toggle (§ A.1.1 + § P1) gates a T2 entry off when
+   *  any of its `requires_kinds` is unchecked. */
+  requires_kinds?: ReadonlyArray<IngredientKind>;
+  /** D-192 Slice 7 — raw catalog ops (`recued_op_*`) only: the container reads
+   *  granting this op TRANSITIVELY admits (`work_entity_sources[].
+   *  source_dependencies[]`). The door per-tool grant checklist discloses these
+   *  ("also reads: team") so a write-op grant is legible. Absent on tools that
+   *  admit none. Same admission the gate computes — one shared definition. */
+  also_reads?: ReadonlyArray<DependencyReadAdmission>;
+}
+
+/** § A.1.1 — closed channel discriminator for dispatch context. The
+ *  same primitive layer serves both consumers; channel-specific
+ *  semantics (per-token gating for MCP wire vs in-process audit +
+ *  transparency-stream for internal) layer on top.
+ *
+ *  The discriminator gates Must Hold I-channel-isolation: the internal
+ *  channel MUST NOT consume per-pair MCP tokens, MUST NOT apply
+ *  per-token rate limits or visibility filters. The MCP wire channel
+ *  MUST do all of the above. The
+ *  `__tests__/d-137-phase-1-channel-isolation.test.ts` ratchet asserts
+ *  the discriminator drives the audit path. */
+export type ChatDispatchChannel =
+  | 'internal_function_call'
+  | 'mcp_wire';
+
+export const CHAT_DISPATCH_CHANNELS: ReadonlyArray<ChatDispatchChannel> = [
+  'internal_function_call',
+  'mcp_wire',
+] as const;
+
+export const CHAT_DISPATCH_CHANNEL_SET: ReadonlySet<ChatDispatchChannel> =
+  new Set(CHAT_DISPATCH_CHANNELS);
+
+export const isChatDispatchChannel = (
+  value: unknown,
+): value is ChatDispatchChannel =>
+  typeof value === 'string' &&
+  CHAT_DISPATCH_CHANNEL_SET.has(value as ChatDispatchChannel);
+
+/** § A.1.1 — caller-supplied context threaded into every dispatch.
+ *  The `channel` discriminator is load-bearing: it gates the per-token
+ *  rate limit + visibility filter (skipped iff
+ *  `channel === 'internal_function_call'`).
+ *
+ *  `session_id` + `turn_id` are populated when the caller is the chat
+ *  orchestrator (used to attach the dispatch result to a chat
+ *  message's `tool_calls` provenance entry). The MCP wire path leaves
+ *  both undefined; its caller is an external agent without chat
+ *  session context. */
+export interface ChatDispatchContext {
+  channel: ChatDispatchChannel;
+  /** Set on internal-channel dispatches; undefined on mcp_wire. */
+  session_id?: string;
+  /** Set on internal-channel dispatches; undefined on mcp_wire. */
+  turn_id?: string;
+  /** Set on mcp_wire dispatches; the per-pair MCP token id used for
+   *  rate-limit + visibility-filter dispatch. Undefined on internal
+   *  channel. */
+  mcp_token_id?: string;
+  /** D-153 P2.C — channel-shaped `ExecutionSource` resolved at the
+   *  dispatch boundary (mcp-server.ts for mcp_wire today; chat
+   *  orchestrator in a follow-on slice). Tier 1 `recipe.run` + Tier 2
+   *  recipe dispatches thread this onto the `ExecuteRequest` so the
+   *  execute-handler's policy gate evaluates them under the right
+   *  `(channel × actor)` cell. Undefined on dispatch paths whose
+   *  producer hasn't been wired yet (internal_function_call today);
+   *  the engine's per-cell policy gate is the enforcement boundary —
+   *  this field is the producer-side carrier. */
+  execution_source?: ExecutionSource;
+  /** D-153 P2.C — resolved per-token `ContractSnapshot` paired with
+   *  `execution_source` when the actor is contract-scoped (`mcp_wire`
+   *  produces `actor: 'contracted_user'` today). The execute-handler
+   *  throws if a contract-scoped source arrives without a snapshot
+   *  (spec line 429); leaving this undefined alongside a
+   *  contract-scoped `execution_source` is a producer-side bug, not a
+   *  recipe-level deny. */
+  contract_snapshot?: ContractSnapshot;
+  /** D-160 P3 / I-7 — the loop-bound hop token of the turn this
+   *  dispatch belongs to, riding as a SIBLING of `execution_source`
+   *  exactly as it does on `ChannelInbound` and `Commit` (policy
+   *  identity and dispatch-tree depth stay orthogonal). A messenger
+   *  turn ingested at depth N dispatches its tools at depth N, so the
+   *  Gateway's `MAX_DISPATCH_DEPTH` ceiling bounds a
+   *  `messenger`→trigger→`messenger` loop THROUGH tool dispatches too.
+   *  Absent (chat's genuine top-level turns + legacy producers) the
+   *  execute path's existing depth-0 default stands. */
+  dispatch_depth?: number;
+}
+
+/** § A.1.1 — discriminated dispatch result. `ok: true` carries the
+ *  tier-specific result shape (which the orchestrator normalises into
+ *  the chat message provenance entry). `ok: false` carries a closed-
+ *  list reason code; orchestrator maps each to a transparency-stream
+ *  event + user-facing failure copy per D-145 PB7 templates.
+ *
+ *  P1 substrate ships the discriminator + reason taxonomy; the
+ *  per-Tier-1 handlers return `ok: false, reason: 'not_implemented'`
+ *  until the per-primitive wiring lands in subsequent slices. The
+ *  closed reason list lets ratchet tests assert exhaustivity. */
+export type ChatDispatchReason =
+  | 'not_implemented'
+  | 'unknown_tool'
+  | 'invalid_args'
+  | 'channel_denied'
+  | 'kind_gated'
+  | 'classification_blocked'
+  | 'connection_unavailable'
+  | 'capacity_gap'
+  | 'execution_error'
+  // D-137 P3 § A.11 — write tool dispatched before Mary approved the
+  // proposal. The orchestrator emits `chat.plan_proposed` + returns
+  // this reason; Mary's `chat.plan.approve` rpc flips the pending
+  // plan to `'approved'` + the next dispatch attempt (the agent
+  // re-issues on her follow-up message — turn-agnostic match on
+  // `(session, tool, args_hash)`) CONSUMES the approval (single-use,
+  // TTL-bounded; see `ChatPlanProposal.consumed_at`) + proceeds. The
+  // `detail` field carries the `plan_id` so the renderer can
+  // correlate to the proposed-event payload.
+  | 'awaiting_approval'
+  // D-137 P3 § A.11 — Mary explicitly cancelled the plan via
+  // `chat.plan.cancel`. Terminal — the orchestrator surfaces this
+  // back to the agent loop + Mary's chat tail; subsequent re-issues
+  // of the same `(session, turn, tool)` mint a fresh proposal.
+  | 'plan_cancelled'
+  // D-181 § 9 — the run the agent dispatched was terminated by the
+  // OWNER mid-flight (an `execution.kill` on a running op, or an
+  // `execution.cancel` on a queued call before it dispatched) — NOT a
+  // recipe-internal failure. Distinct from `execution_error`: the
+  // `detail` carries the user-cancelled, do-NOT-retry posture so the
+  // agent resolves with the user instead of re-issuing the call. The
+  // tool-loop reads it as a non-retryable error outcome.
+  | 'run_cancelled';
+
+export const CHAT_DISPATCH_REASONS: ReadonlyArray<ChatDispatchReason> = [
+  'not_implemented',
+  'unknown_tool',
+  'invalid_args',
+  'channel_denied',
+  'kind_gated',
+  'classification_blocked',
+  'connection_unavailable',
+  'capacity_gap',
+  'execution_error',
+  'awaiting_approval',
+  'plan_cancelled',
+  // D-181 § 9 — owner-cancelled run (kill / cancel-in-queue).
+  'run_cancelled',
+] as const;
+
+export const CHAT_DISPATCH_REASON_SET: ReadonlySet<ChatDispatchReason> =
+  new Set(CHAT_DISPATCH_REASONS);
+
+export const isChatDispatchReason = (
+  value: unknown,
+): value is ChatDispatchReason =>
+  typeof value === 'string' &&
+  CHAT_DISPATCH_REASON_SET.has(value as ChatDispatchReason);
+
+/** D-182 — a USER-FACING signal that an `ok: true` recipe-run dispatch actually
+ *  FAILED (the run returned `success: false` + errors, and was NOT held for
+ *  approval). The MODEL-facing result stays `ok: true` (the tuned anti-loop
+ *  posture — a bare failure makes a model re-send + loop), but the chat broadcast
+ *  reads this to render the activity row as an ERROR with a concise `detail` line
+ *  (e.g. the cli failure message) instead of a misleading "used X ✓". */
+export interface ChatRunFailure {
+  detail: string;
+}
+
+/** A model-facing successful projection for work queued behind a gate and
+ * therefore not executed in this dispatch. */
+export interface ChatRunHeld {
+  readonly kind: 'approval' | 'container_pick' | 'create_plan';
+}
+
+export type ChatDispatchResult =
+  | {
+      ok: true;
+      result: unknown;
+      run_failed?: ChatRunFailure;
+      run_held?: ChatRunHeld;
+    }
+  | { ok: false; reason: ChatDispatchReason; detail?: string };
+
+/** § A.1.1 — registry surface. Implementations live in
+ *  `packages/middleware/src/internal-tool-registry/`. The chat
+ *  orchestrator calls `dispatch` directly; no MCP-wire framing.
+ *
+ *  `list()` returns the post-Mary-side filter union (Tier 1 always
+ *  present; Tier 2 narrowed by `chat_exposed: true` + per-kind toggle;
+ *  Tier 3 narrowed by per-tool `enabled: true` + classification).
+ *  `subscribeRefresh` lets the orchestrator invalidate its per-turn
+ *  catalog cache when a recipe is installed / a connection's
+ *  `tools/list` cache refreshes. */
+export interface InternalToolRegistry {
+  list(): ReadonlyArray<ToolEntry>;
+  listByTier(tier: ToolTier): ReadonlyArray<ToolEntry>;
+  getByName(name: string): ToolEntry | null;
+  dispatch(
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<ChatDispatchResult>;
+  subscribeRefresh(callback: () => void): () => void;
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-137 § Contract Tightening — Chat storage shapes (D-137's own
+// substrate; D-120 Memory is NOT the chat history store).
+// ────────────────────────────────────────────────────────────────
+
+/** § A.14 — model-routing layer discriminator. The user picks the source
+ *  in the chat header (`free_pool` / a BYOK slot) with provider labeling;
+ *  a BYOK slot whose `base_url` is local carries a "(local)" DISPLAY badge
+ *  (`isLocalSlotBaseUrl`), but "local" is NOT a routing layer (D-191 retired
+ *  force-local routing — aliasing is the sole always-on PII protection). */
+export type ChatModelRoutingLayer = 'free_pool' | 'byok';
+
+export const CHAT_MODEL_ROUTING_LAYERS: ReadonlyArray<ChatModelRoutingLayer> = [
+  'free_pool',
+  'byok',
+] as const;
+
+export const CHAT_MODEL_ROUTING_LAYER_SET: ReadonlySet<ChatModelRoutingLayer> =
+  new Set(CHAT_MODEL_ROUTING_LAYERS);
+
+export const isChatModelRoutingLayer = (
+  value: unknown,
+): value is ChatModelRoutingLayer =>
+  typeof value === 'string' &&
+  CHAT_MODEL_ROUTING_LAYER_SET.has(value as ChatModelRoutingLayer);
+
+/** D-174 R28 Slice A — the persisted form of the per-pair global chat-model
+ *  default: WHICH configured source a non-overridden session inherits. This
+ *  is the slot-faithful taxonomy the user actually picks (`slot_1` = fast /
+ *  `slot_2` = quality·thinking / `free_pool`). The `free_pool | byok`
+ *  `ChatModelRoutingLayer` stays an INTERNAL resolution detail — the engine
+ *  resolves a `source_id` to a concrete `{layer, model_hint}` at read time
+ *  against the LIVE LLM config (a slot's speed/locality can change via field-
+ *  level writes). "local" is never a source or a routing layer: it's only a
+ *  per-slot display badge (`isLocalSlotBaseUrl`). */
+export type ChatModelSourceId = 'slot_1' | 'slot_2' | 'free_pool';
+
+export const CHAT_MODEL_SOURCE_IDS: ReadonlyArray<ChatModelSourceId> = [
+  'slot_1',
+  'slot_2',
+  'free_pool',
+] as const;
+
+export const CHAT_MODEL_SOURCE_ID_SET: ReadonlySet<ChatModelSourceId> = new Set(
+  CHAT_MODEL_SOURCE_IDS,
+);
+
+export const isChatModelSourceId = (
+  value: unknown,
+): value is ChatModelSourceId =>
+  typeof value === 'string' &&
+  CHAT_MODEL_SOURCE_ID_SET.has(value as ChatModelSourceId);
+
+/** Lever-2 — chat catalog delivery mode. Three points on a cost/discovery
+ *  curve, all presentation-only (authorization + the searchable pool are
+ *  identical): `'full'` (baseline) serializes every entry's full `arg_schema`
+ *  into the D-164 cacheable prefix; `'index'` leans Tier-2 recipe entries to
+ *  slug+description (drops the schemas) with the `tools.search` recall tool;
+ *  `'lean-core'` drops the Tier-2 listing entirely, so `tools.search` becomes
+ *  the discovery path. The mode is per-LLM-source (`ChatModelSourceId`) —
+ *  cache-harvesting BYOK slots want `full` (the prefix is nearly free after the
+ *  first call), zero-harvest free-pool models want thinning. Lives in contracts
+ *  because the mode crosses boundaries: the server orchestrator resolves it, the
+ *  `packages/llm` `LLMConfig` persists it per source, and the webclient AI/Models
+ *  page sets it. (The projection config that carries the server-only index
+ *  desc-cap stays server-local — only the mode enum is shared.) */
+export type ChatCatalogDeliveryMode = 'full' | 'index' | 'lean-core';
+
+export const CHAT_CATALOG_DELIVERY_MODES: ReadonlyArray<ChatCatalogDeliveryMode> = [
+  'full',
+  'index',
+  'lean-core',
+] as const;
+
+const CHAT_CATALOG_DELIVERY_MODE_SET: ReadonlySet<ChatCatalogDeliveryMode> = new Set(
+  CHAT_CATALOG_DELIVERY_MODES,
+);
+
+export const isChatCatalogDeliveryMode = (
+  value: unknown,
+): value is ChatCatalogDeliveryMode =>
+  typeof value === 'string' &&
+  CHAT_CATALOG_DELIVERY_MODE_SET.has(value as ChatCatalogDeliveryMode);
+
+/** Lever-2 per-slot — the smart auto-default catalog mode per LLM source
+ *  (applied when the server's smart-defaults are on — ON by default as of
+ *  2026-07-03): zero-harvest free-pool models lean to `index` (thinning pays
+ *  every call), cache-harvesting BYOK slots stay `full` (the prefix is nearly
+ *  free after the first call). Lives in contracts because BOTH the server
+ *  resolver (`resolveCatalogModeForSource`) and the webclient AI/Models page
+ *  read it — the server to route, the webclient to show what "Automatic"
+ *  resolves to. A single source of truth so the UI hint can never drift from
+ *  what the server actually serves. */
+export const CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE: Readonly<
+  Record<ChatModelSourceId, ChatCatalogDeliveryMode>
+> = { free_pool: 'index', slot_1: 'full', slot_2: 'full' };
+
+/** § A.14 — the BYOK slot capability hint carried ALONGSIDE the routing
+ *  layer so chat can target the user's FAST (slot_1) vs QUALITY/THINKING
+ *  (slot_2) slot. Mirrors the `packages/llm` matcher `ModelHint` (the slot
+ *  `speed` field). This only selects WHICH BYOK slot a turn resolves to.
+ *  Absent → the chat turn's default tier (`'fast'`, i.e.
+ *  slot_1) — so legacy rows + free_pool keep prior behaviour. */
+export type ChatModelHint = 'fast' | 'quality' | 'thinking';
+
+export const CHAT_MODEL_HINTS: ReadonlyArray<ChatModelHint> = [
+  'fast',
+  'quality',
+  'thinking',
+] as const;
+
+export const CHAT_MODEL_HINT_SET: ReadonlySet<ChatModelHint> = new Set(
+  CHAT_MODEL_HINTS,
+);
+
+export const isChatModelHint = (value: unknown): value is ChatModelHint =>
+  typeof value === 'string' &&
+  CHAT_MODEL_HINT_SET.has(value as ChatModelHint);
+
+// ────────────────────────────────────────────────────────────────
+// D-137 W2.4 § A.14 — chat-agent model routing pure helpers.
+//
+// `ChatModelRoutingLayer` is the 2-value per-session preference Mary
+// toggles in the chat header; the LLM resolver in `packages/llm`
+// keys off a narrower `ForceLayer` (`'free' | 'byok' | 'any'`). The chat
+// substrate has no business surfacing `'any'` (the substrate's
+// whole point is "user always knows which model is processing the
+// question" per § A.14). The mapping below codifies the allowed
+// projection: `'free_pool'` → `'free'`; `'byok'` → `'byok'`. The
+// local-vs-remote distinction is a DISPLAY property enforced at slot
+// resolution (`isLocalSlotBaseUrl` → the "(local)" badge), never at the
+// matcher layer (D-191 retired force-local routing).
+// ────────────────────────────────────────────────────────────────
+
+/** § A.14 — `ChatModelRoutingLayer` → `packages/llm` ForceLayer.
+ *  Closed 2-value codomain (`'free' | 'byok'`) — the chat substrate
+ *  never falls through to `'any'` (privacy invariant: user always knows the routing layer). Pure. */
+export type ChatForceLayer = 'free' | 'byok';
+
+export const chatModelLayerToForceLayer = (
+  layer: ChatModelRoutingLayer,
+): ChatForceLayer => {
+  if (layer === 'free_pool') return 'free';
+  return 'byok';
+};
+
+/** § A.14 — true when a BYOK slot's `base_url` points at a local
+ *  endpoint (`localhost` / `127.0.0.1` / `::1` / RFC1918 private
+ *  ranges). Drives the per-slot "(local)" DISPLAY badge in the chat
+ *  model picker (D-191: "local" is a derived display property, never a
+ *  routing layer — force-local routing was retired). Also the detection
+ *  helper the future explicit global local-only toggle will reuse.
+ *
+ *  Returns `false` for `undefined` / empty string — a BYOK slot
+ *  without a `base_url` uses the provider's hosted endpoint
+ *  (`api.anthropic.com`, `api.openai.com`, etc.), which is NOT
+ *  local. Pure (no DNS, no IP arithmetic — substring + literal
+ *  prefix match against the RFC1918 / RFC4193 / loopback ranges'
+ *  textual form). */
+export const isLocalSlotBaseUrl = (base_url: string | undefined): boolean => {
+  if (typeof base_url !== 'string' || base_url.length === 0) return false;
+  let host: string;
+  try {
+    host = new URL(base_url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // `URL.hostname` keeps IPv6 brackets — strip before matching.
+  if (host.startsWith('[') && host.endsWith(']')) {
+    host = host.slice(1, -1);
+  }
+  if (host === 'localhost') return true;
+  // IPv6 — distinguishable from hostnames by the presence of a colon
+  // in the textual form. Rules out false positives on hostnames that
+  // merely happen to start with `fc`/`fd` (e.g. `fcsomething.com`).
+  if (host.includes(':')) {
+    if (host === '::1') return true;
+    // RFC4193 — fc00::/7 unique-local. The first hex pair is in
+    // 0xfc00..0xfdff; the textual prefix `fc` / `fd` plus a hex digit
+    // or `:` is sufficient — URL parsing canonicalises the rest.
+    if (host.startsWith('fc') || host.startsWith('fd')) return true;
+    return false;
+  }
+  // IPv4 — parse octets numerically. Avoids substring false-positives
+  // on hostnames like `192.168.example.com` whose first labels happen
+  // to look like a private prefix.
+  const parts = host.split('.');
+  if (parts.length === 4) {
+    const ip = parts.map((p) => (/^\d+$/.test(p) ? Number(p) : Number.NaN));
+    if (ip.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+      const a = ip[0] as number;
+      const b = ip[1] as number;
+      if (a === 127) return true;
+      if (a === 10) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+    }
+  }
+  return false;
+};
+
+/** § A.14 + § A.1.1 — kernel-namespace slug for the chat main-turn
+ *  ingredient manifest. Runtime-bundled; invisible in marketplace /
+ *  install / manage UI; reserved via `KERNEL_AUTHOR`. Consumed by
+ *  `chat-orchestrator.ts`'s inline `buildChatMainTurnManifest`. */
+export const CHAT_MAIN_TURN_INGREDIENT_SLUG = 'recued/chat-main-turn' as const;
+
+/** § A.14 + D-137 Trio #B — maximum number of main-turn re-invocation
+ *  rounds per user turn. Each round is one batch of tool dispatches
+ *  followed by one main-turn re-invocation that synthesises over the
+ *  accumulated `prior_tool_calls`. The chat orchestrator's cooperative
+ *  AI ↔ Recued loop ceiling.
+ *
+ *  Rationale: matches industry-standard agent loop ceilings (OpenAI's
+ *  agent SDK defaults to 10; Anthropic's tool-use docs cite 8-10 as
+ *  reasonable; LangChain's default is 15). Eight is the chat-side
+ *  ceiling because chat turns are interactive (user is waiting in the
+ *  webclient; rounds beyond ~8 stretch perceived latency past the
+ *  "actively thinking" threshold). For long-horizon agentic work
+ *  outside the chat surface (recipes invoked via `recipe.run`), the
+ *  recipe's own multi-turn cap (PB5 `runMultiTurnLoop` with
+ *  `TIER_PACKET_BUDGETS[tier].max_rounds`) governs independently —
+ *  this constant is the chat orchestrator's ceiling alone. */
+export const CHAT_MAIN_TURN_TOOL_LOOP_CAP = 8;
+
+/** A short echo of a chat message — the orchestrator passes the
+ *  recent tail to the main turn so synthesis has immediate context.
+ *  The tail length is currently 3 messages (declared inline in
+ *  `chat-orchestrator.ts`); shape stays here so the rpc handler
+ *  in `chat-handler.ts` and the orchestrator agree on the wire
+ *  contract. */
+export interface ChatTailMessage {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+  readonly turn?: number;
+}
+
+/** § A.14 — `ModelTier` (`'fast' | 'mid' | 'reasoning'`) →
+ *  `ModelHint` (packages/llm matcher `'fast' | 'quality' | 'thinking'`).
+ *  The two taxonomies live in parallel: `ModelTier` is the SI / Plan
+ *  IR / orchestrator vocabulary (cost-rooted: cheaper vs more
+ *  reasoning); `ModelHint` is the slot-picker vocabulary the
+ *  `packages/llm` matcher consumes (capability-rooted: fast vs quality
+ *  vs thinking). Closed 3-value map. Pure. */
+export const modelTierToModelHint = (
+  tier: 'fast' | 'mid' | 'reasoning',
+): 'fast' | 'quality' | 'thinking' => {
+  if (tier === 'fast') return 'fast';
+  if (tier === 'mid') return 'quality';
+  return 'thinking';
+};
+
+/** § A.8 — picker target. `'self'` is the default sentinel (Mary's
+ *  own server's internal-channel registry); any other string is a
+ *  `connection.mcp.<name>` reference (Direction A — outbound MCP).
+ *  Direction C (`<peer> (chat)`) is reserved at P1 but its picker
+ *  entry doesn't surface until D-140 federation ships. */
+export const CHAT_PICKER_SELF = 'self' as const;
+export type ChatPickerSelf = typeof CHAT_PICKER_SELF;
+/** A picker target string. `'self'` for the internal channel; any
+ *  other string is a `connection.mcp.<name>` identifier. Validation
+ *  lives at the rpc gate (set_picker rejects non-existent connection
+ *  records). */
+export type ChatPickerTarget = ChatPickerSelf | string;
+
+/** § A.3 — Recued server signature shape advertised via MCP
+ *  `initialize` `serverInfo._meta.recued`. Picker (§ A.7) filters
+ *  bonded MCP connections by presence of `server_kind === 'recued'`.
+ *  Generic MCP connections (exa, GitHub, filesystem) lack this
+ *  metadata; they stay in the connections drawer as tool sources but
+ *  never appear as picker options. */
+export interface RecuedServerSignature {
+  server_kind: 'recued';
+  version: string;
+  /** Stable id surviving server restarts; used to detect peer-server
+   *  identity across reconnects. */
+  instance_id: string;
+}
+
+/** § Contract Tightening — chat session storage row. One row per
+ *  conversation. `picker_state.current` defaults to `'self'` at
+ *  creation. `model_routing.current` is the EFFECTIVE routing layer:
+ *  an explicit per-session override when `overridden` is true, else
+ *  the per-pair global chat-model default (`chat.default_model_pref.*`,
+ *  resolved at read time so a default change re-applies to every
+ *  non-overridden session — D-167 chat provider-threading follow-on). */
+export interface ChatSession {
+  id: string;
+  created_at: number;
+  last_active_at: number;
+  title?: string;
+  picker_state: { current: ChatPickerTarget };
+  model_routing: {
+    current: ChatModelRoutingLayer;
+    /** § A.14 — BYOK slot capability hint (which slot the turn targets:
+     *  `'fast'` = slot_1, `'quality'`/`'thinking'` = slot_2). Absent for
+     *  free_pool + legacy rows (the turn falls back to the default tier). */
+    model_hint?: ChatModelHint;
+    /** D-191 Phase 6 — the EXACT slot the user picked (`slot_1` | `slot_2` |
+     *  `free_pool`), persisted so a manual pick PINS that slot at the matcher
+     *  (fail-closed against a same-speed local+remote leak — INV3). Distinct
+     *  from `model_hint` (speed): two slots can share a speed, so the slot key
+     *  is the authoritative pin. Absent → no pin (legacy rows / inherited
+     *  default derive routing from `model_hint` only). `'free_pool'` carries no
+     *  pin (it fans out across pool entries). */
+    source_id?: ChatModelSourceId;
+    provider?: string;
+    model_id?: string;
+    /** True when `current` is an explicit per-session override; false /
+     *  absent when `current` is inherited from the per-pair global
+     *  default. Drives the chat-header "using global default" affordance
+     *  + the "Use global default" (clear) control. */
+    overridden?: boolean;
+  };
+  archived: boolean;
+}
+
+/** § Contract Tightening — chat message storage row. One row per turn
+ *  (user / assistant) + one per tool result (`role: 'tool'`). The
+ *  `target_server` + `picker_at_send` snapshot the picker state at
+ *  send time so history reasoning across mixed-picker conversations
+ *  resolves correctly without re-querying live state. */
+export type ChatMessageRole = 'user' | 'assistant' | 'tool' | 'system';
+
+export const CHAT_MESSAGE_ROLES: ReadonlyArray<ChatMessageRole> = [
+  'user',
+  'assistant',
+  'tool',
+  'system',
+] as const;
+
+export const CHAT_MESSAGE_ROLE_SET: ReadonlySet<ChatMessageRole> =
+  new Set(CHAT_MESSAGE_ROLES);
+
+export const isChatMessageRole = (value: unknown): value is ChatMessageRole =>
+  typeof value === 'string' &&
+  CHAT_MESSAGE_ROLE_SET.has(value as ChatMessageRole);
+
+/** D-177 N.11 rule 5 (5.f) — contributor stamp on chat session items: the
+ *  D-161 origin move applied to the chat session store. Server-stamped at
+ *  persistence time (never client-supplied); gates which session items are
+ *  ELIGIBLE sources for the `'scoped'` session-grant overlay — for v1
+ *  `'forwarded_item_sender'` only `'user'`-contributed forwarded mail items
+ *  feed the sender-candidate index. Tool results are deliberately NOT
+ *  `'user'` (model-steered external content, 5.f). */
+export type ChatSessionContributor = 'user' | 'model' | 'tool_result';
+
+/** The server stamp: contributor derived from the persisted role. `system`
+ *  rows are server-/externally-injected content the user did not type, so
+ *  they land on `'tool_result'` (the not-user, not-model bucket) — the only
+ *  consumer gate today is `contributor === 'user'`, and anything non-user
+ *  must fail that gate (5.f fail-closed posture). */
+export const contributorForChatRole = (
+  role: ChatMessageRole,
+): ChatSessionContributor =>
+  role === 'user' ? 'user' : role === 'assistant' ? 'model' : 'tool_result';
+
+/** § A.5 + § A.12 — per-tool-call provenance attached to a chat
+ *  message. The orchestrator builds one entry per dispatch event in
+ *  the turn loop; the renderer surfaces them inline beneath the
+ *  assistant turn ("Used contact.search — found Peter Smith from
+ *  HubSpot"). */
+export interface ChatToolCall {
+  tool_name: string;
+  tier: ToolTier;
+  args: unknown;
+  /** Reference into chat-side ephemeral storage; the orchestrator
+   *  persists the raw result keyed on this id so the message row
+   *  stays compact. */
+  result_ref?: string;
+  /** Closed-list outcome for the renderer + transparency stream. */
+  status: 'started' | 'ok' | 'error';
+  /** Set when `status === 'error'`. */
+  reason?: ChatDispatchReason;
+  /** D-182 — set when `status === 'error'`: a concise underlying error line (the
+   *  run/tool failure message, e.g. the cli `not found` message) the activity row
+   *  renders. Distinct from `reason` (the closed-list slug). */
+  detail?: string;
+  started_at: number;
+  completed_at?: number;
+}
+
+/** D-137 Trio #B — per-prior-tool-call shape threaded back into the
+ *  chat main turn on re-invocation. The chat orchestrator's tool loop
+ *  accumulates one entry per dispatch the previous main turn emitted;
+ *  the orchestrator serialises the list into tool-result messages on
+ *  the next AI provider call so the AI can read what happened and
+ *  synthesise over the actual results.
+ *
+ *  Distinct from `ChatToolCall` (persistence-side provenance): this
+ *  shape carries the FULL dispatch payload (`result` field) for the
+ *  AI to re-read, whereas `ChatToolCall` carries an opaque `result_ref`
+ *  + status badge for the renderer. The persistence shape is keyed on
+ *  audit-row reasoning; the re-invocation shape is keyed on what the
+ *  AI saw in its tool-result messages. */
+export interface ChatPriorToolCall {
+  /** Tool name dispatched — matches `ToolEntry.name`. */
+  tool_name: string;
+  /** Tier the registry resolved at dispatch time. The adapter may
+   *  surface this in the AI's tool-result message body for context
+   *  ("Tier 1 primitive completed in 12ms"). */
+  tier: ToolTier;
+  /** Verbatim args the AI emitted on the prior `tool_call`. */
+  args: unknown;
+  /** Closed-list dispatch outcome. `'started'` is NOT legal here —
+   *  only completed dispatches are eligible for re-invocation feedback. */
+  status: 'ok' | 'error';
+  /** When `status === 'ok'` — the dispatch result payload. The chat
+   *  orchestrator serialises this into the AI's tool-result message
+   *  body on the next main-turn re-invocation (D-164 P6.3 inline
+   *  composition path). */
+  result?: unknown;
+  /** When `status === 'error'` — closed-list reason from the
+   *  `InternalToolRegistry.dispatch` call. */
+  reason?: ChatDispatchReason;
+  /** Optional dispatch-side detail (e.g. underlying error message);
+   *  surfaced verbatim to the AI in the tool-result message body. */
+  detail?: string;
+  /** Dispatch start timestamp (ms epoch) — orchestrator-owned clock. */
+  started_at: number;
+  /** Dispatch completion timestamp (ms epoch) — orchestrator-owned
+   *  clock. The orchestrator MAY include `(completed_at - started_at)`
+   *  in the AI's tool-result body to anchor latency-sensitive
+   *  synthesis. */
+  completed_at: number;
+}
+
+/** D-167 (recall path) — the `ChatPriorToolCall.tool_name`s whose result is a
+ *  memory RECALL artifact (freeform recalled prose, NOT a schema-tagged entity
+ *  record). The chat prompt composer routes these out of `prior_tool_calls` into
+ *  the typed `recall_context` packet field so the PII egress aliases their result
+ *  against the contact recall index (seed ⊇ scan) + overlap-reveal — closing the
+ *  cross-session recall leak — instead of sniffing tool names at the egress seam.
+ *  Single-element today; a future `data.timeline`-style recall tool joins the set
+ *  in ONE place (the composer + egress both read it through here). */
+export const MEMORY_RECALL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'memory.search',
+]);
+
+/** D-167 (recall path) — partition the cooperative tool loop's accumulated
+ *  `prior_tool_calls` into the non-recall `prior` calls and the `recall` calls
+ *  (`tool_name ∈ MEMORY_RECALL_TOOL_NAMES`), preserving order within each arm.
+ *  Pure; the composer calls it to emit the typed `recall_context` field. Keeping
+ *  the classification here (the SSOT) keeps the PII egress free of tool-name
+ *  domain knowledge — it gathers the typed field. */
+export const partitionPriorToolCalls = (
+  calls: readonly ChatPriorToolCall[],
+): { prior: ChatPriorToolCall[]; recall: ChatPriorToolCall[] } => {
+  const prior: ChatPriorToolCall[] = [];
+  const recall: ChatPriorToolCall[] = [];
+  for (const call of calls) {
+    (MEMORY_RECALL_TOOL_NAMES.has(call.tool_name) ? recall : prior).push(call);
+  }
+  return { prior, recall };
+};
+
+/** § A.5 — per-source provenance reference (used by scope-search
+ *  result rendering + cross-server attribution invariants). */
+export interface ChatProvenanceRef {
+  /** Source identifier: `'local' | 'hubspot' | 'salesforce' | <peer-
+   *  name> | …`. Renderer maps to human-readable labels. */
+  source: string;
+  /** Stable id of the underlying record (record `_id` in canonical
+   *  shape). */
+  record_id?: string;
+  /** Optional human-readable label for inline rendering. */
+  label?: string;
+}
+
+export interface ChatMessageAttachment {
+  file_id: string;
+  media_class: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: ChatMessageRole;
+  content: string;
+  /** Picker target the turn was sent under. Snapshots the session's
+   *  `picker_state.current` at send time. */
+  target_server: ChatPickerTarget;
+  picker_at_send: {
+    display_name: string;
+    signature: RecuedServerSignature;
+  };
+  model_used: { provider: string; model_id: string };
+  tool_calls?: ChatToolCall[];
+  provenance?: ChatProvenanceRef[];
+  attachments?: ChatMessageAttachment[];
+  /** D-177 5.f — server-stamped contributor (see
+   *  {@link ChatSessionContributor}). Attachments inherit the row's stamp
+   *  (an attachment on a user turn is user-contributed). Stamped by the
+   *  chat store on insert; rows persisted before the column derive from
+   *  role at read time, so the facet is always present on read. */
+  contributor: ChatSessionContributor;
+  ts: number;
+}
+
+/** One model-bound prompt actually sent to the LLM for an assistant turn —
+ *  the "what we sent" egress-history record. `prompt` is the ALIASED packet
+ *  (PII already substituted), exactly as it crossed to the model. A turn's
+ *  tool loop reinvokes, so one assistant message has one packet per AI call,
+ *  ordered by `call_index`. Stored encrypted at rest, read lazily by the
+ *  transparency expander — never inlined into the message list. */
+export interface ChatEgressPacket {
+  /** 0-based index of the AI call within the turn. */
+  call_index: number;
+  /** The aliased, model-bound prompt as sent. */
+  prompt: string;
+  /** Resolved model id the packet went to. */
+  model_id: string;
+  ts: number;
+}
+
+/** Compact summary shape returned by `chat.sessions.list`. Avoids
+ *  loading the per-message blob on every list refresh. */
+export interface ChatSessionSummary {
+  id: string;
+  title?: string;
+  created_at: number;
+  last_active_at: number;
+  message_count: number;
+  archived: boolean;
+  picker_state: { current: ChatPickerTarget };
+  model_routing: {
+    current: ChatModelRoutingLayer;
+    /** § A.14 — BYOK slot capability hint (`'fast'` = slot_1,
+     *  `'quality'`/`'thinking'` = slot_2). Absent for free_pool + legacy
+     *  rows. See {@link ChatModelHint}. */
+    model_hint?: ChatModelHint;
+    /** D-191 Phase 6 — the exact picked slot (`slot_1` | `slot_2` |
+     *  `free_pool`); pins that slot at the matcher. See {@link ChatModelSourceId}. */
+    source_id?: ChatModelSourceId;
+    provider?: string;
+    overridden?: boolean;
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-137 § Wire A — closed list of `chat.*` rpc method names and
+// broadcast event kinds. Adding either = substrate change.
+// ────────────────────────────────────────────────────────────────
+
+/** § Contract Tightening Wire A — closed `chat.*` rpc method list.
+ *  Handler implementations live in `backend/server/src/chat-handler.ts`
+ *  (greenfield; P1 ships substrate, handler scaffolds land in the next
+ *  slice). The rpc registry rejects any method not in this set. */
+export type ChatRpcMethod =
+  | 'chat.sessions.list'
+  | 'chat.session.get'
+  | 'chat.session.create'
+  | 'chat.session.delete'
+  | 'chat.session.export'
+  | 'chat.egress.get'
+  | 'chat.send'
+  | 'chat.plan.approve'
+  | 'chat.plan.cancel'
+  | 'chat.session.set_picker'
+  | 'chat.session.set_model_pref'
+  // D-167 chat provider-threading — per-session model-pref override
+  // lifecycle + the per-pair global default it inherits from.
+  //   - `chat.session.clear_model_pref` drops a session's explicit
+  //     override so its effective layer reverts to the global default.
+  //   - `chat.default_model_pref.get` / `.set` read + write the per-pair
+  //     global chat-model routing layer (NOT per-session; applies to
+  //     every non-overridden session, resolved at read time). `.set`
+  //     emits the `chat.default_model_pref_changed` broadcast. Per-pair
+  //     only — no cross-cloud sync (D-097 / D-168).
+  | 'chat.session.clear_model_pref'
+  | 'chat.default_model_pref.get'
+  | 'chat.default_model_pref.set'
+  // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope. Per-pair
+  // setting (not per-session); reads via `chat.tool_catalog.get`,
+  // writes via `chat.tool_catalog.set` (which emits the
+  // `chat.tool_catalog_scope_changed` broadcast).
+  | 'chat.tool_catalog.get'
+  | 'chat.tool_catalog.set'
+  // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
+  // annotation. `list` returns every persisted annotation row; `get`
+  // returns one connection's row (or the empty default when absent);
+  // `set` validates + persists + emits the
+  // `chat.connection_mcp_annotation_changed` broadcast. Per-pair only
+  // — no cross-cloud sync (D-097 / D-168).
+  | 'chat.connection_mcp.list'
+  | 'chat.connection_mcp.get'
+  | 'chat.connection_mcp.set'
+  // D-137 P4 § A.7 + § A.7.1 — picker entry projection + refresh.
+  //   - `chat.picker.entries` returns the live `PickerEntry[]` array
+  //     (always includes `'self'`; peer entries surface per
+  //     `buildPickerEntries`'s closed-list gates). Read-only.
+  //   - `chat.picker.refresh` re-stamps one annotation row's
+  //     `recued_signature` + `tools_list_cache` after a caller-driven
+  //     probe of the peer's MCP `initialize` + `tools/list` (the
+  //     orchestrator-side probe wiring lands alongside the outbound
+  //     dispatch in a P4 follow-on; until then, the rpc accepts
+  //     caller-supplied data so Settings UI + tests can populate the
+  //     substrate). Both writes flow through `chat.connection_mcp.set`'s
+  //     validator — `recued_signature_*` issue codes apply.
+  | 'chat.picker.entries'
+  | 'chat.picker.refresh'
+  // D-137 P5 follow-on § A.9 — Bob's per-pair inbound MCP token
+  // registry. The Settings → MCP Tokens page consumes the full set:
+  //   - `list` enumerates every persisted token row (DESC by
+  //     `created_at`); used by the table view.
+  //   - `get` fetches one row by `token_id` for the per-token detail
+  //     view (rendered as the per-tool checklist + capability summary
+  //     + concurrency-tier picker + chat-mode toggle).
+  //   - `issue` mints a new token. Returns the `IssuedMcpInboundToken`
+  //     envelope WITH bearer plaintext exactly once (the only rpc that
+  //     ever surfaces the bearer). Subsequent reads never re-emit the
+  //     plaintext.
+  //   - `update_grants` re-writes the per-tool grants map (Bob's
+  //     checklist toggle). Stamps a fresh `updated_at`.
+  //   - `revoke` stamps `revoked_at` so the token becomes inactive.
+  //     Idempotent — re-revoking preserves the original timestamp.
+  //   - `delete` hard-deletes a row (housekeeping; revoke is the
+  //     preferred path for live tokens since it preserves the audit
+  //     breadcrumb).
+  // All six methods reach through `MCP_RESERVED_RPC_PREFIXES`'s
+  // `chat.inbound_token.` carve-out; external MCP agents can NEVER
+  // invoke these (channel-isolation invariant — the inbound-token
+  // surface manages credentials Bob issues to peers, not credentials
+  // peers can use to mint more credentials).
+  | 'chat.inbound_token.list'
+  | 'chat.inbound_token.get'
+  | 'chat.inbound_token.issue'
+  | 'chat.inbound_token.update_grants'
+  // D-171 slice 3 — rebind the token's bound `contract_id` IN PLACE (no
+  // re-issue; the token value is unchanged so connected clients keep
+  // working, decision 6). The Advanced sub-panel's cap/expiry toggles
+  // lazily mint a `contract_definition` (D-166) via
+  // `collection.contract.mintContract`, then call this to bind the live
+  // token to it; turning a limit off rebinds to unbound (`contract_id:
+  // null`) before revoking the definition. Binding is opaque — liveness
+  // resolves at dispatch, so an id naming no contract fails closed.
+  | 'chat.inbound_token.update_contract'
+  | 'chat.inbound_token.revoke'
+  | 'chat.inbound_token.delete'
+  // D-171 slice 2c — the live self tool catalog (`ToolEntry[]`) the
+  // Permissions → MCP door per-tool grant checklist renders. A read over
+  // the orchestrator's `InternalToolRegistry.list()` (Tier 1 + 2 + 3 self
+  // tools — the same names the inbound MCP dispatch gate authorises against
+  // per `isMcpInboundTokenToolAuthorized`). No webclient rpc returned it
+  // before (`chat.tool_catalog.*` is only the per-kind SCOPE toggle). Under
+  // the `chat.inbound_token.` reserved prefix so external MCP agents can
+  // never enumerate the owner's full tool surface (channel-isolation
+  // invariant — same posture as the rest of the family).
+  | 'chat.inbound_token.tool_catalog';
+
+export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
+  'chat.sessions.list',
+  'chat.session.get',
+  'chat.session.create',
+  'chat.session.delete',
+  'chat.session.export',
+  'chat.egress.get',
+  'chat.send',
+  'chat.plan.approve',
+  'chat.plan.cancel',
+  'chat.session.set_picker',
+  'chat.session.set_model_pref',
+  'chat.session.clear_model_pref',
+  'chat.default_model_pref.get',
+  'chat.default_model_pref.set',
+  'chat.tool_catalog.get',
+  'chat.tool_catalog.set',
+  'chat.connection_mcp.list',
+  'chat.connection_mcp.get',
+  'chat.connection_mcp.set',
+  'chat.picker.entries',
+  'chat.picker.refresh',
+  'chat.inbound_token.list',
+  'chat.inbound_token.get',
+  'chat.inbound_token.issue',
+  'chat.inbound_token.update_grants',
+  // D-171 slice 3 — rebind the bound `contract_id` (lazy cap/expiry).
+  'chat.inbound_token.update_contract',
+  'chat.inbound_token.revoke',
+  'chat.inbound_token.delete',
+  // D-171 slice 2c — the grant checklist's live self tool catalog.
+  'chat.inbound_token.tool_catalog',
+] as const;
+
+export const CHAT_RPC_METHOD_SET: ReadonlySet<ChatRpcMethod> =
+  new Set(CHAT_RPC_METHODS);
+
+export const isChatRpcMethod = (value: unknown): value is ChatRpcMethod =>
+  typeof value === 'string' &&
+  CHAT_RPC_METHOD_SET.has(value as ChatRpcMethod);
+
+/** § Contract Tightening Wire A — closed broadcast event kind list
+ *  (D-121 bus). Adding a kind = substrate change. Multi-client
+ *  coherence: a chat turn that lands on Mary's laptop also surfaces
+ *  on her phone (PWA) without per-client polling, because every paired
+ *  client subscribes to the bus by default per `DEFAULT_SUBSCRIPTIONS`. */
+export type ChatBroadcastEventKind =
+  | 'chat.token_streamed'
+  | 'chat.tool_call_started'
+  | 'chat.tool_call_completed'
+  | 'chat.plan_proposed'
+  | 'chat.transparency'
+  | 'chat.message_complete'
+  | 'chat.session_changed'
+  // D-137 W2.2 § A.1.1 — fires once when Mary toggles a per-kind
+  // catalog scope checkbox. Fans the new enabled-kinds list to every
+  // paired client so the Settings page + chat catalog stay in sync
+  // across devices. NOT session-scoped (the scope is per-pair, not
+  // per-session) — `session_id` deliberately absent on this variant.
+  | 'chat.tool_catalog_scope_changed'
+  // D-167 chat provider-threading — fires when the per-pair global
+  // chat-model default changes (`chat.default_model_pref.set`). Fans the
+  // new routing layer to every paired client so Settings + every
+  // non-overridden session's header badge stay in sync. NOT session-scoped
+  // (the default is per-pair, applied uniformly) — `session_id` absent.
+  | 'chat.default_model_pref_changed'
+  // D-137 W2.3 § A.1.1 + § A.10 — fires when Mary saves a per-connection
+  // MCP tool annotation (Settings → Connections → <name> → Tools). Fans
+  // the connection_name + the new annotation shape to every paired
+  // client so the Tier 3 catalog projection + the Connections page stay
+  // in sync across devices. NOT session-scoped — the annotation is
+  // per-pair, applied uniformly across every chat session.
+  | 'chat.connection_mcp_annotation_changed'
+  // D-137 P3 § A.5 Pattern 3 — disambiguation surface. Fires when a
+  // scope-search returns plausible-but-ambiguous candidates (Pattern 3
+  // shape) and the renderer should paint chips (≤5 named candidates) /
+  // an open question. Session-scoped; one per ambiguous tool call.
+  | 'chat.disambiguation_proposed'
+  // D-137 P3 § A.11 — plan resolved. Fires when Mary approves OR cancels
+  // a previously-proposed write plan via `chat.plan.approve` /
+  // `chat.plan.cancel` rpc. Carries the post-resolution plan shape so
+  // paired clients re-render the per-message approval card with the
+  // final state (approved → tool will fire on next dispatch attempt;
+  // cancelled → terminal refusal).
+  | 'chat.plan_resolved'
+  // D-137 P4 § A.7.1 — picker entries changed. Fires when:
+  //   (a) a `chat.picker.refresh` rpc updates an annotation row's
+  //       `recued_signature` + `tools_list_cache`, OR
+  //   (b) a `chat.connection_mcp.set` write modifies any field that
+  //       could shift picker visibility (annotation creation,
+  //       classification flips that change `available_tool_count`,
+  //       signature changes).
+  // Carries the post-write `PickerEntry[]` array so paired clients
+  // re-render the picker dropdown without re-querying via
+  // `chat.picker.entries`. NOT session-scoped — picker entries are
+  // per-pair, applied uniformly across every chat session.
+  | 'chat.picker_entries_changed'
+  // D-137 P5 follow-on § A.9 — inbound-token registry mutated. Fires
+  // on `chat.inbound_token.{issue, update_grants, revoke, delete}`.
+  // Carries the canonical record (sans bearer plaintext — the bearer
+  // is only ever surfaced via the `issue` rpc's response envelope) so
+  // paired clients (Bob's other devices) re-render the Settings → MCP
+  // Tokens table without round-tripping `chat.inbound_token.list`.
+  // The `op` discriminator lets the renderer animate the row update
+  // appropriately (insert / update / revoke / remove). The `delete`
+  // op carries `record: null` since the row no longer exists. NOT
+  // session-scoped — token registry is per-pair, not per-session.
+  | 'chat.inbound_token_changed';
+
+export const CHAT_BROADCAST_EVENT_KINDS: ReadonlyArray<ChatBroadcastEventKind> = [
+  'chat.token_streamed',
+  'chat.tool_call_started',
+  'chat.tool_call_completed',
+  'chat.plan_proposed',
+  'chat.transparency',
+  'chat.message_complete',
+  'chat.session_changed',
+  'chat.tool_catalog_scope_changed',
+  'chat.default_model_pref_changed',
+  'chat.connection_mcp_annotation_changed',
+  'chat.disambiguation_proposed',
+  'chat.plan_resolved',
+  'chat.picker_entries_changed',
+  'chat.inbound_token_changed',
+] as const;
+
+export const CHAT_BROADCAST_EVENT_KIND_SET: ReadonlySet<ChatBroadcastEventKind> =
+  new Set(CHAT_BROADCAST_EVENT_KINDS);
+
+export const isChatBroadcastEventKind = (
+  value: unknown,
+): value is ChatBroadcastEventKind =>
+  typeof value === 'string' &&
+  CHAT_BROADCAST_EVENT_KIND_SET.has(value as ChatBroadcastEventKind);
+
+/** § Contract Tightening Wire A — `chat.session_changed` field
+ *  discriminator (kept narrow so the renderer doesn't grow open
+ *  branches). New fields = substrate change. */
+export type ChatSessionChangedField =
+  | 'picker'
+  | 'model_pref'
+  | 'title'
+  | 'archived';
+
+export const CHAT_SESSION_CHANGED_FIELDS: ReadonlyArray<ChatSessionChangedField> = [
+  'picker',
+  'model_pref',
+  'title',
+  'archived',
+] as const;
+
+export const CHAT_SESSION_CHANGED_FIELD_SET: ReadonlySet<ChatSessionChangedField> =
+  new Set(CHAT_SESSION_CHANGED_FIELDS);
+
+export const isChatSessionChangedField = (
+  value: unknown,
+): value is ChatSessionChangedField =>
+  typeof value === 'string' &&
+  CHAT_SESSION_CHANGED_FIELD_SET.has(value as ChatSessionChangedField);
+
+// ────────────────────────────────────────────────────────────────
+// D-137 § Must Hold (D-137-equivalent of D-149 § Must Hold I-15) —
+// chat substrate is per-pair only; no cross-cloud sync.
+// ────────────────────────────────────────────────────────────────
+
+/** § Contract Tightening — server-internal table inventory for the
+ *  chat substrate. Per-pair only; no cross-cloud sync (D-097 /
+ *  D-168). Each table is created via `ensureChatSchema(db)` at boot
+ *  (idempotent CREATE TABLE IF NOT EXISTS).
+ *
+ *  P1 lands two tables as fully-shaped (not placeholders — chat
+ *  storage IS the substrate that ships first):
+ *
+ *    - `chat_sessions`  — per-session row with picker / model_routing
+ *      / metadata.
+ *    - `chat_messages`  — per-turn row with role / content / tool_calls
+ *      / provenance / target_server / picker_at_send / model_used.
+ *
+ *  Both are encrypted at rest via a new `chat` sub-DEK domain (lands
+ *  with the rpc handler slice; P1 schema reserves the encrypted-blob
+ *  columns). */
+/** P1 closed-list inventory — the *core* chat-thread tables landed by
+ *  `ensureChatSchema`. W2.2 / W2.3 ship their own ensure-functions
+ *  (`ensureChatToolCatalogSchema` / `ensureChatConnectionMcpAnnotationSchema`)
+ *  for their per-pair singletons; those tables stay outside this
+ *  inventory so the existing `ensureChatSchema` ratchet keeps its
+ *  narrow scope. The Must-Hold per-pair-only invariant applies to
+ *  every per-pair chat table regardless of which ensure-fn lands
+ *  it. */
+export type ChatTableName = 'chat_sessions' | 'chat_messages';
+
+export const CHAT_TABLES: ReadonlyArray<ChatTableName> = [
+  'chat_sessions',
+  'chat_messages',
+] as const;
+
+export const CHAT_TABLE_SET: ReadonlySet<ChatTableName> = new Set(CHAT_TABLES);
+
+// ────────────────────────────────────────────────────────────────
+// D-137 § A.1.1 — Tier 1 handler descriptor (used by the
+// `createInternalToolRegistry` factory to wire each closed-list
+// primitive to its dispatch implementation).
+// ────────────────────────────────────────────────────────────────
+
+/** Per-Tier-1 declarative descriptor. The registry factory iterates
+ *  this map to assemble the registry. Each handler implementation is
+ *  wired into `createInternalToolRegistry` (`packages/middleware/src/
+ *  internal-tool-registry/`) as a `tier1Handlers` override — the
+ *  server supplies the live handlers via `backend/server/src/chat-
+ *  tool-handlers.ts`; unwired entries default to
+ *  `{ ok: false, reason: 'not_implemented' }`. */
+export interface Tier1ToolDescriptor {
+  name: Tier1ToolName;
+  /** Short LLM-readable description per § A.13 authoring guide. P1
+   *  ships placeholder copy; the per-primitive landing tightens. */
+  description: string;
+  /** JSON Schema for input args. P1 ships permissive `unknown`
+   *  schemas; per-primitive landings narrow. */
+  arg_schema: unknown;
+  classification: 'read' | 'write' | 'unknown';
+  topic_tags: ReadonlyArray<string>;
+  /** D-164 § 6 — batch-dispatch safety. Pulled from
+   *  `TIER1_CONCURRENCY_SAFE`. Surfaced on the projected `ToolEntry`
+   *  so the catalog substrate + framework dispatch primitive read the
+   *  same source. */
+  concurrency_safe: boolean;
+}
+
+/** P1 placeholder descriptor table — one entry per `Tier1ToolName`.
+ *  Closed at substrate level (the type union enforces exhaustivity).
+ *  Per-primitive landings update each entry in place. */
+export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDescriptor>> = {
+  'contact.search': {
+    name: 'contact.search',
+    description:
+      "Search Mary's contact graph by name, email, phone, company, or alias — one identifier kind per call (each is an arg; see the arg descriptions). Returns matched candidates with per-source provenance: HubSpot + Salesforce contribute when `email` or `query` is set; `phone` / `company` / `alias` are local-warehouse only. Result envelope carries `shape.pattern` (1-4) — the agent reads it to choose between silent execute / optimistic-with-alternatives / refuse / fall-through. Use this over `memory.search` when the user is asking about someone in their address book vs someone mentioned in a past recipe / audit row.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: "Free-text fuzzy lookup by a person's name." },
+        email: { type: 'string', description: 'Exact-match canonical email address.' },
+        phone: { type: 'string', description: 'Exact-match E.164-canonical phone number.' },
+        company: {
+          type: 'string',
+          description: "Org-scoped lookup — contacts whose company name matches (substring).",
+        },
+        alias: {
+          type: 'string',
+          description:
+            "The user's own private nickname for someone (\"mom\", \"the cheese guy\") — not a real name. Pair with `platform` for an external handle lookup.",
+        },
+        platform: {
+          type: 'string',
+          description:
+            'External platform for a handle lookup, paired with `alias`: facebook / x / instagram / linkedin / github / substack.',
+        },
+        limit: { type: 'number', description: 'Max candidates to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['contact.search'],
+    topic_tags: TIER1_TOPIC_TAGS['contact.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['contact.search'],
+  },
+  'mail.search': {
+    name: 'mail.search',
+    description:
+      'Search Mary\'s mail mirror by subject, sender, recipient, body keyword, or date range (local warehouse — mail mirrors fully into it). Results may carry `partial: true` + `partial_failures` when the read degraded. Use this over `memory.search` when the user wants an actual email message; use `memory.search` for past-discussion intent that may live outside mail.',
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            "Free-text match over subject, sender, recipients, and body. Accepts a person's name or their canonical email/ref to find mail from or to them.",
+        },
+        since: { type: 'number', description: 'Lower bound (epoch ms) on message date.' },
+        until: { type: 'number', description: 'Upper bound (epoch ms) on message date.' },
+        filters: { type: 'object', description: 'Optional exact hot-field filters, applied when query is empty.' },
+        limit: { type: 'number', description: 'Max messages to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['mail.search'],
+    topic_tags: TIER1_TOPIC_TAGS['mail.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['mail.search'],
+  },
+  'calendar.search': {
+    name: 'calendar.search',
+    description:
+      "Search Mary's calendar mirror — free-text `query` over titles, locations, and attendee/organizer names + emails (so a person's name or canonical email finds the events they are on), narrowed by an optional event-time window (`start_since`/`start_until`). Results may carry `partial: true` when the read degraded. Use over `memory.search` when the user wants the actual meeting / event entry; use `memory.search` for past-meeting discussion context.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Free-text match over event title, description, location, and attendee/organizer names + emails.',
+        },
+        start_since: { type: 'number', description: 'Lower bound (epoch ms) on event start time.' },
+        start_until: { type: 'number', description: 'Upper bound (epoch ms) on event start time.' },
+        since: { type: 'number', description: 'Alias for `start_since`.' },
+        until: { type: 'number', description: 'Alias for `start_until`.' },
+        calendar_id: { type: 'string', description: 'Restrict to a single calendar instance.' },
+        limit: { type: 'number', description: 'Max events to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['calendar.search'],
+    topic_tags: TIER1_TOPIC_TAGS['calendar.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['calendar.search'],
+  },
+  'memory.search': {
+    name: 'memory.search',
+    description:
+      "Recall saved KNOWLEDGE from Mary's memory pool — facts, decisions, preferences, product/domain notes she or you saved with `memory.write`. Its job is CROSS-SESSION recall: knowledge from earlier sessions that the current conversation never carried. Free-text `query` matches the summary AND the full body. Bodies come back inline when they fit a per-call budget; a `truncated` entry gives you its `memory_id` — call again with `memory_id` for the full text. Do NOT call it to re-fetch something already said in THIS conversation: that text is already in front of you, so answer from it directly. It does NOT hold run history (what a recipe did), nor mail/calendar/contact records — use the specific tool for those.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'What to recall — free text, matched over each memory\'s summary and full body. Omit to get the most recent memories.',
+        },
+        memory_id: {
+          type: 'string',
+          description:
+            'Fetch ONE memory in full. Pass the `memory_id` of an entry that came back `truncated`. Ignores `query`.',
+        },
+        since: { type: 'number', description: 'Only memories at/after this epoch-ms.' },
+        until: { type: 'number', description: 'Only memories at/before this epoch-ms.' },
+        cursor: {
+          type: 'string',
+          description: 'Next page — pass the `next_cursor` from a previous result.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['memory.search'],
+    topic_tags: TIER1_TOPIC_TAGS['memory.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['memory.search'],
+  },
+  'memory.write': {
+    name: 'memory.write',
+    description:
+      "Save a durable memory to the user's shared memory pool — a fact, decision, preference, or piece of knowledge worth remembering across sessions. Reach for it when the user says \"remember that …\", states a lasting preference, or you have derived a fact worth persisting for later recall (readable back via `memory.search`). The entry is transparently attributed to the AI and is visible + reversible in the Memory view. Do NOT use it for transient conversation state (already in front of you) or a one-off answer. Give a concise `summary` (the recall line) plus, when there is more to it, a longer `body`.",
+    arg_schema: {
+      type: 'object',
+      required: ['summary'],
+      properties: {
+        summary: {
+          type: 'string',
+          description:
+            'REQUIRED — a concise, self-contained statement of the memory (the line shown in the feed + recalled later). E.g. "Prefers morning meetings" or "Acme renewal closes 2026-Q3".',
+        },
+        body: {
+          type: 'string',
+          description:
+            'Optional longer detail / context for the memory. Omit when the summary already says it all.',
+        },
+        provenance_entity_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional entity ids this memory is about (e.g. a contact email), to link it into the provenance graph.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['memory.write'],
+    topic_tags: TIER1_TOPIC_TAGS['memory.write'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['memory.write'],
+  },
+  'enrichment.search': {
+    name: 'enrichment.search',
+    description:
+      "Search Mary's pre-computed AI + aggregate facts by entity scope, topic, or staleness. Common scopes: `mail` / `contact` / `calendar` / `connection.api.<vendor>.<entity>`. Returns rows with `topic`, `body`, `staleness_class` ('fresh' | 'stale' | 'invalid'). Filter with `topic` + `target_id` when you know the entity; filter with `topic` alone to list every recent enrichment of that kind. Use this for AI-derived facts (sentiment, deal-risk, follow-up suggestions); use `memory.search` for raw audit history.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        topic: {
+          type: 'string',
+          description:
+            'REQUIRED — the registry topic key to search (one topic per call; there is NO list-across-topics). If you do not know the topic, ask the user or use contact/mail/calendar/deal.search for raw records.',
+        },
+        scope: {
+          type: 'string',
+          description: 'Entity scope: `mail` / `contact` / `calendar` / `connection.api.<vendor>.<entity>`.',
+        },
+        target_id: {
+          type: 'string',
+          description:
+            'The specific entity id within the scope (e.g. a contact email). Pair with `topic` for one entity; omit to list every recent enrichment of that topic.',
+        },
+        limit: { type: 'number', description: 'Max enrichment rows to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['enrichment.search'],
+    topic_tags: TIER1_TOPIC_TAGS['enrichment.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['enrichment.search'],
+  },
+  'deal.search': {
+    name: 'deal.search',
+    description:
+      "Search Mary's CRM deal graph (HubSpot deals + Salesforce opportunities, unioned with per-source provenance) by name and/or canonical filters: `query` (case-insensitive substring on the deal/opportunity name), `close_state` ('open' | 'won' | 'lost'), and the close-date window `close_since`/`close_until` (epoch ms). These filters apply uniformly across vendors (every CRM projects them identically), so combine them freely — e.g. open deals closing this quarter. Stage, owner, and amount appear on results but are not yet filters. Result envelope carries `shape.pattern` (1-4) and may carry `recipe_fallback` when an installed deal-related recipe matches the intent. Use this when the user names or qualifies a deal (\"the Acme deal\", \"open opportunities closing this month\"); use `contact.search` for person-centric intent. D-206: `contact` (an email of one of Mary\'s own contacts) returns THAT PERSON\'S deals across every bound CRM — the deal\u2192contact relationship resolved through her contact graph, so it finds deals whose NAME never mentions them. On that path ONLY, the envelope also carries `total`: the COMPLETE number of matching deals, which may exceed the returned page — say \"N deals\" from `total`, never from counting `candidates`. Each result also carries `contact_id` (the CRM\'s own record id) and, when readable, `contact` (Mary\'s matching contact).",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Case-insensitive substring match on the deal/opportunity name. A company name works only if it appears in the deal name; use `contact.search` for a person.',
+        },
+        close_state: {
+          type: 'string',
+          // Mirrors CANONICAL_CRM_FIELD_SCHEMA.deal.close_state.enum_values (D-190);
+          // the handler enum-guards against that schema (the authoritative source).
+          enum: ['open', 'won', 'lost'],
+          description:
+            "Won/lost lifecycle state — 'open' | 'won' | 'lost' (cross-vendor; derived from each vendor's close flags).",
+        },
+        close_since: {
+          type: 'number',
+          description: 'Lower bound (epoch ms) on the deal close date (inclusive).',
+        },
+        close_until: {
+          type: 'number',
+          description: 'Upper bound (epoch ms) on the deal close date (inclusive).',
+        },
+        contact: {
+          type: 'string',
+          description:
+            "D-206 — email of one of Mary's OWN contacts. Returns the deals that reference that person, across every bound CRM, resolved through her contact graph (it finds deals whose name never mentions them). The envelope's `total` is then the COMPLETE match count — quote deal counts from it, never from the length of `candidates`, which is a page.",
+        },
+        limit: { type: 'number', description: 'Max deal candidates to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['deal.search'],
+    topic_tags: TIER1_TOPIC_TAGS['deal.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['deal.search'],
+  },
+  'account.search': {
+    name: 'account.search',
+    description:
+      "Search Mary's CRM account graph (HubSpot companies + Salesforce accounts + Pipedrive organizations, unioned with per-source provenance) by `query` (case-insensitive substring on the company/account name) and/or `domain` (exact website-domain match, case-insensitive — the account's strong identifier). Industry, owner, employee count, and annual revenue appear on results but are not yet filters. With no args it lists accounts (up to `limit`). Result envelope carries `shape.pattern` (1-4) — the agent reads it to choose silent execute / optimistic-with-alternatives / refuse / fall-through. Use this when the user names or qualifies a company/organization (\"the Acme account\", \"accounts at acme.com\"); use `contact.search` for a person, `deal.search` for a deal.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Case-insensitive substring match on the company / account name. Use `contact.search` for a person, `deal.search` for a deal.',
+        },
+        domain: {
+          type: 'string',
+          description:
+            "Exact website-domain match (case-insensitive) — the account's strong identifier (e.g. 'acme.com').",
+        },
+        limit: { type: 'number', description: 'Max account candidates to return.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['account.search'],
+    topic_tags: TIER1_TOPIC_TAGS['account.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['account.search'],
+  },
+  'work.search': {
+    name: 'work.search',
+    description:
+      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source (Recued's own records + synced vendor mirrors like HubSpot/Salesforce tasks). Filter with `query` (case-insensitive substring over title + body text) / `source_id` / `done`. Results are the LOCAL mirror: `source_freshness` says how current each Source is (poll-synced mirrors can trail the vendor), and any `long_text.fidelity: 'preview'` is a bounded excerpt — NEVER present it as the complete body (use `work.read` with `fidelity: 'remote_detail'` for the full text). Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted vendor reads; if the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from the local rows disclosing `limitations`), do not re-send unchanged. Read-cost-zero when neither flag is set — never invokes LLMs.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: [...WORK_ENTITY_KINDS],
+          description: 'Which work-item family to search.',
+        },
+        query: {
+          type: 'string',
+          description: 'Case-insensitive substring over title and body/description text.',
+        },
+        source_id: {
+          type: 'string',
+          description: 'Restrict to one registered Source (ids appear on results and in `source_freshness`).',
+        },
+        done: {
+          type: 'boolean',
+          description: 'Tasks only — true for completed, false for open.',
+        },
+        current: {
+          type: 'boolean',
+          description: 'The user asked for latest/right-now state — escalates to bounded vendor reads.',
+        },
+        detail: {
+          type: 'boolean',
+          description: 'Complete body text is required — escalates where the Source serves it remotely.',
+        },
+        limit: { type: 'number', description: 'Max items to return (default 20).' },
+      },
+      required: ['kind'],
+    },
+    classification: TIER1_CLASSIFICATIONS['work.search'],
+    topic_tags: TIER1_TOPIC_TAGS['work.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['work.search'],
+  },
+  'work.read': {
+    name: 'work.read',
+    description:
+      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. Default `fidelity: 'rich_meta'` serves the local mirror row — `long_text.fidelity` marks 'complete' vs 'preview' (a bounded excerpt; never present a preview as the full body). Use `fidelity: 'remote_detail'` when the complete body/detail is required (fetches from the vendor when the Source serves it remotely), or `fidelity: 'current_remote'` when the user asks for latest/right-now state (always fetches vendor-current). A vendor fetch that fails degrades honestly to the local row with `escalation_error` naming the cause — do not retry the same call; answer from the local row and tell the user, citing `source_freshness`.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: [...WORK_ENTITY_KINDS],
+          description: 'The work-item family.',
+        },
+        id: { type: 'string', description: "The item's id (from `work.search` results)." },
+        fidelity: {
+          type: 'string',
+          enum: ['rich_meta', 'remote_detail', 'current_remote'],
+          description:
+            "'rich_meta' (default) = local mirror; 'remote_detail' = complete record where the Source serves it; 'current_remote' = vendor-current now.",
+        },
+      },
+      required: ['kind', 'id'],
+    },
+    classification: TIER1_CLASSIFICATIONS['work.read'],
+    topic_tags: TIER1_TOPIC_TAGS['work.read'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['work.read'],
+  },
+  'recipe.run': {
+    name: 'recipe.run',
+    description:
+      "Invoke an installed Recued recipe by `<publisher>/<slug>` with config. The recipe's manifest declares its own argument schema; pass `config` matching that schema. Write-capable recipes (manifest `risk_tier` `'write'` / `'admin'` / `'destructive'`) pause for the user's approval before executing — the dispatcher returns reason `'awaiting_approval'`; that is the expected outcome, not a failure (do not re-send the call). Use this primitive when the user intent matches an installed recipe's purpose AND no Tier 1 read primitive can satisfy the question on its own.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        recipe_id: {
+          type: 'string',
+          description: 'The installed recipe to invoke, as `<publisher>/<slug>`.',
+        },
+        config: {
+          type: 'object',
+          description: "Arguments for the recipe, matching the schema declared in the recipe's manifest.",
+        },
+        recipe: {
+          type: 'object',
+          description:
+            'Inline recipe definition to run directly instead of `recipe_id` (the AI-authored escape hatch). Provide `recipe_id` OR `recipe`, not both.',
+        },
+        vault: {
+          type: 'object',
+          description: 'Advanced — normally omit: per-run credential overrides.',
+        },
+        context: {
+          type: 'object',
+          description: 'Advanced — normally omit: extra runtime context.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['recipe.run'],
+    topic_tags: TIER1_TOPIC_TAGS['recipe.run'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.run'],
+  },
+} as const;
+
+// ────────────────────────────────────────────────────────────────
+// D-137 P2 § Contract Tightening — Scope-search result envelope.
+//
+// Server-side read consolidation (§ A.4) returns multi-source
+// candidate sets with per-source provenance. The orchestrator's
+// confidence-shape dispatch (§ A.5, P3) reads `score`; the agent's
+// response synthesis surfaces `partial` / `partial_failures` so the
+// user sees explicit "HubSpot unavailable" copy rather than silent
+// degradation. Closed envelope — adding fields is a substrate change.
+// ────────────────────────────────────────────────────────────────
+
+/** § Contract Tightening — closed identifier for a fan-out source.
+ *  `'local'` is the user's warehouse (`data.contact` / `data.calendar`
+ *  / `data.mail` / `data.enrichment.deal.*`); `'hubspot'` /
+ *  `'salesforce'` are platform-reference mirrors keyed under
+ *  `connection.api.<vendor>.<entity>`. Future entries (Linear,
+ *  Notion, ...) widen this union as their adapters land. Display
+ *  labels live in the UI; the wire id stays stable for ratchet tests
+ *  + per-source-toggle prefs. */
+/** A scope-search fan-out source id. `'local'` is the user's own warehouse; any
+ *  other value is a bound CRM **vendor** name. OPEN since D-190 — `deal.search`
+ *  enumerates the user's bound CRM connections GENERICALLY (a pack that declares
+ *  `crm_alias` entities is a first-class CRM vendor, not a hardcoded one), so the
+ *  source id is any vendor, never a closed union. The `(string & {})` member keeps
+ *  the shipped built-ins as autocomplete hints without closing the set. */
+export type ScopeSearchSourceId =
+  | 'local'
+  | 'hubspot'
+  | 'salesforce'
+  | (string & {});
+
+// The shipped built-in source ids. NOT exhaustive since D-190 (the source set is
+// open — any bound CRM vendor) — these are convenience constants for the built-ins,
+// not the authority on what's a valid source. `deal.search` derives its sources from
+// the bound connections, not from this list.
+export const SCOPE_SEARCH_SOURCE_IDS: ReadonlyArray<ScopeSearchSourceId> = [
+  'local',
+  'hubspot',
+  'salesforce',
+] as const;
+
+export const SCOPE_SEARCH_SOURCE_ID_SET: ReadonlySet<ScopeSearchSourceId> =
+  new Set(SCOPE_SEARCH_SOURCE_IDS);
+
+export const isScopeSearchSourceId = (
+  value: unknown,
+): value is ScopeSearchSourceId =>
+  typeof value === 'string' &&
+  SCOPE_SEARCH_SOURCE_ID_SET.has(value as ScopeSearchSourceId);
+
+/** § Contract Tightening — one candidate emitted by one source. The
+ *  shape mirrors the spec: `source` is the stable id (not the display
+ *  label); `record` is the canonical-shape record per
+ *  `docs/canonical-shapes.md`; `score` is optional 0–1 relevance/
+ *  similarity consumed by § A.5 dispatch (P3 wires it). */
+export interface ScopeSearchCandidate<T> {
+  source: ScopeSearchSourceId;
+  record: T;
+  score?: number;
+}
+
+/** § Contract Tightening — per-source degradation entry. The agent
+ *  surfaces these in the user-facing response copy ("HubSpot was
+ *  unreachable; here's what local + Salesforce returned"). `reason`
+ *  is intentionally free-form short text — taxonomy lives in tests
+ *  + the per-source query implementations, not the wire envelope. */
+export interface ScopeSearchPartialFailure {
+  source: ScopeSearchSourceId;
+  reason: string;
+}
+
+/** § Contract Tightening — full scope-search result. `partial` /
+ *  `partial_failures` are omitted on the all-green path so the
+ *  default-narrow result stays minimal; they appear together when
+ *  any source threw or timed out. */
+export interface ScopeSearchResult<T> {
+  candidates: ReadonlyArray<ScopeSearchCandidate<T>>;
+  partial?: boolean;
+  partial_failures?: ReadonlyArray<ScopeSearchPartialFailure>;
+}
+
+/** § Contract Tightening — per-tool registered scopes. Each Tier 1
+ *  scope-search tool declares its supported source ids; the per-tool
+ *  fan-out runner skips unregistered ids without surfacing a
+ *  `partial_failure` (the source isn't a contract dependency for that
+ *  scope). Closed map; widening = substrate change. P2 ships
+ *  `contact.search` + `deal.search` with the full {local, hubspot,
+ *  salesforce} set; D-190 adds `account.search` with the platform set
+ *  only ({hubspot, salesforce} — accounts have no `local` warehouse,
+ *  unlike the contact graph). The other Tier 1 scope-search tools stay
+ *  local-only per the P2 phase plan. */
+export const SCOPE_SEARCH_TOOL_SOURCES: Readonly<
+  Record<'contact.search' | 'deal.search' | 'account.search', ReadonlyArray<ScopeSearchSourceId>>
+> = {
+  'contact.search': ['local', 'hubspot', 'salesforce'],
+  'deal.search': ['local', 'hubspot', 'salesforce'],
+  'account.search': ['hubspot', 'salesforce'],
+} as const;
+
+/** § Contract Tightening — unified candidate shape for `contact.search`
+ *  fan-out. Local source projects `data.contact.*` (rich
+ *  `ContactRecord` shape) into this loose envelope; HubSpot /
+ *  Salesforce sources project their `EnrichmentMeta` snapshot into
+ *  the same shape. One return shape across every fan-out source
+ *  keeps the agent's prompt budget + synthesis reasoning predictable —
+ *  the only difference between local and platform-mirror candidates
+ *  is `target_id`'s naming convention + which optional fields populate.
+ *
+ *  `target_id` is the per-source primary key the agent uses to follow
+ *  up (`local` → canonical email; `hubspot` / `salesforce` → vendor
+ *  platform-id-shaped target id from `connection.api.<vendor>.contact`
+ *  rows). The agent reads richer detail via `data.contact.<email>`
+ *  (local) or `data.crm.contact.<target_id>.enrichments.<topic>`
+ *  (platform mirror via D-130 P7 cross-vendor alias). */
+export interface ChatContactCandidate {
+  /** Canonical email (lowercase + trimmed); NULL when the source's
+   *  record lacks a deliverable email (HubSpot contact without an
+   *  email property; D-138 mention-only placeholder). */
+  email: string | null;
+  /** Display name when available (firstname + lastname concatenation
+   *  or email local-part fallback per vendor projection rules). */
+  name?: string;
+  /** Per-source primary key. `local` → canonical email (matches
+   *  `email`); platform mirrors → `<vendor>_contact_<id>` shape from
+   *  the platform-reference row's `target_id` column. */
+  target_id: string;
+  /** Lifecycle stage from meta (HubSpot `lifecyclestage`) /
+   *  LeadSource (Salesforce) / `identity_status` derived locally.
+   *  Open vocabulary; absent on records that don't carry one. */
+  lifecycle_stage?: string;
+  /** Most-recent interaction timestamp (unix-ms). Local source maps
+   *  `ContactRecord.last_interaction`; platform mirrors map
+   *  `meta.recent_activity_at`. */
+  recent_activity_at?: number;
+}
+
+/** § Contract Tightening — unified candidate shape for `deal.search`
+ *  fan-out. HubSpot deals + Salesforce opportunities project into one
+ *  envelope; future `data.enrichment.deal.*` local-derived shapes
+ *  also land here. CRM-deal `target_id` follows the vendor
+ *  `<vendor>_deal_<id>` / `<vendor>_opportunity_<id>` prefixed
+ *  convention from `connection.api.<vendor>.deal` /
+ *  `connection.api.<vendor>.opportunity` scopes (D-128 / D-130 P7
+ *  cross-vendor alias). */
+export interface ChatDealCandidate {
+  /** Deal / opportunity display name. */
+  name: string;
+  /** Per-source primary key (vendor target_id). */
+  target_id: string;
+  /** Lifecycle stage (HubSpot `dealstage` / Salesforce `StageName`). */
+  stage?: string;
+  /** Amount in deal currency (HubSpot `amount` / Salesforce `Amount`). */
+  amount?: number;
+  /** Owner identifier (HubSpot `hubspot_owner_id` / Salesforce
+   *  `OwnerId` — email when resolved, raw id otherwise). */
+  owner?: string;
+  /** Close date (unix-ms). */
+  close_date?: number;
+  /** `'open' | 'won' | 'lost'` derived state from vendor close flags. */
+  close_state?: string;
+
+  // ── D-206 — the deal's declared RELATIONSHIP to a contact ────────────────────
+  //
+  // Before this, `deal.search` carried no relationship at all, so *"who is the
+  // Acme renewal actually with?"* was a question the model could not answer. The
+  // canonical `deal.contact_id` field (Pipedrive `person_id`) is DECLARED a ref to
+  // `contact` (D-206), and these three fields are it, resolved.
+
+  /** The VENDOR's own contact record id, verbatim from `deal.contact_id`. CRM-plane
+   *  data on the CRM's own authorization axis — always present when the vendor
+   *  declares the field, whatever the core-graph grant says. */
+  contact_id?: string;
+  /** The user's OWN contact (`data.contact`), reached from `contact_id` through the
+   *  durable identity link (`contact_platform_link`) — and resolved THROUGH the merge
+   *  chain, so it is the live person, not a tombstone.
+   *
+   *  🔴 **Present ONLY when the door holds the `data.contact` collection grant.**
+   *  Resolving a CRM record to *"your contact Bob"* CROSSES from the CRM plane into
+   *  the core contact graph — the gate-crossing edge D-205 §3 exists for. A door with
+   *  the CRM lens but not the core graph sees the deal's `contact_id` and nothing
+   *  more: the CRM record renders **as itself**, never as one of the user's people. */
+  contact?: ChatContactCandidate;
+  /** True when the core-graph hop was REFUSED by the owner's `data.contact` grant.
+   *
+   *  ⚠ **It exists to stop an absence being read as a fact.** Without it, "no
+   *  `contact`" is ambiguous between *"this deal's contact is not one of your
+   *  people"* (a claim about the user's data) and *"you may not look"* (a claim about
+   *  policy) — and a model told the former states it to the user as truth. Same class
+   *  as the D-205 §3 read fences refusing into `{matches: []}`. */
+  contact_core_fenced?: boolean;
+}
+
+/** § Contract Tightening — unified candidate shape for `account.search`
+ *  fan-out. HubSpot companies + Salesforce accounts + Pipedrive
+ *  organizations project into one envelope via the canonical
+ *  `crm_alias:'account'` projection (D-130 P7 / D-190). CRM-account
+ *  `target_id` follows the `<vendor>_<entity>_<connection>_<id>` shape
+ *  (D-128 per-connection scoping) from the `connection.api.<vendor>.company`
+ *  / `.account` / `.organization` mirror scopes. */
+export interface ChatAccountCandidate {
+  /** Company / account display name. */
+  name: string;
+  /** Per-source primary key (vendor target_id). */
+  target_id: string;
+  /** Primary website domain (HubSpot `domain` / Salesforce `Website` /
+   *  Pipedrive `website` — freeform, not canonicalized at projection). */
+  domain?: string;
+  /** Industry tag (vendor-managed taxonomy; open vocabulary). */
+  industry?: string;
+  /** Owner identifier (Salesforce `OwnerId` / Pipedrive `owner_id` —
+   *  email when resolved, raw id otherwise). */
+  owner?: string;
+  /** Employee count when the vendor carries it (Salesforce
+   *  `NumberOfEmployees` / Pipedrive `employee_count`). */
+  num_employees?: number;
+  /** Annual revenue when set (Salesforce `AnnualRevenue` / Pipedrive
+   *  `annual_revenue`). */
+  annual_revenue?: number;
+}
+
+/** S1 (CRM mirror freshness) — per-connection "last synced" signal attached to a
+ *  `deal.search` / `contact.search` result so the AI can reason about staleness.
+ *
+ *  The CRM record mirror is *eventually consistent*, not live: it's maintained by
+ *  the housekeeping reconciler (idle-driven, 6h default) + webhook funnels, so its
+ *  data is "as of the last successful reconcile." `synced_at` surfaces that per
+ *  bound connection — the honest granularity, since the full-walk / incremental
+ *  sync confirms the whole connection's set at once (per-record `updated_at` would
+ *  read as "last changed," mis-signalling a steady record as stale).
+ *
+ *  `synced_at` = the connection's last reconcile wall-clock (`last_run_at`) when the
+ *  last run did not error; `null` = never synced or the last sync failed (treat as
+ *  unknown / stale). The AI uses this to caveat ("as of 5 days ago") or to decide a
+ *  record is fresh enough — and S3 reuses it as the staleness-driven live trigger. */
+export interface CrmConnectionFreshness {
+  /** The bound connection this freshness is for (the immutable connection name). */
+  connection_name: string;
+  /** Vendor id (`hubspot` / `salesforce` / `pipedrive` / pack-declared). */
+  vendor: string;
+  /** Vendor entity (`deal` / `opportunity` / `contact` / `account` / …). */
+  entity: string;
+  /** Freshness wall-clock (unix-ms). For a `'local'` (mirror) source this is the
+   *  connection's last successful reconcile; `null` = never synced or last sync
+   *  errored. For a `'server'` (S3 live-escalated) source this is the live-fetch time
+   *  (just now) — the data is current. */
+  synced_at: number | null;
+  /** S3 — how THIS connection's records in the result were sourced: `'local'` = read
+   *  from the eventually-consistent mirror; `'server'` = live-fetched from the vendor
+   *  this turn because the mirror was stale / a narrow lookup missed. Absent ⇒
+   *  `'local'` (the S1 default before S3 escalation wires in). */
+  filter_applied?: 'server' | 'local';
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-137 P3 § A.5 — Confidence-shape dispatch envelope.
+//
+// The chat-tool-handlers attach a `ConfidenceShape<T>` to every
+// scope-search result so the agent loop drives disambiguation UX
+// off the distribution, not a tunable confidence knob. Four
+// patterns per spec; the orchestrator's synthesis prompt reads the
+// pattern + the per-pattern candidate lists to shape its response
+// (silent execute / optimistic-with-alternatives / refuse / fall-
+// through). The classifier implementation lives in
+// `packages/middleware-recued/src/confidence-shape/classify.ts`.
+// ────────────────────────────────────────────────────────────────
+
+/** § A.5 — pattern discriminator. Closed `1 | 2 | 3 | 4` per spec.
+ *  Adding patterns = substrate change here AND in the classifier;
+ *  the renderer reads `shape.pattern` to select the right UX. */
+export type ChatConfidencePattern = 1 | 2 | 3 | 4;
+
+export const CHAT_CONFIDENCE_PATTERNS: ReadonlyArray<ChatConfidencePattern> = [
+  1, 2, 3, 4,
+] as const;
+
+/** § A.5 — internal numeric measures snapshot embedded with the
+ *  shape envelope. Audit-side; never user-facing per spec ("users
+ *  never see a 'confidence threshold' knob whose behavior changes
+ *  per-user"). Counts + ratios only; never candidate content
+ *  (privacy invariant per PB7 § B.5.1). */
+export interface ChatConfidenceMeasures {
+  candidate_count: number;
+  top_score: number | null;
+  top_margin: number | null;
+  mean_score: number | null;
+}
+
+/** § A.5 — confidence-shape envelope attached to scope-search
+ *  results. Generic over the candidate shape so `contact.search`
+ *  carries `ChatContactCandidate` shapes while `deal.search` carries
+ *  `ChatDealCandidate` shapes through the same dispatcher.
+ *
+ *  Discriminated union: `pattern` is the load-bearing field every
+ *  caller reads first; the rest of the body shape depends on it. */
+export type ChatConfidenceShape<T> =
+  | {
+      pattern: 1;
+      /** The single high-confidence candidate. Agent executes silently
+       *  with inline provenance ("Used Peter Smith from deal Acme"). */
+      top: T;
+      /** Other matches, hidden behind a "see other matches"
+       *  affordance. */
+      alternatives: ReadonlyArray<T>;
+      measures: ChatConfidenceMeasures;
+    }
+  | {
+      pattern: 2;
+      /** Top candidate the agent guesses with. */
+      top: T;
+      /** Alternatives close enough in score to merit visible
+       *  rendering ("Other Peters: B, C — click to redo"). */
+      close: ReadonlyArray<T>;
+      /** Tail alternatives further down the distribution. */
+      alternatives: ReadonlyArray<T>;
+      measures: ChatConfidenceMeasures;
+    }
+  | {
+      pattern: 3;
+      /** Plausible-but-ambiguous candidates. Renderer chooses chips
+       *  vs open question based on `candidates.length` (≤5 chips;
+       *  otherwise open question per § A.5). */
+      candidates: ReadonlyArray<T>;
+      measures: ChatConfidenceMeasures;
+    }
+  | {
+      pattern: 4;
+      measures: ChatConfidenceMeasures;
+    };
+
+/** § A.5 Pattern 4 + § A.6 — recipe fallback suggestion. Attached to
+ *  Pattern-4 envelopes when an installed Tier 2 recipe matches the
+ *  request intent. The agent loop surfaces this in the response prose +
+ *  decides whether to invoke `recipe.run` (writes still gate through
+ *  plan-approval per § A.11). Substrate adds `null` rather than
+ *  omitting the field — closed-list ratchet on Pattern 4 envelope
+ *  shape stays exhaustive. */
+export interface ChatRecipeFallbackSuggestion {
+  recipe_name: string;
+  description: string;
+  topic_match_count: number;
+  matched_topics: ReadonlyArray<string>;
+}
+
+/** § A.5 — full envelope attached to a scope-search result. The
+ *  chat-tool-handlers stamp this onto the dispatch result body; the
+ *  agent loop reads it to drive its response shape. */
+export interface ChatConfidenceEnvelope<T> {
+  shape: ChatConfidenceShape<T>;
+  /** Pattern-4 specific. Always omitted on patterns 1/2/3; present
+   *  on pattern 4 iff `findRecipeFallback` returned a match. */
+  recipe_fallback?: ChatRecipeFallbackSuggestion;
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-137 P3 § A.11 — Plan-approval contracts.
+//
+// Writes (any tool whose classification is `'write'` OR
+// `'unknown'` with a write-class `risk_tier` / `destructive_hint:
+// true` hint) route through the propose → confirm plan-approval pattern:
+// (1) AI proposes a plan; (2) Mary reviews; (3) Mary
+// approves / cancels; (4) approved plans dispatch.
+//
+// Substrate lives in `packages/gateway/src/plan-approval/`. Contracts
+// stay here so the rpc + broadcast events can reference the proposal
+// shape without depending on the gateway package.
+// ────────────────────────────────────────────────────────────────
+
+/** § A.11 — plan status discriminator. Closed list; transitions are
+ *  one-way (`'proposed'` → `'approved'` | `'cancelled'`; resolved
+ *  plans never flip back). */
+export type ChatPlanStatus = 'proposed' | 'approved' | 'cancelled';
+
+export const CHAT_PLAN_STATUSES: ReadonlyArray<ChatPlanStatus> = [
+  'proposed',
+  'approved',
+  'cancelled',
+] as const;
+
+export const CHAT_PLAN_STATUS_SET: ReadonlySet<ChatPlanStatus> = new Set(
+  CHAT_PLAN_STATUSES,
+);
+
+export const isChatPlanStatus = (value: unknown): value is ChatPlanStatus =>
+  typeof value === 'string'
+  && CHAT_PLAN_STATUS_SET.has(value as ChatPlanStatus);
+
+/** § A.11 — canonical plan-proposal shape. Persisted in the gateway's
+ *  in-memory `PlanApprovalStore`; the rpc handlers + broadcast events
+ *  carry the same shape so paired clients render identical state
+ *  across surfaces. */
+export interface ChatPlanProposal {
+  plan_id: string;
+  session_id: string;
+  turn_id: string;
+  tool: string;
+  tier: ToolTier;
+  classification: 'read' | 'write' | 'unknown';
+  /** Resolved tool args at proposal time. Mary edits before
+   *  approving (the renderer surfaces a per-arg form per § A.11
+   *  "Mary confirms / edits / cancels"). Edits propagate as a new
+   *  proposal — the original is left as `cancelled` for audit. */
+  args: unknown;
+  /** Stable content hash of `args` — load-bearing for the
+   *  orchestrator gate so an approval is bound to *exactly* the
+   *  reviewed payload. Codex P3 review P1 fold #2: prior gate
+   *  matched only on `(session, turn, tool)`, so an approval for
+   *  `mail.send({ to: 'alice' })` would also authorize `mail.send(
+   *  { to: 'attacker' })` if the agent emitted a different recipient
+   *  in the same turn. Hash binds the approval to the inspected
+   *  args. SHA-256 over canonical JSON; first 16 hex chars (96-bit
+   *  collision space — comfortable for per-turn dispatch counts
+   *  while keeping the wire shape compact). */
+  args_hash: string;
+  /** Optional target-instance hint when the write scope is
+   *  multi-instance (`mail.send` over both Mary's local Gmail + Bob's
+   *  mail account via outbound MCP). Single-instance scopes leave
+   *  undefined; the renderer defaults silently. */
+  target_instance?: string;
+  status: ChatPlanStatus;
+  created_at: number;
+  /** Unix-ms when the plan flipped to a terminal state. Undefined
+   *  while `status === 'proposed'`. */
+  resolved_at?: number;
+  /** Unix-ms when the orchestrator gate CONSUMED the approval by
+   *  dispatching the tool. § A.11 approvals are SINGLE-USE: one
+   *  approve = one execution of exactly the reviewed payload. A
+   *  consumed plan keeps `status: 'approved'` (the card renders the
+   *  decision, the dispatch's own tool_call events render the
+   *  execution) but is never matched by the gate again — a later
+   *  re-issue of the same `(session, tool, args)` mints a fresh
+   *  proposal. Undefined until consumption; only ever set on
+   *  `'approved'` plans. */
+  consumed_at?: number;
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-137 W2.2 § A.1.1 + § P1 — Mary's per-kind catalog scope.
+//
+// Mary's Settings → Chat → Tool Catalog Scope page lets her toggle which
+// `IngredientKind`s her chat agent's Tier 2 catalog may transitively
+// touch. The substrate stores one row per pair (singleton-per-pair —
+// no cross-cloud sync per D-097 / D-168). The orchestrator's inline
+// `buildChatMainTurnTools` projection (D-164 P6.3) consumes the stored
+// enabled set as `kindGatedTier2Names`; Tier 1 + Tier 3 are unaffected.
+// ────────────────────────────────────────────────────────────────
+
+/** § A.1.1 — Mary-level setting. The persisted shape lives in the
+ *  server's per-pair SQLite db; the rpc surface returns this shape +
+ *  the broadcast surface fans it. `enabled_kinds` is the *positive*
+ *  list — a kind absent from the array is disabled (i.e. every Tier 2
+ *  recipe whose `requires_kinds` intersects the disabled set drops
+ *  from the chat catalog). */
+export interface ChatToolCatalogScopeState {
+  /** Closed-list `IngredientKind` set. Order is informational only —
+   *  validators treat it as a set. */
+  enabled_kinds: ReadonlyArray<IngredientKind>;
+  /** Wall-clock at last write. Used for the "last changed" hint in
+   *  the Settings page + as a tiebreaker if Mary toggles on two
+   *  devices near-simultaneously. */
+  updated_at: number;
+}
+
+/** § P1 — default-on kinds. The substrate ships these as the
+ *  out-of-box scope so Mary's mail/calendar/memory/AI-summary recipes
+ *  surface immediately without manual setup.
+ *
+ *    - `http`     — mail / calendar / contact platform adapters
+ *    - `ai`       — programmatic AI synthesis (BYOK / free pool)
+ *    - `storage`  — local warehouse + memory + enrichment reads/writes
+ *    - `service`  — D-118 long-running services
+ *
+ *  Risky kinds (`dom`, `chat`, `mcp`, `connection`, `cli`) start off —
+ *  Mary opts in explicitly per the § P1 default-deny posture for
+ *  high-risk surfaces. `cli` (D-182 local-binary toolkit ops —
+ *  whisper / docling / ffmpeg / imagemagick) joins the off set: local
+ *  tools surface in the agent's chat catalog only once Mary enables the
+ *  "Local tools" kind, matching the §7 opt-in / bring-your-own-tool
+ *  posture (execution stays gated by the §7 capability grant
+ *  regardless). */
+export const SAFE_DEFAULT_CHAT_CATALOG_KINDS: ReadonlyArray<IngredientKind> = [
+  // Canonical INGREDIENT_KINDS declaration order — keeps the persisted
+  // shape stable when callers re-stamp (validator canonicalises against
+  // this same order, so reading the substrate default and writing it
+  // back via `chat.tool_catalog.set` is a fixed point).
+  'http',
+  'ai',
+  'service',
+  'storage',
+] as const;
+
+/** § P1 — initial scope minted by the server on first boot when no
+ *  row exists. `updated_at` is `0` so the Settings page surfaces "not
+ *  configured" copy + the next write stamps the real wall-clock. The
+ *  closed-list `IngredientKind` membership is the only contract; the
+ *  array reference is mutable-safe at runtime because callers must
+ *  treat it as `readonly` per the type. */
+export const DEFAULT_CHAT_CATALOG_SCOPE: ChatToolCatalogScopeState = {
+  enabled_kinds: SAFE_DEFAULT_CHAT_CATALOG_KINDS,
+  updated_at: 0,
+} as const;
+
+/** § A.1.1 — pure helper. Returns the Tier 2 entries the orchestrator
+ *  must mark as `kind_gated` (filter-tools drops with reason code
+ *  `kind_gated`). The function treats Tier 1 + Tier 3 entries as
+ *  out-of-scope (Mary's per-kind toggle only applies to Tier 2 per
+ *  spec); they pass through untouched.
+ *
+ *  Substrate-pure: same `(catalog, enabledKinds)` → same set. No I/O,
+ *  no clock, no module-level state. */
+export const computeKindGatedTier2Names = (
+  catalog: ReadonlyArray<ToolEntry>,
+  enabledKinds: ReadonlySet<IngredientKind>,
+): ReadonlySet<string> => {
+  const gated = new Set<string>();
+  for (const e of catalog) {
+    if (e.tier !== 2) continue;
+    const required = e.requires_kinds;
+    if (!required || required.length === 0) continue;
+    // A Tier 2 entry is gated iff ANY of its required kinds is
+    // disabled. Mary's per-kind toggle is a hard refusal — if she
+    // unchecks `file`, every recipe transitively touching `file` (via
+    // `storage` here) is gated regardless of which other kinds it
+    // also touches.
+    let gatedHere = false;
+    for (const k of required) {
+      if (!enabledKinds.has(k)) {
+        gatedHere = true;
+        break;
+      }
+    }
+    if (gatedHere) gated.add(e.name);
+  }
+  return gated;
+};
+
+/** § A.1.1 — validator for inbound `chat.tool_catalog.set` rpc args.
+ *  Returns the closed-list issues; empty array = ok. Each issue carries
+ *  a stable `code` so callers can map to user copy without parsing
+ *  strings. */
+export type ChatToolCatalogScopeValidationIssueCode =
+  | 'enabled_kinds_not_array'
+  | 'enabled_kinds_member_invalid'
+  | 'enabled_kinds_duplicate';
+
+export interface ChatToolCatalogScopeValidationIssue {
+  code: ChatToolCatalogScopeValidationIssueCode;
+  detail: string;
+}
+
+export const CHAT_TOOL_CATALOG_SCOPE_VALIDATION_ISSUE_CODES:
+  ReadonlyArray<ChatToolCatalogScopeValidationIssueCode> = [
+  'enabled_kinds_not_array',
+  'enabled_kinds_member_invalid',
+  'enabled_kinds_duplicate',
+] as const;
+
+/** Pure validator. Inputs are wire-untrusted; the validator returns
+ *  the issues array so the rpc handler can map to a `bad_request`
+ *  envelope without bespoke error code soup. */
+export const validateChatToolCatalogScopeInput = (
+  input: unknown,
+): { ok: true; enabled_kinds: ReadonlyArray<IngredientKind> }
+  | { ok: false; issues: ReadonlyArray<ChatToolCatalogScopeValidationIssue> } => {
+  const issues: ChatToolCatalogScopeValidationIssue[] = [];
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return {
+      ok: false,
+      issues: [{
+        code: 'enabled_kinds_not_array',
+        detail: 'expected { enabled_kinds: IngredientKind[] }',
+      }],
+    };
+  }
+  const raw = (input as { enabled_kinds?: unknown }).enabled_kinds;
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      issues: [{
+        code: 'enabled_kinds_not_array',
+        detail: 'enabled_kinds must be an array',
+      }],
+    };
+  }
+  const seen = new Set<string>();
+  const out: IngredientKind[] = [];
+  for (const member of raw) {
+    if (typeof member !== 'string' || !INGREDIENT_KINDS.has(member as IngredientKind)) {
+      issues.push({
+        code: 'enabled_kinds_member_invalid',
+        detail: `enabled_kinds contains non-IngredientKind value: ${JSON.stringify(member)}`,
+      });
+      continue;
+    }
+    if (seen.has(member)) {
+      issues.push({
+        code: 'enabled_kinds_duplicate',
+        detail: `enabled_kinds contains duplicate kind: ${member}`,
+      });
+      continue;
+    }
+    seen.add(member);
+    out.push(member as IngredientKind);
+  }
+  if (issues.length > 0) return { ok: false, issues };
+  // Preserve canonical declaration order from INGREDIENT_KINDS so the
+  // persisted shape stays stable across writes regardless of caller
+  // ordering — matches the audit-friendly ordering W2.1 uses for
+  // `deriveRecipeRequiresKinds`.
+  const canonical: IngredientKind[] = [];
+  for (const k of INGREDIENT_KINDS) {
+    if (seen.has(k)) canonical.push(k);
+  }
+  return { ok: true, enabled_kinds: canonical };
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-137 W2.3 § A.1.1 + § A.10 — Tier 3 (connection.mcp.*) catalog
+// substrate. Mary's per-connection MCP tool annotations gate which
+// upstream-advertised tools surface in the chat catalog.
+//
+// Source-of-truth shape: one annotation row per `connection_name`
+// (NOT per (kind, name) — only `mcp` connections can advertise tools).
+// Each row carries the upstream `tools/list` snapshot
+// (`tools_list_cache`) + Mary's per-tool overrides
+// (`tool_overrides`) + her connection-level topic-tag chips
+// (`topic_tags`). Per § A.10 — projection rule is **both gates must
+// pass**: a tool surfaces iff (a) the connection has an override row
+// for it AND (b) `enabled: true` AND `classification !== 'unknown'`.
+// New tools added by upstream later default to invisible until Mary
+// classifies them (safe-by-default; no implicit decisions).
+//
+// Per § Must Hold — this substrate is per-pair only; no cross-cloud
+// sync (D-097 / D-168). Stored unencrypted (no secrets in the
+// annotation; the secrets live in the connection record's
+// `auth_ciphertext`).
+// ────────────────────────────────────────────────────────────────
+
+/** § A.10 — per-tool classification. Closed list. Substrate-level
+ *  invariant: tools with `classification: 'unknown'` are **invisible**
+ *  to the chat catalog (per § A.10 — "until classified, the tool is
+ *  invisible"). Mary's Settings → Connections → MCP install flow asks
+ *  her to classify each newly-advertised tool before it surfaces. */
+export type Tier3ToolClassification = 'read' | 'write' | 'unknown';
+
+export const TIER3_TOOL_CLASSIFICATIONS: ReadonlyArray<Tier3ToolClassification> = [
+  'read',
+  'write',
+  'unknown',
+] as const;
+
+export const TIER3_TOOL_CLASSIFICATION_SET: ReadonlySet<Tier3ToolClassification> =
+  new Set(TIER3_TOOL_CLASSIFICATIONS);
+
+export const isTier3ToolClassification = (
+  value: unknown,
+): value is Tier3ToolClassification =>
+  typeof value === 'string' &&
+  TIER3_TOOL_CLASSIFICATION_SET.has(value as Tier3ToolClassification);
+
+/** § A.10 — minimal upstream MCP tool descriptor cached at probe time.
+ *  Mirrors the MCP spec `tools/list` per-tool entry shape (the load-
+ *  bearing fields only — `name`, `description`, `inputSchema`,
+ *  `annotations.destructiveHint`). When the probe lands in P4.x, it
+ *  writes this shape into `tools_list_cache.tools`; until then, the
+ *  store accepts hand-assembled descriptors (test fixtures + Mary's
+ *  manual classification UI). */
+export interface McpToolDescriptor {
+  /** Upstream-advertised tool name (NOT the formatted
+   *  `<connection>.<tool>` Tier 3 entry name — that lives in
+   *  `formatTier3ToolName`). */
+  name: string;
+  /** LLM-readable one-line description per § A.13. */
+  description?: string;
+  /** JSON Schema for input args. Opaque at the catalog layer; the
+   *  outbound MCP adapter validates at call time. */
+  input_schema?: unknown;
+  /** § A.10 — upstream-declared "this tool writes / mutates state"
+   *  hint. Used by the renderer to surface a "destructive" badge in
+   *  the classification UI; Mary's `Tier3ToolClassification` override
+   *  is the load-bearing gate (the hint is informational only). */
+  destructive_hint?: boolean;
+}
+
+/** § A.10 — Mary's per-tool override. One entry per upstream tool name
+ *  in `ConnectionMcpAnnotationState.tool_overrides`. Both `enabled` and
+ *  `classification !== 'unknown'` must hold for the tool to surface in
+ *  the Tier 3 catalog (the projection helper `buildTier3ToolEntry`
+ *  enforces both gates). */
+export interface ConnectionMcpToolOverride {
+  /** Settings → Connections → exa → toggle individual tools on/off. */
+  enabled: boolean;
+  /** § A.10 — Mary's `read` / `write` / `unknown` classification.
+   *  Unknown = invisible to catalog. The upstream descriptor's
+   *  `destructive_hint` may seed the default at classification time,
+   *  but Mary always confirms before the tool becomes visible. */
+  classification: Tier3ToolClassification;
+  /** § A.10 — Mary's per-tool topic-tag override. When present,
+   *  REPLACES the connection-level `topic_tags` for this tool only
+   *  (matches the spec's "custom_topic_tags" field). When absent, the
+   *  connection-level `topic_tags` apply. */
+  custom_topic_tags?: ReadonlyArray<string>;
+}
+
+/** § A.10 — full annotation row. One per `connection_name`. Persisted
+ *  as a JSON blob (server) / IDB object (webclient) keyed on
+ *  `connection_name`. The substrate stays opaque to the upstream
+ *  vendor — exa, GitHub, peer Recued all share this shape.
+ *
+ *  Per § Must Hold — no cross-cloud sync (D-097 / D-168). Per-pair only. */
+export interface ConnectionMcpAnnotationState {
+  /** Stable identifier — matches the `ConnectionRecord.name` of the
+   *  underlying D-125 `mcp` connection. The connection itself lives in
+   *  the D-125 `connections` table; this row is the chat-catalog
+   *  overlay. */
+  connection_name: string;
+  /** § A.10 — connection-level topic-tag chips. Mary adds these at
+   *  enrollment ("web search" / "research" / "github"). Inherited by
+   *  every Tier 3 `ToolEntry` projected from this connection
+   *  (`ToolEntry.topic_tags` carries them through to the catalog row);
+   *  the main-turn projection itself gates only on
+   *  `kindGatedTier2Names` / `disabledTier3Names`, but downstream
+   *  consumers (audit, picker, future routing) can still read the
+   *  topic dimension off the catalog entry. Empty array = no
+   *  connection-level tags. */
+  topic_tags: ReadonlyArray<string>;
+  /** § A.10 — Mary's per-tool overrides. Keyed on the upstream tool
+   *  name (NOT the formatted `<connection>.<tool>`). Missing entries
+   *  default-invisible (new tools the probe just learned about; Mary
+   *  hasn't classified them yet). */
+  tool_overrides: Readonly<Record<string, ConnectionMcpToolOverride>>;
+  /** § A.10 — cached upstream `tools/list` response. Refreshes on
+   *  (a) enrollment, (b) explicit refresh button, (c) chat session
+   *  start. `cached_at: 0` means the probe never ran (substrate
+   *  default; new annotation rows). */
+  tools_list_cache: {
+    tools: ReadonlyArray<McpToolDescriptor>;
+    cached_at: number;
+  };
+  /** D-137 P4 § A.3 + § A.7.1 — upstream Recued signature captured at
+   *  the most recent probe via MCP `initialize`'s
+   *  `serverInfo._meta.recued`. Present iff the upstream advertised
+   *  itself as a Recued server (`server_kind: 'recued'`); `null` for
+   *  generic MCP connections (exa, GitHub, filesystem) which stay in
+   *  the connections drawer as tool sources but NEVER appear in the
+   *  chat picker. The picker-entry projection (`buildPickerEntries`)
+   *  is the only consumer; the main-turn catalog projection ignores
+   *  this field. */
+  recued_signature?: RecuedServerSignature | null;
+  /** D-137 P5 § A.7.1 + § A.10 — Bob's per-contract chat-mode metadata,
+   *  mirrored from his MCP server's `serverInfo._meta.recued.chat_mode`
+   *  block (or set manually if Bob's server doesn't advertise).
+   *
+   *    - `null` (default)         — chat-mode is not part of this
+   *      contract. The picker emits only `<peer> (data)` (Direction A).
+   *      Generic non-Recued MCP connections also carry `null` (chat-mode
+   *      is a Recued-only construct).
+   *    - `{ offered: false }`      — Bob's a Recued peer but has chat-
+   *      mode disabled for this contract. Same picker shape as `null`.
+   *    - `{ offered: true, ... }`  — Bob's offering chat-mode. The
+   *      picker entry `<peer> (chat)` (Direction C) is reserved at the
+   *      substrate level but stays absent until the runtime ships in a
+   *      follow-up D (likely D-140 federation). P5 lands the metadata
+   *      only; the picker emitter ignores `offered: true` until then.
+   *
+   *  `session_cap` is Bob's optional cost-control parameter: per-day +
+   *  concurrent limit on Mary's chat-mode sessions Bob's AI will process.
+   *  Never affects permissions — the per-tool grants checklist (Bob-side
+   *  inbound token, § A.9) is the only permission surface. Per § A.9:
+   *  "chat-mode never widens Mary's tool reach beyond the per-tool
+   *  checklist; it just changes who's reasoning over the same scoped
+   *  catalog." */
+  chat_mode?: ConnectionMcpChatMode | null;
+  /** Wall-clock at last write. Tiebreaker for near-simultaneous
+   *  Settings toggles on two devices. */
+  updated_at: number;
+}
+
+/** § A.10 — per-contract chat-mode metadata. Both fields are owned by
+ *  Bob (peer) at issuance; Mary's connection store mirrors what Bob's
+ *  server advertised. `session_cap` is optional (no caller-supplied cap
+ *  ⇒ Bob is fine with arbitrary load); when present, both fields are
+ *  required + non-negative finite numbers. */
+export interface ConnectionMcpChatMode {
+  offered: boolean;
+  session_cap?: ConnectionMcpChatModeSessionCap;
+}
+
+/** § A.10 — Bob's optional cost-control cap. `per_day` is a 24-hour
+ *  rolling-window cap on chat sessions Bob's AI will process for Mary;
+ *  `concurrent` is the max in-flight chat sessions at any instant.
+ *  Both are non-negative integers (zero = "no sessions" / paused — the
+ *  picker entry stays present but every chat dispatch fails with
+ *  `connection_unavailable`). */
+export interface ConnectionMcpChatModeSessionCap {
+  per_day: number;
+  concurrent: number;
+}
+
+/** § A.10 — empty annotation default. Used by the store on first read
+ *  for a connection that has no row yet. The Settings page surfaces
+ *  "no tools classified yet" copy until Mary saves the first
+ *  classification batch. */
+export const buildDefaultConnectionMcpAnnotation = (
+  connection_name: string,
+): ConnectionMcpAnnotationState => ({
+  connection_name,
+  topic_tags: [],
+  tool_overrides: Object.create(null) as Record<string, ConnectionMcpToolOverride>,
+  tools_list_cache: { tools: [], cached_at: 0 },
+  recued_signature: null,
+  chat_mode: null,
+  updated_at: 0,
+});
+
+/** § A.1.1 — formatted Tier 3 entry name. Dot separator (matches the
+ *  W2.1 docstring on `ToolEntry.name`: "Tier 3: `<connection_name>.
+ *  <tool_name>`"). Pure: same `(connection, tool)` → same string. */
+export const formatTier3ToolName = (
+  connection_name: string,
+  tool_name: string,
+): string => `${connection_name}.${tool_name}`;
+
+/** Codex W2.3 review P2 fold — Tier 3 names collide with Tier 1 when a
+ *  user enrolls an MCP connection whose `<connection_name>.<tool_name>`
+ *  happens to match a canonical primitive (e.g. a connection literally
+ *  named `contact` advertising a tool named `search` → `contact.search`,
+ *  same string as the Tier 1 primitive). The registry's dispatch resolves
+ *  Tier 1 first, so the agent would see the Tier 3 schema while the
+ *  underlying call routes to the built-in primitive — a real
+ *  correctness bug.
+ *
+ *  Substrate fix: `buildTier3ToolEntry` returns null when the formatted
+ *  name matches any `Tier1ToolName`. The catalog stays consistent with
+ *  the spec ("until classified, invisible") and Mary's Settings UI
+ *  surfaces the empty row for inspection. Tier 2 names use a `/`
+ *  separator and can't collide with Tier 1 or Tier 3. */
+const NAME_COLLIDES_WITH_TIER1 = (name: string): boolean =>
+  TIER1_TOOL_NAME_SET.has(name as Tier1ToolName);
+
+/** § A.10 — projection helper. Builds a Tier 3 `ToolEntry` from one
+ *  upstream descriptor + Mary's annotation. Returns `null` when ANY
+ *  gate fails:
+ *
+ *    - **Missing override** — Mary has not classified this tool yet
+ *      (new upstream tool the probe just learned about). Per spec
+ *      § A.10: "until classified, the tool is invisible to the
+ *      catalog."
+ *    - **`enabled: false`** — Mary toggled the tool off in Settings.
+ *    - **`classification: 'unknown'`** — Mary explicitly marked the
+ *      tool as unclassified (intermediate state when the probe re-
+ *      surfaces a newly-advertised tool and Mary has not yet picked
+ *      `read` / `write`).
+ *    - **Name collides with a Tier 1 primitive** (Codex W2.3 review
+ *      P2 fold — see above). Prevents Mary's `contact` connection
+ *      from silently overriding the `contact.search` built-in.
+ *
+ *  Topic tags resolve: per-tool `custom_topic_tags` takes precedence
+ *  over the connection-level `topic_tags`. Empty array when both are
+ *  absent — filter-tools then treats the entry as topic-free. An
+ *  explicit empty `custom_topic_tags: []` is respected verbatim (per
+ *  Codex W2.3 review P2 fold on the storage parser) — Mary may
+ *  deliberately clear per-tool tags to suppress connection-level
+ *  topic matching for one tool.
+ *
+ *  Pure: same inputs → same output, no clock, no I/O. */
+export const buildTier3ToolEntry = (
+  annotation: ConnectionMcpAnnotationState,
+  descriptor: McpToolDescriptor,
+): ToolEntry | null => {
+  if (typeof descriptor.name !== 'string' || descriptor.name.length === 0) return null;
+  const override = annotation.tool_overrides[descriptor.name];
+  if (!override) return null;
+  if (!override.enabled) return null;
+  if (override.classification === 'unknown') return null;
+  const formattedName = formatTier3ToolName(annotation.connection_name, descriptor.name);
+  if (NAME_COLLIDES_WITH_TIER1(formattedName)) return null;
+  // Empty array (explicit Mary intent: "no per-tool tags") is preserved
+  // verbatim — the spread copy keeps it an empty array rather than
+  // falling through to the connection-level tags. `Array.isArray` gates
+  // off non-array shapes (defensive against hand-edited rows).
+  const topic_tags = Array.isArray(override.custom_topic_tags)
+    ? [...override.custom_topic_tags]
+    : [...annotation.topic_tags];
+  const description = descriptor.description?.trim()
+    ? descriptor.description.trim()
+    : `${annotation.connection_name} MCP tool (${descriptor.name})`;
+  const arg_schema = descriptor.input_schema ?? { type: 'object' };
+  const entry: ToolEntry = {
+    name: formattedName,
+    tier: 3,
+    description,
+    arg_schema,
+    topic_tags,
+    classification: override.classification,
+    // D-164 § 6 — Tier 3 vendor APIs default sequential. External
+    // services carry their own rate limits / per-call cost; concurrent
+    // dispatch corrupts the rate-limit budget without per-vendor
+    // knowledge. A future per-vendor override on
+    // `ConnectionMcpToolOverride` (or upstream `tools/list` annotation)
+    // can flip individual entries — bench v5d only validates batching
+    // for local warehouse reads, not external APIs.
+    concurrency_safe: false,
+  };
+  if (descriptor.destructive_hint !== undefined) {
+    (entry as { destructive_hint?: boolean }).destructive_hint =
+      descriptor.destructive_hint;
+  }
+  return entry;
+};
+
+/** § A.10 — full Tier 3 catalog projection. Walks every annotation +
+ *  every cached descriptor; keeps the entries that survive both gates.
+ *  Output sorted by Tier 3 name (`<connection>.<tool>` ascending) for
+ *  deterministic ordering — matches W2.1's Tier 2 sort posture.
+ *
+ *  Pure: same `annotations` → same catalog. */
+export const buildTier3Catalog = (
+  annotations: ReadonlyArray<ConnectionMcpAnnotationState>,
+): ReadonlyArray<ToolEntry> => {
+  const projected: ToolEntry[] = [];
+  for (const ann of annotations) {
+    for (const desc of ann.tools_list_cache.tools) {
+      const entry = buildTier3ToolEntry(ann, desc);
+      if (entry) projected.push(entry);
+    }
+  }
+  projected.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return projected;
+};
+
+/** § A.10 — enumerate the formatted Tier 3 names whose upstream
+ *  descriptor IS cached but whose projection failed (missing override /
+ *  disabled / unclassified). Used by the chat orchestrator's inline
+ *  `buildChatMainTurnTools` projection (D-164 P6.3) as the
+ *  `disabledTier3Names` set — entries in it stay out of the catalog
+ *  the AI sees.
+ *
+ *  Note: this set covers the "cached-but-not-visible" case; tools
+ *  Mary has never seen (probe never fired) don't appear in
+ *  `tools_list_cache.tools` and therefore are not in this set. The
+ *  main-turn projection treats them as not-in-catalog rather than
+ *  explicitly disabled, which matches the spec intent: disabled =
+ *  Mary's deliberate action; absent = never advertised.
+ *
+ *  Codex W2.3 review P2 fold — names that would collide with a Tier 1
+ *  primitive are excluded entirely: they are not in the catalog (the
+ *  projection refuses them upstream) AND they are not surfaced as
+ *  "disabled" either, because the disabled transparency surface is
+ *  meant to reflect Mary's annotation decisions; a substrate-level
+ *  refusal should look like the tool was never advertised.
+ *
+ *  Pure: same `annotations` → same set. */
+export const computeConnectionMcpDisabledTier3Names = (
+  annotations: ReadonlyArray<ConnectionMcpAnnotationState>,
+): ReadonlySet<string> => {
+  const out = new Set<string>();
+  for (const ann of annotations) {
+    for (const desc of ann.tools_list_cache.tools) {
+      if (typeof desc.name !== 'string' || desc.name.length === 0) continue;
+      const formatted = formatTier3ToolName(ann.connection_name, desc.name);
+      if (NAME_COLLIDES_WITH_TIER1(formatted)) continue;
+      const override = ann.tool_overrides[desc.name];
+      if (override && override.enabled && override.classification !== 'unknown') {
+        continue;
+      }
+      out.add(formatted);
+    }
+  }
+  return out;
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-137 P4 § A.7 + § A.7.1 — Picker entry substrate (MCP-scope-
+// switch). Each entry tells the renderer which surfaces are eligible
+// to scope a chat conversation to. `'self'` is always present;
+// per-peer entries surface iff:
+//   - the connection has an annotation row, AND
+//   - the annotation carries a `recued_signature` (peer probed +
+//     advertised `server_kind: 'recued'` — generic MCP connections
+//     stay in the connections drawer as tool sources, never appear
+//     here), AND
+//   - the annotation projects ≥1 enabled+classified tool through
+//     `buildTier3Catalog` (peer with zero usable tools = empty
+//     contract; no entry).
+//
+// Direction C `<peer> (chat)` is reserved per § A.7.1 but the
+// substrate does NOT emit those entries — § A.10's `chat_mode_offered`
+// field + the chat-to-chat protocol land in D-140 federation. P4
+// substrate only emits `mode: 'data'` peer entries; `mode: 'chat'`
+// stays absent until the runtime ships.
+//
+// Pure helpers; no clock, no I/O. The orchestrator + rpc handler
+// consume the same projection — single source of truth.
+// ────────────────────────────────────────────────────────────────
+
+/** § A.7 — picker entry kind. Closed list; widening = substrate
+ *  change. `'self'` is the default sentinel (Mary's own server's
+ *  internal-channel registry); `'peer_data'` is Direction A (Mary's
+ *  AI calls peer's MCP tools); `'peer_chat'` is reserved for
+ *  Direction C (peer's AI runs the reasoning) but never surfaces
+ *  until D-140 federation ships. */
+export type PickerEntryKind = 'self' | 'peer_data' | 'peer_chat';
+
+export const PICKER_ENTRY_KINDS: ReadonlyArray<PickerEntryKind> = [
+  'self',
+  'peer_data',
+  'peer_chat',
+] as const;
+
+export const PICKER_ENTRY_KIND_SET: ReadonlySet<PickerEntryKind> =
+  new Set(PICKER_ENTRY_KINDS);
+
+export const isPickerEntryKind = (value: unknown): value is PickerEntryKind =>
+  typeof value === 'string'
+  && PICKER_ENTRY_KIND_SET.has(value as PickerEntryKind);
+
+/** § A.7.1 — version-delta hint between Mary's own server + a peer
+ *  Recued server. Closed 4-value list; the renderer surfaces a hint
+ *  banner when `older` / `newer`. `'same'` and `'unknown'` are silent.
+ *
+ *    - `same`     — semver match (textually identical version strings).
+ *    - `older`    — peer's version sorts strictly less than self.
+ *    - `newer`    — peer's version sorts strictly greater than self.
+ *    - `unknown`  — either side's version is unparseable; banner stays
+ *                   silent (no false-positive nudge from a hand-edited
+ *                   version string). */
+export type PickerVersionDelta = 'same' | 'older' | 'newer' | 'unknown';
+
+export const PICKER_VERSION_DELTAS: ReadonlyArray<PickerVersionDelta> = [
+  'same',
+  'older',
+  'newer',
+  'unknown',
+] as const;
+
+/** § A.7.1 — pure version-comparison helper. Parses the two version
+ *  strings as dotted-numeric sequences (semver "major.minor.patch" is
+ *  the common form; pre-release suffix like `-rc.1` is ignored — only
+ *  the numeric prefix participates in the comparison). Any non-numeric
+ *  component anywhere in either string collapses to `'unknown'` so
+ *  hand-edited / future-format versions don't generate misleading
+ *  hints.
+ *
+ *  Pure: same `(self, peer)` → same delta. */
+export const compareRecuedVersions = (
+  self: string,
+  peer: string,
+): PickerVersionDelta => {
+  const parsePrefix = (v: string): number[] | null => {
+    if (typeof v !== 'string' || v.length === 0) return null;
+    // Strip a `-` / `+` semver suffix — comparison runs over the
+    // numeric prefix only.
+    const head = v.split(/[-+]/)[0] ?? v;
+    const parts = head.split('.');
+    if (parts.length === 0) return null;
+    const nums: number[] = [];
+    for (const p of parts) {
+      if (!/^\d+$/.test(p)) return null;
+      const n = Number(p);
+      if (!Number.isInteger(n) || n < 0) return null;
+      nums.push(n);
+    }
+    return nums;
+  };
+  const a = parsePrefix(self);
+  const b = parsePrefix(peer);
+  if (a === null || b === null) return 'unknown';
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av < bv) return 'newer';   // peer's higher → peer is newer
+    if (av > bv) return 'older';   // self's higher → peer is older
+  }
+  return 'same';
+};
+
+/** § A.7.1 — one picker entry. `'self'` always appears at index 0;
+ *  peer entries follow in `connection_name` ASCII order so the
+ *  renderer can render a stable list without re-sorting.
+ *
+ *  `id` is the load-bearing routing identifier: the rpc layer + the
+ *  orchestrator's `picker_state.current` key off this string verbatim.
+ *  `'self'` routes to `InternalToolRegistry`; otherwise it carries the
+ *  `connection.mcp.<name>` form so the orchestrator + outbound MCP
+ *  client share one identifier. */
+export interface PickerEntry {
+  id: 'self' | string;
+  /** Human-readable display string the renderer paints in the picker
+   *  dropdown ("Self" / "Bob (data)"). Pure projection — never
+   *  carries credentials / signatures / live state. */
+  label: string;
+  kind: PickerEntryKind;
+  /** Present iff `kind === 'peer_data' | 'peer_chat'`. Carries the
+   *  peer's most-recent probed signature so the renderer can paint
+   *  the per-message source badge with stable identity (`instance_id`
+   *  survives version bumps; `version` drives the version-delta hint). */
+  signature?: RecuedServerSignature;
+  /** Present iff `kind === 'peer_data' | 'peer_chat'`. Closed 4-value
+   *  hint comparing peer's version against self's. `'unknown'` is the
+   *  silent default when either version string is unparseable. */
+  version_delta?: PickerVersionDelta;
+  /** Diagnostic count surfaced in the renderer's hover tooltip
+   *  ("Bob: 3 tools available"). Pure projection from the peer's
+   *  annotation `tools_list_cache` filtered by `buildTier3ToolEntry`'s
+   *  visibility gates; never includes Mary's `Self` Tier 1/2 union. */
+  available_tool_count: number;
+}
+
+/** § A.7 + § A.7.1 — pure picker-entry projection. Always returns at
+ *  least the `'self'` entry. Per-peer entries follow when:
+ *
+ *    - the annotation carries a `recued_signature` (peer is a Recued
+ *      server), AND
+ *    - the annotation projects ≥1 enabled+classified tool through
+ *      `buildTier3ToolEntry` (peer has usable tools after Mary's
+ *      per-tool classifications).
+ *
+ *  Empty result for a peer ≡ "Bob's contract is empty / Mary hasn't
+ *  classified anything yet" — surface stays hidden from the picker
+ *  per the spec's "picker visibility" rule. The acceptance test
+ *  `Picker hidden when zero peers` reduces to `entries.length === 1
+ *  && entries[0].id === 'self'`.
+ *
+ *  Pure: same inputs → same output. */
+export const buildPickerEntries = (
+  annotations: ReadonlyArray<ConnectionMcpAnnotationState>,
+  selfSignature: RecuedServerSignature,
+  selfDisplayName: string = 'Self',
+): ReadonlyArray<PickerEntry> => {
+  const out: PickerEntry[] = [];
+  // Self always heads the list.
+  out.push({
+    id: 'self',
+    label: selfDisplayName,
+    kind: 'self',
+    available_tool_count: 0,
+  });
+  // Stable peer order — sort by connection_name ascending so the
+  // renderer can `.find` / index without re-sorting.
+  const peers = [...annotations].sort((a, b) =>
+    a.connection_name < b.connection_name ? -1 : a.connection_name > b.connection_name ? 1 : 0,
+  );
+  for (const ann of peers) {
+    const signature = ann.recued_signature;
+    if (!signature || signature.server_kind !== 'recued') continue;
+    // Project the annotation's catalog → count usable entries. Reuses
+    // `buildTier3ToolEntry`'s exact visibility gates so the picker
+    // visibility matches the orchestrator's per-peer catalog
+    // projection exactly (one set, one truth).
+    let toolCount = 0;
+    for (const desc of ann.tools_list_cache.tools) {
+      if (buildTier3ToolEntry(ann, desc) !== null) toolCount += 1;
+    }
+    if (toolCount === 0) continue;
+    const delta = compareRecuedVersions(selfSignature.version, signature.version);
+    out.push({
+      id: `connection.mcp.${ann.connection_name}`,
+      label: `${ann.connection_name} (data)`,
+      kind: 'peer_data',
+      signature,
+      version_delta: delta,
+      available_tool_count: toolCount,
+    });
+  }
+  return out;
+};
+
+/** § A.7 — true iff the given picker target id maps to an emitted
+ *  `peer_data` entry in the picker projection. Used by the rpc-side
+ *  `set_picker` validator to reject targets that don't correspond to
+ *  a live peer — protects the orchestrator from dispatching at a
+ *  non-existent / unprobed / generic-MCP connection.
+ *
+ *  `'self'` is always valid. Pure. */
+export const isValidPickerTarget = (
+  target: string,
+  annotations: ReadonlyArray<ConnectionMcpAnnotationState>,
+  selfSignature: RecuedServerSignature,
+  selfDisplayName?: string,
+): boolean => {
+  if (target === 'self') return true;
+  const entries = buildPickerEntries(annotations, selfSignature, selfDisplayName);
+  for (const e of entries) {
+    if (e.id === target) return true;
+  }
+  return false;
+};
+
+/** § A.10 — closed-list validation issue codes for the
+ *  `chat.connection_mcp.set` rpc input. */
+export type ConnectionMcpAnnotationValidationIssueCode =
+  | 'input_not_object'
+  | 'connection_name_invalid'
+  | 'topic_tags_not_array'
+  | 'topic_tag_member_invalid'
+  | 'topic_tag_duplicate'
+  | 'tool_overrides_not_object'
+  | 'tool_override_key_invalid'
+  | 'tool_override_shape_invalid'
+  | 'tool_override_enabled_invalid'
+  | 'tool_override_classification_invalid'
+  | 'tool_override_custom_tag_invalid'
+  | 'tools_list_cache_shape_invalid'
+  | 'tools_list_cache_descriptor_invalid'
+  | 'tools_list_cache_duplicate_tool'
+  | 'tools_list_cache_cached_at_invalid'
+  // D-137 P4 § A.3 — recued_signature payload validation. Closed list;
+  // a `recued_signature` field on the rpc input must either be an
+  // explicit `null` (clearing — peer no longer advertises Recued
+  // signature) OR a `RecuedServerSignature` shape with all three
+  // required fields. Garbage shapes raise these codes.
+  | 'recued_signature_shape_invalid'
+  | 'recued_signature_server_kind_invalid'
+  | 'recued_signature_version_invalid'
+  | 'recued_signature_instance_id_invalid'
+  // D-137 P5 § A.7.1 + § A.10 — chat_mode payload validation. The field
+  // accepts `null` (clears — chat-mode not offered on this contract),
+  // absent (preserves prior persisted value, matches the
+  // `recued_signature` merge posture), or an object with `offered:
+  // boolean` + optional `session_cap: { per_day: number; concurrent:
+  // number }`. Off-shape inputs surface one of the codes below; valid
+  // inputs round-trip through the store's parse + merge rules.
+  | 'chat_mode_shape_invalid'
+  | 'chat_mode_offered_invalid'
+  | 'chat_mode_session_cap_shape_invalid'
+  | 'chat_mode_session_cap_per_day_invalid'
+  | 'chat_mode_session_cap_concurrent_invalid';
+
+export interface ConnectionMcpAnnotationValidationIssue {
+  code: ConnectionMcpAnnotationValidationIssueCode;
+  detail: string;
+}
+
+export const CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES:
+  ReadonlyArray<ConnectionMcpAnnotationValidationIssueCode> = [
+  'input_not_object',
+  'connection_name_invalid',
+  'topic_tags_not_array',
+  'topic_tag_member_invalid',
+  'topic_tag_duplicate',
+  'tool_overrides_not_object',
+  'tool_override_key_invalid',
+  'tool_override_shape_invalid',
+  'tool_override_enabled_invalid',
+  'tool_override_classification_invalid',
+  'tool_override_custom_tag_invalid',
+  'tools_list_cache_shape_invalid',
+  'tools_list_cache_descriptor_invalid',
+  'tools_list_cache_duplicate_tool',
+  'tools_list_cache_cached_at_invalid',
+  'recued_signature_shape_invalid',
+  'recued_signature_server_kind_invalid',
+  'recued_signature_version_invalid',
+  'recued_signature_instance_id_invalid',
+  'chat_mode_shape_invalid',
+  'chat_mode_offered_invalid',
+  'chat_mode_session_cap_shape_invalid',
+  'chat_mode_session_cap_per_day_invalid',
+  'chat_mode_session_cap_concurrent_invalid',
+] as const;
+
+/** Validated payload returned by `validateConnectionMcpAnnotationInput`.
+ *  Mirrors `ConnectionMcpAnnotationState` minus `updated_at` (which the
+ *  store stamps at write time). The store accepts this shape directly. */
+export interface ValidatedConnectionMcpAnnotationInput {
+  connection_name: string;
+  topic_tags: ReadonlyArray<string>;
+  tool_overrides: Readonly<Record<string, ConnectionMcpToolOverride>>;
+  tools_list_cache: {
+    tools: ReadonlyArray<McpToolDescriptor>;
+    cached_at: number;
+  };
+  /** D-137 P4 § A.3 — present when caller is updating the Recued
+   *  signature for this annotation row. Explicit `null` clears the
+   *  prior signature (peer no longer advertises Recued metadata).
+   *  Absent in the validated payload when caller didn't include the
+   *  field — the store preserves the prior persisted value. */
+  recued_signature?: RecuedServerSignature | null;
+  /** D-137 P5 § A.7.1 + § A.10 — present when caller is updating
+   *  chat-mode metadata. Explicit `null` clears chat-mode for this
+   *  contract; an object stamps the offered+session_cap state. Absent
+   *  in the validated payload when caller didn't include the field —
+   *  the store preserves the prior persisted value (parallel to the
+   *  `recued_signature` merge posture). */
+  chat_mode?: ConnectionMcpChatMode | null;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** § A.10 — pure validator over the wire-untrusted
+ *  `chat.connection_mcp.set` args. Returns the closed-list issue array
+ *  or the canonicalized payload (topic_tags sorted via INGREDIENT_KINDS-
+ *  free string-compare; tool_overrides keys preserved as-given since
+ *  upstream tool names carry no inherent order beyond MCP's
+ *  case-sensitivity rules). */
+export const validateConnectionMcpAnnotationInput = (
+  input: unknown,
+):
+  | { ok: true; value: ValidatedConnectionMcpAnnotationInput }
+  | { ok: false; issues: ReadonlyArray<ConnectionMcpAnnotationValidationIssue> } => {
+  const issues: ConnectionMcpAnnotationValidationIssue[] = [];
+  if (!isPlainObject(input)) {
+    return {
+      ok: false,
+      issues: [{
+        code: 'input_not_object',
+        detail: 'expected an object payload',
+      }],
+    };
+  }
+  const connection_name = (input as { connection_name?: unknown }).connection_name;
+  if (typeof connection_name !== 'string' || connection_name.length === 0) {
+    issues.push({
+      code: 'connection_name_invalid',
+      detail: 'connection_name must be a non-empty string',
+    });
+  }
+  // ── topic_tags ───────────────────────────────────────────────
+  const rawTags = (input as { topic_tags?: unknown }).topic_tags;
+  let topic_tags: ReadonlyArray<string> = [];
+  if (rawTags !== undefined) {
+    if (!Array.isArray(rawTags)) {
+      issues.push({
+        code: 'topic_tags_not_array',
+        detail: 'topic_tags must be an array of strings',
+      });
+    } else {
+      const seenTag = new Set<string>();
+      const tagOut: string[] = [];
+      for (const t of rawTags) {
+        if (typeof t !== 'string' || t.length === 0) {
+          issues.push({
+            code: 'topic_tag_member_invalid',
+            detail: `topic_tags member is not a non-empty string: ${JSON.stringify(t)}`,
+          });
+          continue;
+        }
+        if (seenTag.has(t)) {
+          issues.push({
+            code: 'topic_tag_duplicate',
+            detail: `topic_tags contains duplicate: ${t}`,
+          });
+          continue;
+        }
+        seenTag.add(t);
+        tagOut.push(t);
+      }
+      topic_tags = tagOut;
+    }
+  }
+  // ── tool_overrides ───────────────────────────────────────────
+  const rawOverrides = (input as { tool_overrides?: unknown }).tool_overrides;
+  const tool_overrides: Record<string, ConnectionMcpToolOverride> = Object.create(null);
+  if (rawOverrides !== undefined) {
+    if (!isPlainObject(rawOverrides)) {
+      issues.push({
+        code: 'tool_overrides_not_object',
+        detail: 'tool_overrides must be an object keyed on upstream tool name',
+      });
+    } else {
+      for (const [k, raw] of Object.entries(rawOverrides)) {
+        if (typeof k !== 'string' || k.length === 0) {
+          issues.push({
+            code: 'tool_override_key_invalid',
+            detail: `tool_overrides key is invalid: ${JSON.stringify(k)}`,
+          });
+          continue;
+        }
+        if (!isPlainObject(raw)) {
+          issues.push({
+            code: 'tool_override_shape_invalid',
+            detail: `tool_overrides[${k}] is not an object`,
+          });
+          continue;
+        }
+        const enabled = (raw as { enabled?: unknown }).enabled;
+        const classification = (raw as { classification?: unknown }).classification;
+        if (typeof enabled !== 'boolean') {
+          issues.push({
+            code: 'tool_override_enabled_invalid',
+            detail: `tool_overrides[${k}].enabled must be a boolean`,
+          });
+          continue;
+        }
+        if (!isTier3ToolClassification(classification)) {
+          issues.push({
+            code: 'tool_override_classification_invalid',
+            detail: `tool_overrides[${k}].classification must be one of ${TIER3_TOOL_CLASSIFICATIONS.join(' | ')}`,
+          });
+          continue;
+        }
+        const customTagsRaw = (raw as { custom_topic_tags?: unknown }).custom_topic_tags;
+        let custom_topic_tags: ReadonlyArray<string> | undefined;
+        if (customTagsRaw !== undefined) {
+          if (!Array.isArray(customTagsRaw)) {
+            issues.push({
+              code: 'tool_override_custom_tag_invalid',
+              detail: `tool_overrides[${k}].custom_topic_tags must be an array of strings`,
+            });
+            continue;
+          }
+          const seenCustom = new Set<string>();
+          const customOut: string[] = [];
+          let bad = false;
+          for (const t of customTagsRaw) {
+            if (typeof t !== 'string' || t.length === 0) {
+              issues.push({
+                code: 'tool_override_custom_tag_invalid',
+                detail: `tool_overrides[${k}].custom_topic_tags member must be a non-empty string`,
+              });
+              bad = true;
+              break;
+            }
+            if (seenCustom.has(t)) {
+              issues.push({
+                code: 'tool_override_custom_tag_invalid',
+                detail: `tool_overrides[${k}].custom_topic_tags duplicate member: ${t}`,
+              });
+              bad = true;
+              break;
+            }
+            seenCustom.add(t);
+            customOut.push(t);
+          }
+          if (bad) continue;
+          custom_topic_tags = customOut;
+        }
+        const entry: ConnectionMcpToolOverride = {
+          enabled,
+          classification,
+        };
+        if (custom_topic_tags !== undefined) entry.custom_topic_tags = custom_topic_tags;
+        tool_overrides[k] = entry;
+      }
+    }
+  }
+  // ── tools_list_cache ─────────────────────────────────────────
+  const rawCache = (input as { tools_list_cache?: unknown }).tools_list_cache;
+  let tools_list_cache: { tools: ReadonlyArray<McpToolDescriptor>; cached_at: number } = {
+    tools: [],
+    cached_at: 0,
+  };
+  if (rawCache !== undefined) {
+    if (!isPlainObject(rawCache)) {
+      issues.push({
+        code: 'tools_list_cache_shape_invalid',
+        detail: 'tools_list_cache must be an object',
+      });
+    } else {
+      const cached_at = (rawCache as { cached_at?: unknown }).cached_at;
+      if (typeof cached_at !== 'number' || !Number.isFinite(cached_at) || cached_at < 0) {
+        issues.push({
+          code: 'tools_list_cache_cached_at_invalid',
+          detail: 'tools_list_cache.cached_at must be a non-negative finite number',
+        });
+      }
+      const rawTools = (rawCache as { tools?: unknown }).tools;
+      if (rawTools !== undefined) {
+        if (!Array.isArray(rawTools)) {
+          issues.push({
+            code: 'tools_list_cache_shape_invalid',
+            detail: 'tools_list_cache.tools must be an array',
+          });
+        } else {
+          const seenTool = new Set<string>();
+          const toolsOut: McpToolDescriptor[] = [];
+          for (const t of rawTools) {
+            if (!isPlainObject(t)) {
+              issues.push({
+                code: 'tools_list_cache_descriptor_invalid',
+                detail: 'tools_list_cache.tools[*] must be an object',
+              });
+              continue;
+            }
+            const name = (t as { name?: unknown }).name;
+            if (typeof name !== 'string' || name.length === 0) {
+              issues.push({
+                code: 'tools_list_cache_descriptor_invalid',
+                detail: 'tools_list_cache.tools[*].name must be a non-empty string',
+              });
+              continue;
+            }
+            if (seenTool.has(name)) {
+              issues.push({
+                code: 'tools_list_cache_duplicate_tool',
+                detail: `tools_list_cache.tools duplicate name: ${name}`,
+              });
+              continue;
+            }
+            seenTool.add(name);
+            const desc: McpToolDescriptor = { name };
+            const d = (t as { description?: unknown }).description;
+            if (typeof d === 'string' && d.length > 0) desc.description = d;
+            const s = (t as { input_schema?: unknown }).input_schema;
+            if (s !== undefined) desc.input_schema = s;
+            const h = (t as { destructive_hint?: unknown }).destructive_hint;
+            if (typeof h === 'boolean') desc.destructive_hint = h;
+            toolsOut.push(desc);
+          }
+          if (issues.length === 0) {
+            tools_list_cache = {
+              tools: toolsOut,
+              cached_at: typeof cached_at === 'number' && Number.isFinite(cached_at) && cached_at >= 0
+                ? cached_at
+                : 0,
+            };
+          }
+        }
+      } else if (typeof cached_at === 'number' && Number.isFinite(cached_at) && cached_at >= 0) {
+        tools_list_cache = { tools: [], cached_at };
+      }
+    }
+  }
+  // ── recued_signature (D-137 P4 § A.3) ────────────────────────
+  //   - absent  → don't surface field on the validated payload; store
+  //               preserves the prior persisted value.
+  //   - null    → caller clears the signature; surface `null` so the
+  //               store writes the clearing decision.
+  //   - object  → parse + validate the three required fields; reject
+  //               garbage shapes with closed-list issue codes.
+  const hasSignatureField = Object.prototype.hasOwnProperty.call(
+    input as object,
+    'recued_signature',
+  );
+  let signatureUpdate: RecuedServerSignature | null | undefined;
+  if (hasSignatureField) {
+    const raw = (input as { recued_signature?: unknown }).recued_signature;
+    if (raw === null) {
+      signatureUpdate = null;
+    } else if (!isPlainObject(raw)) {
+      issues.push({
+        code: 'recued_signature_shape_invalid',
+        detail: 'recued_signature must be an object, null, or absent',
+      });
+    } else {
+      const server_kind = (raw as { server_kind?: unknown }).server_kind;
+      const version = (raw as { version?: unknown }).version;
+      const instance_id = (raw as { instance_id?: unknown }).instance_id;
+      if (server_kind !== 'recued') {
+        issues.push({
+          code: 'recued_signature_server_kind_invalid',
+          detail: 'recued_signature.server_kind must be the literal "recued"',
+        });
+      }
+      if (typeof version !== 'string' || version.length === 0) {
+        issues.push({
+          code: 'recued_signature_version_invalid',
+          detail: 'recued_signature.version must be a non-empty string',
+        });
+      }
+      if (typeof instance_id !== 'string' || instance_id.length === 0) {
+        issues.push({
+          code: 'recued_signature_instance_id_invalid',
+          detail: 'recued_signature.instance_id must be a non-empty string',
+        });
+      }
+      if (
+        server_kind === 'recued'
+        && typeof version === 'string' && version.length > 0
+        && typeof instance_id === 'string' && instance_id.length > 0
+      ) {
+        signatureUpdate = { server_kind, version, instance_id };
+      }
+    }
+  }
+  // ── chat_mode (D-137 P5 § A.7.1 + § A.10) ───────────────────
+  //   - absent  → preserve the prior persisted value (matches the
+  //               `recued_signature` merge posture; legacy writes
+  //               from before P5 don't accidentally clear chat-mode).
+  //   - null    → caller explicitly cleared chat-mode for this
+  //               contract.
+  //   - object  → parse `offered: boolean` + optional `session_cap`.
+  const hasChatModeField = Object.prototype.hasOwnProperty.call(
+    input as object,
+    'chat_mode',
+  );
+  let chatModeUpdate: ConnectionMcpChatMode | null | undefined;
+  if (hasChatModeField) {
+    const raw = (input as { chat_mode?: unknown }).chat_mode;
+    if (raw === null) {
+      chatModeUpdate = null;
+    } else if (!isPlainObject(raw)) {
+      issues.push({
+        code: 'chat_mode_shape_invalid',
+        detail: 'chat_mode must be an object, null, or absent',
+      });
+    } else {
+      const offered = (raw as { offered?: unknown }).offered;
+      if (typeof offered !== 'boolean') {
+        issues.push({
+          code: 'chat_mode_offered_invalid',
+          detail: 'chat_mode.offered must be a boolean',
+        });
+      }
+      let session_cap: ConnectionMcpChatModeSessionCap | undefined;
+      const hasCap = Object.prototype.hasOwnProperty.call(
+        raw as object,
+        'session_cap',
+      );
+      if (hasCap) {
+        const capRaw = (raw as { session_cap?: unknown }).session_cap;
+        if (capRaw === undefined) {
+          // hasCap with `undefined` value — same as omitted; no cap.
+        } else if (!isPlainObject(capRaw)) {
+          issues.push({
+            code: 'chat_mode_session_cap_shape_invalid',
+            detail: 'chat_mode.session_cap must be an object',
+          });
+        } else {
+          const per_day = (capRaw as { per_day?: unknown }).per_day;
+          const concurrent = (capRaw as { concurrent?: unknown }).concurrent;
+          let perDayOk = false;
+          let concurrentOk = false;
+          if (typeof per_day !== 'number' || !Number.isInteger(per_day) || per_day < 0) {
+            issues.push({
+              code: 'chat_mode_session_cap_per_day_invalid',
+              detail: 'chat_mode.session_cap.per_day must be a non-negative integer',
+            });
+          } else {
+            perDayOk = true;
+          }
+          if (typeof concurrent !== 'number' || !Number.isInteger(concurrent) || concurrent < 0) {
+            issues.push({
+              code: 'chat_mode_session_cap_concurrent_invalid',
+              detail: 'chat_mode.session_cap.concurrent must be a non-negative integer',
+            });
+          } else {
+            concurrentOk = true;
+          }
+          if (perDayOk && concurrentOk) {
+            session_cap = { per_day: per_day as number, concurrent: concurrent as number };
+          }
+        }
+      }
+      if (typeof offered === 'boolean') {
+        chatModeUpdate = session_cap !== undefined
+          ? { offered, session_cap }
+          : { offered };
+      }
+    }
+  }
+  if (issues.length > 0) return { ok: false, issues };
+  return {
+    ok: true,
+    value: {
+      connection_name: connection_name as string,
+      topic_tags,
+      tool_overrides,
+      tools_list_cache,
+      ...(hasSignatureField ? { recued_signature: signatureUpdate as RecuedServerSignature | null } : {}),
+      ...(hasChatModeField ? { chat_mode: chatModeUpdate as ConnectionMcpChatMode | null } : {}),
+    },
+  };
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-137 P5 § A.9 — MCP inbound per-token grants substrate.
+//
+// Bob's server-side per-token permission checklist + token issuance /
+// revoke + expiry + per-token concurrency rate-limit + default-deny
+// posture + capability summary projection. The shape Bob renders the
+// checklist over; the runtime that the rpc handler binds to; the
+// verifier the MCP port handler delegates to once per-pair token
+// issuance graduates from the v1 single-tenant interim env-var token.
+//
+// Per-pair only — table lives in Bob's per-pair SQLite db; no
+// cross-cloud sync (D-097 / D-168). The substrate is inbound —
+// Mary's *outbound* peer connection is the existing D-125
+// `connection.mcp.<peer>` record + the P4 `ConnectionMcpAnnotationState`
+// annotation overlay; this slice adds the matching surface on Bob's
+// side that gates ingress.
+//
+// Default-deny posture per spec § A.9:
+//   - Tier 1 read tools (classification: 'read'): checked at issuance
+//   - Tier 3 read tools (classification: 'read'): checked at issuance
+//   - All other tools (Tier 1 'write' / 'unknown'; Tier 2 recipes;
+//     Tier 3 'write' / 'unknown'): unchecked at issuance
+//
+// New-tool default-off per spec § A.9: a tool name that does not
+// appear in the grants map resolves to `false` at authorisation time.
+// Future server-version bumps that introduce a new primitive don't
+// auto-receive grants on existing tokens — Bob must explicitly opt-in.
+//
+// Token format per spec § Contract Tightening: `recued_<base64url(32
+// random bytes)>`. The bearer plaintext is materialised once at
+// issuance + handed to Bob via the issuance rpc result; the store
+// persists only the sha256 hash (constant-time compare at verify
+// time). The first 16 hex of the sha256 digest is the stable
+// `token_id` — same derivation pattern as `createMcpHttpDispatch`'s
+// `http_<sha256-16>` interim id.
+// ────────────────────────────────────────────────────────────────
+
+/** § A.9 — closed list of concurrency rate-limit tiers per token.
+ *  Spec ladder: "3 / 5 / 10 concurrent calls." Adding a tier is a
+ *  substrate change. The store + rpc validator both gate input against
+ *  this list. */
+export type McpInboundConcurrencyTier = 3 | 5 | 10;
+
+export const MCP_INBOUND_CONCURRENCY_LADDER: ReadonlyArray<McpInboundConcurrencyTier> = [
+  3,
+  5,
+  10,
+] as const;
+
+export const MCP_INBOUND_CONCURRENCY_TIER_SET: ReadonlySet<McpInboundConcurrencyTier> =
+  new Set(MCP_INBOUND_CONCURRENCY_LADDER);
+
+export const isMcpInboundConcurrencyTier = (
+  value: unknown,
+): value is McpInboundConcurrencyTier =>
+  typeof value === 'number'
+  && MCP_INBOUND_CONCURRENCY_TIER_SET.has(value as McpInboundConcurrencyTier);
+
+/** § A.9 — default expiry window per spec: "Optional expiry (default 1
+ *  year, configurable; safety net against abandoned tokens)." Stamped
+ *  by the issuance rpc handler when Bob doesn't supply a custom
+ *  `expires_at`. */
+export const MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** § Contract Tightening — bearer-string prefix. The handler parses
+ *  the leading `recued_` so probes can fingerprint Recued bearer
+ *  tokens at the wire layer (the server gate already gates 401 before
+ *  the body parse; this is for diagnostic / log readability). */
+export const MCP_INBOUND_TOKEN_PREFIX = 'recued_';
+
+/** § A.9 — Bob's per-token chat-mode flag. Mirrors the per-contract
+ *  `ConnectionMcpChatMode` shape on the outbound side; Bob owns the
+ *  setting here ("Allow this token to invoke my chat AI") + Mary's
+ *  outbound connection record reflects it via probe.
+ *
+ *  `null` (default) means chat-mode is not offered on this token. The
+ *  picker on Mary's side stays Data-only. `{ offered: true, ... }`
+ *  unlocks Direction C once the chat-to-chat runtime ships (D-140
+ *  federation). */
+export type McpInboundTokenChatMode = ConnectionMcpChatMode | null;
+
+/** § A.9 + § Contract Tightening — one inbound token row. Persisted in
+ *  Bob's per-pair SQLite; rendered as one row in Settings → MCP
+ *  Tokens.
+ *
+ *  `token_id` is the stable identifier (sha256-16 prefix of the bearer
+ *  plaintext); it propagates into the MCP dispatch context as
+ *  `mcp_token_id` so per-tool grants + per-token rate limits +
+ *  audit framing share one identifier.
+ *
+ *  `bearer_hash` is the full sha256 hex digest of the bearer
+ *  plaintext; the verifier constant-time-compares this on every
+ *  request. The bearer plaintext itself is never persisted — it lives
+ *  in Bob's clipboard / out-of-band channel until Mary loads it into
+ *  her connection record.
+ *
+ *  `grants` is a Mary's-classification-snapshot at issuance:
+ *  `{ <ToolEntry.name>: boolean }`. Missing keys resolve to `false`
+ *  at authorisation time (new-tool default-off). Bob edits the map
+ *  via the grants-update rpc (settings UI toggle); the store stamps a
+ *  fresh `updated_at`.
+ *
+ *  `expires_at: 0` is a substrate sentinel for "no expiry" — Bob may
+ *  set this explicitly via the issuance rpc to opt out of the 1-year
+ *  default. The authorisation predicate treats `expires_at: 0` as
+ *  "never expires"; any positive value is enforced. Negative values
+ *  are validator-rejected. */
+export interface McpInboundTokenRecord {
+  token_id: string;
+  bearer_hash: string;
+  label: string;
+  peer_handle?: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  grants: Readonly<Record<string, boolean>>;
+  concurrency_tier: McpInboundConcurrencyTier;
+  chat_mode: McpInboundTokenChatMode;
+  /** D-166 P2 token↔contract binding — the minted `contract_id` this token is
+   *  bound to, or absent for an unbound token. When present, every MCP dispatch
+   *  authenticated by this token carries the bound id as
+   *  `ExecutionSource.contract_id`, so the active contract's `.<contract_id>`
+   *  policy_matrix overlay governs the call live AND revoking / expiring /
+   *  exhausting the contract collapses the token's snapshot allowlist to empty
+   *  (a live kill-switch). The id is opaque here — liveness is resolved at
+   *  dispatch, so binding to an id that names no contract simply fails closed
+   *  (denies) rather than being rejected at issuance. */
+  contract_id?: string;
+  updated_at: number;
+}
+
+/** § A.9 — issuance-time result envelope. Returned once by the
+ *  issuance rpc; Bob copies the `bearer_plaintext` to share out-of-
+ *  band (Signal / email / paper). Subsequent reads of the token row
+ *  never re-surface the plaintext — only the persisted `token_id` +
+ *  `bearer_hash` + grants are accessible. */
+export interface IssuedMcpInboundToken {
+  record: McpInboundTokenRecord;
+  bearer_plaintext: string;
+}
+
+/** D-182 §8 — wire prefix for a raw catalog-op tool. MUST stay in sync with
+ *  `OP_TOOL_PREFIX` in `backend/server/src/mcp-server.ts` (the contracts package
+ *  can't import from backend); the end-to-end default-grants test over a
+ *  server-built catalog catches any drift. */
+const RAW_OP_TOOL_PREFIX = 'recued_op_';
+
+/** § A.9 — pure helper: walks a catalog snapshot + projects the
+ *  default-deny posture per spec. Read-classified Tier 1 + Tier 3
+ *  entries default to `true`; everything else (Tier 1 writes / Tier 2
+ *  recipes / Tier 3 writes / unknown classifications) defaults to
+ *  `false`.
+ *
+ *  Recipes (Tier 2) ALWAYS default to `false` per spec — "Recipe
+ *  tools: unchecked by default (recipe execution is potentially
+ *  write-equivalent)" — regardless of any recipe-author classification
+ *  hint. The substrate's load-bearing rule is `tier === 2 ⇒ false`.
+ *
+ *  D-182 §8 — a raw catalog op (`recued_op_<opid>`) is the ONE exception to the
+ *  tier-2 blanket: READS default `true` (AI reading your world is the core value,
+ *  idempotent — same posture as a Tier-1 `*.search`) and WRITES default `false`
+ *  (recipe-preferred; explicit opt-in). Checked BEFORE the tier-2 rule (the grant
+ *  catalog stamps raw ops `tier: 2`, so without this they'd be forced off). The
+ *  door's per-tool grant remains the actual gate — this is the smart default the
+ *  owner widens/narrows.
+ *
+ *  Pure: same `catalog` → same grants map. */
+export const buildDefaultMcpInboundTokenGrants = (
+  catalog: ReadonlyArray<ToolEntry>,
+): Readonly<Record<string, boolean>> => {
+  const out: Record<string, boolean> = Object.create(null);
+  for (const entry of catalog) {
+    if (entry.name.startsWith(RAW_OP_TOOL_PREFIX)) {
+      out[entry.name] = entry.classification === 'read';
+      continue;
+    }
+    if (entry.tier === 2) {
+      out[entry.name] = false;
+      continue;
+    }
+    if (entry.classification === 'read') {
+      out[entry.name] = true;
+      continue;
+    }
+    out[entry.name] = false;
+  }
+  return out;
+};
+
+/** § A.9 — pure helper: returns true iff the token row is active at
+ *  `now` (not revoked + not expired). The MCP port handler's verifier
+ *  AND the per-tool authorisation predicate both call this; the
+ *  verifier rejects 401 on inactive tokens, the predicate rejects
+ *  `false` so the orchestrator surfaces a `connection_unavailable`
+ *  failure.
+ *
+ *  Pure: same `(record, now)` → same answer. */
+export const isMcpInboundTokenActive = (
+  record: McpInboundTokenRecord,
+  now: number,
+): boolean => {
+  if (record.revoked_at !== null) return false;
+  if (record.expires_at === 0) return true; // sentinel: never expires
+  return record.expires_at > now;
+};
+
+/** § A.9 — pure authorisation predicate: returns true iff the token
+ *  is active AND the per-tool grant is explicitly `true`. Missing
+ *  grant keys resolve to `false` per spec § A.9 new-tool default-off.
+ *
+ *  Pure: same `(record, tool_name, now)` → same answer. */
+export const isMcpInboundTokenToolAuthorized = (
+  record: McpInboundTokenRecord,
+  tool_name: string,
+  now: number,
+): boolean => {
+  if (!isMcpInboundTokenActive(record, now)) return false;
+  return record.grants[tool_name] === true;
+};
+
+/** § A.9 — capability summary buckets. Rendered above the per-token
+ *  checklist as "This token can: read mail, read calendar. Cannot:
+ *  send mail, run recipes." Pure projection; the renderer formats the
+ *  human-readable string from the structured buckets.
+ *
+ *  `allowed_*` carry the granted tool names; `denied_*` carry the
+ *  catalog tool names NOT granted. The renderer differentiates so it
+ *  can surface "Bob unchecked a read tool" as an unusual state.
+ *
+ *  Tool names that exist in the grants map but NOT in the current
+ *  catalog (e.g., a recipe Mary uninstalled) are ignored entirely —
+ *  the summary tracks the live catalog, not the historical grants. */
+export interface McpInboundTokenCapabilitySummary {
+  allowed_read: ReadonlyArray<string>;
+  allowed_write: ReadonlyArray<string>;
+  allowed_unknown: ReadonlyArray<string>;
+  denied_read: ReadonlyArray<string>;
+  denied_write: ReadonlyArray<string>;
+  denied_unknown: ReadonlyArray<string>;
+}
+
+/** § A.9 — pure helper: bucket every catalog entry by (granted? ×
+ *  classification). Stable order (catalog order) so the renderer
+ *  produces deterministic copy.
+ *
+ *  Pure: same `(grants, catalog)` → same summary. */
+export const summarizeMcpInboundTokenCapability = (
+  grants: Readonly<Record<string, boolean>>,
+  catalog: ReadonlyArray<ToolEntry>,
+): McpInboundTokenCapabilitySummary => {
+  const allowed_read: string[] = [];
+  const allowed_write: string[] = [];
+  const allowed_unknown: string[] = [];
+  const denied_read: string[] = [];
+  const denied_write: string[] = [];
+  const denied_unknown: string[] = [];
+  for (const entry of catalog) {
+    const granted = grants[entry.name] === true;
+    if (entry.classification === 'read') {
+      (granted ? allowed_read : denied_read).push(entry.name);
+    } else if (entry.classification === 'write') {
+      (granted ? allowed_write : denied_write).push(entry.name);
+    } else {
+      (granted ? allowed_unknown : denied_unknown).push(entry.name);
+    }
+  }
+  return {
+    allowed_read,
+    allowed_write,
+    allowed_unknown,
+    denied_read,
+    denied_write,
+    denied_unknown,
+  };
+};
+
+/** § A.9 — closed-list issue codes for the inbound-token validator. */
+export type McpInboundTokenValidationIssueCode =
+  | 'input_not_object'
+  | 'label_invalid'
+  | 'peer_handle_invalid'
+  | 'grants_shape_invalid'
+  | 'grants_key_invalid'
+  | 'grants_value_invalid'
+  | 'concurrency_tier_invalid'
+  | 'expires_at_invalid'
+  | 'chat_mode_shape_invalid'
+  | 'chat_mode_offered_invalid'
+  | 'chat_mode_session_cap_shape_invalid'
+  | 'chat_mode_session_cap_per_day_invalid'
+  | 'chat_mode_session_cap_concurrent_invalid'
+  | 'contract_id_invalid';
+
+export interface McpInboundTokenValidationIssue {
+  code: McpInboundTokenValidationIssueCode;
+  detail: string;
+}
+
+export const MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES:
+  ReadonlyArray<McpInboundTokenValidationIssueCode> = [
+  'input_not_object',
+  'label_invalid',
+  'peer_handle_invalid',
+  'grants_shape_invalid',
+  'grants_key_invalid',
+  'grants_value_invalid',
+  'concurrency_tier_invalid',
+  'expires_at_invalid',
+  'chat_mode_shape_invalid',
+  'chat_mode_offered_invalid',
+  'chat_mode_session_cap_shape_invalid',
+  'chat_mode_session_cap_per_day_invalid',
+  'chat_mode_session_cap_concurrent_invalid',
+  'contract_id_invalid',
+] as const;
+
+/** § A.9 — validated issuance / edit payload. The store accepts this
+ *  shape directly. `expires_at: 0` is the substrate sentinel for "no
+ *  expiry"; positive integers are enforced; negative + non-integer
+ *  values raise `expires_at_invalid`. */
+export interface ValidatedMcpInboundTokenInput {
+  label: string;
+  peer_handle?: string;
+  grants: Readonly<Record<string, boolean>>;
+  concurrency_tier: McpInboundConcurrencyTier;
+  expires_at: number;
+  chat_mode: McpInboundTokenChatMode;
+  /** D-166 P2 token↔contract binding — optional minted `contract_id` to bind
+   *  this token to (see {@link McpInboundTokenRecord.contract_id}). Carried to
+   *  the store verbatim; liveness is resolved at dispatch, not at issuance. */
+  contract_id?: string;
+}
+
+/** § A.9 — pure validator over the wire-untrusted issuance / edit
+ *  args. Returns the closed-list issue array or the canonicalized
+ *  payload (grants keys preserved as-given since tool names carry no
+ *  inherent order; map keys may collide on case at the wire boundary
+ *  but the catalog projection treats names case-sensitively, so the
+ *  validator does too). */
+export const validateMcpInboundTokenInput = (
+  input: unknown,
+):
+  | { ok: true; value: ValidatedMcpInboundTokenInput }
+  | { ok: false; issues: ReadonlyArray<McpInboundTokenValidationIssue> } => {
+  const issues: McpInboundTokenValidationIssue[] = [];
+  if (!isPlainObject(input)) {
+    return {
+      ok: false,
+      issues: [{
+        code: 'input_not_object',
+        detail: 'expected an object payload',
+      }],
+    };
+  }
+  const label = (input as { label?: unknown }).label;
+  if (typeof label !== 'string' || label.length === 0 || label.length > 256) {
+    issues.push({
+      code: 'label_invalid',
+      detail: 'label must be a non-empty string up to 256 characters',
+    });
+  }
+  const peer_handle_raw = (input as { peer_handle?: unknown }).peer_handle;
+  let peer_handle: string | undefined;
+  if (peer_handle_raw !== undefined && peer_handle_raw !== null) {
+    if (typeof peer_handle_raw !== 'string' || peer_handle_raw.length === 0 || peer_handle_raw.length > 256) {
+      issues.push({
+        code: 'peer_handle_invalid',
+        detail: 'peer_handle, when present, must be a non-empty string up to 256 characters',
+      });
+    } else {
+      peer_handle = peer_handle_raw;
+    }
+  }
+  // ── grants ──────────────────────────────────────────────────
+  const rawGrants = (input as { grants?: unknown }).grants;
+  const grants: Record<string, boolean> = Object.create(null);
+  if (!isPlainObject(rawGrants)) {
+    issues.push({
+      code: 'grants_shape_invalid',
+      detail: 'grants must be an object keyed on tool names',
+    });
+  } else {
+    for (const [k, v] of Object.entries(rawGrants as Record<string, unknown>)) {
+      if (typeof k !== 'string' || k.length === 0) {
+        issues.push({
+          code: 'grants_key_invalid',
+          detail: 'grants keys must be non-empty strings',
+        });
+        continue;
+      }
+      if (typeof v !== 'boolean') {
+        issues.push({
+          code: 'grants_value_invalid',
+          detail: `grants[${k}] must be a boolean`,
+        });
+        continue;
+      }
+      grants[k] = v;
+    }
+  }
+  // ── concurrency_tier ────────────────────────────────────────
+  const concurrencyRaw = (input as { concurrency_tier?: unknown }).concurrency_tier;
+  if (!isMcpInboundConcurrencyTier(concurrencyRaw)) {
+    issues.push({
+      code: 'concurrency_tier_invalid',
+      detail: `concurrency_tier must be one of ${MCP_INBOUND_CONCURRENCY_LADDER.join(' | ')}`,
+    });
+  }
+  // ── expires_at ──────────────────────────────────────────────
+  const expiresRaw = (input as { expires_at?: unknown }).expires_at;
+  if (
+    typeof expiresRaw !== 'number'
+    || !Number.isInteger(expiresRaw)
+    || expiresRaw < 0
+  ) {
+    issues.push({
+      code: 'expires_at_invalid',
+      detail: 'expires_at must be a non-negative integer (0 = never expires)',
+    });
+  }
+  // ── chat_mode ───────────────────────────────────────────────
+  //   Required field on inbound tokens — the validator forces Bob to
+  //   make an explicit decision at issuance. `null` means "not offered"
+  //   (matches the picker-side default), object means Bob's set it.
+  const rawChatMode = (input as { chat_mode?: unknown }).chat_mode;
+  let chat_mode: McpInboundTokenChatMode = null;
+  if (rawChatMode === undefined || rawChatMode === null) {
+    chat_mode = null;
+  } else if (!isPlainObject(rawChatMode)) {
+    issues.push({
+      code: 'chat_mode_shape_invalid',
+      detail: 'chat_mode must be an object or null',
+    });
+  } else {
+    const offered = (rawChatMode as { offered?: unknown }).offered;
+    if (typeof offered !== 'boolean') {
+      issues.push({
+        code: 'chat_mode_offered_invalid',
+        detail: 'chat_mode.offered must be a boolean',
+      });
+    }
+    let session_cap: ConnectionMcpChatModeSessionCap | undefined;
+    const hasCap = Object.prototype.hasOwnProperty.call(
+      rawChatMode as object,
+      'session_cap',
+    );
+    if (hasCap) {
+      const capRaw = (rawChatMode as { session_cap?: unknown }).session_cap;
+      if (capRaw === undefined) {
+        // hasCap with `undefined` value — same as omitted; no cap.
+      } else if (!isPlainObject(capRaw)) {
+        issues.push({
+          code: 'chat_mode_session_cap_shape_invalid',
+          detail: 'chat_mode.session_cap must be an object',
+        });
+      } else {
+        const per_day = (capRaw as { per_day?: unknown }).per_day;
+        const concurrent = (capRaw as { concurrent?: unknown }).concurrent;
+        let perDayOk = false;
+        let concurrentOk = false;
+        if (typeof per_day !== 'number' || !Number.isInteger(per_day) || per_day < 0) {
+          issues.push({
+            code: 'chat_mode_session_cap_per_day_invalid',
+            detail: 'chat_mode.session_cap.per_day must be a non-negative integer',
+          });
+        } else {
+          perDayOk = true;
+        }
+        if (typeof concurrent !== 'number' || !Number.isInteger(concurrent) || concurrent < 0) {
+          issues.push({
+            code: 'chat_mode_session_cap_concurrent_invalid',
+            detail: 'chat_mode.session_cap.concurrent must be a non-negative integer',
+          });
+        } else {
+          concurrentOk = true;
+        }
+        if (perDayOk && concurrentOk) {
+          session_cap = { per_day: per_day as number, concurrent: concurrent as number };
+        }
+      }
+    }
+    if (typeof offered === 'boolean') {
+      chat_mode = session_cap !== undefined
+        ? { offered, session_cap }
+        : { offered };
+    }
+  }
+  // ── contract_id (D-166 P2 token↔contract binding) ───────────
+  //   Optional. Binds the token to a minted contract so dispatches under it
+  //   carry that contract_id (the active contract's overlay governs the call;
+  //   revoke / expiry / exhaustion of the contract is a live kill-switch). The
+  //   id is opaque here — contract liveness is resolved at dispatch, so an id
+  //   that names no contract simply fails closed (denies) at request time
+  //   rather than being rejected at issuance.
+  const contractIdRaw = (input as { contract_id?: unknown }).contract_id;
+  let contract_id: string | undefined;
+  if (contractIdRaw !== undefined && contractIdRaw !== null) {
+    if (
+      typeof contractIdRaw !== 'string'
+      || contractIdRaw.length === 0
+      || contractIdRaw.length > 256
+    ) {
+      issues.push({
+        code: 'contract_id_invalid',
+        detail: 'contract_id, when present, must be a non-empty string up to 256 characters',
+      });
+    } else {
+      contract_id = contractIdRaw;
+    }
+  }
+  if (issues.length > 0) return { ok: false, issues };
+  const value: ValidatedMcpInboundTokenInput = {
+    label: label as string,
+    grants,
+    concurrency_tier: concurrencyRaw as McpInboundConcurrencyTier,
+    expires_at: expiresRaw as number,
+    chat_mode,
+  };
+  if (peer_handle !== undefined) value.peer_handle = peer_handle;
+  if (contract_id !== undefined) value.contract_id = contract_id;
+  return { ok: true, value };
+};
+
+/** D-171 slice 2b — pure validator for the OPTIONAL `chat_mode` field on
+ *  `chat.inbound_token.update_grants` (the Chat row's live toggle). Mirrors
+ *  the issuance validator's chat_mode parse, but with **present/absent**
+ *  semantics (the connection-annotation merge posture, NOT the issuance
+ *  validator's required-field default) so the per-tool grant checklist (slice
+ *  2c) can call `update_grants` with grants only and NOT clobber chat-mode:
+ *    - **absent**  → `{ present: false }` — the store preserves the prior value.
+ *    - **`null`**  → `{ present: true, chat_mode: null }` — clears chat-mode.
+ *    - **object**  → `{ present: true, chat_mode: { offered, session_cap? } }`.
+ *  Reuses the shared closed-list chat_mode issue codes
+ *  (`MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES`). Pure: same `input` → same
+ *  result. The caller is expected to have already established `input` is a
+ *  plain object (the rpc handler validates that first). */
+export const validateInboundTokenChatModeUpdate = (
+  input: object,
+):
+  | { ok: true; present: false }
+  | { ok: true; present: true; chat_mode: McpInboundTokenChatMode }
+  | { ok: false; issues: ReadonlyArray<McpInboundTokenValidationIssue> } => {
+  const hasField = Object.prototype.hasOwnProperty.call(input, 'chat_mode');
+  if (!hasField) return { ok: true, present: false };
+  const raw = (input as { chat_mode?: unknown }).chat_mode;
+  if (raw === undefined || raw === null) {
+    // An explicit `null` (or `undefined` value on a present key) clears chat-mode.
+    return { ok: true, present: true, chat_mode: null };
+  }
+  const issues: McpInboundTokenValidationIssue[] = [];
+  if (!isPlainObject(raw)) {
+    issues.push({
+      code: 'chat_mode_shape_invalid',
+      detail: 'chat_mode must be an object, null, or absent',
+    });
+    return { ok: false, issues };
+  }
+  const offered = (raw as { offered?: unknown }).offered;
+  if (typeof offered !== 'boolean') {
+    issues.push({
+      code: 'chat_mode_offered_invalid',
+      detail: 'chat_mode.offered must be a boolean',
+    });
+  }
+  let session_cap: ConnectionMcpChatModeSessionCap | undefined;
+  const hasCap = Object.prototype.hasOwnProperty.call(raw, 'session_cap');
+  if (hasCap) {
+    const capRaw = (raw as { session_cap?: unknown }).session_cap;
+    if (capRaw === undefined || capRaw === null) {
+      // present-but-empty cap — same as omitted; no cap.
+    } else if (!isPlainObject(capRaw)) {
+      issues.push({
+        code: 'chat_mode_session_cap_shape_invalid',
+        detail: 'chat_mode.session_cap must be an object',
+      });
+    } else {
+      const per_day = (capRaw as { per_day?: unknown }).per_day;
+      const concurrent = (capRaw as { concurrent?: unknown }).concurrent;
+      let perDayOk = false;
+      let concurrentOk = false;
+      if (typeof per_day !== 'number' || !Number.isInteger(per_day) || per_day < 0) {
+        issues.push({
+          code: 'chat_mode_session_cap_per_day_invalid',
+          detail: 'chat_mode.session_cap.per_day must be a non-negative integer',
+        });
+      } else {
+        perDayOk = true;
+      }
+      if (typeof concurrent !== 'number' || !Number.isInteger(concurrent) || concurrent < 0) {
+        issues.push({
+          code: 'chat_mode_session_cap_concurrent_invalid',
+          detail: 'chat_mode.session_cap.concurrent must be a non-negative integer',
+        });
+      } else {
+        concurrentOk = true;
+      }
+      if (perDayOk && concurrentOk) {
+        session_cap = { per_day: per_day as number, concurrent: concurrent as number };
+      }
+    }
+  }
+  if (issues.length > 0) return { ok: false, issues };
+  const chat_mode: McpInboundTokenChatMode = session_cap !== undefined
+    ? { offered: offered as boolean, session_cap }
+    : { offered: offered as boolean };
+  return { ok: true, present: true, chat_mode };
+};

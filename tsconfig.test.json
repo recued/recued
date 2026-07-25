@@ -1,0 +1,38 @@
+{
+  // Type-check lane for TEST files only.
+  //
+  // The release gate (`tsconfig.build.json`) compiles shippable code and
+  // deliberately excludes test files (see `tsconfig.base.json` → `exclude`),
+  // because test files are never published and a release gate should verify
+  // the artifact, not the harness. This config is the complement: it
+  // type-checks every test file against package SOURCE (via the `paths`
+  // aliases inherited from the base), with `noEmit` so it never writes dist.
+  //
+  // Run via `npm run typecheck:tests`. Kept green in CI by `npm run ci`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": ".",
+    "types": ["node"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "exclude": ["**/node_modules", "**/dist"],
+  "include": [
+    "packages/**/src/**/*.test.ts",
+    "packages/**/src/**/*.test.tsx",
+    "packages/**/src/**/__tests__/**/*.ts",
+    "packages/**/src/**/__tests__/**/*.tsx",
+    "apps/**/src/**/*.test.ts",
+    "apps/**/src/**/*.test.tsx",
+    "apps/**/src/**/__tests__/**/*.ts",
+    "apps/**/src/**/__tests__/**/*.tsx",
+    "backend/**/src/**/*.test.ts",
+    "backend/**/src/**/*.test.tsx",
+    "backend/**/src/**/__tests__/**/*.ts",
+    "backend/**/src/**/__tests__/**/*.tsx"
+  ]
+}

@@ -1,0 +1,5165 @@
+{
+  "_extract": {
+    "source": {
+      "kind": "openapi",
+      "reference_url": "https://developers.hellosign.com/api/api-reference-welcome",
+      "repository_url": "https://github.com/hellosign/hellosign-openapi",
+      "url": "https://raw.githubusercontent.com/hellosign/hellosign-openapi/31136f9035133acb5f055a94f24e006857210fdb/openapi.yaml",
+      "current_url": "https://raw.githubusercontent.com/hellosign/hellosign-openapi/main/openapi.yaml",
+      "commit": "31136f9035133acb5f055a94f24e006857210fdb",
+      "sha256": "2ea3f04008afe945d45ba8a6da41c4f1612cc899ba0c96cf36b4da00ce7419ec",
+      "bytes": 589837,
+      "retrieved_on": "2026-07-15",
+      "openapi": "3.0.3",
+      "info_version": "3.0.0",
+      "server": "https://api.hellosign.com/v3",
+      "mutability": "The composition pins an immutable official repository commit. Generation also verifies that the current main document is byte-identical, so a new vendor revision fails closed until consciously upgraded."
+    },
+    "official_path_count": 67,
+    "official_operation_count": 73,
+    "admitted_operation_count": 68,
+    "declared_operation_count": 73,
+    "excluded_operation_count": 5,
+    "unique_admitted_operation_id_count": 68,
+    "unique_admitted_method_path_count": 68,
+    "unique_declared_qualified_operation_count": 73,
+    "official_method_counts": {
+      "POST": 32,
+      "GET": 27,
+      "PUT": 10,
+      "DELETE": 4
+    },
+    "admitted_method_counts": {
+      "POST": 30,
+      "GET": 25,
+      "PUT": 10,
+      "DELETE": 3
+    },
+    "tag_counts": {
+      "Account": 4,
+      "Api App": 5,
+      "Bulk Send Job": 2,
+      "Embedded": 2,
+      "Fax": 5,
+      "Fax Line": 7,
+      "OAuth": 2,
+      "Report": 1,
+      "Signature Request": 20,
+      "Team": 10,
+      "Template": 11,
+      "Unclaimed Draft": 4
+    },
+    "pack_operation_counts": {
+      "dropbox-sign": 13,
+      "dropbox-sign-signing-workflows": 32,
+      "dropbox-sign-platform-admin": 28
+    },
+    "composition_bytes": {
+      "dropbox-sign": 22980,
+      "dropbox-sign-signing-workflows": 78011,
+      "dropbox-sign-platform-admin": 32470
+    },
+    "risk_counts": {
+      "read": 31,
+      "destructive": 10,
+      "write": 23,
+      "admin": 9
+    },
+    "approval_counts": {
+      "never": 31,
+      "always": 39,
+      "ask": 3
+    },
+    "idempotency_counts": {
+      "safe": 31,
+      "non_idempotent": 30,
+      "idempotent": 12
+    },
+    "pagination_counts": {
+      "none": 64,
+      "offset": 9
+    },
+    "paginated_operation_ids": [
+      "apiAppList",
+      "bulkSendJobGet",
+      "bulkSendJobList",
+      "faxLineList",
+      "faxList",
+      "signatureRequestList",
+      "teamMembers",
+      "teamSubTeams",
+      "templateList"
+    ],
+    "manual_pagination_operation_ids": [
+      "bulkSendJobGet",
+      "bulkSendJobList",
+      "signatureRequestList",
+      "teamMembers",
+      "templateList"
+    ],
+    "supplemental_aliases": [
+      {
+        "pack": "dropbox-sign-signing-workflows",
+        "op": "bulk_send_job.all",
+        "operation_id": "bulkSendJobList",
+        "result_path": "bulk_send_jobs"
+      },
+      {
+        "pack": "dropbox-sign-signing-workflows",
+        "op": "bulk_send_job.signature_request.all",
+        "operation_id": "bulkSendJobGet",
+        "result_path": "signature_requests"
+      },
+      {
+        "pack": "dropbox-sign-signing-workflows",
+        "op": "signature_request.all",
+        "operation_id": "signatureRequestList",
+        "result_path": "signature_requests"
+      },
+      {
+        "pack": "dropbox-sign-platform-admin",
+        "op": "team.member.all",
+        "operation_id": "teamMembers",
+        "result_path": "team_members"
+      },
+      {
+        "pack": "dropbox-sign-signing-workflows",
+        "op": "template.all",
+        "operation_id": "templateList",
+        "result_path": "templates"
+      }
+    ],
+    "binary_response_operation_ids": [
+      "faxFiles",
+      "signatureRequestFiles",
+      "templateFiles"
+    ],
+    "json_request_operation_count": 36,
+    "json_alternative_operation_ids": [
+      "apiAppCreate",
+      "apiAppUpdate",
+      "faxSend",
+      "signatureRequestBulkCreateEmbeddedWithTemplate",
+      "signatureRequestBulkSendWithTemplate",
+      "signatureRequestCreateEmbedded",
+      "signatureRequestCreateEmbeddedWithTemplate",
+      "signatureRequestEdit",
+      "signatureRequestEditEmbedded",
+      "signatureRequestEditEmbeddedWithTemplate",
+      "signatureRequestEditWithTemplate",
+      "signatureRequestSend",
+      "signatureRequestSendWithTemplate",
+      "templateCreate",
+      "templateCreateEmbeddedDraft",
+      "templateUpdateFiles",
+      "unclaimedDraftCreate",
+      "unclaimedDraftCreateEmbedded",
+      "unclaimedDraftCreateEmbeddedWithTemplate"
+    ],
+    "omitted_binary_request_fields": {
+      "signatureRequestSendWithTemplate": [
+        "files"
+      ],
+      "apiAppCreate": [
+        "custom_logo_file"
+      ],
+      "apiAppUpdate": [
+        "custom_logo_file"
+      ],
+      "faxSend": [
+        "files"
+      ],
+      "signatureRequestBulkCreateEmbeddedWithTemplate": [
+        "signer_file"
+      ],
+      "signatureRequestBulkSendWithTemplate": [
+        "signer_file"
+      ],
+      "signatureRequestCreateEmbedded": [
+        "files"
+      ],
+      "signatureRequestCreateEmbeddedWithTemplate": [
+        "files"
+      ],
+      "signatureRequestEdit": [
+        "files"
+      ],
+      "signatureRequestEditEmbedded": [
+        "files"
+      ],
+      "signatureRequestEditEmbeddedWithTemplate": [
+        "files"
+      ],
+      "signatureRequestEditWithTemplate": [
+        "files"
+      ],
+      "signatureRequestSend": [
+        "files"
+      ],
+      "templateCreate": [
+        "files"
+      ],
+      "templateCreateEmbeddedDraft": [
+        "files"
+      ],
+      "templateUpdateFiles": [
+        "files"
+      ],
+      "unclaimedDraftCreate": [
+        "files"
+      ],
+      "unclaimedDraftCreateEmbedded": [
+        "files"
+      ],
+      "unclaimedDraftCreateEmbeddedWithTemplate": [
+        "files"
+      ]
+    },
+    "omitted_credential_request_fields": {
+      "accountCreate": [
+        "client_secret"
+      ]
+    },
+    "lossless_integer_operation_count": 67,
+    "compatibility_operation_ids": [
+      "account.read",
+      "bulk_send_job.read",
+      "bulk_send_job.search",
+      "signature_request.cancel",
+      "signature_request.read",
+      "signature_request.remind",
+      "signature_request.search",
+      "signature_request.send_with_template",
+      "signature_request.update_signer",
+      "team.member.search",
+      "team.read",
+      "template.read",
+      "template.search"
+    ],
+    "compatibility_operation_ids_sha256": "7761e60fe8ac982009b4d6ffc3082f1ca4209bf832e8dab30db443c1fad6e356",
+    "compatibility_operation_rows_sha256": "34bc45b3ba96942f0baa92884a4b38befb579217378e90f72abaf9b02921186d",
+    "compatibility_effective_urls": "Version 1 used https://api.hellosign.com/v3 plus doc-relative paths. Version 2 uses the origin-only https://api.hellosign.com base plus explicit /v3 paths, preserving every effective URL.",
+    "recipe_versions": {
+      "request-status-digest-dropbox-sign": 1,
+      "request-evidence-brief-dropbox-sign": 1,
+      "template-readiness-brief-dropbox-sign": 1,
+      "send-template-request-dropbox-sign": 1,
+      "remind-signer-dropbox-sign": 1,
+      "update-signer-dropbox-sign": 1,
+      "cancel-request-dropbox-sign": 1
+    },
+    "auth": {
+      "selected": "HTTP Basic API key supplied only by the enrolled Dropbox Sign connection",
+      "official_alternatives": [
+        "api_key",
+        "oauth2"
+      ],
+      "authenticated_operations": 71,
+      "unauthenticated_bootstrap_operation_ids": [
+        "oauthTokenGenerate",
+        "oauthTokenRefresh"
+      ],
+      "credential_arguments": 0,
+      "oauth_note": "The one-click recued-core enrollment accelerator selects Basic API-key auth. A manually enrolled OAuth bearer connection can supply the same ingredient without exposing tokens as operation arguments."
+    },
+    "source_decision": {
+      "admitted": false,
+      "reason": "No live Dropbox Sign connection was available for the empirical field-presence and version-signal proof required by the authoring guide. OpenAPI shape alone is not used to claim a synchronized Source."
+    },
+    "entity_audit": {
+      "retained_entity_count": 5,
+      "retained_field_count": 32,
+      "removed_legacy_fields": [
+        {
+          "entity": "bulk_send_job",
+          "field_path": "status"
+        },
+        {
+          "entity": "bulk_send_job",
+          "field_path": "signature_request_ids"
+        },
+        {
+          "entity": "signature",
+          "field_path": "signature_id"
+        },
+        {
+          "entity": "signature",
+          "field_path": "signer_email_address"
+        },
+        {
+          "entity": "signature",
+          "field_path": "signer_name"
+        },
+        {
+          "entity": "signature",
+          "field_path": "signer_role"
+        },
+        {
+          "entity": "signature",
+          "field_path": "status_code"
+        },
+        {
+          "entity": "signature",
+          "field_path": "last_viewed_at"
+        },
+        {
+          "entity": "signature",
+          "field_path": "last_reminded_at"
+        },
+        {
+          "entity": "signature",
+          "field_path": "signed_at"
+        },
+        {
+          "entity": "team",
+          "field_path": "team_id"
+        },
+        {
+          "entity": "team",
+          "field_path": "num_accounts"
+        }
+      ],
+      "repaired_legacy_types": [
+        {
+          "field": "bulk_send_job.created_at",
+          "from": "datetime",
+          "to": "number"
+        },
+        {
+          "field": "signature_request.created_at",
+          "from": "datetime",
+          "to": "number"
+        },
+        {
+          "field": "signature_request.expires_at",
+          "from": "datetime",
+          "to": "number"
+        }
+      ]
+    },
+    "exclusions": [
+      {
+        "operation_id": "faxLineDelete",
+        "method": "DELETE",
+        "path": "/fax_line",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "delete_request_body",
+        "reason": "The official DELETE /fax_line route requires a JSON request body. The current REST binding deliberately does not serialize DELETE bodies, so an empty or query-substituted call would be non-executable."
+      },
+      {
+        "operation_id": "oauthTokenGenerate",
+        "method": "POST",
+        "path": "/oauth/token",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_exchange",
+        "reason": "This unauthenticated bootstrap route requires OAuth client_secret and authorization-code inputs. Credentials belong to the enrolled connection, never recipe arguments."
+      },
+      {
+        "operation_id": "oauthTokenRefresh",
+        "method": "POST",
+        "path": "/oauth/token?refresh",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_exchange",
+        "reason": "This unauthenticated bootstrap route exchanges refresh-token credentials and publishes a query marker inside the OpenAPI path. Connection-owned OAuth refresh must handle it outside an API operation."
+      },
+      {
+        "operation_id": "signatureRequestFilesAsDataUri",
+        "method": "GET",
+        "path": "/signature_request/files_as_data_uri/{signature_request_id}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "binary_content_in_json",
+        "reason": "The response embeds complete signed documents as data URIs in JSON. Publishing it would route document bytes through operation values instead of the isolated file_ref capture boundary; the binary download and expiring file-URL operations remain available."
+      },
+      {
+        "operation_id": "templateFilesAsDataUri",
+        "method": "GET",
+        "path": "/template/files_as_data_uri/{template_id}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "binary_content_in_json",
+        "reason": "The response embeds complete template documents as data URIs in JSON. Publishing it would route document bytes through operation values instead of the isolated file_ref capture boundary; the binary download and expiring file-URL operations remain available."
+      }
+    ]
+  },
+  "paths": {
+    "/account/create": {
+      "post": {
+        "operationId": "accountCreate"
+      }
+    },
+    "/account": {
+      "get": {
+        "operationId": "accountGet"
+      },
+      "put": {
+        "operationId": "accountUpdate"
+      }
+    },
+    "/account/verify": {
+      "post": {
+        "operationId": "accountVerify"
+      }
+    },
+    "/api_app": {
+      "post": {
+        "operationId": "apiAppCreate"
+      }
+    },
+    "/api_app/{client_id}": {
+      "get": {
+        "operationId": "apiAppGet"
+      },
+      "put": {
+        "operationId": "apiAppUpdate"
+      },
+      "delete": {
+        "operationId": "apiAppDelete"
+      }
+    },
+    "/api_app/list": {
+      "get": {
+        "operationId": "apiAppList"
+      }
+    },
+    "/bulk_send_job/{bulk_send_job_id}": {
+      "get": {
+        "operationId": "bulkSendJobGet"
+      }
+    },
+    "/bulk_send_job/list": {
+      "get": {
+        "operationId": "bulkSendJobList"
+      }
+    },
+    "/embedded/edit_url/{template_id}": {
+      "post": {
+        "operationId": "embeddedEditUrl"
+      }
+    },
+    "/embedded/sign_url/{signature_id}": {
+      "get": {
+        "operationId": "embeddedSignUrl"
+      }
+    },
+    "/fax/{fax_id}": {
+      "get": {
+        "operationId": "faxGet"
+      },
+      "delete": {
+        "operationId": "faxDelete"
+      }
+    },
+    "/fax/files/{fax_id}": {
+      "get": {
+        "operationId": "faxFiles"
+      }
+    },
+    "/fax_line/add_user": {
+      "put": {
+        "operationId": "faxLineAddUser"
+      }
+    },
+    "/fax_line/area_codes": {
+      "get": {
+        "operationId": "faxLineAreaCodeGet"
+      }
+    },
+    "/fax_line/create": {
+      "post": {
+        "operationId": "faxLineCreate"
+      }
+    },
+    "/fax_line": {
+      "get": {
+        "operationId": "faxLineGet"
+      },
+      "delete": {
+        "operationId": "faxLineDelete"
+      }
+    },
+    "/fax_line/list": {
+      "get": {
+        "operationId": "faxLineList"
+      }
+    },
+    "/fax_line/remove_user": {
+      "put": {
+        "operationId": "faxLineRemoveUser"
+      }
+    },
+    "/fax/list": {
+      "get": {
+        "operationId": "faxList"
+      }
+    },
+    "/fax/send": {
+      "post": {
+        "operationId": "faxSend"
+      }
+    },
+    "/oauth/token": {
+      "post": {
+        "operationId": "oauthTokenGenerate"
+      }
+    },
+    "/oauth/token?refresh": {
+      "post": {
+        "operationId": "oauthTokenRefresh"
+      }
+    },
+    "/report/create": {
+      "post": {
+        "operationId": "reportCreate"
+      }
+    },
+    "/signature_request/bulk_create_embedded_with_template": {
+      "post": {
+        "operationId": "signatureRequestBulkCreateEmbeddedWithTemplate"
+      }
+    },
+    "/signature_request/bulk_send_with_template": {
+      "post": {
+        "operationId": "signatureRequestBulkSendWithTemplate"
+      }
+    },
+    "/signature_request/cancel/{signature_request_id}": {
+      "post": {
+        "operationId": "signatureRequestCancel"
+      }
+    },
+    "/signature_request/create_embedded": {
+      "post": {
+        "operationId": "signatureRequestCreateEmbedded"
+      }
+    },
+    "/signature_request/create_embedded_with_template": {
+      "post": {
+        "operationId": "signatureRequestCreateEmbeddedWithTemplate"
+      }
+    },
+    "/signature_request/edit/{signature_request_id}": {
+      "put": {
+        "operationId": "signatureRequestEdit"
+      }
+    },
+    "/signature_request/edit_embedded/{signature_request_id}": {
+      "put": {
+        "operationId": "signatureRequestEditEmbedded"
+      }
+    },
+    "/signature_request/edit_embedded_with_template/{signature_request_id}": {
+      "put": {
+        "operationId": "signatureRequestEditEmbeddedWithTemplate"
+      }
+    },
+    "/signature_request/edit_with_template/{signature_request_id}": {
+      "put": {
+        "operationId": "signatureRequestEditWithTemplate"
+      }
+    },
+    "/signature_request/files/{signature_request_id}": {
+      "get": {
+        "operationId": "signatureRequestFiles"
+      }
+    },
+    "/signature_request/files_as_data_uri/{signature_request_id}": {
+      "get": {
+        "operationId": "signatureRequestFilesAsDataUri"
+      }
+    },
+    "/signature_request/files_as_file_url/{signature_request_id}": {
+      "get": {
+        "operationId": "signatureRequestFilesAsFileUrl"
+      }
+    },
+    "/signature_request/{signature_request_id}": {
+      "get": {
+        "operationId": "signatureRequestGet"
+      }
+    },
+    "/signature_request/list": {
+      "get": {
+        "operationId": "signatureRequestList"
+      }
+    },
+    "/signature_request/release_hold/{signature_request_id}": {
+      "post": {
+        "operationId": "signatureRequestReleaseHold"
+      }
+    },
+    "/signature_request/remind/{signature_request_id}": {
+      "post": {
+        "operationId": "signatureRequestRemind"
+      }
+    },
+    "/signature_request/remove/{signature_request_id}": {
+      "post": {
+        "operationId": "signatureRequestRemove"
+      }
+    },
+    "/signature_request/send": {
+      "post": {
+        "operationId": "signatureRequestSend"
+      }
+    },
+    "/signature_request/send_with_template": {
+      "post": {
+        "operationId": "signatureRequestSendWithTemplate"
+      }
+    },
+    "/signature_request/update/{signature_request_id}": {
+      "post": {
+        "operationId": "signatureRequestUpdate"
+      }
+    },
+    "/team/add_member": {
+      "put": {
+        "operationId": "teamAddMember"
+      }
+    },
+    "/team/create": {
+      "post": {
+        "operationId": "teamCreate"
+      }
+    },
+    "/team/destroy": {
+      "delete": {
+        "operationId": "teamDelete"
+      }
+    },
+    "/team": {
+      "get": {
+        "operationId": "teamGet"
+      },
+      "put": {
+        "operationId": "teamUpdate"
+      }
+    },
+    "/team/info": {
+      "get": {
+        "operationId": "teamInfo"
+      }
+    },
+    "/team/invites": {
+      "get": {
+        "operationId": "teamInvites"
+      }
+    },
+    "/team/members/{team_id}": {
+      "get": {
+        "operationId": "teamMembers"
+      }
+    },
+    "/team/remove_member": {
+      "post": {
+        "operationId": "teamRemoveMember"
+      }
+    },
+    "/team/sub_teams/{team_id}": {
+      "get": {
+        "operationId": "teamSubTeams"
+      }
+    },
+    "/template/add_user/{template_id}": {
+      "post": {
+        "operationId": "templateAddUser"
+      }
+    },
+    "/template/create": {
+      "post": {
+        "operationId": "templateCreate"
+      }
+    },
+    "/template/create_embedded_draft": {
+      "post": {
+        "operationId": "templateCreateEmbeddedDraft"
+      }
+    },
+    "/template/delete/{template_id}": {
+      "post": {
+        "operationId": "templateDelete"
+      }
+    },
+    "/template/files/{template_id}": {
+      "get": {
+        "operationId": "templateFiles"
+      }
+    },
+    "/template/files_as_data_uri/{template_id}": {
+      "get": {
+        "operationId": "templateFilesAsDataUri"
+      }
+    },
+    "/template/files_as_file_url/{template_id}": {
+      "get": {
+        "operationId": "templateFilesAsFileUrl"
+      }
+    },
+    "/template/{template_id}": {
+      "get": {
+        "operationId": "templateGet"
+      }
+    },
+    "/template/list": {
+      "get": {
+        "operationId": "templateList"
+      }
+    },
+    "/template/remove_user/{template_id}": {
+      "post": {
+        "operationId": "templateRemoveUser"
+      }
+    },
+    "/template/update_files/{template_id}": {
+      "post": {
+        "operationId": "templateUpdateFiles"
+      }
+    },
+    "/unclaimed_draft/create": {
+      "post": {
+        "operationId": "unclaimedDraftCreate"
+      }
+    },
+    "/unclaimed_draft/create_embedded": {
+      "post": {
+        "operationId": "unclaimedDraftCreateEmbedded"
+      }
+    },
+    "/unclaimed_draft/create_embedded_with_template": {
+      "post": {
+        "operationId": "unclaimedDraftCreateEmbeddedWithTemplate"
+      }
+    },
+    "/unclaimed_draft/edit_and_resend/{signature_request_id}": {
+      "post": {
+        "operationId": "unclaimedDraftEditAndResend"
+      }
+    }
+  },
+  "operation_contracts": {
+    "dropbox-sign-platform-admin.account.create": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "account.create",
+      "operation_id": "accountCreate",
+      "tag": "Account",
+      "method": "POST",
+      "path": "/account/create",
+      "wire_path": "/v3/account/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "client_id",
+          "email_address",
+          "locale"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": [
+          "client_secret"
+        ]
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object"
+          },
+          "oauth_data": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "account",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.account.update": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "account.update",
+      "operation_id": "accountUpdate",
+      "tag": "Account",
+      "method": "PUT",
+      "path": "/account",
+      "wire_path": "/v3/account",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "account_id",
+          "callback_url",
+          "locale"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "account",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.account.verify": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "account.verify",
+      "operation_id": "accountVerify",
+      "tag": "Account",
+      "method": "POST",
+      "path": "/account/verify",
+      "wire_path": "/v3/account/verify",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "email_address"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "account",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.api_app.create": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "api_app.create",
+      "operation_id": "apiAppCreate",
+      "tag": "Api App",
+      "method": "POST",
+      "path": "/api_app",
+      "wire_path": "/v3/api_app",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "callback_url",
+          "domains",
+          "name",
+          "oauth",
+          "options",
+          "white_labeling_options"
+        ],
+        "omitted_binary_properties": [
+          "custom_logo_file"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "api_app": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "api_app",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.api_app.delete": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "api_app.delete",
+      "operation_id": "apiAppDelete",
+      "tag": "Api App",
+      "method": "DELETE",
+      "path": "/api_app/{client_id}",
+      "wire_path": "/v3/api_app/{{client_id}}",
+      "parameters": [
+        {
+          "name": "client_id",
+          "in": "path",
+          "admitted_name": "client_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.api_app.read": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "api_app.read",
+      "operation_id": "apiAppGet",
+      "tag": "Api App",
+      "method": "GET",
+      "path": "/api_app/{client_id}",
+      "wire_path": "/v3/api_app/{{client_id}}",
+      "parameters": [
+        {
+          "name": "client_id",
+          "in": "path",
+          "admitted_name": "client_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "api_app": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "api_app",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.api_app.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "api_app.search",
+      "operation_id": "apiAppList",
+      "tag": "Api App",
+      "method": "GET",
+      "path": "/api_app/list",
+      "wire_path": "/v3/api_app/list",
+      "parameters": [
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "api_apps": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "api_apps",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.api_app.update": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "api_app.update",
+      "operation_id": "apiAppUpdate",
+      "tag": "Api App",
+      "method": "PUT",
+      "path": "/api_app/{client_id}",
+      "wire_path": "/v3/api_app/{{client_id}}",
+      "parameters": [
+        {
+          "name": "client_id",
+          "in": "path",
+          "admitted_name": "client_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "callback_url",
+          "domains",
+          "name",
+          "oauth",
+          "options",
+          "white_labeling_options"
+        ],
+        "omitted_binary_properties": [
+          "custom_logo_file"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "api_app": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "api_app",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.area_code.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.area_code.search",
+      "operation_id": "faxLineAreaCodeGet",
+      "tag": "Fax Line",
+      "method": "GET",
+      "path": "/fax_line/area_codes",
+      "wire_path": "/v3/fax_line/area_codes",
+      "parameters": [
+        {
+          "name": "country",
+          "in": "query",
+          "admitted_name": "query.country",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "state",
+          "in": "query",
+          "admitted_name": "query.state",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "province",
+          "in": "query",
+          "admitted_name": "query.province",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "city",
+          "in": "query",
+          "admitted_name": "query.city",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "area_codes": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "area_codes",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.create": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.create",
+      "operation_id": "faxLineCreate",
+      "tag": "Fax Line",
+      "method": "POST",
+      "path": "/fax_line/create",
+      "wire_path": "/v3/fax_line/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "area_code",
+          "country",
+          "city",
+          "account_id"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax_line": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "fax_line",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.read": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.read",
+      "operation_id": "faxLineGet",
+      "tag": "Fax Line",
+      "method": "GET",
+      "path": "/fax_line",
+      "wire_path": "/v3/fax_line",
+      "parameters": [
+        {
+          "name": "number",
+          "in": "query",
+          "admitted_name": "query.number",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax_line": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "fax_line",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.search",
+      "operation_id": "faxLineList",
+      "tag": "Fax Line",
+      "method": "GET",
+      "path": "/fax_line/list",
+      "wire_path": "/v3/fax_line/list",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "show_team_lines",
+          "in": "query",
+          "admitted_name": "query.show_team_lines",
+          "type": "boolean",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "list_info": {
+            "type": "object"
+          },
+          "fax_lines": {
+            "type": "array"
+          },
+          "warnings": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "fax_lines",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.user.add": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.user.add",
+      "operation_id": "faxLineAddUser",
+      "tag": "Fax Line",
+      "method": "PUT",
+      "path": "/fax_line/add_user",
+      "wire_path": "/v3/fax_line/add_user",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "number",
+          "account_id",
+          "email_address"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax_line": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "fax_line",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax_line.user.remove": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax_line.user.remove",
+      "operation_id": "faxLineRemoveUser",
+      "tag": "Fax Line",
+      "method": "PUT",
+      "path": "/fax_line/remove_user",
+      "wire_path": "/v3/fax_line/remove_user",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "number",
+          "account_id",
+          "email_address"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax_line": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "fax_line",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax.delete": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax.delete",
+      "operation_id": "faxDelete",
+      "tag": "Fax",
+      "method": "DELETE",
+      "path": "/fax/{fax_id}",
+      "wire_path": "/v3/fax/{{fax_id}}",
+      "parameters": [
+        {
+          "name": "fax_id",
+          "in": "path",
+          "admitted_name": "fax_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax.file.download": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax.file.download",
+      "operation_id": "faxFiles",
+      "tag": "Fax",
+      "method": "GET",
+      "path": "/fax/files/{fax_id}",
+      "wire_path": "/v3/fax/files/{{fax_id}}",
+      "parameters": [
+        {
+          "name": "fax_id",
+          "in": "path",
+          "admitted_name": "fax_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/pdf"
+      ],
+      "selected_response_media": "application/pdf",
+      "response_schema": {
+        "type": "string",
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/pdf",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "response_json": null,
+      "accept": "application/pdf",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax.read": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax.read",
+      "operation_id": "faxGet",
+      "tag": "Fax",
+      "method": "GET",
+      "path": "/fax/{fax_id}",
+      "wire_path": "/v3/fax/{{fax_id}}",
+      "parameters": [
+        {
+          "name": "fax_id",
+          "in": "path",
+          "admitted_name": "fax_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "fax",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax.search",
+      "operation_id": "faxList",
+      "tag": "Fax",
+      "method": "GET",
+      "path": "/fax/list",
+      "wire_path": "/v3/fax/list",
+      "parameters": [
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "faxes": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "faxes",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.fax.send": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "fax.send",
+      "operation_id": "faxSend",
+      "tag": "Fax",
+      "method": "POST",
+      "path": "/fax/send",
+      "wire_path": "/v3/fax/send",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "recipient",
+          "sender",
+          "file_urls",
+          "test_mode",
+          "cover_page_to",
+          "cover_page_from",
+          "cover_page_message",
+          "title"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "fax": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "fax",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.create": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.create",
+      "operation_id": "teamCreate",
+      "tag": "Team",
+      "method": "POST",
+      "path": "/team/create",
+      "wire_path": "/v3/team/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "name"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.delete": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.delete",
+      "operation_id": "teamDelete",
+      "tag": "Team",
+      "method": "DELETE",
+      "path": "/team/destroy",
+      "wire_path": "/v3/team/destroy",
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.info": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.info",
+      "operation_id": "teamInfo",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team/info",
+      "wire_path": "/v3/team/info",
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "query",
+          "admitted_name": "query.team_id",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.invite.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.invite.search",
+      "operation_id": "teamInvites",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team/invites",
+      "wire_path": "/v3/team/invites",
+      "parameters": [
+        {
+          "name": "email_address",
+          "in": "query",
+          "admitted_name": "query.email_address",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team_invites": {
+            "type": "array"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team_invites",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.member.add": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.member.add",
+      "operation_id": "teamAddMember",
+      "tag": "Team",
+      "method": "PUT",
+      "path": "/team/add_member",
+      "wire_path": "/v3/team/add_member",
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "query",
+          "admitted_name": "query.team_id",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "account_id",
+          "email_address",
+          "role"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.member.all": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.member.all",
+      "operation_id": "teamMembers",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team/members/{team_id}",
+      "wire_path": "/v3/team/members/{{team_id}}",
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "path",
+          "admitted_name": "team_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team_members": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team_members",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": true
+    },
+    "dropbox-sign-platform-admin.team.member.remove": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.member.remove",
+      "operation_id": "teamRemoveMember",
+      "tag": "Team",
+      "method": "POST",
+      "path": "/team/remove_member",
+      "wire_path": "/v3/team/remove_member",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "account_id",
+          "email_address",
+          "new_owner_email_address",
+          "new_team_id",
+          "new_role"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.sub_team.search": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.sub_team.search",
+      "operation_id": "teamSubTeams",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team/sub_teams/{team_id}",
+      "wire_path": "/v3/team/sub_teams/{{team_id}}",
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "path",
+          "admitted_name": "team_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "sub_teams": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "sub_teams",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-platform-admin.team.update": {
+      "pack": "dropbox-sign-platform-admin",
+      "op": "team.update",
+      "operation_id": "teamUpdate",
+      "tag": "Team",
+      "method": "PUT",
+      "path": "/team",
+      "wire_path": "/v3/team",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "name"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.bulk_send_job.all": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "bulk_send_job.all",
+      "operation_id": "bulkSendJobList",
+      "tag": "Bulk Send Job",
+      "method": "GET",
+      "path": "/bulk_send_job/list",
+      "wire_path": "/v3/bulk_send_job/list",
+      "parameters": [
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_jobs": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "bulk_send_jobs",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": true
+    },
+    "dropbox-sign-signing-workflows.bulk_send_job.signature_request.all": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "bulk_send_job.signature_request.all",
+      "operation_id": "bulkSendJobGet",
+      "tag": "Bulk Send Job",
+      "method": "GET",
+      "path": "/bulk_send_job/{bulk_send_job_id}",
+      "wire_path": "/v3/bulk_send_job/{{bulk_send_job_id}}",
+      "parameters": [
+        {
+          "name": "bulk_send_job_id",
+          "in": "path",
+          "admitted_name": "bulk_send_job_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_job": {
+            "type": "object"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "signature_requests": {
+            "type": "array"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_requests",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": true
+    },
+    "dropbox-sign-signing-workflows.embedded.edit_url": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "embedded.edit_url",
+      "operation_id": "embeddedEditUrl",
+      "tag": "Embedded",
+      "method": "POST",
+      "path": "/embedded/edit_url/{template_id}",
+      "wire_path": "/v3/embedded/edit_url/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "allow_edit_ccs",
+          "cc_roles",
+          "editor_options",
+          "force_signer_roles",
+          "force_subject_message",
+          "merge_fields",
+          "preview_only",
+          "show_preview",
+          "show_progress_stepper",
+          "test_mode"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "embedded": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "embedded",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.embedded.sign_url": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "embedded.sign_url",
+      "operation_id": "embeddedSignUrl",
+      "tag": "Embedded",
+      "method": "GET",
+      "path": "/embedded/sign_url/{signature_id}",
+      "wire_path": "/v3/embedded/sign_url/{{signature_id}}",
+      "parameters": [
+        {
+          "name": "signature_id",
+          "in": "path",
+          "admitted_name": "signature_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "embedded": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "embedded",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.report.create": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "report.create",
+      "operation_id": "reportCreate",
+      "tag": "Report",
+      "method": "POST",
+      "path": "/report/create",
+      "wire_path": "/v3/report/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "end_date",
+          "report_type",
+          "start_date"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "report": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "report",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.all": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.all",
+      "operation_id": "signatureRequestList",
+      "tag": "Signature Request",
+      "method": "GET",
+      "path": "/signature_request/list",
+      "wire_path": "/v3/signature_request/list",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "query",
+          "in": "query",
+          "admitted_name": "query.query",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_requests": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_requests",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": true
+    },
+    "dropbox-sign-signing-workflows.signature_request.bulk_create_embedded_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.bulk_create_embedded_with_template",
+      "operation_id": "signatureRequestBulkCreateEmbeddedWithTemplate",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/bulk_create_embedded_with_template",
+      "wire_path": "/v3/signature_request/bulk_create_embedded_with_template",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "signer_list",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "message",
+          "metadata",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title"
+        ],
+        "omitted_binary_properties": [
+          "signer_file"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_job": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "bulk_send_job",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.bulk_send_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.bulk_send_with_template",
+      "operation_id": "signatureRequestBulkSendWithTemplate",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/bulk_send_with_template",
+      "wire_path": "/v3/signature_request/bulk_send_with_template",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "signer_list",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "message",
+          "metadata",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title"
+        ],
+        "omitted_binary_properties": [
+          "signer_file"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_job": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "bulk_send_job",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.create_embedded": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.create_embedded",
+      "operation_id": "signatureRequestCreateEmbedded",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/create_embedded",
+      "wire_path": "/v3/signature_request/create_embedded",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "signers",
+          "grouped_signers",
+          "allow_decline",
+          "allow_reassign",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "message",
+          "metadata",
+          "signing_options",
+          "subject",
+          "test_mode",
+          "title",
+          "use_text_tags",
+          "populate_auto_fill_fields",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.create_embedded_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.create_embedded_with_template",
+      "operation_id": "signatureRequestCreateEmbeddedWithTemplate",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/create_embedded_with_template",
+      "wire_path": "/v3/signature_request/create_embedded_with_template",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "file_urls",
+          "message",
+          "metadata",
+          "signers",
+          "signing_options",
+          "subject",
+          "test_mode",
+          "title",
+          "populate_auto_fill_fields"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.edit": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.edit",
+      "operation_id": "signatureRequestEdit",
+      "tag": "Signature Request",
+      "method": "PUT",
+      "path": "/signature_request/edit/{signature_request_id}",
+      "wire_path": "/v3/signature_request/edit/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "signers",
+          "grouped_signers",
+          "allow_decline",
+          "allow_reassign",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "is_eid",
+          "message",
+          "metadata",
+          "signing_options",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title",
+          "use_text_tags",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.edit_embedded": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.edit_embedded",
+      "operation_id": "signatureRequestEditEmbedded",
+      "tag": "Signature Request",
+      "method": "PUT",
+      "path": "/signature_request/edit_embedded/{signature_request_id}",
+      "wire_path": "/v3/signature_request/edit_embedded/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "signers",
+          "grouped_signers",
+          "allow_decline",
+          "allow_reassign",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "message",
+          "metadata",
+          "signing_options",
+          "subject",
+          "test_mode",
+          "title",
+          "use_text_tags",
+          "populate_auto_fill_fields",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.edit_embedded_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.edit_embedded_with_template",
+      "operation_id": "signatureRequestEditEmbeddedWithTemplate",
+      "tag": "Signature Request",
+      "method": "PUT",
+      "path": "/signature_request/edit_embedded_with_template/{signature_request_id}",
+      "wire_path": "/v3/signature_request/edit_embedded_with_template/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "file_urls",
+          "message",
+          "metadata",
+          "signers",
+          "signing_options",
+          "subject",
+          "test_mode",
+          "title",
+          "populate_auto_fill_fields"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.edit_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.edit_with_template",
+      "operation_id": "signatureRequestEditWithTemplate",
+      "tag": "Signature Request",
+      "method": "PUT",
+      "path": "/signature_request/edit_with_template/{signature_request_id}",
+      "wire_path": "/v3/signature_request/edit_with_template/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "file_urls",
+          "is_eid",
+          "message",
+          "metadata",
+          "signers",
+          "signing_options",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.file_url.create": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.file_url.create",
+      "operation_id": "signatureRequestFilesAsFileUrl",
+      "tag": "Signature Request",
+      "method": "GET",
+      "path": "/signature_request/files_as_file_url/{signature_request_id}",
+      "wire_path": "/v3/signature_request/files_as_file_url/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "force_download",
+          "in": "query",
+          "admitted_name": "query.force_download",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "file_url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.file.download": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.file.download",
+      "operation_id": "signatureRequestFiles",
+      "tag": "Signature Request",
+      "method": "GET",
+      "path": "/signature_request/files/{signature_request_id}",
+      "wire_path": "/v3/signature_request/files/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "file_type",
+          "in": "query",
+          "admitted_name": "query.file_type",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/pdf",
+        "application/zip"
+      ],
+      "selected_response_media": "application/pdf",
+      "response_schema": {
+        "type": "string",
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "response_json": null,
+      "accept": "application/pdf, application/zip",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.release_hold": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.release_hold",
+      "operation_id": "signatureRequestReleaseHold",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/release_hold/{signature_request_id}",
+      "wire_path": "/v3/signature_request/release_hold/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.remove": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.remove",
+      "operation_id": "signatureRequestRemove",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/remove/{signature_request_id}",
+      "wire_path": "/v3/signature_request/remove/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.signature_request.send": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "signature_request.send",
+      "operation_id": "signatureRequestSend",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/send",
+      "wire_path": "/v3/signature_request/send",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "signers",
+          "grouped_signers",
+          "allow_decline",
+          "allow_reassign",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "is_eid",
+          "message",
+          "metadata",
+          "signing_options",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title",
+          "use_text_tags",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.all": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.all",
+      "operation_id": "templateList",
+      "tag": "Template",
+      "method": "GET",
+      "path": "/template/list",
+      "wire_path": "/v3/template/list",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "query",
+          "in": "query",
+          "admitted_name": "query.query",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "templates",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "page_size",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": true
+    },
+    "dropbox-sign-signing-workflows.template.create": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.create",
+      "operation_id": "templateCreate",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/create",
+      "wire_path": "/v3/template/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "allow_reassign",
+          "attachments",
+          "cc_roles",
+          "client_id",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "merge_fields",
+          "message",
+          "metadata",
+          "signer_roles",
+          "subject",
+          "test_mode",
+          "title",
+          "use_preexisting_fields"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.create_embedded_draft": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.create_embedded_draft",
+      "operation_id": "templateCreateEmbeddedDraft",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/create_embedded_draft",
+      "wire_path": "/v3/template/create_embedded_draft",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "allow_ccs",
+          "allow_reassign",
+          "attachments",
+          "cc_roles",
+          "client_id",
+          "editor_options",
+          "field_options",
+          "force_signer_roles",
+          "force_subject_message",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "merge_fields",
+          "message",
+          "metadata",
+          "show_preview",
+          "show_progress_stepper",
+          "signer_roles",
+          "skip_me_now",
+          "subject",
+          "test_mode",
+          "title",
+          "use_preexisting_fields"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.delete": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.delete",
+      "operation_id": "templateDelete",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/delete/{template_id}",
+      "wire_path": "/v3/template/delete/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.file_url.create": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.file_url.create",
+      "operation_id": "templateFilesAsFileUrl",
+      "tag": "Template",
+      "method": "GET",
+      "path": "/template/files_as_file_url/{template_id}",
+      "wire_path": "/v3/template/files_as_file_url/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "force_download",
+          "in": "query",
+          "admitted_name": "query.force_download",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "file_url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.file.download": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.file.download",
+      "operation_id": "templateFiles",
+      "tag": "Template",
+      "method": "GET",
+      "path": "/template/files/{template_id}",
+      "wire_path": "/v3/template/files/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "file_type",
+          "in": "query",
+          "admitted_name": "query.file_type",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/pdf",
+        "application/zip"
+      ],
+      "selected_response_media": "application/pdf",
+      "response_schema": {
+        "type": "string",
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "response_json": null,
+      "accept": "application/pdf, application/zip",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.update_files": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.update_files",
+      "operation_id": "templateUpdateFiles",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/update_files/{template_id}",
+      "wire_path": "/v3/template/update_files/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "client_id",
+          "file_urls",
+          "message",
+          "subject",
+          "test_mode"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.user.add": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.user.add",
+      "operation_id": "templateAddUser",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/add_user/{template_id}",
+      "wire_path": "/v3/template/add_user/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "account_id",
+          "email_address",
+          "skip_notification"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.template.user.remove": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "template.user.remove",
+      "operation_id": "templateRemoveUser",
+      "tag": "Template",
+      "method": "POST",
+      "path": "/template/remove_user/{template_id}",
+      "wire_path": "/v3/template/remove_user/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "account_id",
+          "email_address"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.unclaimed_draft.create": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "unclaimed_draft.create",
+      "operation_id": "unclaimedDraftCreate",
+      "tag": "Unclaimed Draft",
+      "method": "POST",
+      "path": "/unclaimed_draft/create",
+      "wire_path": "/v3/unclaimed_draft/create",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "allow_decline",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "field_options",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "message",
+          "metadata",
+          "show_progress_stepper",
+          "signers",
+          "signing_options",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "type",
+          "use_preexisting_fields",
+          "use_text_tags",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "unclaimed_draft": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "unclaimed_draft",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.unclaimed_draft.create_embedded": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "unclaimed_draft.create_embedded",
+      "operation_id": "unclaimedDraftCreateEmbedded",
+      "tag": "Unclaimed Draft",
+      "method": "POST",
+      "path": "/unclaimed_draft/create_embedded",
+      "wire_path": "/v3/unclaimed_draft/create_embedded",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "file_urls",
+          "allow_ccs",
+          "allow_decline",
+          "allow_reassign",
+          "attachments",
+          "cc_email_addresses",
+          "client_id",
+          "custom_fields",
+          "editor_options",
+          "field_options",
+          "force_signer_page",
+          "force_subject_message",
+          "form_field_groups",
+          "form_field_rules",
+          "form_fields_per_document",
+          "hide_text_tags",
+          "hold_request",
+          "is_for_embedded_signing",
+          "message",
+          "metadata",
+          "requester_email_address",
+          "requesting_redirect_url",
+          "show_preview",
+          "show_progress_stepper",
+          "signers",
+          "signing_options",
+          "signing_redirect_url",
+          "skip_me_now",
+          "subject",
+          "test_mode",
+          "type",
+          "use_preexisting_fields",
+          "use_text_tags",
+          "populate_auto_fill_fields",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "unclaimed_draft": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "unclaimed_draft",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.unclaimed_draft.create_embedded_with_template": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "unclaimed_draft.create_embedded_with_template",
+      "operation_id": "unclaimedDraftCreateEmbeddedWithTemplate",
+      "tag": "Unclaimed Draft",
+      "method": "POST",
+      "path": "/unclaimed_draft/create_embedded_with_template",
+      "wire_path": "/v3/unclaimed_draft/create_embedded_with_template",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "allow_decline",
+          "allow_reassign",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "editor_options",
+          "field_options",
+          "file_urls",
+          "force_signer_roles",
+          "force_subject_message",
+          "hold_request",
+          "is_for_embedded_signing",
+          "message",
+          "metadata",
+          "preview_only",
+          "requester_email_address",
+          "requesting_redirect_url",
+          "show_preview",
+          "show_progress_stepper",
+          "signers",
+          "signing_options",
+          "signing_redirect_url",
+          "skip_me_now",
+          "subject",
+          "template_ids",
+          "test_mode",
+          "title",
+          "populate_auto_fill_fields",
+          "allow_ccs"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "unclaimed_draft": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "unclaimed_draft",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign-signing-workflows.unclaimed_draft.edit_and_resend": {
+      "pack": "dropbox-sign-signing-workflows",
+      "op": "unclaimed_draft.edit_and_resend",
+      "operation_id": "unclaimedDraftEditAndResend",
+      "tag": "Unclaimed Draft",
+      "method": "POST",
+      "path": "/unclaimed_draft/edit_and_resend/{signature_request_id}",
+      "wire_path": "/v3/unclaimed_draft/edit_and_resend/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "client_id",
+          "editor_options",
+          "is_for_embedded_signing",
+          "requester_email_address",
+          "requesting_redirect_url",
+          "show_progress_stepper",
+          "signing_redirect_url",
+          "test_mode"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "unclaimed_draft": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "unclaimed_draft",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "dropbox-sign.account.read": {
+      "pack": "dropbox-sign",
+      "op": "account.read",
+      "operation_id": "accountGet",
+      "tag": "Account",
+      "method": "GET",
+      "path": "/account",
+      "wire_path": "/v3/account",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "email_address",
+          "in": "query",
+          "admitted_name": "query.email_address",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "account",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.bulk_send_job.read": {
+      "pack": "dropbox-sign",
+      "op": "bulk_send_job.read",
+      "operation_id": "bulkSendJobGet",
+      "tag": "Bulk Send Job",
+      "method": "GET",
+      "path": "/bulk_send_job/{bulk_send_job_id}",
+      "wire_path": "/v3/bulk_send_job/{{bulk_send_job_id}}",
+      "parameters": [
+        {
+          "name": "bulk_send_job_id",
+          "in": "path",
+          "admitted_name": "bulk_send_job_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_job": {
+            "type": "object"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "signature_requests": {
+            "type": "array"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "bulk_send_job",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.bulk_send_job.search": {
+      "pack": "dropbox-sign",
+      "op": "bulk_send_job.search",
+      "operation_id": "bulkSendJobList",
+      "tag": "Bulk Send Job",
+      "method": "GET",
+      "path": "/bulk_send_job/list",
+      "wire_path": "/v3/bulk_send_job/list",
+      "parameters": [
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "bulk_send_jobs": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "bulk_send_jobs",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.cancel": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.cancel",
+      "operation_id": "signatureRequestCancel",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/cancel/{signature_request_id}",
+      "wire_path": "/v3/signature_request/cancel/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.read": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.read",
+      "operation_id": "signatureRequestGet",
+      "tag": "Signature Request",
+      "method": "GET",
+      "path": "/signature_request/{signature_request_id}",
+      "wire_path": "/v3/signature_request/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.remind": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.remind",
+      "operation_id": "signatureRequestRemind",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/remind/{signature_request_id}",
+      "wire_path": "/v3/signature_request/remind/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "email_address",
+          "name"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.search": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.search",
+      "operation_id": "signatureRequestList",
+      "tag": "Signature Request",
+      "method": "GET",
+      "path": "/signature_request/list",
+      "wire_path": "/v3/signature_request/list",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "query",
+          "in": "query",
+          "admitted_name": "query.query",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_requests": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_requests",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.send_with_template": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.send_with_template",
+      "operation_id": "signatureRequestSendWithTemplate",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/send_with_template",
+      "wire_path": "/v3/signature_request/send_with_template",
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json",
+          "multipart/form-data"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "template_ids",
+          "allow_decline",
+          "ccs",
+          "client_id",
+          "custom_fields",
+          "file_urls",
+          "is_eid",
+          "message",
+          "metadata",
+          "signers",
+          "signing_options",
+          "signing_redirect_url",
+          "subject",
+          "test_mode",
+          "title"
+        ],
+        "omitted_binary_properties": [
+          "files"
+        ],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.signature_request.update_signer": {
+      "pack": "dropbox-sign",
+      "op": "signature_request.update_signer",
+      "operation_id": "signatureRequestUpdate",
+      "tag": "Signature Request",
+      "method": "POST",
+      "path": "/signature_request/update/{signature_request_id}",
+      "wire_path": "/v3/signature_request/update/{{signature_request_id}}",
+      "parameters": [
+        {
+          "name": "signature_request_id",
+          "in": "path",
+          "admitted_name": "signature_request_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "writable_properties": [
+          "email_address",
+          "name",
+          "signature_id",
+          "expires_at"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "signature_request": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "signature_request",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.team.member.search": {
+      "pack": "dropbox-sign",
+      "op": "team.member.search",
+      "operation_id": "teamMembers",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team/members/{team_id}",
+      "wire_path": "/v3/team/members/{{team_id}}",
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "path",
+          "admitted_name": "team_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team_members": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team_members",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.team.read": {
+      "pack": "dropbox-sign",
+      "op": "team.read",
+      "operation_id": "teamGet",
+      "tag": "Team",
+      "method": "GET",
+      "path": "/team",
+      "wire_path": "/v3/team",
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "team",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.template.read": {
+      "pack": "dropbox-sign",
+      "op": "template.read",
+      "operation_id": "templateGet",
+      "tag": "Template",
+      "method": "GET",
+      "path": "/template/{template_id}",
+      "wire_path": "/v3/template/{{template_id}}",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "template",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    },
+    "dropbox-sign.template.search": {
+      "pack": "dropbox-sign",
+      "op": "template.search",
+      "operation_id": "templateList",
+      "tag": "Template",
+      "method": "GET",
+      "path": "/template/list",
+      "wire_path": "/v3/template/list",
+      "parameters": [
+        {
+          "name": "account_id",
+          "in": "query",
+          "admitted_name": "query.account_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "admitted_name": "query.page",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "admitted_name": "query.page_size",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "query",
+          "in": "query",
+          "admitted_name": "query.query",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array"
+          },
+          "list_info": {
+            "type": "object"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "templates",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": true,
+      "supplemental": false
+    }
+  }
+}

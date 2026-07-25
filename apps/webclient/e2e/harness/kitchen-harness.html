@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edit→Kitchen harness</title>
+    <!-- Shared design tokens (copied next to this file by build-harness.mjs) so
+         the real recipe-editor / pack-builder components render with their CSS
+         variables resolved, matching the deployed webclient. -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 0; font-family: system-ui, sans-serif; background: var(--rc-color-bg, #fff); }
+      #root { min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script type="module" src="./kitchen-harness.js"></script>
+  </body>
+</html>

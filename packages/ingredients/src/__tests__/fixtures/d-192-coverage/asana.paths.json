@@ -1,0 +1,32 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.0 YAML (publish parser handles YAML), 175 paths, commit-pinned URL",
+    "url": "https://raw.githubusercontent.com/Asana/openapi/c13afb76dd53e5f6313b0f60b6efd9a81f270265/defs/asana_oas.yaml",
+    "sha256": "2f541dc34c71323d476b788b06d8f5b2b59eb0b84d1d05373c8e1b1b0cbb5659",
+    "fetched_at": "2026-07-15"
+  },
+  "paths": {
+    "/workspaces": {
+      "get": {}
+    },
+    "/projects": {
+      "get": {},
+      "post": {}
+    },
+    "/projects/{project_gid}": {
+      "get": {}
+    },
+    "/projects/{project_gid}/tasks": {
+      "get": {}
+    },
+    "/tasks": {
+      "get": {},
+      "post": {}
+    },
+    "/tasks/{task_gid}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    }
+  }
+}

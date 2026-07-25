@@ -1,0 +1,19 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1, 8 paths, release-pinned URL (immutable)",
+    "url": "https://api.hubspot.com/public/api/spec/v2/specs/release/22187/version/3",
+    "sha256": "1ba065480c9dc0142f069ff02c73759a4eaaba2c0a54d7d5f74bd66d891fef8e",
+    "fetched_at": "2026-07-01"
+  },
+  "paths": {
+    "/crm/v3/objects/tasks": {
+      "get": {},
+      "post": {}
+    },
+    "/crm/v3/objects/tasks/{taskId}": {
+      "get": {},
+      "delete": {},
+      "patch": {}
+    }
+  }
+}

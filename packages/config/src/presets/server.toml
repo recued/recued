@@ -1,0 +1,37 @@
+# recued-server — VPS / headless server distribution defaults.
+#
+# Binds to 0.0.0.0 by default so a reverse proxy can reach it. When
+# exposing the server to the internet, put it behind TLS-terminating
+# nginx/Caddy/Traefik — the server has no TLS surface of its own. The
+# pair handshake is authenticated separately (realm token + pair code).
+
+[bootstrap]
+data_path    = "~/recued-data"
+bind_host    = "0.0.0.0"
+bind_port    = 7717
+mcp_port     = 7718
+# Set webhook_port to a non-zero value to enable the inbound-webhook
+# surface (required for platforms that only push via webhook). Requires
+# public reachability — use a reverse-proxy path like /webhook or open
+# the port in the firewall.
+webhook_port = 0
+log_path     = "{data_path}/logs"
+
+[runtime]
+"llm.allow_upgrade_default"       = false
+"llm.free_pool_strategy"          = "round_robin"
+"llm.budget"                      = 0
+"vault.quota.per_publisher_bytes" = 1048576
+"vault.quota.total_bytes"         = 52428800
+"data.shared.quota.bytes"         = 104857600
+"shared.max_bytes"                = 52428800
+"cache.max_bytes"                 = 209715200
+"storage.reserve_pct"             = 2
+"log.level"                       = "info"
+"log.max_bytes"                   = 104857600
+"log.rotate_at_pct"               = 75
+"log.debounce_window_s"           = 60
+"log.max_fingerprints"            = 1000
+"scheduler.min_interval_minutes"  = 5
+"recipe.default_timeout_seconds"  = 600
+"tier.grace_period_hours"         = 72

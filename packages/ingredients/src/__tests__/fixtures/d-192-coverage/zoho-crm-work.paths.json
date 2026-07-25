@@ -1,0 +1,1421 @@
+{
+  "_extract": {
+    "note": "Multi-authority contract extract for the bounded Zoho CRM Work v2 composition. The ingredient pin remains record.json for the generic Tasks Source proof; the operation audit also retains every official OAS fragment used by the 48 declared operations, current official HTML exceptions where Zoho OAS is incomplete or contradictory, and the official typed SDK field registry.",
+    "fetched_at": "2026-07-14",
+    "oas_repo_commit": "de677537855ddad3c15e5ba46babdb97cbd16ac1",
+    "sdk_repo_commit": "777640e9ac494ff5c8274b2b3be88526dc9065e7",
+    "primary_pin": {
+      "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/record.json",
+      "sha256": "813d65c1aacc8653879bdbdb552602cf7f3e3b3e1346e6344181e95989f554b4"
+    },
+    "sdk": {
+      "kind": "typed_sdk",
+      "url": "https://raw.githubusercontent.com/zoho/zohocrm-typescript-sdk-8.0/777640e9ac494ff5c8274b2b3be88526dc9065e7/core/com/zoho/crm/api/record/field.ts",
+      "sha256": "82b2a42f060a755476ada3cd54a73a1c3165ea0589db959db0c77f527aa4e967",
+      "raw_bytes": 61220
+    },
+    "declared_operation_count": 48,
+    "unique_method_path_count": 48,
+    "documents": {
+      "org": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/org.json",
+        "sha256": "19006cd39d6e652bc4a7f1c992c8ca17f594feb02c663261512d8ebbc75239ac",
+        "raw_bytes": 16162,
+        "path_count": 1,
+        "operation_count": 1
+      },
+      "users": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/users.json",
+        "sha256": "e196de8e45c9bc19fbc42b437f0f4c8c7df438857da10a5c2652336ab2724d1f",
+        "raw_bytes": 98571,
+        "path_count": 2,
+        "operation_count": 6
+      },
+      "modules": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/modules.json",
+        "sha256": "2dabef7469aff234a8f6bb8d97e640ad02cd8050ed69b78aacd4ded2a8de841e",
+        "raw_bytes": 307769,
+        "path_count": 2,
+        "operation_count": 5
+      },
+      "fields": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/fields.json",
+        "sha256": "615a21fcdb0846e367bdc7a814420d23c9f0582eaf57d0037360296dd0afb68f",
+        "raw_bytes": 194703,
+        "path_count": 2,
+        "operation_count": 6
+      },
+      "record": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/record.json",
+        "sha256": "813d65c1aacc8653879bdbdb552602cf7f3e3b3e1346e6344181e95989f554b4",
+        "raw_bytes": 149918,
+        "path_count": 5,
+        "operation_count": 10
+      },
+      "module_search": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/module_search.json",
+        "sha256": "c1aed65135eca4e7930233564af1dc3b467a67511a4f50671305bf80d7d1cca0",
+        "raw_bytes": 46054,
+        "path_count": 1,
+        "operation_count": 1
+      },
+      "notes": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/notes.json",
+        "sha256": "0ba7892a718f0805a58a38c9812ba505febb5eb4f62f83e5cef0ac50eb762f59",
+        "raw_bytes": 120332,
+        "path_count": 2,
+        "operation_count": 7
+      },
+      "related_notes": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/related_notes.json",
+        "sha256": "486596f5ba1974fbe45ec236e48b0a0d18dc3c1d60af34c0b379be894ed767b3",
+        "raw_bytes": 134520,
+        "path_count": 2,
+        "operation_count": 7
+      },
+      "services": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/services.json",
+        "sha256": "e65d96cce645ce68c4ea48ac2f6942ee5463b5ef335f7f5fb8a22325d586f342",
+        "raw_bytes": 122086,
+        "path_count": 2,
+        "operation_count": 7
+      },
+      "appointments": {
+        "kind": "openapi",
+        "url": "https://raw.githubusercontent.com/zoho/crm-oas/de677537855ddad3c15e5ba46babdb97cbd16ac1/v8.0/appointments.json",
+        "sha256": "af64fedd289ae10941b60754d640f890f46904da4dcb8b8ccfa1d12792bedca5",
+        "raw_bytes": 102874,
+        "path_count": 2,
+        "operation_count": 7
+      },
+      "records_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/get-records.html"
+      },
+      "search_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/search-records.html"
+      },
+      "users_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/get-users.html"
+      },
+      "fields_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/field-meta.html"
+      },
+      "related_records_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/get-related-records.html"
+      },
+      "services_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/get-services.html"
+      },
+      "appointments_html": {
+        "kind": "html",
+        "url": "https://www.zoho.com/crm/developer/docs/api/v8/get-appointments.html"
+      }
+    }
+  },
+  "paths": {
+    "/{module}": {
+      "get": {}
+    },
+    "/{module}/{recordID}": {
+      "get": {}
+    }
+  },
+  "operation_contracts": {
+    "account.note.search": {
+      "source": "related_notes+related_records_html",
+      "method": "GET",
+      "contract_path": "/{parentRecordModule}/{parentRecordId}/Notes",
+      "pack_path": "/Accounts/{{account_id}}/Notes",
+      "path_bindings": {
+        "parentRecordModule": {
+          "static": "Accounts"
+        },
+        "parentRecordId": {
+          "arg": "account_id"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The official HTML reference and live wire convention use per_page. The pinned related_notes OAS spells this one parameter perPage; the pack follows the HTML/runtime spelling and the divergence is asserted explicitly."
+    },
+    "account.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Accounts/{{account_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Accounts"
+        },
+        "recordID": {
+          "arg": "account_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "account.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Accounts",
+      "path_bindings": {
+        "module": {
+          "static": "Accounts"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "territory_id",
+        "include_child",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "appointment.create": {
+      "source": "appointments",
+      "method": "POST",
+      "contract_path": "/Appointments__s",
+      "pack_path": "/Appointments__s",
+      "path_bindings": {},
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "appointment.read": {
+      "source": "appointments+appointments_html",
+      "method": "GET",
+      "contract_path": "/Appointments__s/{appointmentId}",
+      "pack_path": "/Appointments__s/{{appointment_id}}",
+      "path_bindings": {
+        "appointmentId": {
+          "arg": "appointment_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "appointment.search": {
+      "source": "appointments+appointments_html",
+      "method": "GET",
+      "contract_path": "/Appointments__s",
+      "pack_path": "/Appointments__s",
+      "path_bindings": {},
+      "exposed_query": [
+        "fields",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The operation-specific OAS omits list query parameters; the official HTML reference documents the generic records list fields, cvid, sorting, and token pagination for this fixed module."
+    },
+    "appointment.update": {
+      "source": "appointments+appointments_html",
+      "method": "PUT",
+      "contract_path": "/Appointments__s/{appointmentId}",
+      "pack_path": "/Appointments__s/{{appointment_id}}",
+      "path_bindings": {
+        "appointmentId": {
+          "arg": "appointment_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "call.create": {
+      "source": "record",
+      "method": "POST",
+      "contract_path": "/{module}",
+      "pack_path": "/Calls",
+      "path_bindings": {
+        "module": {
+          "static": "Calls"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "call.note.search": {
+      "source": "related_notes+related_records_html",
+      "method": "GET",
+      "contract_path": "/{parentRecordModule}/{parentRecordId}/Notes",
+      "pack_path": "/Calls/{{call_id}}/Notes",
+      "path_bindings": {
+        "parentRecordModule": {
+          "static": "Calls"
+        },
+        "parentRecordId": {
+          "arg": "call_id"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The official HTML reference and live wire convention use per_page. The pinned related_notes OAS spells this one parameter perPage; the pack follows the HTML/runtime spelling and the divergence is asserted explicitly."
+    },
+    "call.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Calls/{{call_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Calls"
+        },
+        "recordID": {
+          "arg": "call_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "call.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Calls",
+      "path_bindings": {
+        "module": {
+          "static": "Calls"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "call.update": {
+      "source": "record",
+      "method": "PUT",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Calls/{{call_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Calls"
+        },
+        "recordID": {
+          "arg": "call_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "case.create": {
+      "source": "record",
+      "method": "POST",
+      "contract_path": "/{module}",
+      "pack_path": "/Cases",
+      "path_bindings": {
+        "module": {
+          "static": "Cases"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "case.note.search": {
+      "source": "related_notes+related_records_html",
+      "method": "GET",
+      "contract_path": "/{parentRecordModule}/{parentRecordId}/Notes",
+      "pack_path": "/Cases/{{case_id}}/Notes",
+      "path_bindings": {
+        "parentRecordModule": {
+          "static": "Cases"
+        },
+        "parentRecordId": {
+          "arg": "case_id"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The official HTML reference and live wire convention use per_page. The pinned related_notes OAS spells this one parameter perPage; the pack follows the HTML/runtime spelling and the divergence is asserted explicitly."
+    },
+    "case.query": {
+      "source": "module_search+search_html",
+      "method": "GET",
+      "contract_path": "/{module}/search",
+      "pack_path": "/Cases/search",
+      "path_bindings": {
+        "module": {
+          "static": "Cases"
+        }
+      },
+      "exposed_query": [
+        "approval_state",
+        "criteria",
+        "word",
+        "email",
+        "phone",
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "case.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Cases/{{case_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Cases"
+        },
+        "recordID": {
+          "arg": "case_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "case.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Cases",
+      "path_bindings": {
+        "module": {
+          "static": "Cases"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "case.update": {
+      "source": "record",
+      "method": "PUT",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Cases/{{case_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Cases"
+        },
+        "recordID": {
+          "arg": "case_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "contact.note.search": {
+      "source": "related_notes+related_records_html",
+      "method": "GET",
+      "contract_path": "/{parentRecordModule}/{parentRecordId}/Notes",
+      "pack_path": "/Contacts/{{contact_id}}/Notes",
+      "path_bindings": {
+        "parentRecordModule": {
+          "static": "Contacts"
+        },
+        "parentRecordId": {
+          "arg": "contact_id"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The official HTML reference and live wire convention use per_page. The pinned related_notes OAS spells this one parameter perPage; the pack follows the HTML/runtime spelling and the divergence is asserted explicitly."
+    },
+    "contact.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Contacts/{{contact_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Contacts"
+        },
+        "recordID": {
+          "arg": "contact_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "contact.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Contacts",
+      "path_bindings": {
+        "module": {
+          "static": "Contacts"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "territory_id",
+        "include_child",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "event.create": {
+      "source": "record",
+      "method": "POST",
+      "contract_path": "/{module}",
+      "pack_path": "/Events",
+      "path_bindings": {
+        "module": {
+          "static": "Events"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "event.note.search": {
+      "source": "related_notes+related_records_html",
+      "method": "GET",
+      "contract_path": "/{parentRecordModule}/{parentRecordId}/Notes",
+      "pack_path": "/Events/{{event_id}}/Notes",
+      "path_bindings": {
+        "parentRecordModule": {
+          "static": "Events"
+        },
+        "parentRecordId": {
+          "arg": "event_id"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The official HTML reference and live wire convention use per_page. The pinned related_notes OAS spells this one parameter perPage; the pack follows the HTML/runtime spelling and the divergence is asserted explicitly."
+    },
+    "event.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Events/{{event_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Events"
+        },
+        "recordID": {
+          "arg": "event_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "event.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Events",
+      "path_bindings": {
+        "module": {
+          "static": "Events"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "event.update": {
+      "source": "record",
+      "method": "PUT",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Events/{{event_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Events"
+        },
+        "recordID": {
+          "arg": "event_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "field.search": {
+      "source": "fields+fields_html",
+      "method": "GET",
+      "contract_path": "/settings/fields",
+      "pack_path": "/settings/fields",
+      "path_bindings": {},
+      "exposed_query": [
+        "module",
+        "include",
+        "type"
+      ],
+      "result_path": "fields",
+      "pagination": {
+        "style": "single_page"
+      },
+      "note": "The official HTML reference makes include optional; the pinned OAS incorrectly marks it required."
+    },
+    "module.search": {
+      "source": "modules",
+      "method": "GET",
+      "contract_path": "/settings/modules",
+      "pack_path": "/settings/modules",
+      "path_bindings": {},
+      "exposed_query": [
+        "status",
+        "feature_name",
+        "include"
+      ],
+      "result_path": "modules",
+      "pagination": {
+        "style": "single_page"
+      }
+    },
+    "note.create": {
+      "source": "notes",
+      "method": "POST",
+      "contract_path": "/Notes",
+      "pack_path": "/Notes",
+      "path_bindings": {},
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "note.read": {
+      "source": "notes",
+      "method": "GET",
+      "contract_path": "/Notes/{id}",
+      "pack_path": "/Notes/{{note_id}}",
+      "path_bindings": {
+        "id": {
+          "arg": "note_id"
+        }
+      },
+      "exposed_query": [
+        "fields"
+      ],
+      "result_path": "data.0"
+    },
+    "note.search": {
+      "source": "notes",
+      "method": "GET",
+      "contract_path": "/Notes",
+      "pack_path": "/Notes",
+      "path_bindings": {},
+      "exposed_query": [
+        "fields",
+        "ids",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "note.update": {
+      "source": "notes",
+      "method": "PUT",
+      "contract_path": "/Notes/{id}",
+      "pack_path": "/Notes/{{note_id}}",
+      "path_bindings": {
+        "id": {
+          "arg": "note_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "org.read": {
+      "source": "org",
+      "method": "GET",
+      "contract_path": "/org",
+      "pack_path": "/org",
+      "path_bindings": {},
+      "exposed_query": [],
+      "result_path": "org"
+    },
+    "service.read": {
+      "source": "services+services_html",
+      "method": "GET",
+      "contract_path": "/Services__s/{id}",
+      "pack_path": "/Services__s/{{service_id}}",
+      "path_bindings": {
+        "id": {
+          "arg": "service_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "service.search": {
+      "source": "services+services_html",
+      "method": "GET",
+      "contract_path": "/Services__s",
+      "pack_path": "/Services__s",
+      "path_bindings": {},
+      "exposed_query": [
+        "fields",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "The operation-specific OAS omits list query parameters; the official HTML reference documents the generic records list fields, cvid, sorting, and token pagination for this fixed module."
+    },
+    "service.update": {
+      "source": "services+services_html",
+      "method": "PUT",
+      "contract_path": "/Services__s/{id}",
+      "pack_path": "/Services__s/{{service_id}}",
+      "path_bindings": {
+        "id": {
+          "arg": "service_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "solution.create": {
+      "source": "record",
+      "method": "POST",
+      "contract_path": "/{module}",
+      "pack_path": "/Solutions",
+      "path_bindings": {
+        "module": {
+          "static": "Solutions"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "solution.query": {
+      "source": "module_search+search_html",
+      "method": "GET",
+      "contract_path": "/{module}/search",
+      "pack_path": "/Solutions/search",
+      "path_bindings": {
+        "module": {
+          "static": "Solutions"
+        }
+      },
+      "exposed_query": [
+        "approval_state",
+        "criteria",
+        "word",
+        "email",
+        "phone",
+        "fields",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "solution.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Solutions/{{solution_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Solutions"
+        },
+        "recordID": {
+          "arg": "solution_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "solution.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Solutions",
+      "path_bindings": {
+        "module": {
+          "static": "Solutions"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "solution.update": {
+      "source": "record",
+      "method": "PUT",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Solutions/{{solution_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Solutions"
+        },
+        "recordID": {
+          "arg": "solution_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "task.create": {
+      "source": "record",
+      "method": "POST",
+      "contract_path": "/{module}",
+      "pack_path": "/Tasks",
+      "path_bindings": {
+        "module": {
+          "static": "Tasks"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "task.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Tasks/{{task_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Tasks"
+        },
+        "recordID": {
+          "arg": "task_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "task.record.list": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/{{module}}",
+      "path_bindings": {
+        "module": {
+          "arg": "module",
+          "source_static": "Tasks"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "task.record.read": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/{{module}}/{{record_id}}",
+      "path_bindings": {
+        "module": {
+          "arg": "module",
+          "source_static": "Tasks"
+        },
+        "recordID": {
+          "arg": "record_id"
+        }
+      },
+      "exposed_query": [],
+      "result_path": "data.0"
+    },
+    "task.search": {
+      "source": "record+records_html",
+      "method": "GET",
+      "contract_path": "/{module}",
+      "pack_path": "/Tasks",
+      "path_bindings": {
+        "module": {
+          "static": "Tasks"
+        }
+      },
+      "exposed_query": [
+        "fields",
+        "ids",
+        "cvid",
+        "sort_by",
+        "sort_order"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "token_from": "info.next_page_token",
+        "token_to": "page_token",
+        "done_path": "info.more_records",
+        "done_equals": false
+      }
+    },
+    "task.update": {
+      "source": "record",
+      "method": "PUT",
+      "contract_path": "/{module}/{recordID}",
+      "pack_path": "/Tasks/{{task_id}}",
+      "path_bindings": {
+        "module": {
+          "static": "Tasks"
+        },
+        "recordID": {
+          "arg": "task_id"
+        }
+      },
+      "exposed_query": [],
+      "body_arg": "body",
+      "result_path": "data"
+    },
+    "user.search": {
+      "source": "users+users_html",
+      "method": "GET",
+      "contract_path": "/users",
+      "pack_path": "/users",
+      "path_bindings": {},
+      "exposed_query": [
+        "type",
+        "ids"
+      ],
+      "result_path": "users",
+      "pagination": {
+        "style": "offset",
+        "page_param": "page",
+        "page_size_param": "per_page",
+        "page_size": 200,
+        "done_path": "info.more_records",
+        "done_equals": false
+      },
+      "note": "ids is documented by the official HTML reference; the OAS omits it and instead carries a response-only type__s typo as a request parameter."
+    }
+  },
+  "sdk_module_fields": {
+    "case": [
+      "Account_Name",
+      "Add_Comment",
+      "Case_Number",
+      "Case_Origin",
+      "Case_Reason",
+      "Comments",
+      "Created_By",
+      "Created_Time",
+      "Deal_Name",
+      "Description",
+      "Email",
+      "Internal_Comments",
+      "Locked__s",
+      "Modified_By",
+      "Modified_Time",
+      "No_of_comments",
+      "Owner",
+      "Phone",
+      "Priority",
+      "Product_Name",
+      "Record_Status__s",
+      "Related_To",
+      "Reported_By",
+      "Solution",
+      "Status",
+      "Subject",
+      "Tag",
+      "Type",
+      "id"
+    ],
+    "solution": [
+      "Add_Comment",
+      "Answer",
+      "Comments",
+      "Created_By",
+      "Created_Time",
+      "Locked__s",
+      "Modified_By",
+      "Modified_Time",
+      "No_of_comments",
+      "Owner",
+      "Product_Name",
+      "Published",
+      "Question",
+      "Record_Status__s",
+      "Solution_Number",
+      "Solution_Title",
+      "Status",
+      "Tag",
+      "id"
+    ],
+    "service": [
+      "Availability_Type",
+      "Available_Dates",
+      "Available_Days",
+      "Available_From",
+      "Available_Till",
+      "Available_Timings",
+      "Created_By",
+      "Created_Time",
+      "Description",
+      "Duration",
+      "Job_Sheet_Required",
+      "Job_Sheet_Section__s",
+      "Location",
+      "Members",
+      "Modified_By",
+      "Modified_Time",
+      "Owner",
+      "Price",
+      "Record_Image",
+      "Record_Status__s",
+      "Service_Name",
+      "Status",
+      "Tag",
+      "Tax",
+      "Unavailable_From",
+      "Unavailable_Till",
+      "id"
+    ],
+    "appointment": [
+      "Additional_Information",
+      "Address",
+      "Appointment_End_Time",
+      "Appointment_For",
+      "Appointment_Name",
+      "Appointment_Start_Time",
+      "Cancellation_Note",
+      "Cancellation_Reason",
+      "Cancelled_By",
+      "Cancelled_Time",
+      "Created_By",
+      "Created_Time",
+      "Duration",
+      "Job_Sheet_Created__s",
+      "Job_Sheet_Description__s",
+      "Job_Sheet_Name__s",
+      "Job_Sheet_Section__s",
+      "Location",
+      "Modified_By",
+      "Modified_Time",
+      "Owner",
+      "Record_Status__s",
+      "Remind_At",
+      "Reschedule_Count",
+      "Reschedule_Note",
+      "Reschedule_Reason",
+      "Rescheduled_By",
+      "Rescheduled_From",
+      "Rescheduled_Time",
+      "Rescheduled_To",
+      "Service_Name",
+      "Status",
+      "Tag",
+      "id"
+    ],
+    "task": [
+      "Closed_Time",
+      "Created_By",
+      "Created_Time",
+      "Description",
+      "Due_Date",
+      "Locked__s",
+      "Modified_By",
+      "Modified_Time",
+      "Owner",
+      "Priority",
+      "Record_Status__s",
+      "Recurring_Activity",
+      "Remind_At",
+      "Send_Notification_Email",
+      "Status",
+      "Subject",
+      "Tag",
+      "What_Id",
+      "Who_Id",
+      "id"
+    ],
+    "call": [
+      "CTI_Entry",
+      "Call_Agenda",
+      "Call_Duration",
+      "Call_Duration_in_seconds",
+      "Call_Purpose",
+      "Call_Result",
+      "Call_Start_Time",
+      "Call_Type",
+      "Caller_ID",
+      "Created_By",
+      "Created_Time",
+      "Description",
+      "Dialled_Number",
+      "Modified_By",
+      "Modified_Time",
+      "Outgoing_Call_Status",
+      "Owner",
+      "Record_Status__s",
+      "Reminder",
+      "Scheduled_In_CRM",
+      "Subject",
+      "Tag",
+      "Voice_Recording__s",
+      "What_Id",
+      "Who_Id",
+      "id"
+    ],
+    "event": [
+      "All_day",
+      "Check_In_Address",
+      "Check_In_By",
+      "Check_In_City",
+      "Check_In_Comment",
+      "Check_In_Country",
+      "Check_In_State",
+      "Check_In_Status",
+      "Check_In_Sub_Locality",
+      "Check_In_Time",
+      "Created_By",
+      "Created_Time",
+      "Description",
+      "End_DateTime",
+      "Event_Title",
+      "Latitude",
+      "Longitude",
+      "Modified_By",
+      "Modified_Time",
+      "Owner",
+      "Participants",
+      "Record_Status__s",
+      "Recurring_Activity",
+      "Remind_At",
+      "Remind_Participants",
+      "Start_DateTime",
+      "Tag",
+      "Venue",
+      "What_Id",
+      "Who_Id",
+      "ZIP_Code",
+      "id"
+    ],
+    "contact": [
+      "Account_Name",
+      "Assistant",
+      "Asst_Phone",
+      "Average_Time_Spent_Minutes",
+      "Change_Log_Time__s",
+      "Created_By",
+      "Created_Time",
+      "Data_Processing_Basis",
+      "Data_Processing_Basis_Details",
+      "Data_Source",
+      "Date_of_Birth",
+      "Days_Visited",
+      "Department",
+      "Description",
+      "Email",
+      "Email_Opt_Out",
+      "Enrich_Status__s",
+      "Fax",
+      "First_Name",
+      "First_Visited_Time",
+      "First_Visited_URL",
+      "Full_Name",
+      "Home_Phone",
+      "Last_Activity_Time",
+      "Last_Enriched_Time__s",
+      "Last_Name",
+      "Last_Visited_Time",
+      "Lead_Source",
+      "Locked__s",
+      "Mailing_City",
+      "Mailing_Country",
+      "Mailing_State",
+      "Mailing_Street",
+      "Mailing_Zip",
+      "Mobile",
+      "Modified_By",
+      "Modified_Time",
+      "Number_Of_Chats",
+      "Other_City",
+      "Other_Country",
+      "Other_Phone",
+      "Other_State",
+      "Other_Street",
+      "Other_Zip",
+      "Owner",
+      "Phone",
+      "Record_Image",
+      "Record_Status__s",
+      "Referrer",
+      "Reporting_To",
+      "Reports_To",
+      "Salutation",
+      "Secondary_Email",
+      "Skype_ID",
+      "Tag",
+      "Territories",
+      "Title",
+      "Twitter",
+      "Unsubscribed_Mode",
+      "Unsubscribed_Time",
+      "Vendor_Name",
+      "Visitor_Score",
+      "id"
+    ],
+    "account": [
+      "Account_Name",
+      "Account_Number",
+      "Account_Site",
+      "Account_Type",
+      "Annual_Revenue",
+      "Billing_City",
+      "Billing_Code",
+      "Billing_Country",
+      "Billing_State",
+      "Billing_Street",
+      "Change_Log_Time__s",
+      "Created_By",
+      "Created_Time",
+      "Currency",
+      "Description",
+      "Employees",
+      "Enrich_Status__s",
+      "Exchange_Rate",
+      "Fax",
+      "Industry",
+      "Last_Activity_Time",
+      "Last_Enriched_Time__s",
+      "Locked__s",
+      "Modified_By",
+      "Modified_Time",
+      "Owner",
+      "Ownership",
+      "Parent_Account",
+      "Phone",
+      "Rating",
+      "Record_Image",
+      "Record_Status__s",
+      "SIC_Code",
+      "Shipping_City",
+      "Shipping_Code",
+      "Shipping_Country",
+      "Shipping_State",
+      "Shipping_Street",
+      "Tag",
+      "Territories",
+      "Ticker_Symbol",
+      "Website",
+      "id"
+    ],
+    "note": [
+      "Associated_Id__s",
+      "Created_By",
+      "Created_Time",
+      "Modified_By",
+      "Modified_Time",
+      "Note_Content",
+      "Note_Title",
+      "Owner",
+      "Parent_Id",
+      "Record_Status__s",
+      "id"
+    ]
+  }
+}

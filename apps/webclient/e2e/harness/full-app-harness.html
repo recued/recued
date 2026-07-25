@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Full-app webclient harness</title>
+    <!-- Shared design tokens (copied next to this file by build-harness.mjs) so
+         the real shell + route components render with their CSS variables
+         resolved, matching the deployed webclient. The components inject their
+         own scoped <style> tags into <head> at runtime; this file supplies only
+         the token layer + the root reset. -->
+    <link rel="stylesheet" href="./tokens.css" />
+    <style>
+      :root { color-scheme: light; }
+      html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: var(--rc-color-bg, #fff); }
+      #root { min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script type="module" src="./full-app-harness.js"></script>
+  </body>
+</html>

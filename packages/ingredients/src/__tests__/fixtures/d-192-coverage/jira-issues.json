@@ -1,0 +1,142 @@
+{
+  "_fixture_note": "D-192 P1b coverage declaration (spec \u00a7 Pack coverage gate) \u2014 validation artifact, unpublished + runtime-disabled; exercises the work_entity_sources contract against the real pinned official OpenAPI document (see the sibling *.paths.json extract). auth is stubbed 'none' (enrollment realism is out of P1b scope).",
+  "slug": "jira-issues-coverage",
+  "name": "Jira Issues (D-192 coverage)",
+  "description": "D-192 P1b coverage declaration for Jira Issues (D-192 coverage).",
+  "author": "recued-core",
+  "kind": "connection",
+  "version": 1,
+  "category": "data",
+  "risk_tier": "read",
+  "tags": [
+    "d-192-coverage"
+  ],
+  "input": {
+    "operation": null,
+    "args": null
+  },
+  "output": {
+    "result": "result"
+  },
+  "operations": {
+    "issue.search": {
+      "operation_id": "recued-core/jira.issue.search",
+      "risk_tier": "read"
+    },
+    "issue.read": {
+      "operation_id": "recued-core/jira.issue.read",
+      "risk_tier": "read"
+    }
+  },
+  "surfaces": {
+    "api": {
+      "transport": "rest",
+      "default_base_url": "https://your-domain.atlassian.net",
+      "auth": {
+        "kind": "none"
+      },
+      "openapi_source": {
+        "url": "https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+        "sha256": "d77af740aeaafd81c506c68343073ccacb7ca81da51494ed342461383d882dc6"
+      },
+      "executes": {
+        "issue.search": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/rest/api/3/search/jql"
+        },
+        "issue.read": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/rest/api/3/issue/{issueIdOrKey}"
+        }
+      }
+    }
+  },
+  "work_entity_sources": [
+    {
+      "kind": "task",
+      "source_id_template": "jira.${connection_id}.task",
+      "source_label_template": "Jira issues (${connection_name})",
+      "source_kind": "connection",
+      "contract_source": {
+        "kind": "openapi",
+        "surface": "surfaces.api.openapi_source",
+        "url": "https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+        "sha256": "d77af740aeaafd81c506c68343073ccacb7ca81da51494ed342461383d882dc6",
+        "operations": [
+          "issue.search",
+          "issue.read"
+        ]
+      },
+      "remote": {
+        "entity": "issue",
+        "id": "id",
+        "version": {
+          "kind": "updated_at",
+          "field": "fields.updated"
+        },
+        "hash_fields": [
+          "fields.summary",
+          "fields.status",
+          "fields.duedate",
+          "fields.assignee"
+        ]
+      },
+      "ops": {
+        "list": "issue.search",
+        "read": "issue.read"
+      },
+      "sync": {
+        "mode": "read_only",
+        "depth": "meta",
+        "tombstones": "none",
+        "list_scope": "filtered",
+        "stale_after_ms": 21600000
+      },
+      "read_resolution": {
+        "default": "local_rich_meta",
+        "remote_when": [
+          "field_missing",
+          "source_stale",
+          "complete_body_required",
+          "current_remote_required"
+        ],
+        "wild_query": {
+          "remote_fanout": "bounded_targeted",
+          "max_sources": 3,
+          "max_remote_records": 10,
+          "on_exceeds_cap": "ask_to_narrow"
+        }
+      },
+      "projection": {
+        "canonical": {
+          "title": "fields.summary",
+          "state": "fields.status.name",
+          "due_at": "fields.duedate"
+        },
+        "preview": {
+          "body": {
+            "field": "fields.description",
+            "max_chars": 800
+          }
+        },
+        "extension": {
+          "detail_fidelity": "preview",
+          "issue_key": "key"
+        }
+      },
+      "relationships": [
+        {
+          "local_field": "parent_project_id",
+          "remote_field": "fields.project",
+          "target": "project",
+          "remote_entity": "project",
+          "pairing": "remote_id",
+          "cardinality": "one",
+          "write_back": false
+        }
+      ]
+    }
+  ]
+}

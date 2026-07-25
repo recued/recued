@@ -1,0 +1,13 @@
+{
+  "name": "Recued",
+  "short_name": "Recued",
+  "description": "Personal context layer — your paired recued-server, accessible from any browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FBF4EE",
+  "theme_color": "#2A1F1A",
+  "icons": [],
+  "categories": ["productivity", "utilities"]
+}

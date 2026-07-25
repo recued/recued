@@ -1,0 +1,185 @@
+{
+  "_fixture_note": "D-192 P1b coverage declaration (spec \u00a7 Pack coverage gate) \u2014 validation artifact, unpublished + runtime-disabled; exercises the work_entity_sources contract against the real pinned official OpenAPI document (see the sibling *.paths.json extract). auth is stubbed 'none' (enrollment realism is out of P1b scope).",
+  "slug": "hubspot-tasks-coverage",
+  "name": "HubSpot Tasks (D-192 coverage)",
+  "description": "D-192 P1b coverage declaration for HubSpot Tasks (D-192 coverage).",
+  "author": "recued-core",
+  "kind": "connection",
+  "version": 1,
+  "category": "data",
+  "risk_tier": "read",
+  "tags": [
+    "d-192-coverage"
+  ],
+  "input": {
+    "operation": null,
+    "args": null
+  },
+  "output": {
+    "result": "result"
+  },
+  "operations": {
+    "task.list": {
+      "operation_id": "recued-core/hubspot.task.list",
+      "risk_tier": "read"
+    },
+    "task.read": {
+      "operation_id": "recued-core/hubspot.task.read",
+      "risk_tier": "read"
+    },
+    "task.create": {
+      "operation_id": "recued-core/hubspot.task.create",
+      "risk_tier": "write"
+    },
+    "task.update": {
+      "operation_id": "recued-core/hubspot.task.update",
+      "risk_tier": "write"
+    },
+    "task.delete": {
+      "operation_id": "recued-core/hubspot.task.delete",
+      "risk_tier": "write"
+    }
+  },
+  "surfaces": {
+    "api": {
+      "transport": "rest",
+      "default_base_url": "https://api.hubapi.com",
+      "auth": {
+        "kind": "none"
+      },
+      "openapi_source": {
+        "url": "https://api.hubspot.com/public/api/spec/v2/specs/release/22187/version/3",
+        "sha256": "1ba065480c9dc0142f069ff02c73759a4eaaba2c0a54d7d5f74bd66d891fef8e"
+      },
+      "executes": {
+        "task.list": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/crm/v3/objects/tasks",
+          "static_query": {
+            "properties": "hs_task_subject,hs_task_status,hs_task_priority,hs_timestamp,hs_task_body,hs_task_type"
+          }
+        },
+        "task.read": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/crm/v3/objects/tasks/{taskId}",
+          "static_query": {
+            "properties": "hs_task_subject,hs_task_status,hs_task_priority,hs_timestamp,hs_task_body,hs_task_type"
+          }
+        },
+        "task.create": {
+          "kind": "rest",
+          "method": "POST",
+          "path_template": "/crm/v3/objects/tasks"
+        },
+        "task.update": {
+          "kind": "rest",
+          "method": "PATCH",
+          "path_template": "/crm/v3/objects/tasks/{taskId}"
+        },
+        "task.delete": {
+          "kind": "rest",
+          "method": "DELETE",
+          "path_template": "/crm/v3/objects/tasks/{taskId}"
+        }
+      }
+    }
+  },
+  "work_entity_sources": [
+    {
+      "kind": "task",
+      "source_id_template": "hubspot.${connection_id}.task",
+      "source_label_template": "HubSpot tasks (${connection_name})",
+      "source_kind": "connection",
+      "contract_source": {
+        "kind": "openapi",
+        "surface": "surfaces.api.openapi_source",
+        "url": "https://api.hubspot.com/public/api/spec/v2/specs/release/22187/version/3",
+        "sha256": "1ba065480c9dc0142f069ff02c73759a4eaaba2c0a54d7d5f74bd66d891fef8e",
+        "operations": [
+          "task.list",
+          "task.read",
+          "task.create",
+          "task.update",
+          "task.delete"
+        ]
+      },
+      "remote": {
+        "entity": "task",
+        "id": "id",
+        "version": {
+          "kind": "updated_at",
+          "field": "updatedAt"
+        },
+        "hash_fields": [
+          "properties.hs_task_subject",
+          "properties.hs_task_status",
+          "properties.hs_task_priority",
+          "properties.hs_timestamp",
+          "properties.hs_task_body"
+        ]
+      },
+      "ops": {
+        "list": "task.list",
+        "read": "task.read",
+        "create": "task.create",
+        "update": "task.update",
+        "delete": "task.delete"
+      },
+      "sync": {
+        "mode": "read_write",
+        "depth": "meta",
+        "tombstones": "native",
+        "stale_after_ms": 21600000,
+        "tombstone_field": "archived"
+      },
+      "read_resolution": {
+        "default": "local_rich_meta",
+        "remote_when": [
+          "field_missing",
+          "source_stale",
+          "complete_body_required",
+          "current_remote_required",
+          "write_preflight"
+        ],
+        "wild_query": {
+          "remote_fanout": "bounded_targeted",
+          "max_sources": 3,
+          "max_remote_records": 10,
+          "on_exceeds_cap": "ask_to_narrow"
+        }
+      },
+      "projection": {
+        "canonical": {
+          "title": "properties.hs_task_subject",
+          "state": "properties.hs_task_status",
+          "priority": "properties.hs_task_priority",
+          "due_at": "properties.hs_timestamp"
+        },
+        "preview": {
+          "body": {
+            "field": "properties.hs_task_body",
+            "max_chars": 800
+          }
+        },
+        "extension": {
+          "detail_fidelity": "preview",
+          "native_type": "properties.hs_task_type"
+        }
+      },
+      "writable_fields": [
+        "title",
+        "state",
+        "priority",
+        "due_at",
+        "body"
+      ],
+      "write_policy": {
+        "conditional_write": "none",
+        "stale_write": "manual_merge",
+        "field_conflicts": "manual_merge"
+      }
+    }
+  ]
+}

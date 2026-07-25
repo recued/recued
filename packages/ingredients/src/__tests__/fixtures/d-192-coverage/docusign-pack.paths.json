@@ -1,0 +1,96 @@
+{
+  "_extract": {
+    "url": "https://raw.githubusercontent.com/docusign/OpenAPI-Specifications/858a3ae59b0edbc8beea4fa3a6d7fe803833dd68/esignature.rest.swagger-v2.1.json",
+    "sha256": "77f1998c313d69701eca52cb80e860c2a4b7e97bdceea11fd0427f9405f06c2e",
+    "source_title": "Docusign eSignature REST API",
+    "source_version": "v2.1"
+  },
+  "swagger": "2.0",
+  "basePath": "/restapi",
+  "paths": {
+    "/v2.1/accounts/{accountId}/envelopes": {
+      "get": {
+        "operationId": "Envelopes_GetEnvelopes",
+        "responses": {
+          "200": {
+            "schema": {
+              "$ref": "#/definitions/envelopesInformation"
+            }
+          }
+        }
+      }
+    },
+    "/v2.1/accounts/{accountId}/envelopes/{envelopeId}": {
+      "get": {
+        "operationId": "Envelopes_GetEnvelope",
+        "responses": {
+          "200": {
+            "schema": {
+              "$ref": "#/definitions/envelope"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "envelopesInformation": {
+      "type": "object",
+      "properties": {
+        "envelopes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/envelope"
+          }
+        },
+        "nextUri": {
+          "type": "string"
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "properties": {
+        "envelopeId": {
+          "type": "string"
+        },
+        "emailSubject": {
+          "type": "string"
+        },
+        "emailBlurb": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "lastModifiedDateTime": {
+          "type": "string"
+        },
+        "expireDateTime": {
+          "type": "string"
+        },
+        "completedDateTime": {
+          "type": "string"
+        },
+        "declinedDateTime": {
+          "type": "string"
+        },
+        "voidedDateTime": {
+          "type": "string"
+        },
+        "voidedReason": {
+          "type": "string"
+        },
+        "envelopeUri": {
+          "type": "string"
+        },
+        "sentDateTime": {
+          "type": "string"
+        },
+        "statusChangedDateTime": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

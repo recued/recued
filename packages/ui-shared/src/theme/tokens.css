@@ -1,0 +1,125 @@
+/* Recued canonical design tokens — D-174 P6 "near-monochrome ramp + one
+ * accent + one danger". THE single source of truth for the colour system,
+ * shared across every surface (webclient, Browser Bridge, dashboard,
+ * marketplace). Previously this :root block was hand-copied into four
+ * places and had drifted (the Bridge ran a divergent warm palette); this
+ * file ends that.
+ *
+ * SOURCE OF TRUTH. Edit here, then run `npm run -w @recued/ui-shared
+ * generate:tokens` to refresh `tokens.generated.ts` (the string form a
+ * worker / JS surface inlines). A guard test fails CI if the two drift.
+ *
+ * Consume one of two ways:
+ *   - file:   <link rel="stylesheet" href="tokens.css">  (static HTML
+ *             surfaces copy this file into their build output)
+ *   - string: import { THEME_TOKENS_CSS } from '@recued/ui-shared/theme'
+ *             (SSR worker / JS injection — no extra request, no FOUC)
+ *
+ * Surface-LOCAL aliases (dashboard `--accent-light`, marketplace
+ * `--bg-card`) stay in that surface's own CSS, layered AFTER this file.
+ * The back-compat alias block below mirrors what ui-shared
+ * `PRIMITIVE_STYLES` already injects so a surface linking only this file
+ * still resolves legacy `var(--fail)` / `var(--ok)` references; that
+ * duplication consolidates here over time. */
+
+:root {
+  /* Tell the UA to render native controls + CSS system colours
+   * (ButtonText / ButtonFace / Canvas / form widgets / scrollbars) for the
+   * ACTIVE theme. Without this a bare <button> resolves `color: ButtonText`
+   * = black even on our dark surfaces, so its label is unreadable. Flipped
+   * to `dark` in the dark blocks below. */
+  color-scheme: light;
+  /* Canonical D-174 tokens (light). */
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-sunk: #f4f6f8;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --fg-subtle: #a1a1aa;
+  --fg-muted: #71717a;
+  --fg: #27272a;
+  --fg-strong: #18181b;
+  --brand: #0e7490;
+  --accent: #0e7490;
+  --accent-weak: rgba(14, 116, 144, 0.10);
+  --danger: #dc2626;
+  --danger-weak: #fef2f2;
+  --on-accent: #ffffff;
+  --on-danger: #ffffff;
+
+  /* Back-compat aliases → canonical. No new hues: success/warning carry
+   * meaning by glyph + label + weight (D-174 / WCAG 1.4.1), so --ok/--warn
+   * resolve to neutral surfaces, never a green/amber. */
+  --bg-soft: var(--surface-sunk);
+  --bg-elev: var(--surface);
+  --surface-subtle: var(--surface-sunk);
+  --border-subtle: var(--border);
+  --muted: var(--fg-muted);
+  --fail: var(--danger);
+  --fail-soft: var(--danger-weak);
+  --danger-bg: var(--danger-weak);
+  --accent-soft: var(--accent-weak);
+  --accent-bg: var(--accent-weak);
+  --accent-fg: var(--on-accent);
+  --ok: var(--fg);
+  --ok-soft: var(--surface-sunk);
+  --ok-subtle: var(--surface-sunk);
+  --ok-bg: var(--surface-sunk);
+  --ok-fg: var(--fg);
+  --success: var(--ok);
+  --warn: var(--fg);
+  --warn-soft: var(--surface-sunk);
+  --warn-bg: var(--surface-sunk);
+  --muted-bg: var(--surface-sunk);
+  --muted-fg: var(--fg-muted);
+  --fail-subtle: var(--danger-weak);
+  --accent-subtle: var(--accent-weak);
+}
+
+/* Dark palette. Two activation paths share the SAME values (kept in sync
+ * by hand — CSS can't DRY across a media-query boundary):
+ *   1. `:root[data-theme="dark"]` — the user pinned Dark via the in-app
+ *      theme toggle. Wins regardless of OS preference.
+ *   2. `@media (prefers-color-scheme: dark) :root:not([data-theme])` — the
+ *      OS prefers dark AND the user hasn't pinned a theme (no data-theme
+ *      attribute = "System"). Pinning Light sets `data-theme="light"`,
+ *      which this `:not([data-theme])` excludes, so Light always wins. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #09090b;
+  --surface: #18181b;
+  --surface-sunk: #242428;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --fg-subtle: #52525b;
+  --fg-muted: #a1a1aa;
+  --fg: #e4e4e7;
+  --fg-strong: #fafafa;
+  --accent: #22c1d6;
+  --accent-weak: rgba(34, 193, 214, 0.15);
+  --danger: #f87171;
+  --danger-weak: rgba(248, 113, 113, 0.12);
+  --on-accent: #061315;
+  --on-danger: #18181b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #09090b;
+    --surface: #18181b;
+    --surface-sunk: #242428;
+    --border: #27272a;
+    --border-strong: #3f3f46;
+    --fg-subtle: #52525b;
+    --fg-muted: #a1a1aa;
+    --fg: #e4e4e7;
+    --fg-strong: #fafafa;
+    --accent: #22c1d6;
+    --accent-weak: rgba(34, 193, 214, 0.15);
+    --danger: #f87171;
+    --danger-weak: rgba(248, 113, 113, 0.12);
+    --on-accent: #061315;
+    --on-danger: #18181b;
+  }
+}

@@ -1,0 +1,4088 @@
+{
+  "vendor": "Basecamp",
+  "repository": "https://github.com/basecamp/basecamp-sdk",
+  "commit": "5885d72a3b89d0ab503186c274369e4b1cecfdfd",
+  "url": "https://raw.githubusercontent.com/basecamp/basecamp-sdk/5885d72a3b89d0ab503186c274369e4b1cecfdfd/openapi.json",
+  "sha256": "cd592e7069e3632169f3097a104ac018beac92689327e72a2fde4ec33612a442",
+  "openapi": "3.1.0",
+  "title": "Basecamp",
+  "version": "2026-07-03",
+  "license": "MIT",
+  "byte_length": 784368,
+  "path_count": 131,
+  "operation_count": 203,
+  "selected_operation_count": 200,
+  "emitted_operation_count": 201,
+  "excluded_operation_count": 3,
+  "selected_method_counts": {
+    "DELETE": 20,
+    "GET": 100,
+    "POST": 39,
+    "PUT": 41
+  },
+  "selected_pack_counts": {
+    "basecamp-automation": 69,
+    "basecamp-communication": 47,
+    "basecamp-content": 13,
+    "basecamp-work": 71
+  },
+  "selected_tag_counts": {
+    "Account": 3,
+    "Automation": 40,
+    "Boosts": 6,
+    "Campfire": 12,
+    "Card Tables": 18,
+    "ClientFeatures": 7,
+    "Files": 13,
+    "Forwards": 6,
+    "Gauges": 7,
+    "Messages": 16,
+    "MyAssignments": 3,
+    "MyNotifications": 2,
+    "People": 16,
+    "Projects": 5,
+    "Schedule": 13,
+    "Todos": 17,
+    "untagged": 16
+  },
+  "paginated_operation_count": 44,
+  "docs_contract": {
+    "repository": "https://github.com/basecamp/bc-api",
+    "commit": "02f69fb7635a45a4da2f1c12dbf6086e306e19f8",
+    "api_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/README.md",
+    "api_sha256": "df651945bbf9055672a9e97527b0cf1b5ea7996555d29b9afc9fb0505f78696b",
+    "api_byte_length": 17687,
+    "todo_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/sections/todos.md",
+    "todo_sha256": "6374e7cbd9b6d1ca795bfd4d4797572bca018a317e203bb17ac42972f546ffab",
+    "todo_byte_length": 16060,
+    "todolists_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/sections/todolists.md",
+    "todolists_sha256": "d1b661b97011736567ab7e2d6687f7b127fc666c71db765f4b0d176c168d0f36",
+    "todolists_byte_length": 10247,
+    "recordings_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/sections/recordings.md",
+    "recordings_sha256": "f25d74c3106f17ff702bb288e555306bacff53dbb7f1bfd4504e03183375287a",
+    "recordings_byte_length": 3014,
+    "auth_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/sections/authentication.md",
+    "auth_sha256": "69152d431ae07e2c546de457dac714a56bd59ad2aa646428578bc999c24b9e35",
+    "auth_byte_length": 5897,
+    "assignments_url": "https://raw.githubusercontent.com/basecamp/bc-api/02f69fb7635a45a4da2f1c12dbf6086e306e19f8/sections/my_assignments.md",
+    "assignments_sha256": "3877e796284ddee8005066de81f1d20f4e30f129efb0ab8a929e71b44136bec9",
+    "assignments_byte_length": 6040,
+    "license": "CC BY-SA 4.0"
+  },
+  "admission": {
+    "api_reference": "https://github.com/basecamp/bc-api",
+    "openapi_contract": "https://github.com/basecamp/basecamp-sdk/blob/main/openapi.json",
+    "official_sdk": "https://github.com/basecamp/basecamp-sdk",
+    "authentication_reference": "https://github.com/basecamp/bc-api/blob/master/sections/authentication.md",
+    "todo_reference": "https://github.com/basecamp/bc-api/blob/master/sections/todos.md",
+    "todolist_reference": "https://github.com/basecamp/bc-api/blob/master/sections/todolists.md",
+    "recordings_reference": "https://github.com/basecamp/bc-api/blob/master/sections/recordings.md",
+    "assignments_reference": "https://github.com/basecamp/bc-api/blob/master/sections/my_assignments.md"
+  },
+  "contract_gaps": {
+    "binary_uploads": "Three official operations remain excluded: multipart account-logo bytes and octet-stream attachment/Campfire-upload bytes. The static JSON REST composition cannot serialize them and no JSON operation is presented as equivalent.",
+    "account_scope": "Every API route is scoped by numeric accountId. Recipes request it explicitly; the Todo Source resolves accountId from the bound connection config key account_id, selected from the bc3 authorization record.",
+    "source_hydration": "The account-wide recordings list is fixed to active Todo rows and returns Recording references. sync.list_rows=reference hydrates every id through GetTodo before any Todo-only projection path is read.",
+    "link_pagination": "Forty-four official reads declare Basecamp link pagination. The catalog follows only same-origin RFC Link rel=next paths through the reviewed link_header pagination mechanic.",
+    "missing_openapi_transport_metadata": "The official generated OpenAPI declares no servers or securitySchemes. Basecamp official API and authentication documentation supplies the fixed API origin, OAuth endpoints, bearer use, account scoping, and mandatory identifying User-Agent.",
+    "caching": "Basecamp recommends ETag or Last-Modified conditional requests. The current catalog operation model does not declare conditional validators, so reads use cache_ttl_ms=0 rather than claiming freshness semantics it cannot execute.",
+    "rich_text": "Basecamp content and description fields may contain rich-text HTML. The pack transports them as bounded strings and does not claim plaintext normalization.",
+    "todo_date_nullability": "The generated OpenAPI models optional Todo starts_on and due_on values as strings, while the official Todo response examples return null. Source projection treats missing or null as no date; response_schema is documentary and is not used to manufacture a value.",
+    "replacement_updates": "Official Todo and todolist references require callers to pass every existing mutable value they want preserved because omitted parameters clear current values. The two affected catalog operation descriptions carry that warning and remain approval-always.",
+    "id_precision": "Official assignment examples contain identifier 9007199254741623, beyond JavaScript Number.MAX_SAFE_INTEGER. Every Basecamp REST binding opts into unsafe-integer response preservation; every int64 request argument is string-shaped, and JSON body ID fields declare exact decimal-string-to-integer serialization."
+  },
+  "source_field_proof": {
+    "list_schema": "Recording",
+    "read_schema": "Todo",
+    "list_rows": "reference",
+    "static_list_query": {
+      "type": "Todo",
+      "status": "active",
+      "sort": "updated_at",
+      "direction": "desc"
+    },
+    "connection_config": {
+      "accountId": "account_id"
+    },
+    "fields": {
+      "id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        }
+      },
+      "updated_at": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "content": {
+        "openapi_list": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "description": {
+        "openapi_list": {
+          "present": false,
+          "required": false,
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "completed": {
+        "openapi_list": {
+          "present": false,
+          "required": false,
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": false,
+          "type": "boolean",
+          "nullable": false
+        }
+      },
+      "status": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "due_on": {
+        "openapi_list": {
+          "present": false,
+          "required": false,
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "starts_on": {
+        "openapi_list": {
+          "present": false,
+          "required": false,
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": false,
+          "type": "string",
+          "nullable": false
+        }
+      },
+      "assignees": {
+        "openapi_list": {
+          "present": false,
+          "required": false,
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": false,
+          "type": "array",
+          "nullable": false
+        }
+      },
+      "bucket.id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        }
+      },
+      "parent.id": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "integer",
+          "format": "int64",
+          "nullable": false
+        }
+      },
+      "app_url": {
+        "openapi_list": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        },
+        "openapi_read": {
+          "present": true,
+          "required": true,
+          "type": "string",
+          "nullable": false
+        }
+      }
+    }
+  },
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/{accountId}/account.json",
+      "operation_id": "GetAccount",
+      "tag": "Account",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "account.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/account/logo.json",
+      "operation_id": "RemoveAccountLogo",
+      "tag": "Account",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "account.remove_account_logo",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/account/logo.json",
+      "operation_id": "UpdateAccountLogo",
+      "tag": "Account",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "multipart",
+      "pagination": null,
+      "selected": false,
+      "reason": "multipart/form-data account logo bytes are not representable by the current static JSON REST composition"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/account/name.json",
+      "operation_id": "UpdateAccountName",
+      "tag": "Account",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "account.update_account_name",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/attachments.json",
+      "operation_id": "CreateAttachment",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/octet-stream"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "binary",
+      "pagination": null,
+      "selected": false,
+      "reason": "application/octet-stream attachment bytes are not representable by the current static JSON REST composition"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/boosts/{boostId}",
+      "operation_id": "DeleteBoost",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "boost.delete_boost",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/boosts/{boostId}",
+      "operation_id": "GetBoost",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "boost.get_boost",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/buckets/{bucketId}/card_tables/columns/{columnId}/color.json",
+      "operation_id": "SetCardColumnColor",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "bucket.set_card_column_color",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/buckets/{bucketId}/card_tables/columns/{columnId}/on_hold.json",
+      "operation_id": "DisableCardColumnOnHold",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "bucket.disable_card_column_on_hold",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/buckets/{bucketId}/card_tables/columns/{columnId}/on_hold.json",
+      "operation_id": "EnableCardColumnOnHold",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "bucket.enable_card_column_on_hold",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/buckets/{bucketId}/webhooks.json",
+      "operation_id": "ListWebhooks",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "bucket.list_webhooks",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/buckets/{bucketId}/webhooks.json",
+      "operation_id": "CreateWebhook",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "bucket.create_webhook",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/card_tables/{cardTableId}",
+      "operation_id": "GetCardTable",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.get_card_table",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/{cardTableId}/columns.json",
+      "operation_id": "CreateCardColumn",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.create_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/{cardTableId}/moves.json",
+      "operation_id": "MoveCardColumn",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.move_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/card_tables/cards/{cardId}",
+      "operation_id": "GetCard",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.get_card",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/card_tables/cards/{cardId}",
+      "operation_id": "UpdateCard",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.update_card",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/cards/{cardId}/moves.json",
+      "operation_id": "MoveCard",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.move_card",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/cards/{cardId}/positions.json",
+      "operation_id": "RepositionCardStep",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.reposition_card_step",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/cards/{cardId}/steps.json",
+      "operation_id": "CreateCardStep",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.create_card_step",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/card_tables/columns/{columnId}",
+      "operation_id": "GetCardColumn",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.get_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/card_tables/columns/{columnId}",
+      "operation_id": "UpdateCardColumn",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.update_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/card_tables/lists/{columnId}/cards.json",
+      "operation_id": "ListCards",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.list_cards",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/lists/{columnId}/cards.json",
+      "operation_id": "CreateCard",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.create_card",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/card_tables/lists/{columnId}/subscription.json",
+      "operation_id": "UnsubscribeFromCardColumn",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.unsubscribe_from_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/card_tables/lists/{columnId}/subscription.json",
+      "operation_id": "SubscribeToCardColumn",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.subscribe_to_card_column",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/card_tables/steps/{stepId}",
+      "operation_id": "GetCardStep",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.get_card_step",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/card_tables/steps/{stepId}",
+      "operation_id": "UpdateCardStep",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.update_card_step",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/card_tables/steps/{stepId}/completions.json",
+      "operation_id": "SetCardStepCompletion",
+      "tag": "Card Tables",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "card_table.set_card_step_completion",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/categories.json",
+      "operation_id": "ListMessageTypes",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message_type.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/categories.json",
+      "operation_id": "CreateMessageType",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "categories_json.create_message_type",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/categories/{typeId}",
+      "operation_id": "DeleteMessageType",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message_type.delete_message_type",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/categories/{typeId}",
+      "operation_id": "GetMessageType",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message_type.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/categories/{typeId}",
+      "operation_id": "UpdateMessageType",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message_type.update_message_type",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats.json",
+      "operation_id": "ListCampfires",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}",
+      "operation_id": "GetCampfire",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}/integrations.json",
+      "operation_id": "ListChatbots",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.list_chatbots",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/chats/{campfireId}/integrations.json",
+      "operation_id": "CreateChatbot",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.create_chatbot",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/chats/{campfireId}/integrations/{chatbotId}",
+      "operation_id": "DeleteChatbot",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.delete_chatbot",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}/integrations/{chatbotId}",
+      "operation_id": "GetChatbot",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.get_chatbot",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/chats/{campfireId}/integrations/{chatbotId}",
+      "operation_id": "UpdateChatbot",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.update_chatbot",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}/lines.json",
+      "operation_id": "ListCampfireLines",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.list_campfire_lines",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/chats/{campfireId}/lines.json",
+      "operation_id": "CreateCampfireLine",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.create_campfire_line",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/chats/{campfireId}/lines/{lineId}",
+      "operation_id": "DeleteCampfireLine",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.delete_campfire_line",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}/lines/{lineId}",
+      "operation_id": "GetCampfireLine",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.get_campfire_line",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/chats/{campfireId}/uploads.json",
+      "operation_id": "ListCampfireUploads",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "campfire.list_campfire_uploads",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/chats/{campfireId}/uploads.json",
+      "operation_id": "CreateCampfireUpload",
+      "tag": "Campfire",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/octet-stream"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "binary",
+      "pagination": null,
+      "selected": false,
+      "reason": "application/octet-stream Campfire upload bytes are not representable by the current static JSON REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/circles/people.json",
+      "operation_id": "ListPingablePeople",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "circle.list_pingable_people",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/approvals.json",
+      "operation_id": "ListClientApprovals",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.list_client_approvals",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/approvals/{approvalId}",
+      "operation_id": "GetClientApproval",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.get_client_approval",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/correspondences.json",
+      "operation_id": "ListClientCorrespondences",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.list_client_correspondences",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/correspondences/{correspondenceId}",
+      "operation_id": "GetClientCorrespondence",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.get_client_correspondence",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/recordings/{recordingId}/replies.json",
+      "operation_id": "ListClientReplies",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.list_client_replies",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/client/recordings/{recordingId}/replies/{replyId}",
+      "operation_id": "GetClientReply",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "client.get_client_reply",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/comments/{commentId}",
+      "operation_id": "GetComment",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "comment.get_comment",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/comments/{commentId}",
+      "operation_id": "UpdateComment",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "comment.update_comment",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/dock/tools.json",
+      "operation_id": "CloneTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "tool.clone_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/dock/tools/{toolId}",
+      "operation_id": "DeleteTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "tool.delete_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/dock/tools/{toolId}",
+      "operation_id": "GetTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "tool.get_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/dock/tools/{toolId}",
+      "operation_id": "UpdateTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "tool.update_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/documents/{documentId}",
+      "operation_id": "GetDocument",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "document.get_document",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/documents/{documentId}",
+      "operation_id": "UpdateDocument",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "document.update_document",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/gauge_needles/{needleId}",
+      "operation_id": "DestroyGaugeNeedle",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "gauge.destroy_gauge_needle",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/gauge_needles/{needleId}",
+      "operation_id": "GetGaugeNeedle",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "gauge.get_gauge_needle",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/gauge_needles/{needleId}",
+      "operation_id": "UpdateGaugeNeedle",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "gauge.update_gauge_needle",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/inbox_forwards/{forwardId}",
+      "operation_id": "GetForward",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "forward.get_forward",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/inbox_forwards/{forwardId}/replies.json",
+      "operation_id": "ListForwardReplies",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "forward.list_forward_replies",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/inbox_forwards/{forwardId}/replies.json",
+      "operation_id": "CreateForwardReply",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "forward.create_forward_reply",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/inbox_forwards/{forwardId}/replies/{replyId}",
+      "operation_id": "GetForwardReply",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "forward.get_forward_reply",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/inboxes/{inboxId}",
+      "operation_id": "GetInbox",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "inbox.get_inbox",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/inboxes/{inboxId}/forwards.json",
+      "operation_id": "ListForwards",
+      "tag": "Forwards",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "inbox.list_forwards",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/lineup/markers.json",
+      "operation_id": "ListLineupMarkers",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "lineup.list_lineup_markers",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/lineup/markers.json",
+      "operation_id": "CreateLineupMarker",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "lineup.create_lineup_marker",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/lineup/markers/{markerId}",
+      "operation_id": "DeleteLineupMarker",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "lineup.delete_lineup_marker",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/lineup/markers/{markerId}",
+      "operation_id": "UpdateLineupMarker",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "lineup.update_lineup_marker",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/message_boards/{boardId}",
+      "operation_id": "GetMessageBoard",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message_board.get_message_board",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/message_boards/{boardId}/messages.json",
+      "operation_id": "ListMessages",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/message_boards/{boardId}/messages.json",
+      "operation_id": "CreateMessage",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message.create",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/messages/{messageId}",
+      "operation_id": "GetMessage",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/messages/{messageId}",
+      "operation_id": "UpdateMessage",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "message.update_message",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/assignments.json",
+      "operation_id": "GetMyAssignments",
+      "tag": "MyAssignments",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "assignment.mine",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/assignments/completed.json",
+      "operation_id": "GetMyCompletedAssignments",
+      "tag": "MyAssignments",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "assignment.completed.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/assignments/due.json",
+      "operation_id": "GetMyDueAssignments",
+      "tag": "MyAssignments",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "assignment.due.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/preferences.json",
+      "operation_id": "GetMyPreferences",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.get_my_preferences",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/my/preferences.json",
+      "operation_id": "UpdateMyPreferences",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.update_my_preferences",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/profile.json",
+      "operation_id": "GetMyProfile",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.get_my_profile",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/my/profile.json",
+      "operation_id": "UpdateMyProfile",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.update_my_profile",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/question_reminders.json",
+      "operation_id": "GetQuestionReminders",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.get_question_reminders",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/my/readings.json",
+      "operation_id": "GetMyNotifications",
+      "tag": "MyNotifications",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.get_my_notifications",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/my/unreads.json",
+      "operation_id": "MarkAsRead",
+      "tag": "MyNotifications",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "my.mark_as_read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/people.json",
+      "operation_id": "ListPeople",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "person.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/people/{personId}",
+      "operation_id": "GetPerson",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "person.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/people/{personId}/out_of_office.json",
+      "operation_id": "DisableOutOfOffice",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "person.disable_out_of_office",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/people/{personId}/out_of_office.json",
+      "operation_id": "GetOutOfOffice",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "person.get_out_of_office",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/people/{personId}/out_of_office.json",
+      "operation_id": "EnableOutOfOffice",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "person.enable_out_of_office",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects.json",
+      "operation_id": "ListProjects",
+      "tag": "Projects",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/projects.json",
+      "operation_id": "CreateProject",
+      "tag": "Projects",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "projects_json.create_project",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/projects/{projectId}",
+      "operation_id": "TrashProject",
+      "tag": "Projects",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.trash_project",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/{projectId}",
+      "operation_id": "GetProject",
+      "tag": "Projects",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/projects/{projectId}",
+      "operation_id": "UpdateProject",
+      "tag": "Projects",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.update_project",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/projects/{projectId}/gauge.json",
+      "operation_id": "ToggleGauge",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.toggle_gauge",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/{projectId}/gauge/needles.json",
+      "operation_id": "ListGaugeNeedles",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.list_gauge_needles",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/projects/{projectId}/gauge/needles.json",
+      "operation_id": "CreateGaugeNeedle",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.create_gauge_needle",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/{projectId}/people.json",
+      "operation_id": "ListProjectPeople",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "project.list_project_people",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/projects/{projectId}/people/users.json",
+      "operation_id": "UpdateProjectAccess",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "project.update_project_access",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/{projectId}/timeline.json",
+      "operation_id": "GetProjectTimeline",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.timeline",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/{projectId}/timesheet.json",
+      "operation_id": "GetProjectTimesheet",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "project.get_project_timesheet",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/projects/recordings.json",
+      "operation_id": "ListRecordings",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/question_answers/{answerId}",
+      "operation_id": "GetAnswer",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question_answer.get_answer",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/question_answers/{answerId}",
+      "operation_id": "UpdateAnswer",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question_answer.update_answer",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questionnaires/{questionnaireId}",
+      "operation_id": "GetQuestionnaire",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "questionnaire.get_questionnaire",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questionnaires/{questionnaireId}/questions.json",
+      "operation_id": "ListQuestions",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "questionnaire.list_questions",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/questionnaires/{questionnaireId}/questions.json",
+      "operation_id": "CreateQuestion",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "questionnaire.create_question",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questions/{questionId}",
+      "operation_id": "GetQuestion",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.get_question",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/questions/{questionId}",
+      "operation_id": "UpdateQuestion",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.update_question",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questions/{questionId}/answers.json",
+      "operation_id": "ListAnswers",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.list_answers",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/questions/{questionId}/answers.json",
+      "operation_id": "CreateAnswer",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.create_answer",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questions/{questionId}/answers/by.json",
+      "operation_id": "ListQuestionAnswerers",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.list_question_answerers",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/questions/{questionId}/answers/by/{personId}",
+      "operation_id": "GetAnswersByPerson",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.get_answers_by_person",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/questions/{questionId}/notification_settings.json",
+      "operation_id": "UpdateQuestionNotificationSettings",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.update_question_notification_settings",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/questions/{questionId}/pause.json",
+      "operation_id": "ResumeQuestion",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.resume_question",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/questions/{questionId}/pause.json",
+      "operation_id": "PauseQuestion",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "question.pause_question",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/recordings/{messageId}/pin.json",
+      "operation_id": "UnpinMessage",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.unpin_message",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{messageId}/pin.json",
+      "operation_id": "PinMessage",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.pin_message",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}",
+      "operation_id": "GetRecording",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.get_recording",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/boosts.json",
+      "operation_id": "ListRecordingBoosts",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.list_recording_boosts",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{recordingId}/boosts.json",
+      "operation_id": "CreateRecordingBoost",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.create_recording_boost",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{recordingId}/client_visibility.json",
+      "operation_id": "SetClientVisibility",
+      "tag": "ClientFeatures",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.set_client_visibility",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/comments.json",
+      "operation_id": "ListComments",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.list_comments",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{recordingId}/comments.json",
+      "operation_id": "CreateComment",
+      "tag": "Messages",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.create_comment",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/events.json",
+      "operation_id": "ListEvents",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.list_events",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/events/{eventId}/boosts.json",
+      "operation_id": "ListEventBoosts",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.list_event_boosts",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{recordingId}/events/{eventId}/boosts.json",
+      "operation_id": "CreateEventBoost",
+      "tag": "Boosts",
+      "intended_pack": "basecamp-communication",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-communication",
+      "op": "recording.create_event_boost",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{recordingId}/status/active.json",
+      "operation_id": "UnarchiveRecording",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.unarchive_recording",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{recordingId}/status/archived.json",
+      "operation_id": "ArchiveRecording",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.archive_recording",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{recordingId}/status/trashed.json",
+      "operation_id": "TrashRecording",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.trash_recording",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/recordings/{recordingId}/subscription.json",
+      "operation_id": "Unsubscribe",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.unsubscribe",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/subscription.json",
+      "operation_id": "GetSubscription",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.get_subscription",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{recordingId}/subscription.json",
+      "operation_id": "Subscribe",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.subscribe",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{recordingId}/subscription.json",
+      "operation_id": "UpdateSubscription",
+      "tag": "People",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.update_subscription",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/recordings/{recordingId}/timesheet.json",
+      "operation_id": "GetRecordingTimesheet",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "recording.get_recording_timesheet",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{recordingId}/timesheet/entries.json",
+      "operation_id": "CreateTimesheetEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "recording.create_timesheet_entry",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/recordings/{toolId}/position.json",
+      "operation_id": "DisableTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.disable_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/recordings/{toolId}/position.json",
+      "operation_id": "EnableTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.enable_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/recordings/{toolId}/position.json",
+      "operation_id": "RepositionTool",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "recording.reposition_tool",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/gauges.json",
+      "operation_id": "ListGauges",
+      "tag": "Gauges",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.list_gauges",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/progress.json",
+      "operation_id": "GetProgressReport",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "report.get_progress_report",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/schedules/upcoming.json",
+      "operation_id": "GetUpcomingSchedule",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.get_upcoming_schedule",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/timesheet.json",
+      "operation_id": "GetTimesheetReport",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.get_timesheet_report",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/todos/assigned.json",
+      "operation_id": "ListAssignablePeople",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.list_assignable_people",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/todos/assigned/{personId}",
+      "operation_id": "GetAssignedTodos",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.get_assigned_todos",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/todos/overdue.json",
+      "operation_id": "GetOverdueTodos",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "report.get_overdue_todos",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/reports/users/progress/{personId}.json",
+      "operation_id": "GetPersonProgress",
+      "tag": "untagged",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header",
+        "result_path": "events"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "report.get_person_progress",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/schedule_entries/{entryId}",
+      "operation_id": "GetScheduleEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule_entry.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/schedule_entries/{entryId}",
+      "operation_id": "UpdateScheduleEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule_entry.update_schedule_entry",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/schedule_entries/{entryId}/occurrences/{date}",
+      "operation_id": "GetScheduleEntryOccurrence",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule_entry.get_schedule_entry_occurrence",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/schedules/{scheduleId}",
+      "operation_id": "GetSchedule",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule.get_schedule",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/schedules/{scheduleId}",
+      "operation_id": "UpdateScheduleSettings",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule.update_schedule_settings",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/schedules/{scheduleId}/entries.json",
+      "operation_id": "ListScheduleEntries",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule_entry.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/schedules/{scheduleId}/entries.json",
+      "operation_id": "CreateScheduleEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "schedule_entry.create",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/search.json",
+      "operation_id": "Search",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "search.search",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/searches/metadata.json",
+      "operation_id": "GetSearchMetadata",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "search.metadata",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/templates.json",
+      "operation_id": "ListTemplates",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.list",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/templates.json",
+      "operation_id": "CreateTemplate",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "templates_json.create_template",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/templates/{templateId}",
+      "operation_id": "DeleteTemplate",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.delete_template",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/templates/{templateId}",
+      "operation_id": "GetTemplate",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/templates/{templateId}",
+      "operation_id": "UpdateTemplate",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.update_template",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/templates/{templateId}/project_constructions.json",
+      "operation_id": "CreateProjectFromTemplate",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.create_project_from_template",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/templates/{templateId}/project_constructions/{constructionId}",
+      "operation_id": "GetProjectConstruction",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "template.get_project_construction",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/timesheet_entries/{entryId}",
+      "operation_id": "GetTimesheetEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "timesheet_entry.get_timesheet_entry",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/timesheet_entries/{entryId}",
+      "operation_id": "UpdateTimesheetEntry",
+      "tag": "Schedule",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "timesheet_entry.update_timesheet_entry",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/todolists/{groupId}/position.json",
+      "operation_id": "RepositionTodolistGroup",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.reposition_todolist_group",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todolists/{id}",
+      "operation_id": "GetTodolistOrGroup",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.get_todolist_or_group",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/todolists/{id}",
+      "operation_id": "UpdateTodolistOrGroup",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.update_todolist_or_group",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todolists/{todolistId}/groups.json",
+      "operation_id": "ListTodolistGroups",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.list_todolist_groups",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/todolists/{todolistId}/groups.json",
+      "operation_id": "CreateTodolistGroup",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.create_todolist_group",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todolists/{todolistId}/todos.json",
+      "operation_id": "ListTodos",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todolist.list_todos",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/todolists/{todolistId}/todos.json",
+      "operation_id": "CreateTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.create",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/todos/{todoId}",
+      "operation_id": "TrashTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.trash",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todos/{todoId}",
+      "operation_id": "GetTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.read",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/todos/{todoId}",
+      "operation_id": "UpdateTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.update",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/todos/{todoId}/completion.json",
+      "operation_id": "UncompleteTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.uncomplete",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/todos/{todoId}/completion.json",
+      "operation_id": "CompleteTodo",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.complete",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/todos/{todoId}/position.json",
+      "operation_id": "RepositionTodo",
+      "tag": "untagged",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todo.reposition",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todosets/{todosetId}",
+      "operation_id": "GetTodoset",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todoset.get_todoset",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todosets/{todosetId}/hill.json",
+      "operation_id": "GetHillChart",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todoset.get_hill_chart",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/todosets/{todosetId}/hills/settings.json",
+      "operation_id": "UpdateHillChartSettings",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todoset.update_hill_chart_settings",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/todosets/{todosetId}/todolists.json",
+      "operation_id": "ListTodolists",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todoset.list_todolists",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/todosets/{todosetId}/todolists.json",
+      "operation_id": "CreateTodolist",
+      "tag": "Todos",
+      "intended_pack": "basecamp-work",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-work",
+      "op": "todoset.create_todolist",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/uploads/{uploadId}",
+      "operation_id": "GetUpload",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "upload.get_upload",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/uploads/{uploadId}",
+      "operation_id": "UpdateUpload",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "upload.update_upload",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/uploads/{uploadId}/versions.json",
+      "operation_id": "ListUploadVersions",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "upload.list_upload_versions",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/vaults/{vaultId}",
+      "operation_id": "GetVault",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.get_vault",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/vaults/{vaultId}",
+      "operation_id": "UpdateVault",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.update_vault",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/vaults/{vaultId}/documents.json",
+      "operation_id": "ListDocuments",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.list_documents",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/vaults/{vaultId}/documents.json",
+      "operation_id": "CreateDocument",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.create_document",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/vaults/{vaultId}/uploads.json",
+      "operation_id": "ListUploads",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.list_uploads",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/vaults/{vaultId}/uploads.json",
+      "operation_id": "CreateUpload",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.create_upload",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/vaults/{vaultId}/vaults.json",
+      "operation_id": "ListVaults",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": {
+        "style": "link_header"
+      },
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.list_vaults",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/{accountId}/vaults/{vaultId}/vaults.json",
+      "operation_id": "CreateVault",
+      "tag": "Files",
+      "intended_pack": "basecamp-content",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-content",
+      "op": "vault.create_vault",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/{accountId}/webhooks/{webhookId}",
+      "operation_id": "DeleteWebhook",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "webhook.delete_webhook",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/{accountId}/webhooks/{webhookId}",
+      "operation_id": "GetWebhook",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "none",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "webhook.get_webhook",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/{accountId}/webhooks/{webhookId}",
+      "operation_id": "UpdateWebhook",
+      "tag": "Automation",
+      "intended_pack": "basecamp-automation",
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "response_media": [
+        "application/json"
+      ],
+      "body_mode": "json_fields",
+      "pagination": null,
+      "selected": true,
+      "pack": "basecamp-automation",
+      "op": "webhook.update_webhook",
+      "reason": "official Basecamp operation with buildable static JSON or bodyless REST transport"
+    }
+  ]
+}

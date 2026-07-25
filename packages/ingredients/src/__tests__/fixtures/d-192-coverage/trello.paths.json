@@ -1,0 +1,2307 @@
+{
+  "_extract": {
+    "note": "paths and minimal parameter-shape extract of the pinned official Trello OpenAPI 3 document; covers all 59 Trello v2 bindings. The pack path_alias strips the runtime /1 server prefix before documentary comparison.",
+    "url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json?_v=1.1132.0",
+    "sha256": "b50fca38c5ea62025f9778482f89f11ae3da0dd983d31ba49401c4422e450b19",
+    "fetched_at": "2026-07-14",
+    "openapi": "3.0.0",
+    "document_version": "0.0.1",
+    "raw_path_count": 191,
+    "operation_count": 59,
+    "parameter_count": 265,
+    "servers": [
+      {
+        "url": "https://api.trello.com/1"
+      }
+    ]
+  },
+  "paths": {
+    "/actions/{id}": {
+      "get": {}
+    },
+    "/boards/": {
+      "post": {}
+    },
+    "/boards/{boardId}/actions": {
+      "get": {}
+    },
+    "/boards/{id}": {
+      "get": {},
+      "put": {}
+    },
+    "/boards/{id}/cards/{filter}": {
+      "get": {}
+    },
+    "/boards/{id}/customFields": {
+      "get": {}
+    },
+    "/boards/{id}/labels": {
+      "get": {}
+    },
+    "/boards/{id}/lists": {
+      "get": {}
+    },
+    "/boards/{id}/members": {
+      "get": {}
+    },
+    "/cards": {
+      "post": {}
+    },
+    "/cards/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/cards/{id}/actions": {
+      "get": {}
+    },
+    "/cards/{id}/actions/{idAction}/comments": {
+      "put": {},
+      "delete": {}
+    },
+    "/cards/{id}/actions/comments": {
+      "post": {}
+    },
+    "/cards/{id}/attachments": {
+      "get": {},
+      "post": {}
+    },
+    "/cards/{id}/attachments/{idAttachment}": {
+      "delete": {}
+    },
+    "/cards/{id}/checkItem/{idCheckItem}": {
+      "put": {}
+    },
+    "/cards/{id}/checklists": {
+      "get": {},
+      "post": {}
+    },
+    "/cards/{id}/customFieldItems": {
+      "get": {}
+    },
+    "/cards/{id}/idLabels": {
+      "post": {}
+    },
+    "/cards/{id}/idLabels/{idLabel}": {
+      "delete": {}
+    },
+    "/cards/{id}/idMembers": {
+      "post": {}
+    },
+    "/cards/{id}/idMembers/{idMember}": {
+      "delete": {}
+    },
+    "/cards/{id}/members": {
+      "get": {}
+    },
+    "/cards/{idCard}/customField/{idCustomField}/item": {
+      "put": {}
+    },
+    "/checklists/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/checklists/{id}/checkItems": {
+      "get": {},
+      "post": {}
+    },
+    "/checklists/{id}/checkItems/{idCheckItem}": {
+      "delete": {}
+    },
+    "/labels": {
+      "post": {}
+    },
+    "/labels/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/lists": {
+      "post": {}
+    },
+    "/lists/{id}": {
+      "get": {},
+      "put": {}
+    },
+    "/lists/{id}/cards": {
+      "get": {}
+    },
+    "/members/{id}": {
+      "get": {}
+    },
+    "/members/{id}/boards": {
+      "get": {}
+    },
+    "/members/{id}/cards": {
+      "get": {}
+    },
+    "/members/{id}/organizations": {
+      "get": {}
+    },
+    "/organizations/{id}": {
+      "get": {}
+    },
+    "/organizations/{id}/boards": {
+      "get": {}
+    },
+    "/organizations/{id}/members": {
+      "get": {}
+    },
+    "/search": {
+      "get": {}
+    },
+    "/webhooks/": {
+      "post": {}
+    },
+    "/webhooks/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    }
+  },
+  "operation_parameters": {
+    "member.current": {
+      "query": [
+        {
+          "name": "actions",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boardBackgrounds",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boardsInvited",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boardsInvited_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boardStars",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "cards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customBoardBackgrounds",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customEmoji",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customStickers",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "notifications",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization_paid_account",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "organizations",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organizationsInvited",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organizationsInvited_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "paid_account",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "savedSearches",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "tokens",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "member.board.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "lists",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "member.card.list": {
+      "query": [
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.work_entity.list": {
+      "query": [
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "member.organization.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "paid_account",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "organization.read": {
+      "query": [],
+      "body": []
+    },
+    "organization.board.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "organization.member.list": {
+      "query": [],
+      "body": []
+    },
+    "board.read": {
+      "query": [
+        {
+          "name": "actions",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "boardStars",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_pluginData",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "cards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checklists",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customFields",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "labels",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "lists",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "members",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberships",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "myPrefs",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization_pluginData",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "pluginData",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "tags",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.create": {
+      "query": [
+        {
+          "name": "defaultLabels",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "defaultLists",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "desc",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idBoardSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idOrganization",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "keepFromSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "powerUps",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_background",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_cardAging",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_cardCovers",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_comments",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_invitations",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_permissionLevel",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_selfJoin",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs_voting",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.update": {
+      "query": [
+        {
+          "name": "closed",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "desc",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idOrganization",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/background",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/calendarFeedEnabled",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/cardAging",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/cardCovers",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/comments",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/hideVotes",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/invitations",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/permissionLevel",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/selfJoin",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "prefs/voting",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "subscribed",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.list.list": {
+      "query": [
+        {
+          "name": "card_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "cards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.card.list": {
+      "query": [],
+      "body": []
+    },
+    "board.member.list": {
+      "query": [],
+      "body": []
+    },
+    "board.label.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "object"
+          ],
+          "required": false
+        },
+        {
+          "name": "limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.action.list": {
+      "query": [
+        {
+          "name": "before",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "object"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "format",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idModels",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "member",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "member_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberCreator",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberCreator_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "reactions",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "since",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "board.custom_field.list": {
+      "query": [],
+      "body": []
+    },
+    "list.create": {
+      "query": [
+        {
+          "name": "idBoard",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "idListSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "list.read": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "list.update": {
+      "query": [
+        {
+          "name": "closed",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "idBoard",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "subscribed",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "list.card.list": {
+      "query": [],
+      "body": []
+    },
+    "card.create": {
+      "query": [
+        {
+          "name": "address",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "cardRole",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "coordinates",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "desc",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "due",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "dueComplete",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "fileSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idCardSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idLabels",
+          "types": [
+            "array"
+          ],
+          "required": false
+        },
+        {
+          "name": "idList",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "idMembers",
+          "types": [
+            "array"
+          ],
+          "required": false
+        },
+        {
+          "name": "keepFromSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "locationName",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "mimeType",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "start",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "urlSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.read": {
+      "query": [
+        {
+          "name": "actions",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "attachment_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "attachments",
+          "types": [
+            "boolean",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "board",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "board_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checkItemStates",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "checklist_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checklists",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customFieldItems",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "list",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "member_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "members",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "membersVoted",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberVoted_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pluginData",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "sticker_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "stickers",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.work_entity.read": {
+      "query": [
+        {
+          "name": "actions",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "attachment_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "attachments",
+          "types": [
+            "boolean",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "board",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "board_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checkItemStates",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "checklist_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checklists",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "customFieldItems",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "list",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "member_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "members",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "membersVoted",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberVoted_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pluginData",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "sticker_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "stickers",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.update": {
+      "query": [
+        {
+          "name": "address",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "closed",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "coordinates",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "cover",
+          "types": [
+            "object"
+          ],
+          "required": false
+        },
+        {
+          "name": "desc",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "due",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "dueComplete",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "idAttachmentCover",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idBoard",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idLabels",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idList",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idMembers",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "locationName",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "start",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "subscribed",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.delete": {
+      "query": [],
+      "body": []
+    },
+    "card.action.list": {
+      "query": [
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.comment.create": {
+      "query": [
+        {
+          "name": "text",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "body": []
+    },
+    "card.comment.update": {
+      "query": [
+        {
+          "name": "text",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "body": []
+    },
+    "card.comment.delete": {
+      "query": [],
+      "body": []
+    },
+    "card.member.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.member.add": {
+      "query": [
+        {
+          "name": "value",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.member.remove": {
+      "query": [],
+      "body": []
+    },
+    "card.label.add": {
+      "query": [
+        {
+          "name": "value",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.label.remove": {
+      "query": [],
+      "body": []
+    },
+    "card.attachment.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.attachment.create_url": {
+      "query": [
+        {
+          "name": "file",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "mimeType",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "setCover",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "url",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.attachment.delete": {
+      "query": [],
+      "body": []
+    },
+    "card.checklist.list": {
+      "query": [
+        {
+          "name": "checkItem_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checkItems",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.checklist.create": {
+      "query": [
+        {
+          "name": "idChecklistSource",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "card.custom_field_items.list": {
+      "query": [],
+      "body": []
+    },
+    "card.custom_field.update": {
+      "query": [],
+      "body": [
+        {
+          "name": "idValue",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "value",
+          "types": [
+            "object"
+          ],
+          "required": false
+        }
+      ]
+    },
+    "checklist.read": {
+      "query": [
+        {
+          "name": "cards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checkItem_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "checkItems",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "checklist.update": {
+      "query": [
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "checklist.delete": {
+      "query": [],
+      "body": []
+    },
+    "checklist.item.list": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "filter",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "checklist.item.create": {
+      "query": [
+        {
+          "name": "checked",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "due",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "dueReminder",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "idMember",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "checklist.item.update": {
+      "query": [
+        {
+          "name": "due",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "dueReminder",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "idChecklist",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idMember",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "pos",
+          "types": [
+            "number",
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "state",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "checklist.item.delete": {
+      "query": [],
+      "body": []
+    },
+    "label.read": {
+      "query": [
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "label.create": {
+      "query": [
+        {
+          "name": "color",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "idBoard",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "body": []
+    },
+    "label.update": {
+      "query": [
+        {
+          "name": "color",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "label.delete": {
+      "query": [],
+      "body": []
+    },
+    "action.read": {
+      "query": [
+        {
+          "name": "display",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "entities",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "member",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "member_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberCreator",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "memberCreator_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "search.query": {
+      "query": [
+        {
+          "name": "board_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "board_organization",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "boards_limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_attachments",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_board",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_list",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_members",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "card_stickers",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "cards_limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "cards_page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "idBoards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idCards",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idOrganizations",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "member_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "members_limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "modelTypes",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organization_fields",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "organizations_limit",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "partial",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "query",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "body": []
+    },
+    "webhook.create": {
+      "query": [
+        {
+          "name": "active",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "callbackURL",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "description",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idModel",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "body": []
+    },
+    "webhook.read": {
+      "query": [],
+      "body": []
+    },
+    "webhook.update": {
+      "query": [
+        {
+          "name": "active",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        },
+        {
+          "name": "callbackURL",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "description",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "idModel",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "webhook.delete": {
+      "query": [],
+      "body": []
+    }
+  }
+}

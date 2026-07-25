@@ -1,0 +1,63 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the separately pinned official v3 document; wire and document paths match exactly",
+    "url": "https://developer.clickup.com/openapi/ClickUp_PUBLIC_API_V3.yaml",
+    "sha256": "167e0b99e0c2218312d1318fff613f180dccdfcb8decb724ce08559aa04329f2",
+    "fetched_at": "2026-07-14",
+    "source_title": "ClickUp Public API v3",
+    "source_version": "version"
+  },
+  "openapi": "3.0.0",
+  "servers": [
+    {
+      "url": "https://api.clickup.com/",
+      "description": "ClickUp"
+    }
+  ],
+  "paths": {
+    "/api/v3/workspaces/{workspace_id}/{entity_type}/{entity_id}/attachments": {
+      "get": {
+        "operationId": "getParentEntityAttachments"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/docs": {
+      "get": {
+        "operationId": "searchDocsPublic"
+      },
+      "post": {
+        "operationId": "createDocPublic"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/docs/{doc_id}": {
+      "get": {
+        "operationId": "getDocPublic"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/docs/{doc_id}/page_listing": {
+      "get": {
+        "operationId": "getDocPageListingPublic"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages": {
+      "get": {
+        "operationId": "getDocPagesPublic"
+      },
+      "post": {
+        "operationId": "createPagePublic"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages/{page_id}": {
+      "get": {
+        "operationId": "getPagePublic"
+      },
+      "put": {
+        "operationId": "editPagePublic"
+      }
+    },
+    "/api/v3/workspaces/{workspace_id}/tasks/{task_id}/home_list/{list_id}": {
+      "put": {
+        "operationId": "moveTask"
+      }
+    }
+  }
+}

@@ -1,0 +1,2054 @@
+{
+  "source": "https://developer.gocardless.com/openapi-schema-public.json",
+  "sha256": "0b30c0710c61d2c38b0b28e4307ed6d14c172b4f10a2b8d1fd5b7cf29190284e",
+  "openapi": "3.0.0",
+  "api_version": "2015-07-06",
+  "schema_version": "0.101.0",
+  "path_count": 107,
+  "operation_count": 137,
+  "selected_operation_count": 114,
+  "admission": {
+    "official_reference": "https://developer.gocardless.com/api-reference",
+    "request_signing_reference": "https://developer.gocardless.com/sending-money/api-request-signing/",
+    "outbound_import_reference": "https://developer.gocardless.com/partners/importing-outbound-payments",
+    "restrictions_reference": "https://developer.gocardless.com/api-reference#restrictions"
+  },
+  "contract_gaps": {
+    "query_parameters": "The official OpenAPI declares no query parameters. Fixed documented API-reference filters are restored by the generator; open-ended metadata[key] filters remain omitted because the static REST binder cannot enumerate arbitrary query keys.",
+    "required_request_fields": "The official OpenAPI does not mark request bodies or body leaves required. Generated body args therefore preserve the provider schema without inventing requiredness; GoCardless remains authoritative at request validation time and bundled write recipes supply their narrow required inputs."
+  },
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/balances",
+      "operation_id": "list_balance",
+      "tags": [
+        "Balance"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/bank_account_details/{customer_bank_account_id}",
+      "operation_id": "get_bank_account_details",
+      "tags": [
+        "Bank Account Detail"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/bank_account_holder_verifications",
+      "operation_id": "create_bank_account_holder_verification",
+      "tags": [
+        "Bank Account Holder Verification"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/bank_account_holder_verifications/{bank_account_holder_verification_id}",
+      "operation_id": "get_bank_account_holder_verifications",
+      "tags": [
+        "Bank Account Holder Verification"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/bank_authorisations",
+      "operation_id": "create_bank_authorisation",
+      "tags": [
+        "Bank Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/bank_authorisations/{bank_authorisation_id}",
+      "operation_id": "get_bank_authorisations",
+      "tags": [
+        "Bank Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/bank_details_lookups",
+      "operation_id": "create_bank_details_lookup",
+      "tags": [
+        "Bank Details Lookup"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_request_flows",
+      "operation_id": "create_billing_request_flow",
+      "tags": [
+        "Billing Request Flow"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_request_flows/{billing_request_flow_id}/actions/initialise",
+      "operation_id": "initialise_billing_request_flow",
+      "tags": [
+        "Billing Request Flow"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/billing_request_templates",
+      "operation_id": "list_billing_request_template",
+      "tags": [
+        "Billing Request Template"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_request_templates",
+      "operation_id": "create_billing_request_template",
+      "tags": [
+        "Billing Request Template"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/billing_request_templates/{billing_request_template_id}",
+      "operation_id": "get_billing_request_templates",
+      "tags": [
+        "Billing Request Template"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/billing_request_templates/{billing_request_template_id}",
+      "operation_id": "update_billing_request_templates",
+      "tags": [
+        "Billing Request Template"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/billing_requests",
+      "operation_id": "list_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests",
+      "operation_id": "create_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/billing_requests/{billing_request_id}",
+      "operation_id": "get_billing_requests",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/cancel",
+      "operation_id": "cancel_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/choose_currency",
+      "operation_id": "choose_currency_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/collect_bank_account",
+      "operation_id": "collect_bank_account_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/collect_customer_details",
+      "operation_id": "collect_customer_details_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/confirm_payer_details",
+      "operation_id": "confirm_payer_details_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/fallback",
+      "operation_id": "fallback_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/fulfil",
+      "operation_id": "fulfil_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/notify",
+      "operation_id": "notify_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/{billing_request_id}/actions/select_institution",
+      "operation_id": "select_institution_billing_request",
+      "tags": [
+        "Billing Request"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/billing_requests/{billing_request_id}/institutions",
+      "operation_id": "get_institutions_from_institution",
+      "tags": [
+        "Institution"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/billing_requests/create_with_actions",
+      "operation_id": "create_with_actions_billing_requests",
+      "tags": [
+        "Billing Request With Action"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/blocks",
+      "operation_id": "list_block",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/blocks",
+      "operation_id": "create_block",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/blocks/{block_id}",
+      "operation_id": "get_blocks",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/blocks/{block_id}/actions/disable",
+      "operation_id": "disable_block",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/blocks/{block_id}/actions/enable",
+      "operation_id": "enable_block",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/blocks/block_by_ref",
+      "operation_id": "block_by_ref_blocks",
+      "tags": [
+        "Block"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/branding/logos",
+      "operation_id": "logos_branding",
+      "tags": [
+        "Logo"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/branding/payer_themes",
+      "operation_id": "payer_themes_branding",
+      "tags": [
+        "Payer Theme"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/creditor_bank_accounts",
+      "operation_id": "list_creditor_bank_account",
+      "tags": [
+        "Creditor Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/creditor_bank_accounts",
+      "operation_id": "create_creditor_bank_account",
+      "tags": [
+        "Creditor Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/creditor_bank_accounts/{creditor_bank_account_id}",
+      "operation_id": "get_creditor_bank_accounts",
+      "tags": [
+        "Creditor Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/creditor_bank_accounts/{creditor_bank_account_id}/actions/disable",
+      "operation_id": "disable_creditor_bank_account",
+      "tags": [
+        "Creditor Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/creditors",
+      "operation_id": "list_creditor",
+      "tags": [
+        "Creditor"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/creditors",
+      "operation_id": "create_creditor",
+      "tags": [
+        "Creditor"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/creditors/{creditor_id}",
+      "operation_id": "get_creditors",
+      "tags": [
+        "Creditor"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/creditors/{creditor_id}",
+      "operation_id": "update_creditors",
+      "tags": [
+        "Creditor"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/currency_exchange_rates",
+      "operation_id": "list_currency_exchange_rate",
+      "tags": [
+        "Currency Exchange Rate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/customer_bank_accounts",
+      "operation_id": "list_customer_bank_account",
+      "tags": [
+        "Customer Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/customer_bank_accounts",
+      "operation_id": "create_customer_bank_account",
+      "tags": [
+        "Customer Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/customer_bank_accounts/{customer_bank_account_id}",
+      "operation_id": "get_customer_bank_accounts",
+      "tags": [
+        "Customer Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/customer_bank_accounts/{customer_bank_account_id}",
+      "operation_id": "update_customer_bank_accounts",
+      "tags": [
+        "Customer Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/customer_bank_accounts/{customer_bank_account_id}/actions/disable",
+      "operation_id": "disable_customer_bank_account",
+      "tags": [
+        "Customer Bank Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/customer_notifications/{customer_notification_id}/actions/handle",
+      "operation_id": "handle_customer_notification",
+      "tags": [
+        "Customer Notification"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/customers",
+      "operation_id": "list_customer",
+      "tags": [
+        "Customer"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/customers",
+      "operation_id": "create_customer",
+      "tags": [
+        "Customer"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "DELETE",
+      "path": "/customers/{customer_id}",
+      "operation_id": "delete_customers",
+      "tags": [
+        "Customer"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/customers/{customer_id}",
+      "operation_id": "get_customers",
+      "tags": [
+        "Customer"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/customers/{customer_id}",
+      "operation_id": "update_customers",
+      "tags": [
+        "Customer"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/events",
+      "operation_id": "list_event",
+      "tags": [
+        "Event"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/events/{event_id}",
+      "operation_id": "get_events",
+      "tags": [
+        "Event"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/exports",
+      "operation_id": "list_export",
+      "tags": [
+        "Export"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/exports/{export_id}",
+      "operation_id": "get_exports",
+      "tags": [
+        "Export"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/funds_availability/{mandate_id}",
+      "operation_id": "get_funds_availability",
+      "tags": [
+        "Funds Availability"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/instalment_schedules",
+      "operation_id": "list_instalment_schedule",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/instalment_schedules",
+      "operation_id": "create_instalment_schedule",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/instalment_schedules/{instalment_schedule_id}",
+      "operation_id": "get_instalment_schedules",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/instalment_schedules/{instalment_schedule_id}",
+      "operation_id": "update_instalment_schedules",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/instalment_schedules/{instalment_schedule_id}/actions/cancel",
+      "operation_id": "cancel_instalment_schedule",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/institutions",
+      "operation_id": "list_institution",
+      "tags": [
+        "Institution"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-billing",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/mandate_import_entries",
+      "operation_id": "list_mandate_import_entry",
+      "tags": [
+        "Mandate Import Entry"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandate_import_entries",
+      "operation_id": "create_mandate_import_entry",
+      "tags": [
+        "Mandate Import Entry"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandate_imports",
+      "operation_id": "create_mandate_import",
+      "tags": [
+        "Mandate Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/mandate_imports/{mandate_import_id}",
+      "operation_id": "get_mandate_imports",
+      "tags": [
+        "Mandate Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandate_imports/{mandate_import_id}/actions/cancel",
+      "operation_id": "cancel_mandate_import",
+      "tags": [
+        "Mandate Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandate_imports/{mandate_import_id}/actions/submit",
+      "operation_id": "submit_mandate_import",
+      "tags": [
+        "Mandate Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandate_pdfs",
+      "operation_id": "create_mandate_pdf",
+      "tags": [
+        "Mandate Pdf"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/mandates",
+      "operation_id": "list_mandate",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandates",
+      "operation_id": "create_mandate",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/mandates/{mandate_id}",
+      "operation_id": "get_mandates",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/mandates/{mandate_id}",
+      "operation_id": "update_mandates",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandates/{mandate_id}/actions/cancel",
+      "operation_id": "cancel_mandate",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/mandates/{mandate_id}/actions/reinstate",
+      "operation_id": "reinstate_mandate",
+      "tags": [
+        "Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/negative_balance_limits",
+      "operation_id": "list_negative_balance_limit",
+      "tags": [
+        "Negative Balance Limit"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payment_import_entries",
+      "operation_id": "list_outbound_payment_import_entry",
+      "tags": [
+        "Outbound Payment Import Entry"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-outbound-imports",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payment_imports",
+      "operation_id": "list_outbound_payment_import",
+      "tags": [
+        "Outbound Payment Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-outbound-imports",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/outbound_payment_imports",
+      "operation_id": "create_outbound_payment_import",
+      "tags": [
+        "Outbound Payment Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-outbound-imports",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payment_imports/{outbound_payment_import_id}",
+      "operation_id": "get_outbound_payment_imports",
+      "tags": [
+        "Outbound Payment Import"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-outbound-imports",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payments",
+      "operation_id": "list_outbound_payment",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/outbound_payments",
+      "operation_id": "create_outbound_payment",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payments/{outbound_payment_id}",
+      "operation_id": "get_outbound_payments",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "PUT",
+      "path": "/outbound_payments/{outbound_payment_id}",
+      "operation_id": "update_outbound_payments",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/outbound_payments/{outbound_payment_id}/actions/approve",
+      "operation_id": "approve_outbound_payment",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/outbound_payments/{outbound_payment_id}/actions/cancel",
+      "operation_id": "cancel_outbound_payment",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/outbound_payments/stats",
+      "operation_id": "list_outbound_payments_stats",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/outbound_payments/withdrawal",
+      "operation_id": "withdrawal_outbound_payments",
+      "tags": [
+        "Outbound Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "POST",
+      "path": "/payer_authorisations",
+      "operation_id": "create_payer_authorisation",
+      "tags": [
+        "Payer Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/payer_authorisations/{payer_authorisation_id}",
+      "operation_id": "get_payer_authorisations",
+      "tags": [
+        "Payer Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "PUT",
+      "path": "/payer_authorisations/{payer_authorisation_id}",
+      "operation_id": "update_payer_authorisations",
+      "tags": [
+        "Payer Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/payer_authorisations/{payer_authorisation_id}/actions/confirm",
+      "operation_id": "confirm_payer_authorisation",
+      "tags": [
+        "Payer Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/payer_authorisations/{payer_authorisation_id}/actions/submit",
+      "operation_id": "submit_payer_authorisation",
+      "tags": [
+        "Payer Authorisation"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/payment_account_transactions/{payment_account_transaction_id}",
+      "operation_id": "get_payment_account_transactions",
+      "tags": [
+        "Payment Account Transaction"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/payment_accounts",
+      "operation_id": "list_payment_account",
+      "tags": [
+        "Payment Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/payment_accounts/{payment_account_id}",
+      "operation_id": "get_payment_accounts",
+      "tags": [
+        "Payment Account"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/payment_accounts/{payment_account_transaction_id}/transactions",
+      "operation_id": "get_transactions_from_payment_account_transaction",
+      "tags": [
+        "Payment Account Transaction"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "live route requires dynamic RFC 9421 HTTP message signatures unsupported by a static REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/payments",
+      "operation_id": "list_payment",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/payments",
+      "operation_id": "create_payment",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/payments/{payment_id}",
+      "operation_id": "get_payments",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/payments/{payment_id}",
+      "operation_id": "update_payments",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/payments/{payment_id}/actions/cancel",
+      "operation_id": "cancel_payment",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/payments/{payment_id}/actions/retry",
+      "operation_id": "retry_payment",
+      "tags": [
+        "Payment"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/payout_items",
+      "operation_id": "list_payout_item",
+      "tags": [
+        "Payout Item"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/payouts",
+      "operation_id": "list_payout",
+      "tags": [
+        "Payout"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/payouts/{payout_id}",
+      "operation_id": "get_payouts",
+      "tags": [
+        "Payout"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/payouts/{payout_id}",
+      "operation_id": "update_payouts",
+      "tags": [
+        "Payout"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/redirect_flows",
+      "operation_id": "create_redirect_flow",
+      "tags": [
+        "Redirect Flow"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/redirect_flows/{redirect_flow_id}",
+      "operation_id": "get_redirect_flows",
+      "tags": [
+        "Redirect Flow"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/redirect_flows/{redirect_flow_id}/actions/complete",
+      "operation_id": "complete_redirect_flow",
+      "tags": [
+        "Redirect Flow"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/refunds",
+      "operation_id": "list_refund",
+      "tags": [
+        "Refund"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/refunds",
+      "operation_id": "create_refund",
+      "tags": [
+        "Refund"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/refunds/{refund_id}",
+      "operation_id": "get_refunds",
+      "tags": [
+        "Refund"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/refunds/{refund_id}",
+      "operation_id": "update_refunds",
+      "tags": [
+        "Refund"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/scenario_simulators/{scenario_simulator_id}/actions/run",
+      "operation_id": "run_scenario_simulator",
+      "tags": [
+        "Scenario Simulator"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "sandbox-only scenario simulator"
+    },
+    {
+      "method": "GET",
+      "path": "/scheme_identifiers",
+      "operation_id": "list_scheme_identifier",
+      "tags": [
+        "Scheme Identifier"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/scheme_identifiers",
+      "operation_id": "create_scheme_identifier",
+      "tags": [
+        "Scheme Identifier"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/scheme_identifiers/{scheme_identifier_id}",
+      "operation_id": "get_scheme_identifiers",
+      "tags": [
+        "Scheme Identifier"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/subscriptions",
+      "operation_id": "list_subscription",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/subscriptions",
+      "operation_id": "create_subscription",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/subscriptions/{subscription_id}",
+      "operation_id": "get_subscriptions",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "PUT",
+      "path": "/subscriptions/{subscription_id}",
+      "operation_id": "update_subscriptions",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/subscriptions/{subscription_id}/actions/cancel",
+      "operation_id": "cancel_subscription",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/subscriptions/{subscription_id}/actions/pause",
+      "operation_id": "pause_subscription",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/subscriptions/{subscription_id}/actions/resume",
+      "operation_id": "resume_subscription",
+      "tags": [
+        "Subscription"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/tax_rates",
+      "operation_id": "list_tax_rate",
+      "tags": [
+        "Tax Rate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/tax_rates/{tax_rate_id}",
+      "operation_id": "get_tax_rates",
+      "tags": [
+        "Tax Rate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-reconciliation",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/transferred_mandates/{mandate_id}",
+      "operation_id": "get_transferred_mandates",
+      "tags": [
+        "Transferred Mandate"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-mandates",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/verification_details",
+      "operation_id": "list_verification_detail",
+      "tags": [
+        "Verification Detail"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/verification_details",
+      "operation_id": "create_verification_detail",
+      "tags": [
+        "Verification Detail"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-core",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/webhooks",
+      "operation_id": "list_webhook",
+      "tags": [
+        "Webhook"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "GET",
+      "path": "/webhooks/{webhook_id}",
+      "operation_id": "get_webhooks",
+      "tags": [
+        "Webhook"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/webhooks/{webhook_id}/actions/retry",
+      "operation_id": "retry_webhook",
+      "tags": [
+        "Webhook"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-operations",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    }
+  ]
+}

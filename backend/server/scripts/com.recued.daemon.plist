@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd unit for recued (Phase C).
+
+  Exit-code contract:
+    0  — clean shutdown; launchd does NOT respawn (SuccessfulExit=true
+         for 0; non-zero triggers the KeepAlive.ExitStatus match).
+    1  — crash; launchd respawns.
+    3  — explicit restart; launchd respawns (non-zero exit satisfies
+         the KeepAlive.ExitStatus predicate).
+    4  — lock held; the shell wrapper maps this to exit 0 before
+         launchd's KeepAlive kicks in, so a second instance does not
+         rapid-restart forever.
+
+  launchd sets XPC_SERVICE_NAME = com.recued.daemon in the child's
+  environment, which the supervisor-mode auto-detector keys on for
+  mode=launchd.
+
+  Install:
+    sudo cp com.recued.daemon.plist /Library/LaunchDaemons/
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.recued.daemon.plist
+    sudo launchctl kickstart -k system/com.recued.daemon
+
+  Adjust paths for your install. Binary usually lands at
+  /usr/local/bin/recued.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.recued.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>/usr/local/bin/recued --db /var/lib/recued/recued.db --config /etc/recued/config.toml; status=$?; if [ "$status" -eq 4 ]; then echo "[launchd] recued reported lock_held (exit 4). Staying down." &gt;&amp;2; exit 0; fi; exit "$status"</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Explicit mode skips the supervisor-mode auto-detect. -->
+        <key>RECUED_SUPERVISOR_MODE</key>
+        <string>launchd</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Respawn on any non-clean exit (including exit 1, 3).
+             launchd respawns unless SuccessfulExit is true; exit 0
+             (clean shutdown, plus the wrapper's lock-held remap) is
+             considered successful, so we stay down. -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Use SIGTERM for graceful drain. launchd sends SIGTERM then
+         SIGKILL after ExitTimeOut. -->
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/recued/recued-server.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/recued/recued-server.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>UserName</key>
+    <string>recued</string>
+    <key>GroupName</key>
+    <string>recued</string>
+</dict>
+</plist>

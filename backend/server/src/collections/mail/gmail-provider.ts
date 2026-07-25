@@ -1,0 +1,1073 @@
+/** Phase D (D-106) — Gmail REST provider (Commit 14).
+ *
+ *  Implements `MailProvider` against the Gmail REST API v1 directly —
+ *  no `googleapis` SDK per the spec's dep-bloat rejection. OAuth via
+ *  refresh tokens in `account.gmail.{slug}.*`; incremental sync uses
+ *  the `history` endpoint with a persisted `historyId` watermark.
+ *
+ *  Endpoints used:
+ *    POST https://oauth2.googleapis.com/token       — via oauth.ts
+ *    GET  /gmail/v1/users/me/profile                — first historyId
+ *    GET  /gmail/v1/users/me/messages?q=newer_than  — list (paginated)
+ *    GET  /gmail/v1/users/me/messages/{id}?format=raw — fetch RFC822
+ *    GET  /gmail/v1/users/me/history?startHistoryId — incremental
+ *    POST /gmail/v1/users/me/messages/send          — outbound (D-127 P1.3)
+ *
+ *  `format=raw` returns the base64url-encoded RFC-822 source — we
+ *  decode then hand off to `mailparser.simpleParser` for full
+ *  canonicalization. Keeps the canonicalizer consistent with IMAP.
+ *
+ *  Label mapping:
+ *    - `folder_or_label` = first match from priority
+ *      (INBOX > IMPORTANT > STARRED > SENT > DRAFT) or first label.
+ *    - `labels[]` = full list.
+ *    - Gmail "trash" is a labelAdded=TRASH event → we treat it as
+ *      `deleted` (the message survives 30 days server-side, but from
+ *      the warehouse's point of view it's gone).
+ *
+ *  Push subscriptions (Cloud Pub/Sub `watch`) require a public HTTPS
+ *  endpoint — not used in Phase D (polling suffices for personal
+ *  mailboxes; push follows in post-packaging work).
+ *
+ *  D-127 P1.3 — outbound send. Provider opts in by setting
+ *  `config.granted_scopes` to the list returned at OAuth completion;
+ *  `sendCapable` flips true iff the list contains `gmail.send`.
+ *  `send` constructs an RFC 5322 message (text/plain or
+ *  multipart/alternative when body_html is supplied), base64url-
+ *  encodes it as the `raw` field, and POSTs to
+ *  `users/me/messages/send`. Sent messages land in the INBOX/SENT
+ *  label automatically — the next inbound `history` tick picks
+ *  them up via the existing ingest path. Status mapping:
+ *  401 / 403 → MAIL_SEND_AUTH_FAILED, 4xx → MAIL_SEND_RECIPIENT_INVALID,
+ *  5xx → MAIL_SEND_NETWORK_FAILED.
+ */
+
+import { simpleParser } from 'mailparser';
+import type { AddressObject, ParsedMail } from 'mailparser';
+import { IngredientError } from '@recued/ingredients';
+import {
+  isMailReconciliationId,
+  MAIL_RECONCILIATION_ID_HEADER,
+} from '@recued/contracts';
+import {
+  mailAttachmentPartFromBytes,
+  assertMailSentReconciliationQuery,
+  evaluateMailSentReconciliationCandidates,
+  MAIL_SENT_RECONCILIATION_MAX_SCAN,
+  MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
+  mailSentReconciliationAttachmentPartFromBytes,
+  normalizeMailAttachmentMimeType,
+  sanitizeMailAttachmentFilename,
+  type CanonicalMessage,
+  type InitialScanOptions,
+  type InboundMailAttachmentPart,
+  type MailProvider,
+  type MailSentReconciliationCandidate,
+  type MailSentReconciliationQuery,
+  type MailSentReconciliationResult,
+  type OutgoingMessage,
+  type ProviderHealth,
+  type ProviderSyncCallback,
+  type ProviderSyncEventKind,
+  type SentMessageMeta,
+} from './provider.js';
+import {
+  getAccessToken,
+  keyPrefix,
+  OAuthError,
+  requireProviderConfig,
+  type HttpFetcher,
+  type OAuthAccountStore,
+  type OAuthProviderConfig,
+  type OAuthProviderConfigSource,
+} from './oauth.js';
+
+// ────────────────────────────────────────────────────────────────
+// Gmail-specific config + constants
+// ────────────────────────────────────────────────────────────────
+
+export interface GmailProviderConfig {
+  /** Matches the account.gmail.{slug}.* namespace entry. */
+  account_slug: string;
+  /** Days of backfill on first run. */
+  backfill_days: number;
+  /** Poll cadence for the history endpoint. Default 30 s per spec. */
+  poll_seconds: number;
+  /** Whitelist of labels to sync (empty = all). Gmail label ids:
+   *  `INBOX`, `SENT`, `IMPORTANT`, user-defined Label_*. */
+  label_filter?: string[];
+  /** D-127 P1.3 — OAuth scopes the user actually granted at consent
+   *  (parsed from the token-exchange `scope` field). Drives
+   *  `sendCapable`: outbound is enabled only when this list contains
+   *  the Gmail send scope, regardless of what was requested. P4.2
+   *  wires the scope persistence end-to-end; until then callers leave
+   *  this undefined and the provider stays read-only. */
+  granted_scopes?: string[];
+  /** D-127 P1.6 — canonical account email surfaced via
+   *  `MailProvider.accountEmail`. Captured at OAuth completion from
+   *  the gmail `users.getProfile` response (`emailAddress`). P4.2
+   *  wires the populate path; until then the provider exposes empty
+   *  string and the rpc-layer self-loop guard is a no-op. */
+  account_email?: string;
+}
+
+export interface CreateGmailProviderOptions {
+  slug: string;
+  config: () => GmailProviderConfig;
+  accountStore: OAuthAccountStore;
+  providerConfig: OAuthProviderConfigSource;
+  fetcher?: HttpFetcher;
+  now?: () => number;
+  log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** Test hook — override the poll scheduler so suites don't wait
+   *  for real timers. Receives the tick callback; returns a stop
+   *  function. Production uses `setInterval`. */
+  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+}
+
+const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+const LABEL_PRIORITY = ['INBOX', 'IMPORTANT', 'STARRED', 'SENT', 'DRAFT'] as const;
+const DELETED_LABEL = 'TRASH';
+
+/** D-127 P1.3 — OAuth scope that toggles outbound send capability.
+ *  `sendCapable` flips true iff the user's granted-scope list contains
+ *  this exact value. Documented at
+ *  https://developers.google.com/identity/protocols/oauth2/scopes#gmail. */
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+// ────────────────────────────────────────────────────────────────
+// Canonicalizer — shared body extraction with IMAP
+// ────────────────────────────────────────────────────────────────
+
+const addressToStringList = (v: AddressObject | AddressObject[] | undefined): string[] => {
+  if (!v) return [];
+  const entries = Array.isArray(v) ? v : [v];
+  const out: string[] = [];
+  for (const a of entries) {
+    for (const item of a.value) {
+      if (item.address) out.push(item.address);
+    }
+  }
+  return out;
+};
+
+const firstAddress = (v: AddressObject | AddressObject[] | undefined): string =>
+  addressToStringList(v)[0] ?? '';
+
+const bodyTextFor = (parsed: ParsedMail): string => {
+  if (parsed.text && parsed.text.length > 0) return parsed.text;
+  if (parsed.html) return String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return '';
+};
+
+const hasAttachments = (parsed: ParsedMail): boolean =>
+  Array.isArray(parsed.attachments)
+    && parsed.attachments.some((a) => Boolean(a.filename));
+
+const pickFolder = (labels: string[]): string => {
+  for (const p of LABEL_PRIORITY) {
+    if (labels.includes(p)) return p;
+  }
+  return labels[0] ?? '';
+};
+
+const base64UrlDecode = (s: string): Buffer => {
+  const normalized = s.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '=');
+  return Buffer.from(padded, 'base64');
+};
+
+const parsedAttachmentParts = (parsed: ParsedMail): InboundMailAttachmentPart[] => {
+  const parts: InboundMailAttachmentPart[] = [];
+  for (const [idx, attachment] of (parsed.attachments ?? []).entries()) {
+    const bytes = Buffer.isBuffer(attachment.content)
+      ? attachment.content
+      : Buffer.from(attachment.content ?? '');
+    parts.push(mailAttachmentPartFromBytes({
+      filename: attachment.filename ?? `attachment-${idx + 1}`,
+      mime_type: attachment.contentType,
+      source_part_id: `part-${idx}`,
+      disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+      bytes,
+    }));
+  }
+  return parts;
+};
+
+const parsedReconciliationAttachmentParts = (
+  parsed: ParsedMail,
+): InboundMailAttachmentPart[] => (parsed.attachments ?? []).map((attachment, idx) => {
+  const bytes = Buffer.isBuffer(attachment.content)
+    ? attachment.content
+    : Buffer.from(attachment.content ?? '');
+  return mailSentReconciliationAttachmentPartFromBytes({
+    filename: attachment.filename,
+    mime_type: attachment.contentType,
+    source_part_id: `part-${idx}`,
+    disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+    bytes,
+  });
+});
+
+export interface GmailMessagePayload {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  raw?: string; // base64url-encoded RFC-822
+  internalDate?: string; // epoch ms as string
+}
+
+interface GmailMessagePartBody {
+  attachmentId?: string;
+  data?: string;
+  size?: number;
+}
+
+interface GmailMessagePart {
+  partId?: string;
+  mimeType?: string;
+  filename?: string;
+  headers?: Array<{ name?: string; value?: string }>;
+  body?: GmailMessagePartBody;
+  parts?: GmailMessagePart[];
+}
+
+interface GmailMessageFullPayload extends GmailMessagePayload {
+  payload?: GmailMessagePart;
+}
+
+interface GmailMessageMetadataPayload extends GmailMessagePayload {
+  payload?: GmailMessagePart;
+  sizeEstimate?: number;
+}
+
+interface GmailAttachmentPayload {
+  attachmentId?: string;
+  data?: string;
+  size?: number;
+}
+
+export const canonicalizeGmail = async (
+  msg: GmailMessagePayload,
+): Promise<CanonicalMessage> => {
+  if (!msg.raw) {
+    throw new Error(`gmail message ${msg.id} missing raw body`);
+  }
+  const rfc822 = base64UrlDecode(msg.raw);
+  const parsed = await simpleParser(rfc822);
+  const labels = msg.labelIds ?? [];
+  const internalDate = msg.internalDate ? Number(msg.internalDate) : 0;
+  const attachments = parsedAttachmentParts(parsed);
+  const reconciliationHeaderKey = MAIL_RECONCILIATION_ID_HEADER.toLowerCase();
+  const reconciliationHeaderCount = parsed.headerLines.filter(
+    (header) => header.key.toLowerCase() === reconciliationHeaderKey,
+  ).length;
+  const reconciliationId = reconciliationHeaderCount === 1
+    ? parsed.headers.get(reconciliationHeaderKey)
+    : undefined;
+  const receivedAt = parsed.date instanceof Date
+    ? parsed.date.getTime()
+    : Number.isFinite(internalDate) && internalDate > 0
+      ? internalDate
+      : Date.now();
+  return {
+    source_id: msg.id,
+    rfc_message_id: parsed.messageId ?? undefined,
+    ...(isMailReconciliationId(reconciliationId)
+      ? { reconciliation_id: reconciliationId }
+      : {}),
+    from: parsed.from ? firstAddress(parsed.from) : '',
+    to: addressToStringList(parsed.to),
+    cc: addressToStringList(parsed.cc),
+    subject: parsed.subject ?? '',
+    thread_id: msg.threadId ?? '',
+    folder_or_label: pickFolder(labels),
+    is_read: !labels.includes('UNREAD'),
+    has_attachments: hasAttachments(parsed) || attachments.length > 0,
+    received_at: receivedAt,
+    body_text: bodyTextFor(parsed),
+    body_html: typeof parsed.html === 'string' ? parsed.html : undefined,
+    labels,
+    ...(attachments.length > 0 ? { attachments } : {}),
+  };
+};
+
+// ────────────────────────────────────────────────────────────────
+// API helpers
+// ────────────────────────────────────────────────────────────────
+
+interface GmailFetchOptions {
+  accessToken: string;
+  fetcher: HttpFetcher;
+}
+
+/** Perform a GET against the Gmail API with automatic 401 handling.
+ *  On 401 the caller is expected to refresh the access token and
+ *  retry — we surface it via a distinct return shape so callers can
+ *  retry with `force: true`. */
+const gmailGet = async <T>(
+  url: string,
+  opts: GmailFetchOptions,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; text: string }> => {
+  const res = await opts.fetcher(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${opts.accessToken}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    return { ok: false, status: res.status, text };
+  }
+  const data = (await res.json()) as T;
+  return { ok: true, data };
+};
+
+interface GmailProfile { historyId: string; emailAddress: string; }
+interface GmailMessageRef { id: string; threadId: string; }
+interface GmailMessageList {
+  messages?: GmailMessageRef[];
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
+}
+interface GmailHistoryResponse {
+  history?: Array<{
+    id: string;
+    messagesAdded?: Array<{ message: { id: string; threadId: string; labelIds?: string[] } }>;
+    messagesDeleted?: Array<{ message: { id: string; threadId: string } }>;
+    labelsAdded?: Array<{ message: { id: string; threadId: string }; labelIds: string[] }>;
+    labelsRemoved?: Array<{ message: { id: string; threadId: string }; labelIds: string[] }>;
+  }>;
+  historyId?: string;
+  nextPageToken?: string;
+}
+
+// ────────────────────────────────────────────────────────────────
+// D-127 P1.3 — outbound send helpers (RFC 5322 + base64url)
+// ────────────────────────────────────────────────────────────────
+
+/** Format a unix-ms timestamp as an RFC 5322 Date header value.
+ *  `toUTCString()` produces "Mon, 01 Jan 2024 10:00:00 GMT"; RFC 5322
+ *  requires a numeric zone offset, so we swap `GMT` for `+0000`. */
+const formatRfc5322Date = (ms: number): string =>
+  new Date(ms).toUTCString().replace(/GMT$/, '+0000');
+
+/** Generate a unique multipart MIME boundary. Random suffix avoids
+ *  any chance of collision with body content; the `recued_` prefix
+ *  makes the messages identifiable on the wire when debugging. */
+const newMimeBoundary = (rand: () => number = Math.random): string =>
+  `recued_${Date.now().toString(36)}_${rand().toString(36).slice(2, 10)}`;
+
+/** D-172 P2 — chunk a base64 string into 76-char lines per RFC 2045
+ *  §6.8 (`Content-Transfer-Encoding: base64` lines SHOULD be ≤76
+ *  chars). Some strict MTAs reject one giant unbroken line. */
+const wrapBase64 = (b64: string): string =>
+  (b64.match(/.{1,76}/g) ?? []).join('\r\n');
+
+/** D-172 P2 — render the message body as a single MIME part (the
+ *  inner part when attachments wrap it in multipart/mixed): a bare
+ *  text/plain part, or a nested multipart/alternative when `body_html`
+ *  is present. Returns the `Content-Type` line(s) to emit + the part
+ *  body so callers can place it either at top level (no attachments) or
+ *  as the lead part of a multipart/mixed (with attachments). */
+const renderGmailBodyPart = (
+  msg: OutgoingMessage,
+  rand: () => number,
+): { contentTypeHeaders: string[]; body: string } => {
+  if (msg.body_html) {
+    const boundary = newMimeBoundary(rand);
+    return {
+      contentTypeHeaders: [
+        `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      ],
+      body: [
+        `--${boundary}`,
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        msg.body_text,
+        `--${boundary}`,
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: 7bit',
+        '',
+        msg.body_html,
+        `--${boundary}--`,
+      ].join('\r\n'),
+    };
+  }
+  return {
+    contentTypeHeaders: [
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 7bit',
+    ],
+    body: msg.body_text,
+  };
+};
+
+/** Construct an RFC 5322 message from `OutgoingMessage`. Single-part
+ *  text/plain when `body_html` is omitted; multipart/alternative
+ *  containing both text and HTML when supplied.
+ *
+ *  D-172 P2 — when `attachments` are present, the whole thing is
+ *  wrapped in a `multipart/mixed` container: the body (text or
+ *  multipart/alternative) is the first part, each attachment follows
+ *  as a base64-encoded part with `Content-Disposition: attachment`.
+ *
+ *  Headers use CRLF per RFC; the API's `raw` field accepts either
+ *  CR/LF style but CRLF is the spec'd canonical form. */
+export const buildGmailRfc5322 = (
+  msg: OutgoingMessage,
+  sentAt: number,
+  rand: () => number = Math.random,
+): string => {
+  const headers: string[] = [];
+  headers.push('MIME-Version: 1.0');
+  headers.push(`Date: ${formatRfc5322Date(sentAt)}`);
+  if (msg.reconciliation_id) {
+    headers.push(`${MAIL_RECONCILIATION_ID_HEADER}: ${msg.reconciliation_id}`);
+  }
+  if (msg.to.length > 0) headers.push(`To: ${msg.to.join(', ')}`);
+  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${msg.cc.join(', ')}`);
+  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${msg.bcc.join(', ')}`);
+  headers.push(`Subject: ${msg.subject}`);
+  if (msg.reply_to) headers.push(`Reply-To: ${msg.reply_to}`);
+  if (msg.in_reply_to) headers.push(`In-Reply-To: ${msg.in_reply_to}`);
+  if (msg.references && msg.references.length > 0) {
+    // RFC 5322 §3.6.4 — References is space-separated msg-id list.
+    headers.push(`References: ${msg.references.join(' ')}`);
+  }
+
+  const part = renderGmailBodyPart(msg, rand);
+  const attachments = msg.attachments ?? [];
+  if (attachments.length === 0) {
+    headers.push(...part.contentTypeHeaders);
+    return `${headers.join('\r\n')}\r\n\r\n${part.body}`;
+  }
+
+  // D-172 P2 — multipart/mixed: body part first, then each attachment.
+  const mixed = newMimeBoundary(rand);
+  headers.push(`Content-Type: multipart/mixed; boundary="${mixed}"`);
+  const segments: string[] = [
+    `--${mixed}`,
+    ...part.contentTypeHeaders,
+    '',
+    part.body,
+  ];
+  for (const att of attachments) {
+    segments.push(
+      `--${mixed}`,
+      `Content-Type: ${att.mime_type}; name="${att.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${att.filename}"`,
+      '',
+      wrapBase64(att.bytes_b64),
+    );
+  }
+  segments.push(`--${mixed}--`);
+  return `${headers.join('\r\n')}\r\n\r\n${segments.join('\r\n')}`;
+};
+
+/** RFC 4648 §5 base64url. Gmail's `raw` field is documented as
+ *  "URL-safe base64". Strips trailing `=` padding per the same spec
+ *  (Gmail accepts padded or unpadded). */
+const base64UrlEncode = (s: string): string =>
+  Buffer.from(s, 'utf-8').toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+// ────────────────────────────────────────────────────────────────
+// Provider
+// ────────────────────────────────────────────────────────────────
+
+export const createGmailProvider = (
+  opts: CreateGmailProviderOptions,
+): MailProvider => {
+  const fetcher = opts.fetcher ?? (async (url, init) => {
+    const res = await fetch(url, init);
+    return {
+      status: res.status,
+      ok: res.ok,
+      json: () => res.json(),
+      text: () => res.text(),
+    };
+  });
+  const nowOf = (): number => opts.now?.() ?? Date.now();
+
+  let stopped = false;
+  let pollStop: (() => void) | null = null;
+  let lastSuccessfulSyncAt = 0;
+  let errorCount24h = 0;
+  let pendingQueueSize = 0;
+  let accessToken = '';
+
+  const historyIdKey = (): string =>
+    `${keyPrefix('gmail', opts.config().account_slug)}.history_id`;
+
+  const markError = (msg: string, err: unknown): void => {
+    errorCount24h++;
+    opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
+  };
+
+  const ensureToken = async (force: boolean): Promise<string> => {
+    if (accessToken && !force) return accessToken;
+    accessToken = await getAccessToken({
+      provider: 'gmail',
+      slug: opts.config().account_slug,
+      providerConfig: requireProviderConfig(opts.providerConfig),
+      accountStore: opts.accountStore,
+      fetcher,
+      now: opts.now,
+      force,
+    });
+    return accessToken;
+  };
+
+  const getWithRetry = async <T>(url: string): Promise<T | null> => {
+    const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
+    if (first.ok) return first.data;
+    if (first.status === 401) {
+      const second = await gmailGet<T>(url, {
+        accessToken: await ensureToken(true),
+        fetcher,
+      });
+      if (second.ok) return second.data;
+      markError(`gmail ${url} → ${second.status}`, second.text);
+      return null;
+    }
+    if (first.status === 404) return null;
+    markError(`gmail ${url} → ${first.status}`, first.text);
+    return null;
+  };
+
+  /** Reconciliation cannot collapse transport/auth failures into an empty
+   * result, so it uses a strict sibling of the sync helper. */
+  const getReconciliationSource = async <T>(url: string): Promise<T> => {
+    const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
+    if (first.ok) return first.data;
+    if (first.status === 401) {
+      const second = await gmailGet<T>(url, {
+        accessToken: await ensureToken(true),
+        fetcher,
+      });
+      if (second.ok) return second.data;
+      throw new Error(`gmail reconciliation source read failed (${second.status})`);
+    }
+    throw new Error(`gmail reconciliation source read failed (${first.status})`);
+  };
+
+  const fetchMessageRaw = async (id: string): Promise<GmailMessagePayload | null> => {
+    return getWithRetry<GmailMessagePayload>(
+      `${GMAIL_API_BASE}/messages/${id}?format=raw`,
+    );
+  };
+
+  const fetchMessageFull = async (id: string): Promise<GmailMessageFullPayload | null> => {
+    return getWithRetry<GmailMessageFullPayload>(
+      `${GMAIL_API_BASE}/messages/${id}?format=full`,
+    );
+  };
+
+  const fetchAttachmentPayload = async (
+    messageId: string,
+    attachmentId: string,
+  ): Promise<GmailAttachmentPayload | null> => {
+    return getWithRetry<GmailAttachmentPayload>(
+      `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    );
+  };
+
+  const attachmentBytesFetcher = (
+    messageId: string,
+    body: GmailMessagePartBody | undefined,
+  ): (() => Promise<Buffer>) => {
+    const inlineData = body?.data;
+    const attachmentId = body?.attachmentId;
+    return async () => {
+      if (inlineData) return base64UrlDecode(inlineData);
+      if (!attachmentId) {
+        throw new Error(`gmail attachment on ${messageId} missing attachmentId`);
+      }
+      const payload = await fetchAttachmentPayload(messageId, attachmentId);
+      if (!payload?.data) {
+        throw new Error(`gmail attachment ${attachmentId} on ${messageId} missing data`);
+      }
+      return base64UrlDecode(payload.data);
+    };
+  };
+
+  const collectGmailAttachmentParts = (
+    messageId: string,
+    part: GmailMessagePart | undefined,
+    path = '0',
+    out: InboundMailAttachmentPart[] = [],
+  ): InboundMailAttachmentPart[] => {
+    if (!part) return out;
+    const filename = part.filename ?? '';
+    const body = part.body;
+    if (filename.length > 0 && (body?.attachmentId || body?.data)) {
+      const sourcePartId = body.attachmentId ?? part.partId ?? path;
+      const size = typeof body.size === 'number' && Number.isFinite(body.size)
+        ? body.size
+        : body.data
+          ? base64UrlDecode(body.data).length
+          : 0;
+      out.push({
+        filename: sanitizeMailAttachmentFilename(filename, `attachment-${out.length + 1}`),
+        mime_type: normalizeMailAttachmentMimeType(part.mimeType),
+        size,
+        source_part_id: sourcePartId,
+        fetchBytes: attachmentBytesFetcher(messageId, body),
+      });
+    }
+    for (const [idx, child] of (part.parts ?? []).entries()) {
+      collectGmailAttachmentParts(messageId, child, `${path}.${idx}`, out);
+    }
+    return out;
+  };
+
+  const hydrateGmailAttachments = async (
+    canonical: CanonicalMessage,
+  ): Promise<CanonicalMessage> => {
+    if (!canonical.has_attachments) return canonical;
+    const full = await fetchMessageFull(canonical.source_id);
+    if (!full) {
+      throw new Error(`gmail message ${canonical.source_id} missing full payload for attachments`);
+    }
+    const fullParts = collectGmailAttachmentParts(canonical.source_id, full.payload);
+    if (fullParts.length > 0) {
+      return { ...canonical, attachments: fullParts, has_attachments: true };
+    }
+    return canonical;
+  };
+
+  const applyLabelFilter = (labels: string[] | undefined): boolean => {
+    const filter = opts.config().label_filter ?? [];
+    if (filter.length === 0) return true;
+    if (!labels) return false;
+    return labels.some((l) => filter.includes(l));
+  };
+
+  const fetchAndEmit = async (
+    id: string,
+    kind: ProviderSyncEventKind,
+    cb: ProviderSyncCallback,
+  ): Promise<void> => {
+    if (kind === 'deleted') {
+      await cb({ kind: 'deleted', source_id: id });
+      return;
+    }
+    pendingQueueSize++;
+    try {
+      const raw = await fetchMessageRaw(id);
+      if (!raw) return;
+      if (!applyLabelFilter(raw.labelIds)) return;
+      const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
+      await cb({ kind, source_id: canonical.source_id, message: canonical });
+      lastSuccessfulSyncAt = nowOf();
+    } catch (err) {
+      markError(`gmail ingest failed id=${id}`, err);
+    } finally {
+      pendingQueueSize = Math.max(0, pendingQueueSize - 1);
+    }
+  };
+
+  const writeHistoryWatermark = async (newId: string): Promise<void> => {
+    await opts.accountStore.set(historyIdKey(), newId);
+  };
+
+  const readHistoryWatermark = async (): Promise<string | null> => {
+    return opts.accountStore.get(historyIdKey());
+  };
+
+  // ── initial scan ────────────────────────────────────────────
+  const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
+    // Capture historyId before listing — ensures we don't miss
+    // deliveries that arrive between list + sync start. Gmail ordering
+    // guarantees `history?startHistoryId=profile.historyId` returns
+    // everything after the profile fetch.
+    const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`);
+    if (profile) await writeHistoryWatermark(profile.historyId);
+
+    let pageToken: string | undefined;
+    let aborted = false;
+    const q = `newer_than:${scanOpts.backfill_days}d`;
+    do {
+      const url = new URL(`${GMAIL_API_BASE}/messages`);
+      url.searchParams.set('q', q);
+      url.searchParams.set('maxResults', '100');
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+      const list = await getWithRetry<GmailMessageList>(url.toString());
+      if (!list) break;
+      const ids = (list.messages ?? []).map((m) => m.id);
+      for (const id of ids) {
+        const raw = await fetchMessageRaw(id);
+        if (!raw) continue;
+        if (!applyLabelFilter(raw.labelIds)) continue;
+        try {
+          const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
+          const cont = await scanOpts.onMessage(canonical);
+          lastSuccessfulSyncAt = nowOf();
+          if (!cont) { aborted = true; break; }
+        } catch (err) {
+          markError(`gmail canonicalize failed id=${id}`, err);
+        }
+      }
+      if (aborted) break;
+      pageToken = list.nextPageToken;
+    } while (pageToken);
+  };
+
+  // ── incremental poll ────────────────────────────────────────
+  const runHistoryTick = async (cb: ProviderSyncCallback): Promise<void> => {
+    const watermark = await readHistoryWatermark();
+    if (!watermark) {
+      // No watermark → either first run skipped (scan error) or the
+      // account store lost state. Re-seed from the profile.
+      const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`);
+      if (profile) await writeHistoryWatermark(profile.historyId);
+      return;
+    }
+    let pageToken: string | undefined;
+    let latestId = watermark;
+    do {
+      const url = new URL(`${GMAIL_API_BASE}/history`);
+      url.searchParams.set('startHistoryId', watermark);
+      url.searchParams.append('historyTypes', 'messageAdded');
+      url.searchParams.append('historyTypes', 'messageDeleted');
+      url.searchParams.append('historyTypes', 'labelAdded');
+      url.searchParams.append('historyTypes', 'labelRemoved');
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+      const page = await getWithRetry<GmailHistoryResponse>(url.toString());
+      if (!page) return;
+      for (const entry of page.history ?? []) {
+        for (const add of entry.messagesAdded ?? []) {
+          await fetchAndEmit(add.message.id, 'created', cb);
+        }
+        for (const del of entry.messagesDeleted ?? []) {
+          await fetchAndEmit(del.message.id, 'deleted', cb);
+        }
+        for (const la of entry.labelsAdded ?? []) {
+          if (la.labelIds.includes(DELETED_LABEL)) {
+            await fetchAndEmit(la.message.id, 'deleted', cb);
+          } else {
+            await fetchAndEmit(la.message.id, 'updated', cb);
+          }
+        }
+        for (const lr of entry.labelsRemoved ?? []) {
+          await fetchAndEmit(lr.message.id, 'updated', cb);
+        }
+        if (entry.id && Number(entry.id) > Number(latestId)) latestId = entry.id;
+      }
+      pageToken = page.nextPageToken;
+      if (page.historyId && Number(page.historyId) > Number(latestId)) {
+        latestId = page.historyId;
+      }
+    } while (pageToken);
+    if (latestId !== watermark) await writeHistoryWatermark(latestId);
+    lastSuccessfulSyncAt = nowOf();
+  };
+
+  const defaultScheduler = (cb: () => Promise<void>, intervalMs: number): (() => void) => {
+    const handle = setInterval(() => {
+      void cb().catch((err) => markError('gmail poll tick failed', err));
+    }, intervalMs);
+    handle.unref?.();
+    return () => clearInterval(handle);
+  };
+
+  // ── outbound send (D-127 P1.3) ──────────────────────────────
+  //
+  // Status mapping mirrors P1.2 § severity classification:
+  //   401 / 403  → MAIL_SEND_AUTH_FAILED   (recoverable: re-enroll)
+  //   4xx other → MAIL_SEND_RECIPIENT_INVALID (typo / rejected addr)
+  //   5xx        → MAIL_SEND_NETWORK_FAILED (transient)
+  //
+  // Token refresh runs once on the initial 401 (matches `getWithRetry`
+  // for read paths); a second 401 after refresh indicates the user
+  // revoked or downgraded scopes, so we surface AUTH_FAILED upstream.
+  const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
+    const sentAt = nowOf();
+    const rfc822 = buildGmailRfc5322(msg, sentAt);
+    const raw = base64UrlEncode(rfc822);
+    const url = `${GMAIL_API_BASE}/messages/send`;
+
+    const post = async (token: string) => fetcher(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+    });
+
+    let res = await post(await ensureToken(false));
+    if (res.status === 401) {
+      res = await post(await ensureToken(true));
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const detail = { kind: 'gmail' as const, slug: opts.slug, status: res.status };
+      if (res.status === 401 || res.status === 403) {
+        markError(`gmail send auth ${res.status}`, text);
+        throw new IngredientError(
+          'MAIL_SEND_AUTH_FAILED',
+          `Gmail rejected the send (${res.status}): ${text.slice(0, 200)}`,
+          detail,
+        );
+      }
+      if (res.status >= 400 && res.status < 500) {
+        throw new IngredientError(
+          'MAIL_SEND_RECIPIENT_INVALID',
+          `Gmail rejected a recipient (${res.status}): ${text.slice(0, 200)}`,
+          detail,
+        );
+      }
+      markError(`gmail send transient ${res.status}`, text);
+      throw new IngredientError(
+        'MAIL_SEND_NETWORK_FAILED',
+        `Gmail send failed transiently (${res.status}): ${text.slice(0, 200)}`,
+        detail,
+      );
+    }
+
+    const data = (await res.json()) as { id?: string; threadId?: string };
+    if (!data || typeof data.id !== 'string' || data.id.length === 0) {
+      throw new IngredientError(
+        'MAIL_SEND_NETWORK_FAILED',
+        'Gmail send returned a malformed response (missing id)',
+        { kind: 'gmail', slug: opts.slug, status: res.status },
+      );
+    }
+    lastSuccessfulSyncAt = nowOf();
+    return {
+      // Spec § 1.3 — Gmail's server-assigned id doubles as the
+      // Message-Id surface for the warehouse: the next inbound
+      // history tick indexes the Sent record under the same id.
+      source_id: data.id,
+      message_id: data.id,
+      sent_at: sentAt,
+      thread_id: data.threadId,
+    };
+  };
+
+  const reconciliationHeaderValues = (parsed: ParsedMail): string[] => {
+    const key = MAIL_RECONCILIATION_ID_HEADER.toLowerCase();
+    return parsed.headerLines
+      .filter((header) => header.key.toLowerCase() === key)
+      .map((header) => {
+        const colon = header.line.indexOf(':');
+        return colon >= 0 ? header.line.slice(colon + 1).trim() : '';
+      });
+  };
+
+  const gmailMetadataReconciliationHeaderValues = (
+    message: GmailMessageMetadataPayload,
+  ): string[] => (message.payload?.headers ?? [])
+    .filter((header) => header.name?.toLowerCase()
+      === MAIL_RECONCILIATION_ID_HEADER.toLowerCase())
+    .map((header) => header.value ?? '');
+
+  const gmailReconciliationCandidate = async (
+    msg: GmailMessagePayload,
+  ): Promise<MailSentReconciliationCandidate> => {
+    if (!msg.raw) throw new Error(`gmail message ${msg.id} missing raw body`);
+    if (!(msg.labelIds ?? []).includes('SENT')) {
+      throw new Error(`gmail message ${msg.id} left Sent during reconciliation`);
+    }
+    const maxEncodedSourceBytes = 4 * Math.ceil(
+      MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES / 3,
+    ) + 4;
+    if (Buffer.byteLength(msg.raw, 'ascii') > maxEncodedSourceBytes) {
+      throw new Error(`gmail message ${msg.id} exceeds the reconciliation source cap`);
+    }
+    const source = base64UrlDecode(msg.raw);
+    if (source.length > MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES) {
+      throw new Error(`gmail message ${msg.id} exceeds the reconciliation source cap`);
+    }
+    const parsed = await simpleParser(source);
+    const sentAt = msg.internalDate ? Number(msg.internalDate) : parsed.date?.getTime();
+    if (!Number.isSafeInteger(sentAt) || (sentAt as number) < 0) {
+      throw new Error(`gmail message ${msg.id} missing a safe provider timestamp`);
+    }
+    return {
+      source_id: msg.id,
+      rfc_message_id: parsed.messageId ?? undefined,
+      reconciliation_header_values: reconciliationHeaderValues(parsed),
+      to: addressToStringList(parsed.to),
+      cc: addressToStringList(parsed.cc),
+      bcc: addressToStringList(parsed.bcc),
+      subject: parsed.subject ?? '',
+      sent_at: sentAt as number,
+      attachments: parsedReconciliationAttachmentParts(parsed),
+      attachment_set_complete: true,
+    };
+  };
+
+  const lookupSentByReconciliationId = async (
+    query: MailSentReconciliationQuery,
+  ): Promise<MailSentReconciliationResult> => {
+    assertMailSentReconciliationQuery(query);
+    const candidates: MailSentReconciliationCandidate[] = [];
+    let pageToken: string | undefined;
+    try {
+      do {
+        const remaining = MAIL_SENT_RECONCILIATION_MAX_SCAN - candidates.length;
+        if (remaining <= 0) {
+          return evaluateMailSentReconciliationCandidates(query, candidates, false);
+        }
+        const url = new URL(`${GMAIL_API_BASE}/messages`);
+        // Search one slightly wider provider window, then enforce millisecond
+        // bounds against each fetched source message in the shared verifier.
+        const afterSeconds = Math.max(0, Math.floor(query.sent_after / 1_000) - 1);
+        const beforeSeconds = Math.ceil(query.sent_before / 1_000) + 1;
+        url.searchParams.set('q', `after:${afterSeconds} before:${beforeSeconds}`);
+        url.searchParams.append('labelIds', 'SENT');
+        url.searchParams.set('maxResults', String(Math.min(50, remaining)));
+        if (pageToken) url.searchParams.set('pageToken', pageToken);
+        const page = await getReconciliationSource<GmailMessageList>(url.toString());
+        for (const ref of page.messages ?? []) {
+          if (candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
+            return evaluateMailSentReconciliationCandidates(query, candidates, false);
+          }
+          const metadataUrl = new URL(
+            `${GMAIL_API_BASE}/messages/${encodeURIComponent(ref.id)}`,
+          );
+          metadataUrl.searchParams.set('format', 'metadata');
+          for (const header of [
+            MAIL_RECONCILIATION_ID_HEADER,
+            'Message-ID',
+            'To',
+            'Subject',
+          ]) {
+            metadataUrl.searchParams.append('metadataHeaders', header);
+          }
+          const metadata = await getReconciliationSource<GmailMessageMetadataPayload>(
+            metadataUrl.toString(),
+          );
+          const headerValues = gmailMetadataReconciliationHeaderValues(metadata);
+          if (!headerValues.some((value) => value.trim() === query.reconciliation_id)) {
+            candidates.push({
+              source_id: metadata.id,
+              reconciliation_header_values: headerValues,
+              to: [],
+              cc: [],
+              bcc: [],
+              subject: '',
+              sent_at: 0,
+              attachments: [],
+              attachment_set_complete: false,
+            });
+            continue;
+          }
+          if (
+            !Number.isSafeInteger(metadata.sizeEstimate)
+            || metadata.sizeEstimate! <= 0
+            || metadata.sizeEstimate! > MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES
+          ) {
+            candidates.push({
+              source_id: metadata.id,
+              reconciliation_header_values: headerValues,
+              to: [],
+              cc: [],
+              bcc: [],
+              subject: '',
+              sent_at: 0,
+              attachments: [],
+              attachment_set_complete: false,
+            });
+            continue;
+          }
+          const raw = await getReconciliationSource<GmailMessagePayload>(
+            `${GMAIL_API_BASE}/messages/${encodeURIComponent(ref.id)}?format=raw`,
+          );
+          candidates.push(await gmailReconciliationCandidate(raw));
+        }
+        pageToken = page.nextPageToken;
+        if (pageToken && candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
+          return evaluateMailSentReconciliationCandidates(query, candidates, false);
+        }
+      } while (pageToken);
+      lastSuccessfulSyncAt = nowOf();
+      return evaluateMailSentReconciliationCandidates(query, candidates, true);
+    } catch (err) {
+      markError('gmail sent reconciliation lookup failed', err);
+      return {
+        status: 'unavailable',
+        reason: 'provider_error',
+        scanned_candidates: candidates.length,
+      };
+    }
+  };
+
+  // sendCapable lockstep with `send`: derive once at construction
+  // from the user's granted-scope list. Re-enrollment with new
+  // scopes recreates the provider — config() is read once here so
+  // a later mutation can't desync the field from the method.
+  const sendCapable = (opts.config().granted_scopes ?? []).includes(GMAIL_SEND_SCOPE);
+  const accountEmail = opts.config().account_email ?? '';
+
+  return {
+    kind: 'gmail',
+    slug: opts.slug,
+    sendCapable,
+    accountEmail,
+
+    async connect() {
+      try {
+        await ensureToken(false);
+      } catch (err) {
+        if (err instanceof OAuthError) markError('gmail connect token refresh failed', err);
+        throw err;
+      }
+    },
+
+    async initialScan(scanOpts) {
+      await runInitialScan(scanOpts);
+    },
+
+    async startSync(cb) {
+      const scheduler = opts.scheduler ?? defaultScheduler;
+      const intervalMs = Math.max(1, opts.config().poll_seconds) * 1000;
+      // Run an immediate tick so testers don't need to wait for the
+      // first interval.
+      await runHistoryTick(cb);
+      pollStop = scheduler(() => runHistoryTick(cb), intervalMs);
+      return async () => {
+        if (pollStop) { pollStop(); pollStop = null; }
+      };
+    },
+
+    async close() {
+      stopped = true;
+      if (pollStop) { pollStop(); pollStop = null; }
+    },
+
+    health(): ProviderHealth {
+      return {
+        last_successful_sync_at: lastSuccessfulSyncAt,
+        error_count_24h: errorCount24h,
+        pending_queue_size: pendingQueueSize,
+      };
+    },
+
+    lookupSentByReconciliationId,
+
+    ...(sendCapable ? { send: sendImpl } : {}),
+  };
+};
+
+// ────────────────────────────────────────────────────────────────
+// Shipped OAuth client config
+// ────────────────────────────────────────────────────────────────
+
+/** OAuth constants shipped in the server binary. Users only provide
+ *  the authorization `code` (via the ext popup) — never the client
+ *  credentials. The client id is meant to be replaced at build time
+ *  per-distribution via env or a patching step; the default here is
+ *  a placeholder so the code compiles standalone. */
+export const GMAIL_OAUTH_CONFIG: OAuthProviderConfig = {
+  tokenUrl: 'https://oauth2.googleapis.com/token',
+  clientId: process.env.RECUED_GMAIL_CLIENT_ID ?? '',
+  clientSecret: process.env.RECUED_GMAIL_CLIENT_SECRET ?? undefined,
+};

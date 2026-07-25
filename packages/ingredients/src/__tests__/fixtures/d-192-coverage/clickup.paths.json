@@ -1,0 +1,372 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official v2 document; keys remain raw document-relative paths, and openapi_source.path_alias.wire_prefix reconciles the /api wire prefix",
+    "url": "https://developer.clickup.com/openapi/clickup-api-v2-reference.json",
+    "sha256": "224a4d4d1a50116268be54dbf887a59a444a6bffadd133c620cd1a6c32b1069b",
+    "fetched_at": "2026-07-14",
+    "source_title": "ClickUp API v2 Reference",
+    "source_version": "2.0"
+  },
+  "openapi": "3.1.0",
+  "servers": [
+    {
+      "url": "https://api.clickup.com/api",
+      "description": "ClickUp",
+      "variables": {}
+    }
+  ],
+  "paths": {
+    "/v2/checklist/{checklist_id}": {
+      "delete": {
+        "operationId": "DeleteChecklist"
+      },
+      "put": {
+        "operationId": "EditChecklist"
+      }
+    },
+    "/v2/checklist/{checklist_id}/checklist_item": {
+      "post": {
+        "operationId": "CreateChecklistItem"
+      }
+    },
+    "/v2/checklist/{checklist_id}/checklist_item/{checklist_item_id}": {
+      "delete": {
+        "operationId": "DeleteChecklistItem"
+      },
+      "put": {
+        "operationId": "EditChecklistItem"
+      }
+    },
+    "/v2/comment/{comment_id}": {
+      "delete": {
+        "operationId": "DeleteComment"
+      },
+      "put": {
+        "operationId": "UpdateComment"
+      }
+    },
+    "/v2/comment/{comment_id}/reply": {
+      "get": {
+        "operationId": "GetThreadedComments"
+      },
+      "post": {
+        "operationId": "CreateThreadedComment"
+      }
+    },
+    "/v2/folder/{folder_id}": {
+      "delete": {
+        "operationId": "DeleteFolder"
+      },
+      "get": {
+        "operationId": "GetFolder"
+      },
+      "put": {
+        "operationId": "UpdateFolder"
+      }
+    },
+    "/v2/folder/{folder_id}/field": {
+      "get": {
+        "operationId": "getFolderAvailableFields"
+      }
+    },
+    "/v2/folder/{folder_id}/list": {
+      "get": {
+        "operationId": "GetLists"
+      },
+      "post": {
+        "operationId": "CreateList"
+      }
+    },
+    "/v2/goal/{goal_id}": {
+      "delete": {
+        "operationId": "DeleteGoal"
+      },
+      "get": {
+        "operationId": "GetGoal"
+      },
+      "put": {
+        "operationId": "UpdateGoal"
+      }
+    },
+    "/v2/goal/{goal_id}/key_result": {
+      "post": {
+        "operationId": "CreateKeyResult"
+      }
+    },
+    "/v2/group": {
+      "get": {
+        "operationId": "GetTeams1"
+      }
+    },
+    "/v2/key_result/{key_result_id}": {
+      "delete": {
+        "operationId": "DeleteKeyResult"
+      },
+      "put": {
+        "operationId": "EditKeyResult"
+      }
+    },
+    "/v2/list/{list_id}": {
+      "delete": {
+        "operationId": "DeleteList"
+      },
+      "get": {
+        "operationId": "GetList"
+      },
+      "put": {
+        "operationId": "UpdateList"
+      }
+    },
+    "/v2/list/{list_id}/comment": {
+      "get": {
+        "operationId": "GetListComments"
+      },
+      "post": {
+        "operationId": "CreateListComment"
+      }
+    },
+    "/v2/list/{list_id}/field": {
+      "get": {
+        "operationId": "GetAccessibleCustomFields"
+      }
+    },
+    "/v2/list/{list_id}/member": {
+      "get": {
+        "operationId": "GetListMembers"
+      }
+    },
+    "/v2/list/{list_id}/task": {
+      "get": {
+        "operationId": "GetTasks"
+      },
+      "post": {
+        "operationId": "CreateTask"
+      }
+    },
+    "/v2/space/{space_id}": {
+      "delete": {
+        "operationId": "DeleteSpace"
+      },
+      "get": {
+        "operationId": "GetSpace"
+      },
+      "put": {
+        "operationId": "UpdateSpace"
+      }
+    },
+    "/v2/space/{space_id}/field": {
+      "get": {
+        "operationId": "getSpaceAvailableFields"
+      }
+    },
+    "/v2/space/{space_id}/folder": {
+      "get": {
+        "operationId": "GetFolders"
+      },
+      "post": {
+        "operationId": "CreateFolder"
+      }
+    },
+    "/v2/space/{space_id}/list": {
+      "get": {
+        "operationId": "GetFolderlessLists"
+      },
+      "post": {
+        "operationId": "CreateFolderlessList"
+      }
+    },
+    "/v2/space/{space_id}/tag": {
+      "get": {
+        "operationId": "GetSpaceTags"
+      },
+      "post": {
+        "operationId": "CreateSpaceTag"
+      }
+    },
+    "/v2/space/{space_id}/tag/{tag_name}": {
+      "delete": {
+        "operationId": "DeleteSpaceTag"
+      },
+      "put": {
+        "operationId": "EditSpaceTag"
+      }
+    },
+    "/v2/task/{task_id}": {
+      "delete": {
+        "operationId": "DeleteTask"
+      },
+      "get": {
+        "operationId": "GetTask"
+      },
+      "put": {
+        "operationId": "UpdateTask"
+      }
+    },
+    "/v2/task/{task_id}/checklist": {
+      "post": {
+        "operationId": "CreateChecklist"
+      }
+    },
+    "/v2/task/{task_id}/comment": {
+      "get": {
+        "operationId": "GetTaskComments"
+      },
+      "post": {
+        "operationId": "CreateTaskComment"
+      }
+    },
+    "/v2/task/{task_id}/dependency": {
+      "delete": {
+        "operationId": "DeleteDependency"
+      },
+      "post": {
+        "operationId": "AddDependency"
+      }
+    },
+    "/v2/task/{task_id}/field/{field_id}": {
+      "delete": {
+        "operationId": "RemoveCustomFieldValue"
+      },
+      "post": {
+        "operationId": "SetCustomFieldValue"
+      }
+    },
+    "/v2/task/{task_id}/link/{links_to}": {
+      "delete": {
+        "operationId": "DeleteTaskLink"
+      },
+      "post": {
+        "operationId": "AddTaskLink"
+      }
+    },
+    "/v2/task/{task_id}/member": {
+      "get": {
+        "operationId": "GetTaskMembers"
+      }
+    },
+    "/v2/task/{task_id}/tag/{tag_name}": {
+      "delete": {
+        "operationId": "RemoveTagFromTask"
+      },
+      "post": {
+        "operationId": "AddTagToTask"
+      }
+    },
+    "/v2/task/{task_id}/time_in_status": {
+      "get": {
+        "operationId": "GetTask'sTimeinStatus"
+      }
+    },
+    "/v2/team": {
+      "get": {
+        "operationId": "GetAuthorizedTeams"
+      }
+    },
+    "/v2/team/{team_id}/custom_item": {
+      "get": {
+        "operationId": "GetCustomItems"
+      }
+    },
+    "/v2/team/{team_id}/field": {
+      "get": {
+        "operationId": "getTeamAvailableFields"
+      }
+    },
+    "/v2/team/{team_id}/goal": {
+      "get": {
+        "operationId": "GetGoals"
+      },
+      "post": {
+        "operationId": "CreateGoal"
+      }
+    },
+    "/v2/team/{team_id}/plan": {
+      "get": {
+        "operationId": "GetWorkspaceplan"
+      }
+    },
+    "/v2/team/{team_id}/seats": {
+      "get": {
+        "operationId": "GetWorkspaceseats"
+      }
+    },
+    "/v2/team/{team_id}/space": {
+      "get": {
+        "operationId": "GetSpaces"
+      },
+      "post": {
+        "operationId": "CreateSpace"
+      }
+    },
+    "/v2/team/{team_Id}/task": {
+      "get": {
+        "operationId": "GetFilteredTeamTasks"
+      }
+    },
+    "/v2/team/{team_Id}/time_entries": {
+      "get": {
+        "operationId": "Gettimeentrieswithinadaterange"
+      },
+      "post": {
+        "operationId": "Createatimeentry"
+      }
+    },
+    "/v2/team/{team_id}/time_entries/{timer_id}": {
+      "delete": {
+        "operationId": "DeleteatimeEntry"
+      },
+      "get": {
+        "operationId": "Getsingulartimeentry"
+      },
+      "put": {
+        "operationId": "UpdateatimeEntry"
+      }
+    },
+    "/v2/team/{team_id}/time_entries/{timer_id}/history": {
+      "get": {
+        "operationId": "Gettimeentryhistory"
+      }
+    },
+    "/v2/team/{team_id}/time_entries/current": {
+      "get": {
+        "operationId": "Getrunningtimeentry"
+      }
+    },
+    "/v2/team/{team_Id}/time_entries/start": {
+      "post": {
+        "operationId": "StartatimeEntry"
+      }
+    },
+    "/v2/team/{team_id}/time_entries/stop": {
+      "post": {
+        "operationId": "StopatimeEntry"
+      }
+    },
+    "/v2/team/{team_id}/time_entries/tags": {
+      "get": {
+        "operationId": "Getalltagsfromtimeentries"
+      }
+    },
+    "/v2/team/{team_id}/webhook": {
+      "get": {
+        "operationId": "GetWebhooks"
+      },
+      "post": {
+        "operationId": "CreateWebhook"
+      }
+    },
+    "/v2/user": {
+      "get": {
+        "operationId": "GetAuthorizedUser"
+      }
+    },
+    "/v2/webhook/{webhook_id}": {
+      "delete": {
+        "operationId": "DeleteWebhook"
+      },
+      "put": {
+        "operationId": "UpdateWebhook"
+      }
+    }
+  }
+}

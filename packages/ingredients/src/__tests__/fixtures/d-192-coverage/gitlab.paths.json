@@ -1,0 +1,19 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official GitLab OpenAPI v3 document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0 YAML, commit-pinned URL",
+    "url": "https://gitlab.com/gitlab-org/gitlab/-/raw/4b83f165a57faa54ed7719d734788f62490599ea/doc/api/openapi/openapi_v3.yaml",
+    "sha256": "e8a3e7e3c26f15c7dc4152dff58b143a7bd65de120b46e54a8d51c0ddb510534",
+    "fetched_at": "2026-07-08"
+  },
+  "paths": {
+    "/api/v4/projects": {
+      "get": {}
+    },
+    "/api/v4/projects/{id}/issues": {
+      "get": {}
+    },
+    "/api/v4/projects/{id}/issues/{issue_iid}": {
+      "get": {}
+    }
+  }
+}

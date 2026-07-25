@@ -1,0 +1,5742 @@
+{
+  "_extract": {
+    "source": {
+      "kind": "official_openapi",
+      "url": "https://api.attio.com/openapi/api",
+      "bytes": 755531,
+      "sha256": "21ee487c2b27364bef910413564824441d72da030e6679f2edac47c7548ff120",
+      "openapi": "3.1.0",
+      "api_version": "2.0.0",
+      "retrieved_on": "2026-07-15",
+      "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract."
+    },
+    "official_operation_count": 75,
+    "official_unique_route_count": 75,
+    "admitted_unique_route_count": 73,
+    "declared_operation_count": 79,
+    "excluded_operation_count": 2,
+    "official_method_counts": {
+      "DELETE": 8,
+      "GET": 35,
+      "PATCH": 9,
+      "POST": 19,
+      "PUT": 4
+    },
+    "admitted_method_counts": {
+      "DELETE": 8,
+      "GET": 34,
+      "PATCH": 9,
+      "POST": 18,
+      "PUT": 4
+    },
+    "declared_method_counts": {
+      "DELETE": 8,
+      "GET": 34,
+      "PATCH": 9,
+      "POST": 24,
+      "PUT": 4
+    },
+    "compatibility_operation_count": 20,
+    "compatibility_operation_ids": [
+      "company.create",
+      "company.search",
+      "deal.create",
+      "deal.search",
+      "list.search",
+      "list_entry.create",
+      "list_entry.search",
+      "meta.identify",
+      "note.create",
+      "note.search",
+      "object.search",
+      "person.create",
+      "person.search",
+      "record.entries",
+      "record.read",
+      "record.search",
+      "task.create",
+      "task.search",
+      "task.read",
+      "workspace_member.search"
+    ],
+    "compatibility_hashes": {
+      "ids": "755708310e5d1420c7ed1676a51e4f80ce07b673232236fd36d2d7475cb58feb",
+      "rows": "74a8809a27922378bb768a4e4eb452f6e9934e72a5ed7ea1b569ffacd0c2b92d",
+      "arg_keys": "ce3c5e83d8ef04f3ffc213d37b2d468e4acee7f78e00ecef62948c938d894b8b",
+      "arg_metadata": "36cffea334253698c5a7962c4808ac341da29f4ca7ed1ece128e7161bb0eb7f0"
+    },
+    "legacy_compatibility_hashes": {
+      "ids": "755708310e5d1420c7ed1676a51e4f80ce07b673232236fd36d2d7475cb58feb",
+      "rows": "74a8809a27922378bb768a4e4eb452f6e9934e72a5ed7ea1b569ffacd0c2b92d",
+      "arg_keys": "0b02e0e71df3d3bdca91bbaf797dd5f0058b7b1c9ff3c6914a1b4d7e53c9a0f8",
+      "arg_metadata": "a2c3215c1af44f78cf46926e12d2899e16fcbc516319029bd56d525dd3b89a0e"
+    },
+    "repaired_nested_body_operations": [
+      "company.create",
+      "deal.create",
+      "person.create",
+      "list_entry.create",
+      "note.create",
+      "task.create"
+    ],
+    "recipe_versions": {
+      "relationship-operations-digest-attio": 1,
+      "record-activity-brief-attio": 1,
+      "list-pipeline-readiness-brief-attio": 1,
+      "create-person-intake-attio": 2,
+      "create-company-intake-attio": 2,
+      "create-deal-intake-attio": 2,
+      "add-record-to-list-attio": 2,
+      "add-record-note-attio": 2,
+      "create-follow-up-task-attio": 2
+    },
+    "composition_bytes": 103227,
+    "risk_counts": {
+      "admin": 12,
+      "destructive": 8,
+      "read": 41,
+      "write": 18
+    },
+    "approval_counts": {
+      "always": 32,
+      "ask": 6,
+      "never": 41
+    },
+    "idempotency_counts": {
+      "idempotent": 12,
+      "non_idempotent": 26,
+      "safe": 41
+    },
+    "pagination_counts": {
+      "none": 60,
+      "offset": 13,
+      "query_token": 6
+    },
+    "result_path_counts": {
+      "data": 68,
+      "data.rows": 1,
+      "data.transcript": 1,
+      "none": 9
+    },
+    "body_mode_counts": {
+      "none": 42,
+      "raw_json": 24,
+      "structured_json": 13
+    },
+    "exclusions": [
+      {
+        "operation_id": "file.upload",
+        "method": "POST",
+        "path": "/v2/files/upload",
+        "category": "multipart_binary_request",
+        "reason": "The official route requires multipart/form-data with a binary file part. The current REST binding can preserve JSON and UTF-8 body_raw but cannot construct an arbitrary-byte multipart body without corruption."
+      },
+      {
+        "operation_id": "file.download",
+        "method": "GET",
+        "path": "/v2/files/{file_id}/download",
+        "category": "unproven_signed_redirect_origin",
+        "reason": "The official contract promises a redirect to a signed download URL but does not pin that target to the Attio API origin. The REST transport correctly rejects cross-origin redirects, so this route cannot be admitted without live same-origin proof or weakening credential and SSRF boundaries."
+      }
+    ],
+    "auth": {
+      "selected": "Bearer credential supplied only by the enrolled attio connection",
+      "official_model": "OAuth 2.0 or API-token bearer over HTTPS",
+      "credential_fields_in_pack": 0
+    },
+    "source_decision": {
+      "admitted": true,
+      "kind": "task",
+      "mode": "read_only",
+      "pin_refreshed": true,
+      "caveat": "created_at remains the only documented stable version candidate; the authoring document keeps the stale-row caveat explicit."
+    },
+    "authority_notes": {
+      "multipart_upload_excluded": true,
+      "signed_download_excluded": true,
+      "hidden_alpha_operations_admitted_with_approval": 3,
+      "specialized_route_aliases": "company/person/deal create and search retain six compatibility operations over two generic official record routes."
+    }
+  },
+  "official_operations": [
+    {
+      "method": "GET",
+      "path": "/v2/objects",
+      "operation_id": "object.search",
+      "tag": "Objects",
+      "summary": "List objects",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "object.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/objects",
+      "operation_id": "object.create",
+      "tag": "Objects",
+      "summary": "Create an object",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "object.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/objects/{object}",
+      "operation_id": "object.read",
+      "tag": "Objects",
+      "summary": "Get an object",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "object.read"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/objects/{object}",
+      "operation_id": "object.update",
+      "tag": "Objects",
+      "summary": "Update an object",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "object.update"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/objects/{object}/views",
+      "operation_id": "object_view.search",
+      "tag": "Objects",
+      "summary": "List views for object",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_archived",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "object_view.search"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/{target}/{identifier}/attributes",
+      "operation_id": "attribute.search",
+      "tag": "Attributes",
+      "summary": "List attributes",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "show_archived",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "attribute.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/{target}/{identifier}/attributes",
+      "operation_id": "attribute.create",
+      "tag": "Attributes",
+      "summary": "Create an attribute",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "attribute.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}",
+      "operation_id": "attribute.read",
+      "tag": "Attributes",
+      "summary": "Get an attribute",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "attribute.read"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}",
+      "operation_id": "attribute.update",
+      "tag": "Attributes",
+      "summary": "Update an attribute",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "attribute.update"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/options",
+      "operation_id": "select_option.search",
+      "tag": "Attributes",
+      "summary": "List select options",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_archived",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "select_option.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/options",
+      "operation_id": "select_option.create",
+      "tag": "Attributes",
+      "summary": "Create a select option",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "select_option.create"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/options/{option}",
+      "operation_id": "select_option.update",
+      "tag": "Attributes",
+      "summary": "Update a select option",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "option",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "select_option.update"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/statuses",
+      "operation_id": "status.search",
+      "tag": "Attributes",
+      "summary": "List statuses",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_archived",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "status.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/statuses",
+      "operation_id": "status.create",
+      "tag": "Attributes",
+      "summary": "Create a status",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "status.create"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/{target}/{identifier}/attributes/{attribute}/statuses/{status}",
+      "operation_id": "status.update",
+      "tag": "Attributes",
+      "summary": "Update a status",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "target",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "identifier",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "status",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "status.update"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/objects/{object}/records/query",
+      "operation_id": "record.list",
+      "tag": "Records",
+      "summary": "List records",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "company.search",
+        "deal.search",
+        "person.search",
+        "record.list"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/objects/{object}/records",
+      "operation_id": "record.create",
+      "tag": "Records",
+      "summary": "Create a record",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "company.create",
+        "deal.create",
+        "person.create",
+        "record.create"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/objects/{object}/records",
+      "operation_id": "record.upsert",
+      "tag": "Records",
+      "summary": "Upsert a record",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "matching_attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.upsert"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/objects/{object}/records/{record_id}",
+      "operation_id": "record.read",
+      "tag": "Records",
+      "summary": "Get a record",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.read"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/objects/{object}/records/{record_id}",
+      "operation_id": "record.update_overwrite",
+      "tag": "Records",
+      "summary": "Update a record (overwrite multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.update_overwrite"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/objects/{object}/records/{record_id}",
+      "operation_id": "record.update_append",
+      "tag": "Records",
+      "summary": "Update a record (append multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.update_append"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/objects/{object}/records/{record_id}",
+      "operation_id": "record.delete",
+      "tag": "Records",
+      "summary": "Delete a record",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read",
+        "record_permission:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/objects/{object}/records/{record_id}/attributes/{attribute}/values",
+      "operation_id": "record_attribute_value.search",
+      "tag": "Records",
+      "summary": "List record attribute values",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_historic",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record_attribute_value.search"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/objects/{object}/records/{record_id}/entries",
+      "operation_id": "record.entries",
+      "tag": "Records",
+      "summary": "List record entries",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read",
+        "list_entry:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "record.entries"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/objects/records/search",
+      "operation_id": "record.search",
+      "tag": "Records",
+      "summary": "Search records",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "record.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/sql",
+      "operation_id": "sql.query",
+      "tag": "SQL",
+      "summary": "Query SQL",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "sql.query"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/lists",
+      "operation_id": "list.search",
+      "tag": "Lists",
+      "summary": "List all lists",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "list.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/lists",
+      "operation_id": "list.create",
+      "tag": "Lists",
+      "summary": "Create a list",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_configuration:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "list.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/lists/{list}",
+      "operation_id": "list.read",
+      "tag": "Lists",
+      "summary": "Get a list",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list.read"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/lists/{list}",
+      "operation_id": "list.update",
+      "tag": "Lists",
+      "summary": "Update a list",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_configuration:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list.update"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/lists/{list}/views",
+      "operation_id": "list_view.search",
+      "tag": "Lists",
+      "summary": "List views for list",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_archived",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_view.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/lists/{list}/entries/query",
+      "operation_id": "list_entry.search",
+      "tag": "Entries",
+      "summary": "List entries",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/lists/{list}/entries",
+      "operation_id": "list_entry.create",
+      "tag": "Entries",
+      "summary": "Create an entry (add record to list)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.create"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/lists/{list}/entries",
+      "operation_id": "list_entry.upsert",
+      "tag": "Entries",
+      "summary": "Upsert a list entry by parent",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.upsert"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/lists/{list}/entries/{entry_id}",
+      "operation_id": "list_entry.read",
+      "tag": "Entries",
+      "summary": "Get a list entry",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.read"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/lists/{list}/entries/{entry_id}",
+      "operation_id": "list_entry.update_overwrite",
+      "tag": "Entries",
+      "summary": "Update a list entry (overwrite multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.update_overwrite"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/lists/{list}/entries/{entry_id}",
+      "operation_id": "list_entry.update_append",
+      "tag": "Entries",
+      "summary": "Update a list entry (append multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.update_append"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/lists/{list}/entries/{entry_id}",
+      "operation_id": "list_entry.delete",
+      "tag": "Entries",
+      "summary": "Delete a list entry",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/lists/{list}/entries/{entry_id}/attributes/{attribute}/values",
+      "operation_id": "list_entry_attribute_value.search",
+      "tag": "Entries",
+      "summary": "List attribute values for a list entry",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "show_historic",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "list_entry_attribute_value.search"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/workspace_members",
+      "operation_id": "workspace_member.search",
+      "tag": "Workspace members",
+      "summary": "List workspace members",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "workspace_member.search"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/workspace_members/{workspace_member_id}",
+      "operation_id": "workspace_member.read",
+      "tag": "Workspace members",
+      "summary": "Get a workspace member",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "workspace_member_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "workspace_member.read"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/notes",
+      "operation_id": "note.search",
+      "tag": "Notes",
+      "summary": "List notes",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "note:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "parent_object",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "parent_record_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "note.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/notes",
+      "operation_id": "note.create",
+      "tag": "Notes",
+      "summary": "Create a note",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "note:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "note.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/notes/{note_id}",
+      "operation_id": "note.read",
+      "tag": "Notes",
+      "summary": "Get a note",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "note:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "note_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "note.read"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/notes/{note_id}",
+      "operation_id": "note.delete",
+      "tag": "Notes",
+      "summary": "Delete a note",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "note:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "note_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "note.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/tasks",
+      "operation_id": "task.search",
+      "tag": "Tasks",
+      "summary": "List tasks",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "task:read",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "sort",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_object",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_record_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "assignee",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "is_completed",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "task.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/tasks",
+      "operation_id": "task.create",
+      "tag": "Tasks",
+      "summary": "Create a task",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "task:read-write",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "task.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/tasks/{task_id}",
+      "operation_id": "task.read",
+      "tag": "Tasks",
+      "summary": "Get a task",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "task:read",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "task_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "task.read"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/tasks/{task_id}",
+      "operation_id": "task.update",
+      "tag": "Tasks",
+      "summary": "Update a task",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "task:read-write",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "task_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "task.update"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/tasks/{task_id}",
+      "operation_id": "task.delete",
+      "tag": "Tasks",
+      "summary": "Delete a task",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "task:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "task_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "task.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads",
+      "operation_id": "thread.search",
+      "tag": "Threads",
+      "summary": "List threads",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "comment:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "record_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "object",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "entry_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "list",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "thread.search"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/{thread_id}",
+      "operation_id": "thread.read",
+      "tag": "Threads",
+      "summary": "Get a thread",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "comment:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "thread_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "thread.read"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/comments",
+      "operation_id": "comment.create",
+      "tag": "Comments",
+      "summary": "Create a comment",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "comment:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "comment.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/comments/{comment_id}",
+      "operation_id": "comment.read",
+      "tag": "Comments",
+      "summary": "Get a comment",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "comment:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "comment_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "comment.read"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/comments/{comment_id}",
+      "operation_id": "comment.delete",
+      "tag": "Comments",
+      "summary": "Delete a comment",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "comment:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "comment_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "comment.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/meetings",
+      "operation_id": "meeting.search",
+      "tag": "Meetings",
+      "summary": "List meetings",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_object",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_record_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "participants",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "sort",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "ends_from",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "starts_before",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "timezone",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "meeting.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/meetings",
+      "operation_id": "meeting.create_or_find",
+      "tag": "Meetings",
+      "summary": "Find or create a meeting",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read-write",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "meeting.create_or_find"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/meetings/{meeting_id}",
+      "operation_id": "meeting.read",
+      "tag": "Meetings",
+      "summary": "Get a meeting",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "meeting.read"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/meetings/{meeting_id}/call_recordings",
+      "operation_id": "call_recording.search",
+      "tag": "Call recordings",
+      "summary": "List call recordings",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "call_recording.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/meetings/{meeting_id}/call_recordings",
+      "operation_id": "call_recording.create",
+      "tag": "Call recordings",
+      "summary": "Create call recording",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read-write"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "call_recording.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/meetings/{meeting_id}/call_recordings/{call_recording_id}",
+      "operation_id": "call_recording.read",
+      "tag": "Call recordings",
+      "summary": "Get call recording",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "call_recording_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "call_recording.read"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/meetings/{meeting_id}/call_recordings/{call_recording_id}",
+      "operation_id": "call_recording.delete",
+      "tag": "Call recordings",
+      "summary": "Delete call recording",
+      "request_media": [],
+      "response_status": "204",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read-write"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "call_recording_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "call_recording.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/meetings/{meeting_id}/call_recordings/{call_recording_id}/transcript",
+      "operation_id": "call_transcript.read",
+      "tag": "Transcripts",
+      "summary": "Get call transcript",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "call_recording_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "call_transcript.read"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/files",
+      "operation_id": "file.search",
+      "tag": "Files",
+      "summary": "List files",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read",
+        "record_permission:read",
+        "file:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "storage_provider",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "parent_folder_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "file.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/files",
+      "operation_id": "file.folder.create",
+      "tag": "Files",
+      "summary": "Create a folder",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "file:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "file.folder.create"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/files/upload",
+      "operation_id": "file.upload",
+      "tag": "Files",
+      "summary": "Upload a file",
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "response_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "file:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [],
+      "selected": false,
+      "operations": [],
+      "exclusion": "multipart_binary_request"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/files/{file_id}",
+      "operation_id": "file.read",
+      "tag": "Files",
+      "summary": "Get a file",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "file:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "file_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "file.read"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/files/{file_id}",
+      "operation_id": "file.delete",
+      "tag": "Files",
+      "summary": "Delete a file",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "file:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "file_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "file.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/files/{file_id}/download",
+      "operation_id": "file.download",
+      "tag": "Files",
+      "summary": "Download a file",
+      "request_media": [],
+      "response_status": "302",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read",
+        "record_permission:read",
+        "file:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "file_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unproven_signed_redirect_origin"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/webhooks",
+      "operation_id": "webhook.search",
+      "tag": "Webhooks",
+      "summary": "List webhooks",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "webhook:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "offset",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "webhook.search"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/webhooks",
+      "operation_id": "webhook.create",
+      "tag": "Webhooks",
+      "summary": "Create a webhook",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "webhook.create"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/webhooks/{webhook_id}",
+      "operation_id": "webhook.read",
+      "tag": "Webhooks",
+      "summary": "Get a webhook",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "webhook:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "webhook.read"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/webhooks/{webhook_id}",
+      "operation_id": "webhook.update",
+      "tag": "Webhooks",
+      "summary": "Update a webhook",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "webhook.update"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/webhooks/{webhook_id}",
+      "operation_id": "webhook.delete",
+      "tag": "Webhooks",
+      "summary": "Delete a webhook",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": true,
+      "operations": [
+        "webhook.delete"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/self",
+      "operation_id": "meta.identify",
+      "tag": "Meta",
+      "summary": "Identify",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [],
+      "selected": true,
+      "operations": [
+        "meta.identify"
+      ]
+    }
+  ],
+  "operation_contracts": {
+    "attribute.create": {
+      "official_route": "POST /v2/{target}/{identifier}/attributes",
+      "method": "POST",
+      "path": "/v2/{{target}}/{{identifier}}/attributes",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "attribute.read": {
+      "official_route": "GET /v2/{target}/{identifier}/attributes/{attribute}",
+      "method": "GET",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "attribute.search": {
+      "official_route": "GET /v2/{target}/{identifier}/attributes",
+      "method": "GET",
+      "path": "/v2/{{target}}/{{identifier}}/attributes",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        },
+        {
+          "key": "query.show_archived",
+          "type": "boolean",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 10
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "attribute.update": {
+      "official_route": "PATCH /v2/{target}/{identifier}/attributes/{attribute}",
+      "method": "PATCH",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "call_recording.create": {
+      "official_route": "POST /v2/meetings/{meeting_id}/call_recordings",
+      "method": "POST",
+      "path": "/v2/meetings/{{meeting_id}}/call_recordings",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read-write"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "call_recording.delete": {
+      "official_route": "DELETE /v2/meetings/{meeting_id}/call_recordings/{call_recording_id}",
+      "method": "DELETE",
+      "path": "/v2/meetings/{{meeting_id}}/call_recordings/{{call_recording_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read-write"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "call_recording_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "call_recording.read": {
+      "official_route": "GET /v2/meetings/{meeting_id}/call_recordings/{call_recording_id}",
+      "method": "GET",
+      "path": "/v2/meetings/{{meeting_id}}/call_recordings/{{call_recording_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "call_recording_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "call_recording.search": {
+      "official_route": "GET /v2/meetings/{meeting_id}/call_recordings",
+      "method": "GET",
+      "path": "/v2/meetings/{{meeting_id}}/call_recordings",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 200
+        },
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "call_transcript.read": {
+      "official_route": "GET /v2/meetings/{meeting_id}/call_recordings/{call_recording_id}/transcript",
+      "method": "GET",
+      "path": "/v2/meetings/{{meeting_id}}/call_recordings/{{call_recording_id}}/transcript",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "meeting:read",
+        "call_recording:read"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "call_recording_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data.transcript",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "comment.create": {
+      "official_route": "POST /v2/comments",
+      "method": "POST",
+      "path": "/v2/comments",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "comment:read-write"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "comment.delete": {
+      "official_route": "DELETE /v2/comments/{comment_id}",
+      "method": "DELETE",
+      "path": "/v2/comments/{{comment_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "comment:read-write"
+      ],
+      "args": [
+        {
+          "key": "comment_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "comment.read": {
+      "official_route": "GET /v2/comments/{comment_id}",
+      "method": "GET",
+      "path": "/v2/comments/{{comment_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "comment:read"
+      ],
+      "args": [
+        {
+          "key": "comment_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "company.create": {
+      "official_route": "POST /v2/objects/{object}/records",
+      "method": "POST",
+      "path": "/v2/objects/companies/records",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "company.search": {
+      "official_route": "POST /v2/objects/{object}/records/query",
+      "method": "POST",
+      "path": "/v2/objects/companies/records/query",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.filter",
+          "type": "object",
+          "affects_target": true
+        },
+        {
+          "key": "body.sorts",
+          "type": "array"
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        },
+        {
+          "key": "body.offset",
+          "type": "number"
+        },
+        {
+          "key": "body.filter_view_id",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "body",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "body",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "deal.create": {
+      "official_route": "POST /v2/objects/{object}/records",
+      "method": "POST",
+      "path": "/v2/objects/deals/records",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "deal.search": {
+      "official_route": "POST /v2/objects/{object}/records/query",
+      "method": "POST",
+      "path": "/v2/objects/deals/records/query",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.filter",
+          "type": "object",
+          "affects_target": true
+        },
+        {
+          "key": "body.sorts",
+          "type": "array"
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        },
+        {
+          "key": "body.offset",
+          "type": "number"
+        },
+        {
+          "key": "body.filter_view_id",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "body",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "body",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "file.delete": {
+      "official_route": "DELETE /v2/files/{file_id}",
+      "method": "DELETE",
+      "path": "/v2/files/{{file_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "file:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "file_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "file.folder.create": {
+      "official_route": "POST /v2/files",
+      "method": "POST",
+      "path": "/v2/files",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "file:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "file.read": {
+      "official_route": "GET /v2/files/{file_id}",
+      "method": "GET",
+      "path": "/v2/files/{{file_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "file:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "file_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "file.search": {
+      "official_route": "GET /v2/files",
+      "method": "GET",
+      "path": "/v2/files",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "object_configuration:read",
+        "record_permission:read",
+        "file:read"
+      ],
+      "args": [
+        {
+          "key": "query.object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.storage_provider",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.parent_folder_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 200,
+          "max": 200
+        },
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "list_entry_attribute_value.search": {
+      "official_route": "GET /v2/lists/{list}/entries/{entry_id}/attributes/{attribute}/values",
+      "method": "GET",
+      "path": "/v2/lists/{{list}}/entries/{{entry_id}}/attributes/{{attribute}}/values",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "entry_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_historic",
+          "type": "boolean",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 10
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "list_entry.create": {
+      "official_route": "POST /v2/lists/{list}/entries",
+      "method": "POST",
+      "path": "/v2/lists/{{list}}/entries",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "list_entry.delete": {
+      "official_route": "DELETE /v2/lists/{list}/entries/{entry_id}",
+      "method": "DELETE",
+      "path": "/v2/lists/{{list}}/entries/{{entry_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "entry_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "list_entry.read": {
+      "official_route": "GET /v2/lists/{list}/entries/{entry_id}",
+      "method": "GET",
+      "path": "/v2/lists/{{list}}/entries/{{entry_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "entry_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list_entry.search": {
+      "official_route": "POST /v2/lists/{list}/entries/query",
+      "method": "POST",
+      "path": "/v2/lists/{{list}}/entries/query",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_entry:read",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.filter",
+          "type": "object",
+          "affects_target": true
+        },
+        {
+          "key": "body.sorts",
+          "type": "array"
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        },
+        {
+          "key": "body.offset",
+          "type": "number"
+        },
+        {
+          "key": "body.filter_view_id",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "body",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "body",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "list_entry.update_append": {
+      "official_route": "PATCH /v2/lists/{list}/entries/{entry_id}",
+      "method": "PATCH",
+      "path": "/v2/lists/{{list}}/entries/{{entry_id}}",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "entry_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list_entry.update_overwrite": {
+      "official_route": "PUT /v2/lists/{list}/entries/{entry_id}",
+      "method": "PUT",
+      "path": "/v2/lists/{{list}}/entries/{{entry_id}}",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "entry_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list_entry.upsert": {
+      "official_route": "PUT /v2/lists/{list}/entries",
+      "method": "PUT",
+      "path": "/v2/lists/{{list}}/entries",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list_view.search": {
+      "official_route": "GET /v2/lists/{list}/views",
+      "method": "GET",
+      "path": "/v2/lists/{{list}}/views",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_archived",
+          "type": "boolean",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "list.create": {
+      "official_route": "POST /v2/lists",
+      "method": "POST",
+      "path": "/v2/lists",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "list_configuration:read-write"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list.read": {
+      "official_route": "GET /v2/lists/{list}",
+      "method": "GET",
+      "path": "/v2/lists/{{list}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "list.search": {
+      "official_route": "GET /v2/lists",
+      "method": "GET",
+      "path": "/v2/lists",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "list_configuration:read"
+      ],
+      "args": [],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "list.update": {
+      "official_route": "PATCH /v2/lists/{list}",
+      "method": "PATCH",
+      "path": "/v2/lists/{{list}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "list_configuration:read-write"
+      ],
+      "args": [
+        {
+          "key": "list",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "meeting.create_or_find": {
+      "official_route": "POST /v2/meetings",
+      "method": "POST",
+      "path": "/v2/meetings",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "meeting:read-write",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "meeting.read": {
+      "official_route": "GET /v2/meetings/{meeting_id}",
+      "method": "GET",
+      "path": "/v2/meetings/{{meeting_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "meeting:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "meeting_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "meeting.search": {
+      "official_route": "GET /v2/meetings",
+      "method": "GET",
+      "path": "/v2/meetings",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "meeting:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        },
+        {
+          "key": "query.linked_object",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.linked_record_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.participants",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.sort",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.ends_from",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.starts_before",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.timezone",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 200,
+          "max": 200
+        },
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "meta.identify": {
+      "official_route": "GET /v2/self",
+      "method": "GET",
+      "path": "/v2/self",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [],
+      "args": [],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": true
+    },
+    "note.create": {
+      "official_route": "POST /v2/notes",
+      "method": "POST",
+      "path": "/v2/notes",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "note:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "note.delete": {
+      "official_route": "DELETE /v2/notes/{note_id}",
+      "method": "DELETE",
+      "path": "/v2/notes/{{note_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "note:read-write"
+      ],
+      "args": [
+        {
+          "key": "note_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "note.read": {
+      "official_route": "GET /v2/notes/{note_id}",
+      "method": "GET",
+      "path": "/v2/notes/{{note_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "note:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "note_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "note.search": {
+      "official_route": "GET /v2/notes",
+      "method": "GET",
+      "path": "/v2/notes",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "note:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "args": [
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        },
+        {
+          "key": "query.parent_object",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.parent_record_id",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 50
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "object_view.search": {
+      "official_route": "GET /v2/objects/{object}/views",
+      "method": "GET",
+      "path": "/v2/objects/{{object}}/views",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_archived",
+          "type": "boolean",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "pagination.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
+      "compatibility": false
+    },
+    "object.create": {
+      "official_route": "POST /v2/objects",
+      "method": "POST",
+      "path": "/v2/objects",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "object_configuration:read-write"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "object.read": {
+      "official_route": "GET /v2/objects/{object}",
+      "method": "GET",
+      "path": "/v2/objects/{{object}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "object.search": {
+      "official_route": "GET /v2/objects",
+      "method": "GET",
+      "path": "/v2/objects",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "object_configuration:read"
+      ],
+      "args": [],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "object.update": {
+      "official_route": "PATCH /v2/objects/{object}",
+      "method": "PATCH",
+      "path": "/v2/objects/{{object}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "object_configuration:read-write"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "person.create": {
+      "official_route": "POST /v2/objects/{object}/records",
+      "method": "POST",
+      "path": "/v2/objects/people/records",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "person.search": {
+      "official_route": "POST /v2/objects/{object}/records/query",
+      "method": "POST",
+      "path": "/v2/objects/people/records/query",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.filter",
+          "type": "object",
+          "affects_target": true
+        },
+        {
+          "key": "body.sorts",
+          "type": "array"
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        },
+        {
+          "key": "body.offset",
+          "type": "number"
+        },
+        {
+          "key": "body.filter_view_id",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "body",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "body",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "record_attribute_value.search": {
+      "official_route": "GET /v2/objects/{object}/records/{record_id}/attributes/{attribute}/values",
+      "method": "GET",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}/attributes/{{attribute}}/values",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_historic",
+          "type": "boolean",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 10
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "record.create": {
+      "official_route": "POST /v2/objects/{object}/records",
+      "method": "POST",
+      "path": "/v2/objects/{{object}}/records",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "record.delete": {
+      "official_route": "DELETE /v2/objects/{object}/records/{record_id}",
+      "method": "DELETE",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "object_configuration:read",
+        "record_permission:read-write"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "record.entries": {
+      "official_route": "GET /v2/objects/{object}/records/{record_id}/entries",
+      "method": "GET",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}/entries",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read",
+        "list_entry:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "record.list": {
+      "official_route": "POST /v2/objects/{object}/records/query",
+      "method": "POST",
+      "path": "/v2/objects/{{object}}/records/query",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.filter",
+          "type": "object",
+          "affects_target": true
+        },
+        {
+          "key": "body.filter_view_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "body.sorts",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        },
+        {
+          "key": "body.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "body",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "body",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "record.read": {
+      "official_route": "GET /v2/objects/{object}/records/{record_id}",
+      "method": "GET",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "record.search": {
+      "official_route": "POST /v2/objects/records/search",
+      "method": "POST",
+      "path": "/v2/objects/records/search",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.query",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.objects",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.request_as",
+          "type": "object",
+          "required": true
+        },
+        {
+          "key": "body.limit",
+          "type": "number"
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "record.update_append": {
+      "official_route": "PATCH /v2/objects/{object}/records/{record_id}",
+      "method": "PATCH",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "record.update_overwrite": {
+      "official_route": "PUT /v2/objects/{object}/records/{record_id}",
+      "method": "PUT",
+      "path": "/v2/objects/{{object}}/records/{{record_id}}",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "record_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "record.upsert": {
+      "official_route": "PUT /v2/objects/{object}/records",
+      "method": "PUT",
+      "path": "/v2/objects/{{object}}/records",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "object",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.matching_attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "select_option.create": {
+      "official_route": "POST /v2/{target}/{identifier}/attributes/{attribute}/options",
+      "method": "POST",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/options",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "select_option.search": {
+      "official_route": "GET /v2/{target}/{identifier}/attributes/{attribute}/options",
+      "method": "GET",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/options",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_archived",
+          "type": "boolean",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "select_option.update": {
+      "official_route": "PATCH /v2/{target}/{identifier}/attributes/{attribute}/options/{option}",
+      "method": "PATCH",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/options/{{option}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "option",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "sql.query": {
+      "official_route": "POST /v2/sql",
+      "method": "POST",
+      "path": "/v2/sql",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "args": [
+        {
+          "key": "body.sql",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data.rows",
+      "pagination": null,
+      "compatibility": false
+    },
+    "status.create": {
+      "official_route": "POST /v2/{target}/{identifier}/attributes/{attribute}/statuses",
+      "method": "POST",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/statuses",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "status.search": {
+      "official_route": "GET /v2/{target}/{identifier}/attributes/{attribute}/statuses",
+      "method": "GET",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/statuses",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.show_archived",
+          "type": "boolean",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "status.update": {
+      "official_route": "PATCH /v2/{target}/{identifier}/attributes/{attribute}/statuses/{status}",
+      "method": "PATCH",
+      "path": "/v2/{{target}}/{{identifier}}/attributes/{{attribute}}/statuses/{{status}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [],
+      "args": [
+        {
+          "key": "target",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "identifier",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "attribute",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "status",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "task.create": {
+      "official_route": "POST /v2/tasks",
+      "method": "POST",
+      "path": "/v2/tasks",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "task:read-write",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "args": [
+        {
+          "key": "body.data",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "task.delete": {
+      "official_route": "DELETE /v2/tasks/{task_id}",
+      "method": "DELETE",
+      "path": "/v2/tasks/{{task_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "task:read-write"
+      ],
+      "args": [
+        {
+          "key": "task_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "task.read": {
+      "official_route": "GET /v2/tasks/{task_id}",
+      "method": "GET",
+      "path": "/v2/tasks/{{task_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "task:read",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "args": [
+        {
+          "key": "task_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    },
+    "task.search": {
+      "official_route": "GET /v2/tasks",
+      "method": "GET",
+      "path": "/v2/tasks",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "task:read",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "args": [
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        },
+        {
+          "key": "query.sort",
+          "type": "string"
+        },
+        {
+          "key": "query.linked_object",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.linked_record_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.assignee",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.is_completed",
+          "type": "boolean"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": true
+    },
+    "task.update": {
+      "official_route": "PATCH /v2/tasks/{task_id}",
+      "method": "PATCH",
+      "path": "/v2/tasks/{{task_id}}",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "task:read-write",
+        "object_configuration:read",
+        "record_permission:read",
+        "user_management:read"
+      ],
+      "args": [
+        {
+          "key": "task_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "thread.read": {
+      "official_route": "GET /v2/threads/{thread_id}",
+      "method": "GET",
+      "path": "/v2/threads/{{thread_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "comment:read"
+      ],
+      "args": [
+        {
+          "key": "thread_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "thread.search": {
+      "official_route": "GET /v2/threads",
+      "method": "GET",
+      "path": "/v2/threads",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "comment:read"
+      ],
+      "args": [
+        {
+          "key": "query.record_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.object",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.entry_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.list",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 50
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "webhook.create": {
+      "official_route": "POST /v2/webhooks",
+      "method": "POST",
+      "path": "/v2/webhooks",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "webhook.delete": {
+      "official_route": "DELETE /v2/webhooks/{webhook_id}",
+      "method": "DELETE",
+      "path": "/v2/webhooks/{{webhook_id}}",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "args": [
+        {
+          "key": "webhook_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
+      "pagination": null,
+      "compatibility": false
+    },
+    "webhook.read": {
+      "official_route": "GET /v2/webhooks/{webhook_id}",
+      "method": "GET",
+      "path": "/v2/webhooks/{{webhook_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "webhook:read"
+      ],
+      "args": [
+        {
+          "key": "webhook_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "webhook.search": {
+      "official_route": "GET /v2/webhooks",
+      "method": "GET",
+      "path": "/v2/webhooks",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "webhook:read"
+      ],
+      "args": [
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.offset",
+          "type": "number"
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "compatibility": false
+    },
+    "webhook.update": {
+      "official_route": "PATCH /v2/webhooks/{webhook_id}",
+      "method": "PATCH",
+      "path": "/v2/webhooks/{{webhook_id}}",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "required_scopes": [
+        "webhook:read-write"
+      ],
+      "args": [
+        {
+          "key": "webhook_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "raw_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "workspace_member.read": {
+      "official_route": "GET /v2/workspace_members/{workspace_member_id}",
+      "method": "GET",
+      "path": "/v2/workspace_members/{{workspace_member_id}}",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "user_management:read"
+      ],
+      "args": [
+        {
+          "key": "workspace_member_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": false
+    },
+    "workspace_member.search": {
+      "official_route": "GET /v2/workspace_members",
+      "method": "GET",
+      "path": "/v2/workspace_members",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "required_scopes": [
+        "user_management:read"
+      ],
+      "args": [],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": "data",
+      "pagination": null,
+      "compatibility": true
+    }
+  }
+}

@@ -1,0 +1,225 @@
+/** Phase B + D-145 PB12 + D-145 PB14 + D-157 N.8 — retention pruner
+ *  registrations.
+ *
+ *  Four best-effort periodic pruners that the background-services
+ *  registry owns once `cmdServe` calls this helper:
+ *    - `audit-prune` (Phase B) — age + size reclaim for the audit gate.
+ *      Cadence configurable via `audit.prune_interval_s` (floored at
+ *      60s, defaults 1h). Skipped when `auditRetention` is absent
+ *      (db-less harness).
+ *    - `s2s-preview-prune` (D-145 PB12 / Codex P2 fold 2026-05-10) —
+ *      drops expired s2s preview-token rows. Fixed 1h cadence; the
+ *      consume path already filters by expiry, so this is purely the
+ *      privacy-contract delete-on-disk pass. Skipped when
+ *      `s2sPreviewStore` is absent.
+ *    - `correction-events-prune` (D-145 PB14) — drops correction-event
+ *      rows older than the per-kind retention window. Fixed daily
+ *      cadence — corrections accrue slowly. Skipped when
+ *      `correctionEventsStore` is absent.
+ *    - `checkpoint-stale-prune` (D-157 N.8) — the staleness guard for
+ *      paused preflight approvals (`preflight.stale_after_days`, read
+ *      live each pass; 0 disables) + garbage collection of orphaned /
+ *      terminal / superseded checkpoint rows. Fixed 1h cadence — the
+ *      checkpoint store holds a handful of rows, and the window is
+ *      days-scale; the hourly tick mostly exists so a crash-residue
+ *      row (which can carry `pii_ledgers`) is reclaimed promptly once
+ *      past its grace. Skipped when `checkpointStore` / `auditLog` is
+ *      absent.
+ *
+ *  All four are best-effort: per-tick failures must not crash the
+ *  server. The audit + checkpoint pruners have their own `runSafe()`
+ *  wrappers; the other two get inline try/catch (mirroring
+ *  pre-extraction shape).
+ *
+ *  `fireImmediate: true` on every registration so a restart sweeps
+ *  immediately rather than waiting a full interval. The
+ *  background-services registry handles `.unref()` + final
+ *  `clearInterval` flow. */
+
+import type { BackgroundServiceRegistry } from './wire-background-services.js';
+import type { AuditRetention } from '../../audit-retention.js';
+import { createCheckpointRetention } from '../../checkpoint-retention.js';
+import type { RuntimeConfigStore } from '@recued/config';
+import { HANDLED_ASK_RETENTION_MS, type NotificationBlock } from '@recued/notification';
+import type { AuditLogStore, CheckpointStore } from '@recued/storage';
+import type { S2SPreviewStore } from '../../s2s-preview/store.js';
+import type { CorrectionEventsStore } from '../../storage/correction-events-store.js';
+
+export interface ComposeRetentionPrunersDeps {
+  readonly backgroundServices: BackgroundServiceRegistry;
+  readonly runtimeConfig: RuntimeConfigStore;
+  readonly auditRetention: AuditRetention | undefined;
+  readonly s2sPreviewStore: S2SPreviewStore | undefined;
+  readonly correctionEventsStore: CorrectionEventsStore | undefined;
+  /** D-157 N.8 — the checkpoint sweep's stores. Both required for the
+   *  registration (the sweep classifies rows against their run
+   *  anchors); absent on the db-less harness. */
+  readonly checkpointStore?: CheckpointStore | undefined;
+  readonly auditLog?: AuditLogStore | undefined;
+  /** D-157 N.8 — the notification block's ask-state reads (the
+   *  never-drop-a-decision check + the race-safe prompt close).
+   *  Narrowed to exactly the two methods the sweep consumes. Absent ⇒
+   *  the block was never constructed this process, so no inbound
+   *  answer path exists and the sweep expires without prompt
+   *  bookkeeping. */
+  readonly notificationBlock?:
+    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
+    | undefined;
+  /** Time source for `pruneExpired` / `pruneOlderThan`. Defaults to
+   *  `Date.now`. Test seam. */
+  readonly now?: () => number;
+}
+
+const HOUR_MS = 3_600_000;
+const MIN_AUDIT_INTERVAL_MS = 60_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Default staleness window when the runtime-config read fails (the
+ *  schema default for `preflight.stale_after_days`). */
+const DEFAULT_STALE_AFTER_DAYS = 30;
+
+/** Register up to four pruner intervals with `backgroundServices`.
+ *  Each registration is gated independently — a missing store skips
+ *  that pruner but doesn't block the others. */
+export const composeRetentionPruners = (
+  deps: ComposeRetentionPrunersDeps,
+): void => {
+  const nowOf = deps.now ?? Date.now;
+
+  // Phase B audit retention cron. Defaults to hourly; reads the live
+  // config value at registration time. Registered with the background-
+  // services registry — `.unref()` + final `clearInterval` flow through
+  // the shared helper.
+  if (deps.auditRetention) {
+    const retention = deps.auditRetention;
+    const intervalMs = (() => {
+      try {
+        const seconds = deps.runtimeConfig.get('audit.prune_interval_s') as number;
+        return Math.max(MIN_AUDIT_INTERVAL_MS, seconds * 1000);
+      } catch {
+        return HOUR_MS;
+      }
+    })();
+    deps.backgroundServices.registerInterval({
+      name: 'audit-prune',
+      intervalMs,
+      tick: () => { void retention.runSafe(); },
+      fireImmediate: true,
+    });
+  }
+
+  // D-145 PB12 Codex P2 fold (2026-05-10) — periodic pruner for the
+  // s2s_preview_tokens table. Without this, expired packets persist
+  // indefinitely on disk past their TTL — the consume path filters by
+  // expiry but the bytes stay until the next compaction. The privacy
+  // contract (substrate-level expiry) needs the on-disk row gone, not
+  // just unreadable. Cadence matches the audit pruner default (1 hour)
+  // since the s2s_preview store sees lower volume than the audit log;
+  // the TTL clamp window starts at 1 minute so a 1-hour pruner cycle
+  // gives an upper-bound persistence-past-TTL window of ≈ TTL + 1h.
+  if (deps.s2sPreviewStore) {
+    const store = deps.s2sPreviewStore;
+    deps.backgroundServices.registerInterval({
+      name: 's2s-preview-prune',
+      intervalMs: HOUR_MS,
+      tick: () => {
+        try {
+          store.pruneExpired(nowOf());
+        } catch {
+          // Best-effort — a prune failure must not crash the server.
+        }
+      },
+      fireImmediate: true,
+    });
+  }
+
+  // D-145 PB14 — periodic pruner for the correction_events table.
+  // Removes rows older than CORRECTION_EVENT_RETENTION_MS (1 year)
+  // except kinds in CORRECTION_EVENT_DURABLE_KINDS (contact_merged +
+  // standing_instruction_added). Cadence is daily — corrections accrue
+  // slowly and a 1-year retention window doesn't need tight sweeps.
+  // Best-effort: pruner failures must not crash the server (mirrors
+  // the audit + s2s_preview pruners).
+  if (deps.correctionEventsStore) {
+    const store = deps.correctionEventsStore;
+    deps.backgroundServices.registerInterval({
+      name: 'correction-events-prune',
+      intervalMs: DAY_MS,
+      tick: () => {
+        try {
+          store.pruneOlderThan(nowOf());
+        } catch {
+          // Best-effort — a prune failure must not crash the server.
+        }
+      },
+      fireImmediate: true,
+    });
+  }
+
+  // D-157 N.8 — the stale-checkpoint retention sweep. Window read live
+  // each pass so a Settings change takes effect without restart; the
+  // wire `0` collapses to `null` (guard off — garbage collection still
+  // runs, mirroring how audit retention's age pass disables while its
+  // size pass keeps protecting the quota).
+  if (deps.checkpointStore && deps.auditLog) {
+    const block = deps.notificationBlock;
+    const retention = createCheckpointRetention({
+      checkpointStore: deps.checkpointStore,
+      auditLog: deps.auditLog,
+      ...(block !== undefined
+        ? {
+            askHooks: {
+              getAsk: (ask_id) => block.getAsk(ask_id),
+              cancelAsk: (ask_id) => block.cancelAsk(ask_id),
+            },
+          }
+        : {}),
+      now: nowOf,
+      config: () => {
+        let days: number;
+        try {
+          days = deps.runtimeConfig.get('preflight.stale_after_days') as number;
+        } catch {
+          days = DEFAULT_STALE_AFTER_DAYS;
+        }
+        return { staleAfterDays: days === 0 ? null : days };
+      },
+    });
+    deps.backgroundServices.registerInterval({
+      name: 'checkpoint-stale-prune',
+      intervalMs: HOUR_MS,
+      tick: () => { void retention.runSafe(); },
+      fireImmediate: true,
+    });
+  }
+
+  // D-210 — the terminal-ask retention sweep. `ask-store.ts` has claimed
+  // since D-158 P3 that the store is "small + bounded" and prunes terminal
+  // rows on a retention window; there was no such prune and `handled` rows
+  // accumulated forever.
+  //
+  // ⛔ SEQUENCED AFTER the answer-audit row, not before it. Until the block
+  // wrote `approval_allow` / `approval_deny`, the ask row was the ONLY
+  // record of what the owner was shown, which option they picked, which
+  // channel they answered on, and when — no audit row referenced a
+  // terminal ask at all. Pruning first would have destroyed that silently.
+  // The two land together in this slice for exactly that reason.
+  if (deps.notificationBlock) {
+    const block = deps.notificationBlock;
+    deps.backgroundServices.registerInterval({
+      name: 'handled-ask-prune',
+      intervalMs: HOUR_MS,
+      tick: () => {
+        void (async () => {
+          try {
+            await block.pruneHandledAsks(nowOf() - HANDLED_ASK_RETENTION_MS);
+          } catch {
+            // Best-effort — a prune failure must not crash the server
+            // (mirrors the sweeps above).
+          }
+        })();
+      },
+      fireImmediate: true,
+    });
+  }
+};

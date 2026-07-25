@@ -1,0 +1,188 @@
+{
+  "_fixture_note": "D-192 P2 coverage declaration \u2014 the google_discovery contract-source kind (owner decision 2026-07-01). Google publishes Discovery, not OpenAPI; ops prove via crossCheckCatalogGoogleDiscovery. Validation artifact, unpublished + runtime-disabled; auth stubbed.",
+  "slug": "google-tasks-coverage",
+  "name": "Google Tasks (D-192 coverage)",
+  "description": "D-192 P2 coverage declaration for Google Tasks via the google_discovery contract source.",
+  "author": "recued-core",
+  "kind": "connection",
+  "version": 1,
+  "category": "data",
+  "risk_tier": "read",
+  "tags": [
+    "d-192-coverage"
+  ],
+  "input": {
+    "operation": null,
+    "args": null
+  },
+  "output": {
+    "result": "result"
+  },
+  "operations": {
+    "task.list": {
+      "operation_id": "recued-core/google-tasks.task.list",
+      "risk_tier": "read"
+    },
+    "task.read": {
+      "operation_id": "recued-core/google-tasks.task.read",
+      "risk_tier": "read"
+    },
+    "task.create": {
+      "operation_id": "recued-core/google-tasks.task.create",
+      "risk_tier": "write"
+    },
+    "task.update": {
+      "operation_id": "recued-core/google-tasks.task.update",
+      "risk_tier": "write"
+    },
+    "task.delete": {
+      "operation_id": "recued-core/google-tasks.task.delete",
+      "risk_tier": "write"
+    }
+  },
+  "surfaces": {
+    "api": {
+      "transport": "rest",
+      "default_base_url": "https://tasks.googleapis.com",
+      "auth": {
+        "kind": "none"
+      },
+      "google_discovery_source": {
+        "url": "https://tasks.googleapis.com/$discovery/rest?version=v1",
+        "sha256": "817b523db9410d477f2a53cbe54edd5df00558b79ccb620f3532ab67692f04b7"
+      },
+      "executes": {
+        "task.list": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/tasks/v1/lists/{tasklist}/tasks",
+          "static_query": {
+            "showDeleted": "true",
+            "showHidden": "true"
+          }
+        },
+        "task.read": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/tasks/v1/lists/{tasklist}/tasks/{task}"
+        },
+        "task.create": {
+          "kind": "rest",
+          "method": "POST",
+          "path_template": "/tasks/v1/lists/{tasklist}/tasks"
+        },
+        "task.update": {
+          "kind": "rest",
+          "method": "PUT",
+          "path_template": "/tasks/v1/lists/{tasklist}/tasks/{task}"
+        },
+        "task.delete": {
+          "kind": "rest",
+          "method": "DELETE",
+          "path_template": "/tasks/v1/lists/{tasklist}/tasks/{task}"
+        }
+      }
+    }
+  },
+  "work_entity_sources": [
+    {
+      "kind": "task",
+      "source_id_template": "google-tasks.${connection_id}.task",
+      "source_label_template": "Google Tasks (${connection_name})",
+      "source_kind": "connection",
+      "contract_source": {
+        "kind": "google_discovery",
+        "surface": "surfaces.api.google_discovery_source",
+        "url": "https://tasks.googleapis.com/$discovery/rest?version=v1",
+        "sha256": "817b523db9410d477f2a53cbe54edd5df00558b79ccb620f3532ab67692f04b7",
+        "operations": [
+          "task.list",
+          "task.read",
+          "task.create",
+          "task.update",
+          "task.delete"
+        ]
+      },
+      "remote": {
+        "entity": "task",
+        "id": "id",
+        "version": {
+          "kind": "updated_at",
+          "field": "updated"
+        },
+        "hash_fields": [
+          "title",
+          "status",
+          "due",
+          "notes",
+          "deleted",
+          "completed"
+        ]
+      },
+      "ops": {
+        "list": "task.list",
+        "read": "task.read",
+        "create": "task.create",
+        "update": "task.update",
+        "delete": "task.delete"
+      },
+      "sync": {
+        "mode": "read_write",
+        "depth": "meta",
+        "cursor": {
+          "kind": "updated_since",
+          "arg": "query.updatedMin",
+          "remote_field": "updated"
+        },
+        "tombstones": "native",
+        "stale_after_ms": 3600000,
+        "tombstone_field": "deleted"
+      },
+      "read_resolution": {
+        "default": "local_rich_meta",
+        "remote_when": [
+          "field_missing",
+          "source_stale",
+          "complete_body_required",
+          "current_remote_required",
+          "write_preflight"
+        ],
+        "wild_query": {
+          "remote_fanout": "bounded_targeted",
+          "max_sources": 3,
+          "max_remote_records": 10,
+          "on_exceeds_cap": "ask_to_narrow"
+        }
+      },
+      "projection": {
+        "canonical": {
+          "title": "title",
+          "state": "status",
+          "due_at": "due",
+          "completed_at": "completed"
+        },
+        "preview": {
+          "body": {
+            "field": "notes",
+            "max_chars": 800
+          }
+        },
+        "extension": {
+          "detail_fidelity": "preview",
+          "remote_url": "webViewLink"
+        }
+      },
+      "writable_fields": [
+        "title",
+        "state",
+        "due_at",
+        "body"
+      ],
+      "write_policy": {
+        "conditional_write": "none",
+        "stale_write": "manual_merge",
+        "field_conflicts": "manual_merge"
+      }
+    }
+  ]
+}

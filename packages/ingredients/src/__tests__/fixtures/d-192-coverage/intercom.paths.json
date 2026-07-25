@@ -1,0 +1,2194 @@
+{
+  "_extract": {
+    "note": "Contract extract of the immutable official Intercom 2.15 OpenAPI document. Paths/methods, request parameters, and Source field-presence evidence are retained for the 46 declared operations.",
+    "url": "https://raw.githubusercontent.com/intercom/Intercom-OpenAPI/547f7c6631f8195d5657002ac14c9a981a590c00/descriptions/2.15/api.intercom.io.yaml",
+    "sha256": "8059dca6537aaeeb7f08eae612a8310138cb0052323e0f2cad5885cecd67141d",
+    "fetched_at": "2026-07-15",
+    "openapi": "3.0.1",
+    "api_version": "2.15",
+    "raw_bytes": 902529,
+    "raw_path_count": 117,
+    "raw_operation_count": 161,
+    "declared_operation_count": 46,
+    "unique_method_path_count": 45,
+    "parameter_count": 152
+  },
+  "paths": {
+    "/admins": {
+      "get": {}
+    },
+    "/admins/{admin_id}": {
+      "get": {}
+    },
+    "/teams": {
+      "get": {}
+    },
+    "/teams/{team_id}": {
+      "get": {}
+    },
+    "/contacts": {
+      "get": {},
+      "post": {}
+    },
+    "/contacts/search": {
+      "post": {}
+    },
+    "/contacts/{contact_id}": {
+      "get": {},
+      "put": {}
+    },
+    "/contacts/find_by_external_id/{external_id}": {
+      "get": {}
+    },
+    "/contacts/{contact_id}/notes": {
+      "get": {},
+      "post": {}
+    },
+    "/contacts/{contact_id}/companies": {
+      "get": {}
+    },
+    "/contacts/{contact_id}/tags": {
+      "get": {},
+      "post": {}
+    },
+    "/contacts/{contact_id}/tags/{tag_id}": {
+      "delete": {}
+    },
+    "/companies": {
+      "get": {},
+      "post": {}
+    },
+    "/companies/{company_id}": {
+      "get": {},
+      "put": {}
+    },
+    "/companies/{company_id}/contacts": {
+      "get": {}
+    },
+    "/companies/{company_id}/segments": {
+      "get": {}
+    },
+    "/companies/{company_id}/notes": {
+      "get": {}
+    },
+    "/conversations": {
+      "get": {}
+    },
+    "/conversations/search": {
+      "post": {}
+    },
+    "/conversations/{conversation_id}": {
+      "get": {}
+    },
+    "/conversations/{conversation_id}/reply": {
+      "post": {}
+    },
+    "/conversations/{conversation_id}/parts": {
+      "post": {}
+    },
+    "/conversations/{conversation_id}/tags": {
+      "post": {}
+    },
+    "/conversations/{conversation_id}/tags/{tag_id}": {
+      "delete": {}
+    },
+    "/tickets/search": {
+      "post": {}
+    },
+    "/tickets/{ticket_id}": {
+      "get": {},
+      "put": {}
+    },
+    "/tickets": {
+      "post": {}
+    },
+    "/tickets/{ticket_id}/reply": {
+      "post": {}
+    },
+    "/tickets/{ticket_id}/tags": {
+      "post": {}
+    },
+    "/tickets/{ticket_id}/tags/{tag_id}": {
+      "delete": {}
+    },
+    "/articles": {
+      "get": {}
+    },
+    "/articles/search": {
+      "get": {}
+    },
+    "/articles/{article_id}": {
+      "get": {}
+    },
+    "/tags": {
+      "get": {}
+    },
+    "/tags/{tag_id}": {
+      "get": {}
+    },
+    "/segments": {
+      "get": {}
+    },
+    "/segments/{segment_id}": {
+      "get": {}
+    },
+    "/data_attributes": {
+      "get": {}
+    }
+  },
+  "operation_parameters": {
+    "admin.search": {
+      "operation_id": "listAdmins",
+      "method": "GET",
+      "contract_path": "/admins",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "display_avatar",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "admin.read": {
+      "operation_id": "retrieveAdmin",
+      "method": "GET",
+      "contract_path": "/admins/{admin_id}",
+      "path": [
+        {
+          "name": "admin_id",
+          "types": [
+            "number"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "team.search": {
+      "operation_id": "listTeams",
+      "method": "GET",
+      "contract_path": "/teams",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "team.read": {
+      "operation_id": "retrieveTeam",
+      "method": "GET",
+      "contract_path": "/teams/{team_id}",
+      "path": [
+        {
+          "name": "team_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.search": {
+      "operation_id": "ListContacts",
+      "method": "GET",
+      "contract_path": "/contacts",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.filter": {
+      "operation_id": "SearchContacts",
+      "method": "POST",
+      "contract_path": "/contacts/search",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "pagination",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "query",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "contact.read": {
+      "operation_id": "ShowContact",
+      "method": "GET",
+      "contract_path": "/contacts/{contact_id}",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.find_external": {
+      "operation_id": "ShowContactByExternalId",
+      "method": "GET",
+      "contract_path": "/contacts/find_by_external_id/{external_id}",
+      "path": [
+        {
+          "name": "external_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.note.search": {
+      "operation_id": "listNotes",
+      "method": "GET",
+      "contract_path": "/contacts/{contact_id}/notes",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.company.search": {
+      "operation_id": "listCompaniesForAContact",
+      "method": "GET",
+      "contract_path": "/contacts/{contact_id}/companies",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.tag.search": {
+      "operation_id": "listTagsForAContact",
+      "method": "GET",
+      "contract_path": "/contacts/{contact_id}/tags",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "contact.create": {
+      "operation_id": "CreateContact",
+      "method": "POST",
+      "contract_path": "/contacts",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "avatar",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "custom_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "email",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "external_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "last_seen_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "owner_id",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "phone",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "role",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "signed_up_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "unsubscribed_from_emails",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        }
+      ]
+    },
+    "contact.update": {
+      "operation_id": "UpdateContact",
+      "method": "PUT",
+      "contract_path": "/contacts/{contact_id}",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "avatar",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "custom_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "email",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "external_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "last_seen_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "owner_id",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "phone",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "role",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "signed_up_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "unsubscribed_from_emails",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        }
+      ]
+    },
+    "contact.note.create": {
+      "operation_id": "createNote",
+      "method": "POST",
+      "contract_path": "/contacts/{contact_id}/notes",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "number"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "body",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "contact.tag.attach": {
+      "operation_id": "attachTagToContact",
+      "method": "POST",
+      "contract_path": "/contacts/{contact_id}/tags",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "contact.tag.detach": {
+      "operation_id": "detachTagFromContact",
+      "method": "DELETE",
+      "contract_path": "/contacts/{contact_id}/tags/{tag_id}",
+      "path": [
+        {
+          "name": "contact_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "tag_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "company.search": {
+      "operation_id": "retrieveCompany",
+      "method": "GET",
+      "contract_path": "/companies",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "tag_id",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "segment_id",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "per_page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "company.read": {
+      "operation_id": "RetrieveACompanyById",
+      "method": "GET",
+      "contract_path": "/companies/{company_id}",
+      "path": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "company.contact.search": {
+      "operation_id": "ListAttachedContacts",
+      "method": "GET",
+      "contract_path": "/companies/{company_id}/contacts",
+      "path": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "company.segment.search": {
+      "operation_id": "ListAttachedSegmentsForCompanies",
+      "method": "GET",
+      "contract_path": "/companies/{company_id}/segments",
+      "path": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "company.note.search": {
+      "operation_id": "listCompanyNotes",
+      "method": "GET",
+      "contract_path": "/companies/{company_id}/notes",
+      "path": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "company.upsert": {
+      "operation_id": "createOrUpdateCompany",
+      "method": "POST",
+      "contract_path": "/companies",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "custom_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "industry",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "monthly_spend",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "plan",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "remote_created_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "size",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "website",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        }
+      ]
+    },
+    "company.update": {
+      "operation_id": "UpdateCompany",
+      "method": "PUT",
+      "contract_path": "/companies/{company_id}",
+      "path": [
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "custom_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "industry",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "monthly_spend",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "name",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "plan",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "size",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "website",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        }
+      ]
+    },
+    "conversation.search": {
+      "operation_id": "listConversations",
+      "method": "GET",
+      "contract_path": "/conversations",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "per_page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "starting_after",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "conversation.work_entity.list": {
+      "operation_id": "listConversations",
+      "method": "GET",
+      "contract_path": "/conversations",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "per_page",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "starting_after",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "conversation.filter": {
+      "operation_id": "searchConversations",
+      "method": "POST",
+      "contract_path": "/conversations/search",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "pagination",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "query",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "conversation.read": {
+      "operation_id": "retrieveConversation",
+      "method": "GET",
+      "contract_path": "/conversations/{conversation_id}",
+      "path": [
+        {
+          "name": "conversation_id",
+          "types": [
+            "number"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "display_as",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "include_translations",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "conversation.reply": {
+      "operation_id": "replyConversation",
+      "method": "POST",
+      "contract_path": "/conversations/{conversation_id}/reply",
+      "path": [
+        {
+          "name": "conversation_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "attachment_files",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "attachment_urls",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "body",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "created_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "email",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "intercom_user_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "message_type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "reply_options",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "skip_notifications",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "user_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "conversation.manage": {
+      "operation_id": "manageConversation",
+      "method": "POST",
+      "contract_path": "/conversations/{conversation_id}/parts",
+      "path": [
+        {
+          "name": "conversation_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "assignee_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "body",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "message_type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "snoozed_until",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "conversation.tag.attach": {
+      "operation_id": "attachTagToConversation",
+      "method": "POST",
+      "contract_path": "/conversations/{conversation_id}/tags",
+      "path": [
+        {
+          "name": "conversation_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "conversation.tag.detach": {
+      "operation_id": "detachTagFromConversation",
+      "method": "DELETE",
+      "contract_path": "/conversations/{conversation_id}/tags/{tag_id}",
+      "path": [
+        {
+          "name": "conversation_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "tag_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "ticket.filter": {
+      "operation_id": "searchTickets",
+      "method": "POST",
+      "contract_path": "/tickets/search",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "pagination",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "query",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "ticket.read": {
+      "operation_id": "getTicket",
+      "method": "GET",
+      "contract_path": "/tickets/{ticket_id}",
+      "path": [
+        {
+          "name": "ticket_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "ticket.create": {
+      "operation_id": "createTicket",
+      "method": "POST",
+      "contract_path": "/tickets",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "assignment",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "contacts",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "conversation_to_link_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "created_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "skip_notifications",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "ticket_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "ticket_type_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "ticket.reply": {
+      "operation_id": "replyTicket",
+      "method": "POST",
+      "contract_path": "/tickets/{ticket_id}/reply",
+      "path": [
+        {
+          "name": "ticket_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "attachment_urls",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "body",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "created_at",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "cross_post",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "email",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "intercom_user_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "message_type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "reply_options",
+          "types": [
+            "array"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "skip_notifications",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "type",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "user_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "ticket.update": {
+      "operation_id": "updateTicket",
+      "method": "PUT",
+      "contract_path": "/tickets/{ticket_id}",
+      "path": [
+        {
+          "name": "ticket_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "assignee_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "company_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "is_shared",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "open",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "skip_notifications",
+          "types": [
+            "boolean"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "snoozed_until",
+          "types": [
+            "number"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "ticket_attributes",
+          "types": [
+            "object"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        },
+        {
+          "name": "ticket_state_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": false,
+          "required_in_any_variant": false
+        }
+      ]
+    },
+    "ticket.tag.attach": {
+      "operation_id": "attachTagToTicket",
+      "method": "POST",
+      "contract_path": "/tickets/{ticket_id}/tags",
+      "path": [
+        {
+          "name": "ticket_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        },
+        {
+          "name": "id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "ticket.tag.detach": {
+      "operation_id": "detachTagFromTicket",
+      "method": "DELETE",
+      "contract_path": "/tickets/{ticket_id}/tags/{tag_id}",
+      "path": [
+        {
+          "name": "ticket_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        },
+        {
+          "name": "tag_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": [
+        {
+          "name": "admin_id",
+          "types": [
+            "string"
+          ],
+          "required_in_all_variants": true,
+          "required_in_any_variant": true
+        }
+      ]
+    },
+    "article.search": {
+      "operation_id": "listArticles",
+      "method": "GET",
+      "contract_path": "/articles",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "article.query": {
+      "operation_id": "searchArticles",
+      "method": "GET",
+      "contract_path": "/articles/search",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "phrase",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "state",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "help_center_id",
+          "types": [
+            "number"
+          ],
+          "required": false
+        },
+        {
+          "name": "highlight",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "article.read": {
+      "operation_id": "retrieveArticle",
+      "method": "GET",
+      "contract_path": "/articles/{article_id}",
+      "path": [
+        {
+          "name": "article_id",
+          "types": [
+            "number"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "tag.search": {
+      "operation_id": "listTags",
+      "method": "GET",
+      "contract_path": "/tags",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "tag.read": {
+      "operation_id": "findTag",
+      "method": "GET",
+      "contract_path": "/tags/{tag_id}",
+      "path": [
+        {
+          "name": "tag_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "segment.search": {
+      "operation_id": "listSegments",
+      "method": "GET",
+      "contract_path": "/segments",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "include_count",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    },
+    "segment.read": {
+      "operation_id": "retrieveSegment",
+      "method": "GET",
+      "contract_path": "/segments/{segment_id}",
+      "path": [
+        {
+          "name": "segment_id",
+          "types": [
+            "string"
+          ],
+          "required": true
+        }
+      ],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [],
+      "body": []
+    },
+    "data_attribute.search": {
+      "operation_id": "lisDataAttributes",
+      "method": "GET",
+      "contract_path": "/data_attributes",
+      "path": [],
+      "header": [
+        {
+          "name": "Intercom-Version",
+          "types": [
+            "string"
+          ],
+          "required": false
+        }
+      ],
+      "query": [
+        {
+          "name": "model",
+          "types": [
+            "string"
+          ],
+          "required": false
+        },
+        {
+          "name": "include_archived",
+          "types": [
+            "boolean"
+          ],
+          "required": false
+        }
+      ],
+      "body": []
+    }
+  },
+  "source_field_paths": [
+    {
+      "path": "admin_assignee_id",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "id",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "priority",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "source.body",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "source.subject",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "source.url",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "state",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "team_assignee_id",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "title",
+      "list": true,
+      "read": true
+    },
+    {
+      "path": "updated_at",
+      "list": true,
+      "read": true
+    }
+  ]
+}

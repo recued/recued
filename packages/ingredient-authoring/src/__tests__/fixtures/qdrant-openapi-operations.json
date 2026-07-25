@@ -1,0 +1,6311 @@
+{
+  "source": {
+    "vendor": "Qdrant",
+    "product": "Qdrant REST API",
+    "official_repository": "https://github.com/qdrant/qdrant",
+    "branch": "master",
+    "commit": "44ad62f8cd69642be5afa6441612525e24a0d063",
+    "path": "docs/redoc/master/openapi.json",
+    "url": "https://raw.githubusercontent.com/qdrant/qdrant/44ad62f8cd69642be5afa6441612525e24a0d063/docs/redoc/master/openapi.json",
+    "sha256": "2798adcfea5204f1f82956cbe4ad05d7c201be79ee85ae22a80ccdfe16d1e2fa",
+    "bytes": 536968,
+    "retrieved_on": "2026-07-15",
+    "openapi": "3.0.1",
+    "title": "Qdrant API",
+    "version": "master",
+    "license": {
+      "name": "Apache 2.0",
+      "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+    },
+    "server_template": "{protocol}://{hostname}:{port}",
+    "authentication": {
+      "admitted": "Secured Qdrant Cloud or self-hosted deployment using the api-key header.",
+      "bearer_alternative": "The official contract also documents bearer authentication; this pack uses one closed api-key connection contract.",
+      "unauthenticated_alternative": "The official contract permits deployments without authentication, but the generated pack deliberately requires a secured connection."
+    },
+    "documentary_posture": "Every generated leaf points directly at the immutable raw OpenAPI document from the pinned official Qdrant repository commit. The root carries dependencies rather than a second composition."
+  },
+  "inventory": {
+    "paths": 60,
+    "operations": 75,
+    "selected_operations": 73,
+    "excluded_operations": 2,
+    "leaf_packs": 5,
+    "workflows": 5,
+    "by_pack": {
+      "qdrant-collections": 14,
+      "qdrant-points": 14,
+      "qdrant-search": 13,
+      "qdrant-snapshots": 15,
+      "qdrant-cluster-service": 17
+    },
+    "by_tag": {
+      "Aliases": 3,
+      "Beta": 2,
+      "Collections": 9,
+      "Distributed": 9,
+      "Indexes": 2,
+      "Points": 14,
+      "Search": 13,
+      "Service": 6,
+      "Snapshots": 17
+    },
+    "by_method": {
+      "DELETE": 8,
+      "GET": 25,
+      "PATCH": 1,
+      "POST": 32,
+      "PUT": 9
+    },
+    "selected_by_risk": {
+      "admin": 10,
+      "destructive": 16,
+      "read": 42,
+      "write": 5
+    },
+    "selected_by_approval": {
+      "always": 31,
+      "never": 42
+    },
+    "raw_json_request_bodies": 36,
+    "captured_downloads": 4,
+    "pagination_transport_gaps": 1,
+    "json_responses_with_exact_integer_mode": 65,
+    "non_get_read_operations": 17
+  },
+  "exclusions": {
+    "POST /collections/{collection_name}/shards/{shard_id}/snapshots/upload": "The official operation requires multipart/form-data file upload; the current REST composition cannot construct that multipart binary payload.",
+    "POST /collections/{collection_name}/snapshots/upload": "The official operation requires multipart/form-data file upload; the current REST composition cannot construct that multipart binary payload."
+  },
+  "contract_gaps": {
+    "multipart_snapshot_uploads": "Two official snapshot recovery operations require multipart/form-data file upload. They are excluded because the current REST composition cannot construct multipart binary payloads; URL-based recovery remains admitted for collection and shard snapshots.",
+    "scroll_pagination": "POST /collections/{collection_name}/points/scroll returns result.next_page_offset, but the next cursor belongs inside the exact raw JSON request body. The current paginator cannot mutate body_raw, so callers paginate explicitly and the pack claims no automatic paginator.",
+    "exact_request_integers": "Every admitted JSON body is sent as literal body_raw. This preserves uint64 point IDs and versions as JSON integer tokens instead of routing them through JavaScript Number.",
+    "exact_response_integers": "Every admitted application/json response uses unsafe_integers=string so uint64 IDs, versions, and operation IDs remain exact.",
+    "dynamic_origin": "Qdrant Cloud cluster URLs and self-hosted origins vary. The connection is per-org and uses an HTTPS placeholder solely as an enrollment example.",
+    "authentication_choice": "The official security alternatives are api-key, bearer, and unauthenticated. The pack chooses the documented api-key header and does not weaken the connection to unauthenticated access.",
+    "request_body_requiredness": "The official OpenAPI marks every requestBody optional, including operations whose body schema contains required fields. The generated operation keeps body_raw optional to remain documentary; Qdrant remains authoritative when a call omits or supplies an incomplete body.",
+    "arbitrary_records": "Qdrant collections, points, payloads, vectors, and snapshots are datastore records rather than canonical work entities. No task, note, or project Source is declared."
+  },
+  "source_eligibility": [
+    {
+      "kind": "project",
+      "eligible": false,
+      "declared": false,
+      "evidence": "A Qdrant collection is a vector index, not a canonical project entity, and the suite has no live field-path proof for a project mapping."
+    },
+    {
+      "kind": "task",
+      "eligible": false,
+      "declared": false,
+      "evidence": "Point payloads are user-defined datastore records; the pack does not infer task semantics from arbitrary payload keys."
+    },
+    {
+      "kind": "note",
+      "eligible": false,
+      "declared": false,
+      "evidence": "Point payloads and vectors do not establish the canonical note fields or live load-bearing paths required by the authoring guide."
+    }
+  ],
+  "operations": [
+    {
+      "key": "GET /",
+      "method": "GET",
+      "path": "/",
+      "operation_id": "root",
+      "tag": "Service",
+      "summary": "Returns information about the running Qdrant instance",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.root",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "acf9e7e00f563e07b25307840211524013ac11f560c46cdc5943df7f17955954"
+    },
+    {
+      "key": "GET /aliases",
+      "method": "GET",
+      "path": "/aliases",
+      "operation_id": "get_collections_aliases",
+      "tag": "Aliases",
+      "summary": "List collections aliases",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "aliases.get_collections_aliases",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "02d66df73c9c8721e3c05ff32843c6e5eff2719c6d1c8e36de03efc9d0d8967e"
+    },
+    {
+      "key": "GET /cluster",
+      "method": "GET",
+      "path": "/cluster",
+      "operation_id": "cluster_status",
+      "tag": "Distributed",
+      "summary": "Get cluster status info",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.cluster_status",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "5b217fd305d3b8355eaad0a771930b3c32a593f476be9b29354482c78682620b"
+    },
+    {
+      "key": "DELETE /cluster/peer/{peer_id}",
+      "method": "DELETE",
+      "path": "/cluster/peer/{peer_id}",
+      "operation_id": "remove_peer",
+      "tag": "Distributed",
+      "summary": "Remove peer from the cluster",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "peer_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "peer_id",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        },
+        {
+          "name": "force",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.force",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.remove_peer",
+      "emitted_args": [
+        {
+          "key": "peer_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.force",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "3dbca7f54e22f306803796c271a9704446c7f0ca5d455e991adc4e6f4742cc72",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "POST /cluster/recover",
+      "method": "POST",
+      "path": "/cluster/recover",
+      "operation_id": "recover_current_peer",
+      "tag": "Distributed",
+      "summary": "Tries to recover current peer Raft state.",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.recover_current_peer",
+      "emitted_args": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /cluster/telemetry",
+      "method": "GET",
+      "path": "/cluster/telemetry",
+      "operation_id": "cluster_telemetry",
+      "tag": "Distributed",
+      "summary": "Collect cluster telemetry data",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "details_level",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.details_level",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.cluster_telemetry",
+      "emitted_args": [
+        {
+          "key": "query.details_level",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "93e3693228b7a10d613ab07924dd032cc52d7da233cfbb1d42dd3a41610ae316",
+      "response_schema_sha256": "842d18691848087db3f267264c0de04ac5cda343ea7e2647d2669802911f9c49"
+    },
+    {
+      "key": "GET /collections",
+      "method": "GET",
+      "path": "/collections",
+      "operation_id": "get_collections",
+      "tag": "Collections",
+      "summary": "List collections",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.get_collections",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "d4236349bcaf6c0d37e6a0e6d952923a44e658f0f29e0defdff09bd85138cd8c"
+    },
+    {
+      "key": "POST /collections/aliases",
+      "method": "POST",
+      "path": "/collections/aliases",
+      "operation_id": "update_aliases",
+      "tag": "Aliases",
+      "summary": "Update aliases of the collections",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "aliases.update_aliases",
+      "emitted_args": [
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9ff6a0e64d0d7b1697b04da7331a371e2e218531bab7656333836b1db3e43e75",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /collections/{collection_name}",
+      "method": "GET",
+      "path": "/collections/{collection_name}",
+      "operation_id": "get_collection",
+      "tag": "Collections",
+      "summary": "Collection info",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.get_collection",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "676c18a4b9d0fb1fad443bd832512f78b69303c707220df15d83fb204767c154"
+    },
+    {
+      "key": "PUT /collections/{collection_name}",
+      "method": "PUT",
+      "path": "/collections/{collection_name}",
+      "operation_id": "create_collection",
+      "tag": "Collections",
+      "summary": "Create collection",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.create_collection",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9b5eebee68cb111e59e19148075fe3ba6e7894c8075891d0ca5a547e8cad28ac",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "PATCH /collections/{collection_name}",
+      "method": "PATCH",
+      "path": "/collections/{collection_name}",
+      "operation_id": "update_collection",
+      "tag": "Collections",
+      "summary": "Update collection parameters",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.update_collection",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9b5eebee68cb111e59e19148075fe3ba6e7894c8075891d0ca5a547e8cad28ac",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "DELETE /collections/{collection_name}",
+      "method": "DELETE",
+      "path": "/collections/{collection_name}",
+      "operation_id": "delete_collection",
+      "tag": "Collections",
+      "summary": "Delete collection",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.delete_collection",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "413e9ddc1a06a692ab80ee824a26553c48ef27dcf52c5c9cafe026b283d98cbe",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /collections/{collection_name}/aliases",
+      "method": "GET",
+      "path": "/collections/{collection_name}/aliases",
+      "operation_id": "get_collection_aliases",
+      "tag": "Aliases",
+      "summary": "List aliases for collection",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "aliases.get_collection_aliases",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "02d66df73c9c8721e3c05ff32843c6e5eff2719c6d1c8e36de03efc9d0d8967e"
+    },
+    {
+      "key": "GET /collections/{collection_name}/cluster",
+      "method": "GET",
+      "path": "/collections/{collection_name}/cluster",
+      "operation_id": "collection_cluster_info",
+      "tag": "Distributed",
+      "summary": "Collection cluster info",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.collection_cluster_info",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "4811b4f10bc44ec874ddba5dcdb9e6661b4a98b2270bf2a20b53809a3286af4c"
+    },
+    {
+      "key": "POST /collections/{collection_name}/cluster",
+      "method": "POST",
+      "path": "/collections/{collection_name}/cluster",
+      "operation_id": "update_collection_cluster",
+      "tag": "Distributed",
+      "summary": "Update collection cluster setup",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.update_collection_cluster",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9b5eebee68cb111e59e19148075fe3ba6e7894c8075891d0ca5a547e8cad28ac",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /collections/{collection_name}/exists",
+      "method": "GET",
+      "path": "/collections/{collection_name}/exists",
+      "operation_id": "collection_exists",
+      "tag": "Collections",
+      "summary": "Check the existence of a collection",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.collection_exists",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "d0a0de2195f9eacbaddef52fbeb4f8fdb2b03104f9b696089eac16299064e843"
+    },
+    {
+      "key": "POST /collections/{collection_name}/facet",
+      "method": "POST",
+      "path": "/collections/{collection_name}/facet",
+      "operation_id": "facet",
+      "tag": "Points",
+      "summary": "Facet a payload key with a given filter.",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.facet",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "ac922b7902dae8c893e9f022fdd381dce7d0356f8ee2cd245a1b009b821d1e79"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/index",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/index",
+      "operation_id": "create_field_index",
+      "tag": "Indexes",
+      "summary": "Create index for field in collection",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "indexes.create_field_index",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "DELETE /collections/{collection_name}/index/{field_name}",
+      "method": "DELETE",
+      "path": "/collections/{collection_name}/index/{field_name}",
+      "operation_id": "delete_field_index",
+      "tag": "Indexes",
+      "summary": "Delete index for field in collection",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "field_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "field_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "indexes.delete_field_index",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "field_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "74e9e047a684d5a0d11b53126d3fee4d710106818a7b96b95f5b25f59e2b3340",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "GET /collections/{collection_name}/optimizations",
+      "method": "GET",
+      "path": "/collections/{collection_name}/optimizations",
+      "operation_id": "get_optimizations",
+      "tag": "Collections",
+      "summary": "Get optimization progress",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "with",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.with",
+          "omitted_reason": null
+        },
+        {
+          "name": "completed_limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.completed_limit",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.get_optimizations",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.with",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.completed_limit",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "336a5830a539a96055b63332c4ffcc877a187531fb1548aaebf85863ec38b71c",
+      "response_schema_sha256": "529c0cbb5cb4459a5b637740832af0ca735e18e6e8027414900f1ee8f9ec8073"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points",
+      "operation_id": "get_points",
+      "tag": "Points",
+      "summary": "Get points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.get_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/points",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/points",
+      "operation_id": "upsert_points",
+      "tag": "Points",
+      "summary": "Upsert points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.upsert_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/batch",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/batch",
+      "operation_id": "batch_update",
+      "tag": "Points",
+      "summary": "Batch update points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.batch_update",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/count",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/count",
+      "operation_id": "count_points",
+      "tag": "Points",
+      "summary": "Count points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.count_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "ab91214ec78bf779a9c3837592e3aeb757e1a72dbb93a12e09ff24d757c4b29d"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/delete",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/delete",
+      "operation_id": "delete_points",
+      "tag": "Points",
+      "summary": "Delete points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.delete_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/discover",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/discover",
+      "operation_id": "discover_points",
+      "tag": "Search",
+      "summary": "Discover points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.discover_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/discover/batch",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/discover/batch",
+      "operation_id": "discover_batch_points",
+      "tag": "Search",
+      "summary": "Discover batch points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.discover_batch_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "abd5411aeb5b2c95dbaaa8344d87a572d73a71726b3ea9651ffdba30c38e99ab"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/payload",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/payload",
+      "operation_id": "set_payload",
+      "tag": "Points",
+      "summary": "Set payload",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.set_payload",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/points/payload",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/points/payload",
+      "operation_id": "overwrite_payload",
+      "tag": "Points",
+      "summary": "Overwrite payload",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.overwrite_payload",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/payload/clear",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/payload/clear",
+      "operation_id": "clear_payload",
+      "tag": "Points",
+      "summary": "Clear payload",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.clear_payload",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/payload/delete",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/payload/delete",
+      "operation_id": "delete_payload",
+      "tag": "Points",
+      "summary": "Delete payload",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.delete_payload",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/query",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/query",
+      "operation_id": "query_points",
+      "tag": "Search",
+      "summary": "Query points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.query_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "81af93269c98d51cc1d82ba8503db470141c50344614242c57fa1371ee91c230"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/query/batch",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/query/batch",
+      "operation_id": "query_batch_points",
+      "tag": "Search",
+      "summary": "Query points in batch",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.query_batch_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/query/groups",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/query/groups",
+      "operation_id": "query_points_groups",
+      "tag": "Search",
+      "summary": "Query points, grouped by a given payload field",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.query_points_groups",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "86347aa0fd50866e055d400fc39962a0e61030fce986d3c169a9a124892e54be"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/recommend",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/recommend",
+      "operation_id": "recommend_points",
+      "tag": "Search",
+      "summary": "Recommend points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.recommend_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/recommend/batch",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/recommend/batch",
+      "operation_id": "recommend_batch_points",
+      "tag": "Search",
+      "summary": "Recommend batch points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.recommend_batch_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "abd5411aeb5b2c95dbaaa8344d87a572d73a71726b3ea9651ffdba30c38e99ab"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/recommend/groups",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/recommend/groups",
+      "operation_id": "recommend_point_groups",
+      "tag": "Search",
+      "summary": "Recommend point groups",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.recommend_point_groups",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "86347aa0fd50866e055d400fc39962a0e61030fce986d3c169a9a124892e54be"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/scroll",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/scroll",
+      "operation_id": "scroll_points",
+      "tag": "Points",
+      "summary": "Scroll points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.scroll_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": "The documented cursor is returned at result.next_page_offset and must be sent as the top-level offset field inside the next raw JSON request body; the current paginator cannot mutate body_raw without replacing the caller's exact request document.",
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "3b7ed72510a13293b19b55ae428827a75305125588609aa182867229f34715c4"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/search",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/search",
+      "operation_id": "search_points",
+      "tag": "Search",
+      "summary": "Search points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.search_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/search/batch",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/search/batch",
+      "operation_id": "search_batch_points",
+      "tag": "Search",
+      "summary": "Search batch points",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.search_batch_points",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "abd5411aeb5b2c95dbaaa8344d87a572d73a71726b3ea9651ffdba30c38e99ab"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/search/groups",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/search/groups",
+      "operation_id": "search_point_groups",
+      "tag": "Search",
+      "summary": "Search point groups",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.search_point_groups",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "86347aa0fd50866e055d400fc39962a0e61030fce986d3c169a9a124892e54be"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/search/matrix/offsets",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/search/matrix/offsets",
+      "operation_id": "search_matrix_offsets",
+      "tag": "Search",
+      "summary": "Search points matrix distance offsets",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.search_matrix_offsets",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "63a5080405e8437558b96dc929d73efbf2763479f8caf7d5bb4e6046880ef780"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/search/matrix/pairs",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/search/matrix/pairs",
+      "operation_id": "search_matrix_pairs",
+      "tag": "Search",
+      "summary": "Search points matrix distance pairs",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-search",
+      "op": "search.search_matrix_pairs",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "40772ee403bd93b4e6261c2cdb2b84ec294af049c781d0bdf31c44fa4cf29deb",
+      "response_schema_sha256": "6c712c232944841709dea473f6f13478bad077d9f995b83318c4b04c3b0a318d"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/points/vectors",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/points/vectors",
+      "operation_id": "update_vectors",
+      "tag": "Points",
+      "summary": "Update vectors",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.update_vectors",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "POST /collections/{collection_name}/points/vectors/delete",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/vectors/delete",
+      "operation_id": "delete_vectors",
+      "tag": "Points",
+      "summary": "Delete vectors",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.delete_vectors",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c144fb30acaf9839764abb60e3f7c7905e09c72327e83b51b6f52573bce222b",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "GET /collections/{collection_name}/points/{id}",
+      "method": "GET",
+      "path": "/collections/{collection_name}/points/{id}",
+      "operation_id": "get_point",
+      "tag": "Points",
+      "summary": "Get point",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "id",
+          "omitted_reason": null
+        },
+        {
+          "name": "consistency",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.consistency",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-points",
+      "op": "points.get_point",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.consistency",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "42f49c7510339375c83e2b8909b6bbc7cfcce8b17ba90e6f6633833c94342427",
+      "response_schema_sha256": "016a049d9d98810a9e4223c0e9f440a43841bf9d52b63a73f8cffbd3c423b4de"
+    },
+    {
+      "key": "GET /collections/{collection_name}/shards",
+      "method": "GET",
+      "path": "/collections/{collection_name}/shards",
+      "operation_id": "list_shard_keys",
+      "tag": "Distributed",
+      "summary": "List shard keys",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.list_shard_keys",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "d4d604bce27fe55fb1347616c599cd307eba1cd79180aea1db628c8b50b5091b"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/shards",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/shards",
+      "operation_id": "create_shard_key",
+      "tag": "Distributed",
+      "summary": "Create shard key",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.create_shard_key",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9b5eebee68cb111e59e19148075fe3ba6e7894c8075891d0ca5a547e8cad28ac",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "POST /collections/{collection_name}/shards/delete",
+      "method": "POST",
+      "path": "/collections/{collection_name}/shards/delete",
+      "operation_id": "delete_shard_key",
+      "tag": "Distributed",
+      "summary": "Delete shard key",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "distributed.delete_shard_key",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9b5eebee68cb111e59e19148075fe3ba6e7894c8075891d0ca5a547e8cad28ac",
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /collections/{collection_name}/shards/{shard_id}/snapshot",
+      "method": "GET",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshot",
+      "operation_id": "stream_shard_snapshot",
+      "tag": "Snapshots",
+      "summary": "Download shard snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/octet-stream"
+      ],
+      "selected_response_media": "application/octet-stream",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.stream_shard_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "static_headers": {
+        "Accept": "application/octet-stream"
+      },
+      "response_json": null,
+      "request_schema_sha256": "15e1e9a3f75e20af8115bb7bcdb3cfb1d89f304e8df82f101033c0dca3da4337",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "GET /collections/{collection_name}/shards/{shard_id}/snapshots",
+      "method": "GET",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots",
+      "operation_id": "list_shard_snapshots",
+      "tag": "Snapshots",
+      "summary": "List shards snapshots for a collection",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.list_shard_snapshots",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "15e1e9a3f75e20af8115bb7bcdb3cfb1d89f304e8df82f101033c0dca3da4337",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/shards/{shard_id}/snapshots",
+      "method": "POST",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots",
+      "operation_id": "create_shard_snapshot",
+      "tag": "Snapshots",
+      "summary": "Create shard snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.create_shard_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "458bd4a8aa9cd933f8d9b445a04279fca78e9a6a6f4d21f5e1af8b594720193a",
+      "response_schema_sha256": "6aa99848cd03870e0e2647116895bf9a8886377865ad1bd10ca590b9c529fd0b"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/shards/{shard_id}/snapshots/recover",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots/recover",
+      "operation_id": "recover_shard_from_snapshot",
+      "tag": "Snapshots",
+      "summary": "Recover from a snapshot",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.recover_shard_from_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "3b3cceb4697901e1aa48156b5983c75d680282942c9f36f370e8954469e010ec",
+      "response_schema_sha256": "9f66b3dce983fed5a32efcf7a5fb4def59afdafee37a584bcd32d79619987495"
+    },
+    {
+      "key": "POST /collections/{collection_name}/shards/{shard_id}/snapshots/upload",
+      "method": "POST",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots/upload",
+      "operation_id": "recover_shard_from_uploaded_snapshot",
+      "tag": "Snapshots",
+      "summary": "Recover shard from an uploaded snapshot",
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": false,
+      "exclusion_reason": "The official operation requires multipart/form-data file upload; the current REST composition cannot construct that multipart binary payload.",
+      "pack": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": null,
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": null
+    },
+    {
+      "key": "GET /collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
+      "method": "GET",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
+      "operation_id": "get_shard_snapshot",
+      "tag": "Snapshots",
+      "summary": "Download collection snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        },
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/octet-stream"
+      ],
+      "selected_response_media": "application/octet-stream",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.get_shard_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "static_headers": {
+        "Accept": "application/octet-stream"
+      },
+      "response_json": null,
+      "request_schema_sha256": "e90c7de49e3a9fb9f92de6d40ed1475448b9bad9f0ed99bbcf578f037541c625",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "DELETE /collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
+      "method": "DELETE",
+      "path": "/collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
+      "operation_id": "delete_shard_snapshot",
+      "tag": "Snapshots",
+      "summary": "Delete shard snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "shard_id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "shard_id",
+          "omitted_reason": null
+        },
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.delete_shard_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "shard_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "5470c85dfebd879922e7b149d045a15a742c2f856c683c68f9d47a7dbded2294",
+      "response_schema_sha256": "9f66b3dce983fed5a32efcf7a5fb4def59afdafee37a584bcd32d79619987495"
+    },
+    {
+      "key": "GET /collections/{collection_name}/snapshots",
+      "method": "GET",
+      "path": "/collections/{collection_name}/snapshots",
+      "operation_id": "list_snapshots",
+      "tag": "Snapshots",
+      "summary": "List collection snapshots",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.list_snapshots",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b8a88351200845d2e625dd824a5e88b92c02d6262efedfa18070d6cbeabd8ffd",
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /collections/{collection_name}/snapshots",
+      "method": "POST",
+      "path": "/collections/{collection_name}/snapshots",
+      "operation_id": "create_snapshot",
+      "tag": "Snapshots",
+      "summary": "Create collection snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.create_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "b5ae641b9eb4b96d43c1f8923fe5f181329a605c7032853b5dd478d23e61801a",
+      "response_schema_sha256": "6aa99848cd03870e0e2647116895bf9a8886377865ad1bd10ca590b9c529fd0b"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/snapshots/recover",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/snapshots/recover",
+      "operation_id": "recover_from_snapshot",
+      "tag": "Snapshots",
+      "summary": "Recover from a snapshot",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.recover_from_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "4a6005bc9c15d41b7d24b15d98e0426eced188c53b7491ff3ee3b9e88c0dae32",
+      "response_schema_sha256": "9f66b3dce983fed5a32efcf7a5fb4def59afdafee37a584bcd32d79619987495"
+    },
+    {
+      "key": "POST /collections/{collection_name}/snapshots/upload",
+      "method": "POST",
+      "path": "/collections/{collection_name}/snapshots/upload",
+      "operation_id": "recover_from_uploaded_snapshot",
+      "tag": "Snapshots",
+      "summary": "Recover from an uploaded snapshot",
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": false,
+      "exclusion_reason": "The official operation requires multipart/form-data file upload; the current REST composition cannot construct that multipart binary payload.",
+      "pack": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": null,
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": null
+    },
+    {
+      "key": "GET /collections/{collection_name}/snapshots/{snapshot_name}",
+      "method": "GET",
+      "path": "/collections/{collection_name}/snapshots/{snapshot_name}",
+      "operation_id": "get_snapshot",
+      "tag": "Snapshots",
+      "summary": "Download collection snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/octet-stream"
+      ],
+      "selected_response_media": "application/octet-stream",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.get_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "static_headers": {
+        "Accept": "application/octet-stream"
+      },
+      "response_json": null,
+      "request_schema_sha256": "9d8f6e1c295e2246d241374b3bf8f938c1fd0f416adde9b6852f34b55753b789",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "DELETE /collections/{collection_name}/snapshots/{snapshot_name}",
+      "method": "DELETE",
+      "path": "/collections/{collection_name}/snapshots/{snapshot_name}",
+      "operation_id": "delete_snapshot",
+      "tag": "Snapshots",
+      "summary": "Delete collection snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.delete_snapshot",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "7884457b65323deb4dced86dfdfe5bfbec7469e2e0d5e65d4fb111e6dd407f67",
+      "response_schema_sha256": "9f66b3dce983fed5a32efcf7a5fb4def59afdafee37a584bcd32d79619987495"
+    },
+    {
+      "key": "PUT /collections/{collection_name}/vectors/{vector_name}",
+      "method": "PUT",
+      "path": "/collections/{collection_name}/vectors/{vector_name}",
+      "operation_id": "create_vector_name",
+      "tag": "Collections",
+      "summary": "Create named vector",
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "vector_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "vector_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.create_vector_name",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "vector_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "904820cc5da19ad78c81199cf856519984df8c3ebbc1d1c6526670fc5b432ca3",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "DELETE /collections/{collection_name}/vectors/{vector_name}",
+      "method": "DELETE",
+      "path": "/collections/{collection_name}/vectors/{vector_name}",
+      "operation_id": "delete_vector_name",
+      "tag": "Collections",
+      "summary": "Delete named vector",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "collection_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "collection_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "vector_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "vector_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        },
+        {
+          "name": "ordering",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.ordering",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-collections",
+      "op": "collections.delete_vector_name",
+      "emitted_args": [
+        {
+          "key": "collection_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "vector_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.ordering",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "cdef6ef28dfe6062d7607b605f51da84b6a0891656c7888b4f7f532f7156e978",
+      "response_schema_sha256": "886d904d31c8b381ac5e9c1169ec2c1c4919bf14ec4d6a57640f829dd3a02702"
+    },
+    {
+      "key": "GET /healthz",
+      "method": "GET",
+      "path": "/healthz",
+      "operation_id": "healthz",
+      "tag": "Service",
+      "summary": "Kubernetes healthz endpoint",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "text/plain"
+      ],
+      "selected_response_media": "text/plain",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.healthz",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "text/plain"
+      },
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": "00404e686415370f1711c4d7acfa2905444d3cf23cef2e10c47d445ebe690f96"
+    },
+    {
+      "key": "GET /issues",
+      "method": "GET",
+      "path": "/issues",
+      "operation_id": "get_issues",
+      "tag": "Beta",
+      "summary": "Get issues",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "beta.get_issues",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
+    },
+    {
+      "key": "DELETE /issues",
+      "method": "DELETE",
+      "path": "/issues",
+      "operation_id": "clear_issues",
+      "tag": "Beta",
+      "summary": "Clear issues",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "beta.clear_issues",
+      "emitted_args": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "29e528502f7d4b789bb95843aa41164efba26c70fbcf71580485880a183ed4a6"
+    },
+    {
+      "key": "GET /livez",
+      "method": "GET",
+      "path": "/livez",
+      "operation_id": "livez",
+      "tag": "Service",
+      "summary": "Kubernetes livez endpoint",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "text/plain"
+      ],
+      "selected_response_media": "text/plain",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.livez",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "text/plain"
+      },
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": "00404e686415370f1711c4d7acfa2905444d3cf23cef2e10c47d445ebe690f96"
+    },
+    {
+      "key": "GET /metrics",
+      "method": "GET",
+      "path": "/metrics",
+      "operation_id": "metrics",
+      "tag": "Service",
+      "summary": "Collect Prometheus metrics data",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "anonymize",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.anonymize",
+          "omitted_reason": null
+        },
+        {
+          "name": "per_collection",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.per_collection",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "text/plain"
+      ],
+      "selected_response_media": "text/plain",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.metrics",
+      "emitted_args": [
+        {
+          "key": "query.anonymize",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.per_collection",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "text/plain"
+      },
+      "response_json": null,
+      "request_schema_sha256": "88547be8c9f17f372588f1aaf7d5f00b220b500788c5a1e3ae82171583205e36",
+      "response_schema_sha256": "00404e686415370f1711c4d7acfa2905444d3cf23cef2e10c47d445ebe690f96"
+    },
+    {
+      "key": "GET /readyz",
+      "method": "GET",
+      "path": "/readyz",
+      "operation_id": "readyz",
+      "tag": "Service",
+      "summary": "Kubernetes readyz endpoint",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "text/plain"
+      ],
+      "selected_response_media": "text/plain",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.readyz",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "text/plain"
+      },
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": "00404e686415370f1711c4d7acfa2905444d3cf23cef2e10c47d445ebe690f96"
+    },
+    {
+      "key": "GET /snapshots",
+      "method": "GET",
+      "path": "/snapshots",
+      "operation_id": "list_full_snapshots",
+      "tag": "Snapshots",
+      "summary": "List of storage snapshots",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.list_full_snapshots",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "726ff291db68e1dd33dacc0765c629c69094acb8c44fc559ffd76ce21b9ebc34"
+    },
+    {
+      "key": "POST /snapshots",
+      "method": "POST",
+      "path": "/snapshots",
+      "operation_id": "create_full_snapshot",
+      "tag": "Snapshots",
+      "summary": "Create storage snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.create_full_snapshot",
+      "emitted_args": [
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "d91641554a523182c2d81018d13e7c3ba700402331cec6a434433a527b0907a3",
+      "response_schema_sha256": "6aa99848cd03870e0e2647116895bf9a8886377865ad1bd10ca590b9c529fd0b"
+    },
+    {
+      "key": "GET /snapshots/{snapshot_name}",
+      "method": "GET",
+      "path": "/snapshots/{snapshot_name}",
+      "operation_id": "get_full_snapshot",
+      "tag": "Snapshots",
+      "summary": "Download storage snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/octet-stream"
+      ],
+      "selected_response_media": "application/octet-stream",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.get_full_snapshot",
+      "emitted_args": [
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination_transport_gap": null,
+      "response_capture": {
+        "kind": "file_ref",
+        "mime_type": "application/octet-stream",
+        "filename_source": {
+          "kind": "header"
+        }
+      },
+      "static_headers": {
+        "Accept": "application/octet-stream"
+      },
+      "response_json": null,
+      "request_schema_sha256": "3642cff6eaf03539da640087b1ce6463fa6eff196405bbe6332815b26cc8fdb6",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "DELETE /snapshots/{snapshot_name}",
+      "method": "DELETE",
+      "path": "/snapshots/{snapshot_name}",
+      "operation_id": "delete_full_snapshot",
+      "tag": "Snapshots",
+      "summary": "Delete storage snapshot",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "snapshot_name",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "snapshot_name",
+          "omitted_reason": null
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.wait",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-snapshots",
+      "op": "snapshots.delete_full_snapshot",
+      "emitted_args": [
+        {
+          "key": "snapshot_name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "a708463a883e077f0d149837af1610be999a63645bf9d51495bbdd3d17df3b61",
+      "response_schema_sha256": "9f66b3dce983fed5a32efcf7a5fb4def59afdafee37a584bcd32d79619987495"
+    },
+    {
+      "key": "GET /telemetry",
+      "method": "GET",
+      "path": "/telemetry",
+      "operation_id": "telemetry",
+      "tag": "Service",
+      "summary": "Collect telemetry data",
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "anonymize",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.anonymize",
+          "omitted_reason": null
+        },
+        {
+          "name": "details_level",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.details_level",
+          "omitted_reason": null
+        },
+        {
+          "name": "per_collection",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.per_collection",
+          "omitted_reason": null
+        },
+        {
+          "name": "timeout",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "serialization": "scalar",
+          "emitted_key": "query.timeout",
+          "omitted_reason": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "qdrant-cluster-service",
+      "op": "service.telemetry",
+      "emitted_args": [
+        {
+          "key": "query.anonymize",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.details_level",
+          "type": "number",
+          "required": false
+        },
+        {
+          "key": "query.per_collection",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.timeout",
+          "type": "number",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": "result",
+      "pagination_transport_gap": null,
+      "response_capture": null,
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "62221a010fe2d8e02fe87dd66792a7abf51cb4aadcf8ea7aea9b1ddaa02b221c",
+      "response_schema_sha256": "651dac7cbb1651d4fd44bbeeb3646827923788df7119079bc4ae1ab3a0e8b4c2"
+    }
+  ],
+  "workflows": [
+    {
+      "recipe_id": "collection-inventory-qdrant",
+      "pack": "qdrant-collections",
+      "operation_id": "get_collections",
+      "method": "GET",
+      "path": "/collections",
+      "op": "collections.get_collections",
+      "required_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "point-lookup-qdrant",
+      "pack": "qdrant-points",
+      "operation_id": "get_point",
+      "method": "GET",
+      "path": "/collections/{collection_name}/points/{id}",
+      "op": "points.get_point",
+      "required_args": [
+        "collection_name",
+        "id"
+      ],
+      "supplied_args": [
+        "collection_name",
+        "id"
+      ],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "vector-query-qdrant",
+      "pack": "qdrant-search",
+      "operation_id": "query_points",
+      "method": "POST",
+      "path": "/collections/{collection_name}/points/query",
+      "op": "search.query_points",
+      "required_args": [
+        "collection_name",
+        "body_raw"
+      ],
+      "supplied_args": [
+        "collection_name",
+        "body_raw"
+      ],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "snapshot-inventory-qdrant",
+      "pack": "qdrant-snapshots",
+      "operation_id": "list_snapshots",
+      "method": "GET",
+      "path": "/collections/{collection_name}/snapshots",
+      "op": "snapshots.list_snapshots",
+      "required_args": [
+        "collection_name"
+      ],
+      "supplied_args": [
+        "collection_name"
+      ],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "cluster-status-qdrant",
+      "pack": "qdrant-cluster-service",
+      "operation_id": "cluster_status",
+      "method": "GET",
+      "path": "/cluster",
+      "op": "distributed.cluster_status",
+      "required_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    }
+  ],
+  "generated": [
+    {
+      "slug": "qdrant-collections",
+      "operations": 14,
+      "composition_bytes": 20406
+    },
+    {
+      "slug": "qdrant-points",
+      "operations": 14,
+      "composition_bytes": 26886
+    },
+    {
+      "slug": "qdrant-search",
+      "operations": 13,
+      "composition_bytes": 25581
+    },
+    {
+      "slug": "qdrant-snapshots",
+      "operations": 15,
+      "composition_bytes": 19047
+    },
+    {
+      "slug": "qdrant-cluster-service",
+      "operations": 17,
+      "composition_bytes": 17928
+    }
+  ]
+}

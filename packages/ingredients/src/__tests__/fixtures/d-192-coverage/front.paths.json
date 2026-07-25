@@ -1,0 +1,229 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official Front Core API OpenAPI document; covers every operation shipped by front pack v2",
+    "url": "https://raw.githubusercontent.com/frontapp/front-api-specs/87d9d9a526a41f5821a49b1538d8a006d6544903/core-api/core-api.json",
+    "sha256": "ba70e79db6b4ea49fc73cadc65cac370bcdb18960d027a2dea731b8903c10d2d",
+    "fetched_at": "2026-07-14",
+    "servers": [
+      {
+        "url": "https://api2.frontapp.com"
+      }
+    ]
+  },
+  "paths": {
+    "/accounts": {
+      "get": {},
+      "post": {}
+    },
+    "/accounts/{account_id}": {
+      "get": {},
+      "patch": {}
+    },
+    "/accounts/{account_id}/contacts": {
+      "get": {},
+      "post": {},
+      "delete": {}
+    },
+    "/channels": {
+      "get": {}
+    },
+    "/channels/{channel_id}": {
+      "get": {}
+    },
+    "/comments/{comment_id}": {
+      "get": {}
+    },
+    "/comments/{comment_id}/mentions": {
+      "get": {}
+    },
+    "/comments/{comment_id}/replies": {
+      "post": {}
+    },
+    "/company/statuses": {
+      "get": {}
+    },
+    "/company/statuses/{status_id}": {
+      "get": {}
+    },
+    "/contacts": {
+      "get": {},
+      "post": {}
+    },
+    "/contacts/{contact_id}": {
+      "get": {},
+      "patch": {}
+    },
+    "/contacts/{contact_id}/conversations": {
+      "get": {}
+    },
+    "/contacts/{contact_id}/notes": {
+      "get": {},
+      "post": {}
+    },
+    "/conversations": {
+      "get": {},
+      "post": {}
+    },
+    "/conversations/{conversation_id}": {
+      "get": {},
+      "patch": {}
+    },
+    "/conversations/{conversation_id}/assignee": {
+      "put": {}
+    },
+    "/conversations/{conversation_id}/comments": {
+      "get": {},
+      "post": {}
+    },
+    "/conversations/{conversation_id}/drafts": {
+      "get": {}
+    },
+    "/conversations/{conversation_id}/events": {
+      "get": {}
+    },
+    "/conversations/{conversation_id}/followers": {
+      "get": {},
+      "post": {},
+      "delete": {}
+    },
+    "/conversations/{conversation_id}/inboxes": {
+      "get": {}
+    },
+    "/conversations/{conversation_id}/messages": {
+      "get": {},
+      "post": {}
+    },
+    "/conversations/{conversation_id}/reminders": {
+      "patch": {}
+    },
+    "/conversations/{conversation_id}/tags": {
+      "post": {},
+      "delete": {}
+    },
+    "/conversations/search/{query}": {
+      "get": {}
+    },
+    "/custom_fields": {
+      "get": {}
+    },
+    "/inboxes": {
+      "get": {}
+    },
+    "/inboxes/{inbox_id}": {
+      "get": {}
+    },
+    "/inboxes/{inbox_id}/channels": {
+      "get": {}
+    },
+    "/inboxes/{inbox_id}/conversations": {
+      "get": {}
+    },
+    "/inboxes/{inbox_id}/teammates": {
+      "get": {}
+    },
+    "/knowledge_base_articles/{article_id}": {
+      "get": {}
+    },
+    "/knowledge_base_articles/{article_id}/content": {
+      "get": {},
+      "patch": {}
+    },
+    "/knowledge_base_categories/{category_id}": {
+      "get": {}
+    },
+    "/knowledge_base_categories/{category_id}/content": {
+      "get": {},
+      "patch": {}
+    },
+    "/knowledge_bases": {
+      "get": {}
+    },
+    "/knowledge_bases/{knowledge_base_id}": {
+      "get": {}
+    },
+    "/knowledge_bases/{knowledge_base_id}/articles": {
+      "get": {},
+      "post": {}
+    },
+    "/knowledge_bases/{knowledge_base_id}/categories": {
+      "get": {},
+      "post": {}
+    },
+    "/knowledge_bases/{knowledge_base_id}/content": {
+      "get": {},
+      "patch": {}
+    },
+    "/links": {
+      "get": {},
+      "post": {}
+    },
+    "/links/{link_id}": {
+      "get": {},
+      "patch": {}
+    },
+    "/links/{link_id}/conversations": {
+      "get": {}
+    },
+    "/me": {
+      "get": {}
+    },
+    "/message_templates": {
+      "get": {},
+      "post": {}
+    },
+    "/message_templates/{message_template_id}": {
+      "get": {}
+    },
+    "/messages/{message_id}": {
+      "get": {}
+    },
+    "/messages/{message_id}/seen": {
+      "get": {},
+      "post": {}
+    },
+    "/rules": {
+      "get": {}
+    },
+    "/rules/{rule_id}": {
+      "get": {}
+    },
+    "/tags": {
+      "get": {},
+      "post": {}
+    },
+    "/tags/{tag_id}": {
+      "get": {},
+      "patch": {}
+    },
+    "/tags/{tag_id}/children": {
+      "get": {}
+    },
+    "/tags/{tag_id}/conversations": {
+      "get": {}
+    },
+    "/teammates": {
+      "get": {}
+    },
+    "/teammates/{teammate_id}": {
+      "get": {}
+    },
+    "/teammates/{teammate_id}/conversations": {
+      "get": {}
+    },
+    "/teams": {
+      "get": {}
+    },
+    "/teams/{team_id}": {
+      "get": {}
+    },
+    "/teams/{team_id}/inboxes": {
+      "get": {}
+    },
+    "/views": {
+      "get": {}
+    },
+    "/views/{view_id}": {
+      "get": {}
+    }
+  }
+}

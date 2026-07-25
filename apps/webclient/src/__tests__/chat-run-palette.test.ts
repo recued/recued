@@ -1,0 +1,426 @@
+/** Shell-frame Step 4c — the [▶ Run a recipe] command-palette (§D.L1).
+ *
+ *  Pins:
+ *   - the pure model: recipe classification (manual / autorun /
+ *     managed-reactive) + the auto-run arm-state + toggle decision;
+ *   - the wire: selecting a manual recipe offers Run/Schedule and opens the
+ *     shared Run modal on the chosen tab; selecting an auto-run recipe shows
+ *     the state-aware toggle and drives `auto_run.update`; a pure
+ *     event-trigger recipe offers the Automation deep-link; Close / Escape /
+ *     backdrop + dispose tear the palette down.
+ *
+ *  No jsdom — the ref-picker mounts INERT against the string-rendered fake
+ *  host (it bails when its shell isn't found), so selection is driven through
+ *  the imperative `selectRecipe` seam.
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+
+import type {
+  AutoRunStatusEntry,
+  RecipeDefinition,
+  ServerExecuteResponse,
+  ServerRecipeListEntry,
+} from '@recued/contracts';
+
+import {
+  autoRunStateOf,
+  autoRunToggle,
+  classifyRecipeAction,
+  wireRunPalette,
+  RUN_PALETTE_ACTION_ATTR,
+  RUN_PALETTE_CLOSE_ATTR,
+  RUN_PALETTE_OVERLAY_ATTR,
+} from '../chat/run-palette.js';
+
+// ── fake DOM ──────────────────────────────────────────────────────
+
+interface FakeEl {
+  tagName: string;
+  className: string;
+  textContent: string;
+  innerHTML: string;
+  type: string;
+  disabled: boolean;
+  value: string;
+  attrs: Map<string, string>;
+  children: FakeEl[];
+  parent: FakeEl | null;
+  listeners: Map<string, Array<(ev: unknown) => void>>;
+  readonly firstChild: FakeEl | null;
+  setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
+  hasAttribute(k: string): boolean;
+  appendChild(c: FakeEl): FakeEl;
+  removeChild(c: FakeEl): FakeEl;
+  remove(): void;
+  addEventListener(t: string, fn: (ev: unknown) => void): void;
+  removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  querySelector(sel: string): FakeEl | null;
+  querySelectorAll(sel: string): FakeEl[];
+  click(): void;
+}
+
+const attrOnly = (sel: string): string | null => sel.match(/^\[([\w-]+)\]$/)?.[1] ?? null;
+
+const makeEl = (tag: string): FakeEl => {
+  const el: FakeEl = {
+    tagName: tag.toUpperCase(),
+    className: '',
+    textContent: '',
+    innerHTML: '',
+    type: '',
+    disabled: false,
+    value: '',
+    attrs: new Map(),
+    children: [],
+    parent: null,
+    listeners: new Map(),
+    get firstChild() {
+      return el.children[0] ?? null;
+    },
+    setAttribute: (k, v) => el.attrs.set(k, v),
+    getAttribute: (k) => el.attrs.get(k) ?? null,
+    hasAttribute: (k) => el.attrs.has(k),
+    appendChild: (c) => {
+      c.parent = el;
+      el.children.push(c);
+      return c;
+    },
+    removeChild: (c) => {
+      const i = el.children.indexOf(c);
+      if (i < 0) throw new Error('removeChild: not a child');
+      el.children.splice(i, 1);
+      c.parent = null;
+      return c;
+    },
+    remove: () => {
+      if (el.parent === null) return;
+      const i = el.parent.children.indexOf(el);
+      if (i >= 0) el.parent.children.splice(i, 1);
+      el.parent = null;
+    },
+    addEventListener: (t, fn) => {
+      const list = el.listeners.get(t) ?? [];
+      list.push(fn);
+      el.listeners.set(t, list);
+    },
+    removeEventListener: (t, fn) => {
+      const list = el.listeners.get(t);
+      if (list === undefined) return;
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
+    },
+    // Only `[attr]` selectors are supported; an `[attr="v"]` selector (the
+    // ref-picker's shell lookup) returns null → the ref-picker bails inert.
+    querySelector: (sel) => el.querySelectorAll(sel)[0] ?? null,
+    querySelectorAll: (sel) => {
+      const attr = attrOnly(sel);
+      if (attr === null) return [];
+      const out: FakeEl[] = [];
+      const walk = (n: FakeEl): void => {
+        for (const c of n.children) {
+          if (c.attrs.has(attr)) out.push(c);
+          walk(c);
+        }
+      };
+      walk(el);
+      return out;
+    },
+    click: () => {
+      if (el.disabled) return;
+      for (const fn of [...(el.listeners.get('click') ?? [])]) fn({ target: el });
+    },
+  };
+  return el;
+};
+
+interface FakeDoc {
+  body: FakeEl;
+  head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
+  styles: FakeEl[];
+  createElement(tag: string): FakeEl;
+  addEventListener(t: string, fn: (ev: unknown) => void): void;
+  removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  fireKeydown(key: string): void;
+}
+
+const makeDoc = (): FakeDoc => {
+  const styles: FakeEl[] = [];
+  const keydown: Array<(ev: unknown) => void> = [];
+  return {
+    body: makeEl('body'),
+    styles,
+    head: {
+      querySelector(sel) {
+        const attr = sel.match(/^style\[([\w-]+)\]$/)?.[1];
+        if (attr === undefined) return null;
+        return styles.find((s) => s.attrs.has(attr)) ?? null;
+      },
+      appendChild(el) {
+        styles.push(el);
+        return el;
+      },
+    },
+    createElement: (tag) => makeEl(tag),
+    addEventListener: (t, fn) => {
+      if (t === 'keydown') keydown.push(fn);
+    },
+    removeEventListener: (t, fn) => {
+      if (t !== 'keydown') return;
+      const i = keydown.indexOf(fn);
+      if (i >= 0) keydown.splice(i, 1);
+    },
+    fireKeydown(key) {
+      for (const fn of [...keydown]) fn({ key });
+    },
+  };
+};
+
+const collectByAttr = (root: FakeEl, attr: string): FakeEl[] => {
+  const out: FakeEl[] = [];
+  const walk = (n: FakeEl): void => {
+    if (n.attrs.has(attr)) out.push(n);
+    for (const c of n.children) walk(c);
+  };
+  walk(root);
+  return out;
+};
+
+const allText = (root: FakeEl): string =>
+  [root.textContent, ...root.children.map(allText)].join(' ');
+
+const tick = async (n = 8): Promise<void> => {
+  for (let i = 0; i < n; i += 1) await Promise.resolve();
+};
+
+// ── fixtures ──────────────────────────────────────────────────────
+
+const recipeEntry = (
+  recipe_id: string,
+  name: string,
+  defOverrides: Partial<RecipeDefinition> = {},
+): ServerRecipeListEntry => ({
+  recipe_id,
+  publisher_id: 'recued-core',
+  version: 1,
+  recipe_hash: `hash-${recipe_id}`,
+  recipe: {
+    recipe_id,
+    version: 1,
+    ttl: 0,
+    metadata: {
+      name,
+      description: '',
+      author: 'recued-core',
+      supported_platforms: [],
+      tags: [],
+    },
+    variables: {},
+    prefetch_steps: [],
+    steps: [],
+    output: { sidebar: [] },
+    requires: [],
+    ...defOverrides,
+  },
+  source: 'pair-sync',
+  installed_at: 1_700_000_000_000,
+});
+
+const MANUAL = recipeEntry('manual-1', 'Daily brief');
+const AUTORUN = recipeEntry('autorun-1', 'Watch pipeline', {
+  auto_run: { interval_ms: 60_000 },
+} as unknown as Partial<RecipeDefinition>);
+const TRIGGERED = recipeEntry('trigger-1', 'On new mail', {
+  event_triggers: [{ pattern: 'data.mail.**.created' }],
+} as unknown as Partial<RecipeDefinition>);
+
+const executeResponse = (): ServerExecuteResponse => ({
+  recipe_id: 'manual-1',
+  recipe_hash: 'hash-manual-1',
+  success: true,
+  output: { render: [], sidebar: [] },
+  steps: [],
+  errors: [],
+  duration_ms: 5,
+});
+
+const autoRunEntry = (
+  recipe_id: string,
+  over: Partial<AutoRunStatusEntry> = {},
+): AutoRunStatusEntry => ({
+  recipe_id,
+  publisher_id: 'recued-core',
+  recipe_name: null,
+  interval_ms: 60_000,
+  dynamic: false,
+  enabled: true,
+  auto_disabled: false,
+  consecutive_failures: 0,
+  last_failure_at: null,
+  last_failure_reason: null,
+  next_run_at: null,
+  last_started_at: null,
+  last_finished_at: null,
+  config_overlay: {},
+  variables: {},
+  ...over,
+});
+
+// ── pure model ────────────────────────────────────────────────────
+
+describe('run-palette model', () => {
+  it('classifyRecipeAction: manual / autorun / managed-reactive', () => {
+    expect(classifyRecipeAction({})).toBe('manual');
+    expect(classifyRecipeAction({ auto_run: { interval_ms: 1 } })).toBe('autorun');
+    expect(classifyRecipeAction({ event_triggers: [{}] })).toBe('managed-reactive');
+    expect(classifyRecipeAction({ trigger_steps: [{}] })).toBe('managed-reactive');
+    // auto_run wins over a coincident trigger list.
+    expect(classifyRecipeAction({ auto_run: {}, event_triggers: [{}] })).toBe('autorun');
+    expect(classifyRecipeAction({ event_triggers: [] })).toBe('manual');
+  });
+
+  it('autoRunStateOf maps the entry to an arm state', () => {
+    expect(autoRunStateOf(undefined)).toBe('off');
+    expect(autoRunStateOf(autoRunEntry('x'))).toBe('armed');
+    expect(autoRunStateOf(autoRunEntry('x', { enabled: false }))).toBe('paused');
+    expect(autoRunStateOf(autoRunEntry('x', { auto_disabled: true }))).toBe('tripped');
+  });
+
+  it('autoRunToggle picks the right label + next enabled', () => {
+    expect(autoRunToggle('armed')).toEqual({ label: 'Pause', nextEnabled: false });
+    expect(autoRunToggle('tripped')).toEqual({ label: 'Re-arm', nextEnabled: true });
+    expect(autoRunToggle('paused')).toEqual({ label: 'Arm', nextEnabled: true });
+    expect(autoRunToggle('off')).toEqual({ label: 'Arm', nextEnabled: true });
+  });
+});
+
+// ── wire ──────────────────────────────────────────────────────────
+
+const mount = (
+  over: Partial<Parameters<typeof wireRunPalette>[0]> = {},
+) => {
+  const doc = makeDoc();
+  const recipeList = vi.fn(async () => ({
+    recipes: [MANUAL, AUTORUN, TRIGGERED],
+  }));
+  const handle = wireRunPalette({
+    document: doc as unknown as Document,
+    recipeList,
+    automationHref: (id) => `#automation/${id}`,
+    ...over,
+  });
+  doc.body.appendChild(handle.element as unknown as FakeEl);
+  return { doc, handle, recipeList };
+};
+
+describe('run-palette wire', () => {
+  it('selecting a manual recipe offers Run + Schedule and opens the Run modal', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    const { doc, handle } = mount({ execute });
+    await tick();
+    handle.selectRecipe('manual-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const actions = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR);
+    const labels = actions.map((a) => a.textContent);
+    expect(labels).toContain('Run');
+    expect(labels).toContain('Schedule');
+
+    actions.find((a) => a.textContent === 'Run')!.click();
+    // The shared Run modal mounts (its own root carries this class).
+    const runModalRoots = doc.body.children.filter(
+      (c) => c.className === 'run-modal-overlay-root',
+    );
+    expect(runModalRoots).toHaveLength(1);
+    expect(runModalRoots[0]!.innerHTML).toContain('Daily brief');
+    handle.destroy();
+  });
+
+  it('selecting an armed auto-run recipe offers Pause and drives auto_run.update', async () => {
+    const autoRunUpdate = vi.fn(async () => ({}));
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      autoRunUpdate,
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const toggle = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(toggle.textContent).toBe('Pause'); // armed → Pause
+    toggle.click();
+    await tick();
+    expect(autoRunUpdate).toHaveBeenCalledWith({
+      recipe_id: 'autorun-1',
+      enabled: false,
+    });
+    handle.destroy();
+  });
+
+  it('a tripped auto-run recipe offers Re-arm', async () => {
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({
+        entries: [autoRunEntry('autorun-1', { auto_disabled: true })],
+      })),
+      autoRunUpdate: vi.fn(async () => ({})),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.textContent).toBe('Re-arm');
+    handle.destroy();
+  });
+
+  it('a pure event-trigger recipe offers the Automation deep-link', async () => {
+    const { doc, handle } = mount();
+    await tick();
+    handle.selectRecipe('trigger-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const link = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(link.textContent).toContain('Automation');
+    // Deep-links to THIS recipe's rules (recipes-route parity).
+    expect(link.getAttribute('href')).toBe('#automation/trigger-1');
+    handle.destroy();
+  });
+
+  it('the auto-run toggle is disabled when no update caller is wired', async () => {
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      // no autoRunUpdate
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.disabled).toBe(true);
+    handle.destroy();
+  });
+
+  it('Close / Escape / dispose tear the palette down (and fire onClose once)', async () => {
+    const onClose = vi.fn();
+    const { doc, handle } = mount({ onClose });
+    await tick();
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(1);
+    collectByAttr(doc.body, RUN_PALETTE_CLOSE_ATTR)[0]!.click();
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    handle.destroy(); // idempotent
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape closes the palette', async () => {
+    const { doc, handle } = mount();
+    await tick();
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
+    handle.destroy();
+  });
+
+  it('shows a hint before any recipe is selected', async () => {
+    const { doc, handle } = mount();
+    await tick();
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(allText(overlay)).toContain('Find a recipe');
+    handle.destroy();
+  });
+});

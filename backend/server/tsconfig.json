@@ -1,0 +1,45 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "types": ["node"],
+    // `DOM` pulls in WebCrypto types (BufferSource, AesGcmParams, …)
+    // used by @recued/crypto which we re-type-check via the paths
+    // alias. Node 20+ provides the runtime (globalThis.crypto); this
+    // is types-only, no runtime effect.
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/approvals" },
+    { "path": "../../packages/cache" },
+    { "path": "../../packages/config" },
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/crypto" },
+    { "path": "../../packages/engine" },
+    { "path": "../../packages/fts" },
+    { "path": "../../packages/gateway" },
+    { "path": "../../packages/ingredient-authoring" },
+    { "path": "../../packages/ingredients" },
+    { "path": "../../packages/instances" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/marketplace" },
+    { "path": "../../packages/messenger" },
+    { "path": "../../packages/middleware" },
+    { "path": "../../packages/middleware-recued" },
+    { "path": "../../packages/middleware-recued/prompt-cache" },
+    { "path": "../../packages/notification" },
+    { "path": "../../packages/recipes" },
+    { "path": "../../packages/release" },
+    { "path": "../../packages/renderer" },
+    { "path": "../../packages/scheduler" },
+    { "path": "../../packages/server-network" },
+    { "path": "../../packages/server-tls" },
+    { "path": "../../packages/storage" },
+    { "path": "../../packages/storage-gate" },
+    { "path": "../../packages/transforms" },
+    { "path": "../../packages/transport" },
+    { "path": "../../packages/warehouse-events" }
+  ]
+}

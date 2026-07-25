@@ -1,0 +1,84 @@
+# recued-server — sample configuration (Phase E, D-107).
+#
+# Copy this file to your data directory and uncomment the sections
+# you need. Every runtime key has a schema-backed default; this
+# sample documents common overrides — it does NOT duplicate the
+# full schema.
+#
+# Default config locations (searched in order):
+#   $RECUED_CONFIG
+#   $XDG_CONFIG_HOME/recued/config.toml     (Linux)
+#   ~/.config/recued/config.toml             (Linux fallback)
+#   ~/Library/Application Support/recued/config.toml  (macOS)
+#   %APPDATA%\recued\config.toml             (Windows)
+#
+# The server watches the file for changes when `lifecycle.watch_config
+# = true`; otherwise SIGHUP triggers a reload. See D-105.
+#
+# Per D-111: TOML is for operator concerns only (ports, paths, quotas,
+# logging, scheduler floors). Collection instances — mail accounts,
+# file sources, webhook endpoints, calendar subscriptions — are
+# DB-only. Enroll them from the extension's Options → Server UI, or
+# via the `collection.{mail,file,webhook,calendar}.enroll` rpc.
+
+# ─── Bootstrap — changing any field here requires a restart ─────
+[bootstrap]
+# Absolute path to the data directory (SQLite + CAS blobs + logs).
+# Defaults to an OS-conventional path — override for container /
+# VPS deployments.
+# data_path = "/var/lib/recued"
+
+# Bind host. `127.0.0.1` is safest for local use; use `0.0.0.0`
+# behind a reverse proxy (Caddy variant) or when the pair WS is
+# reachable from LAN/VPN.
+# bind_host = "127.0.0.1"
+
+# Pair WebSocket port (ext ↔ server). The extension pairs over this.
+# bind_port = 7717
+
+# MCP stdio port — 0 disables. Claude Desktop / Cursor / other
+# MCP hosts connect here.
+# mcp_port = 7718
+
+# Inbound webhook port — 0 disables the webhook listener entirely.
+# Non-zero REQUIRES `collection.webhook.public_reachable = true` in
+# [runtime] below AND a public hostname or tunnel in front of this
+# port. D-096: Recued Cloud does NOT relay webhooks.
+# webhook_port = 0
+
+# Log directory. `{data_path}` is substituted at load time.
+# log_path = "{data_path}/logs"
+
+
+# ─── Runtime — live-editable via rpc / SIGHUP / file watch ──────
+[runtime]
+# Logging — debug / info / warn / error. Debug is ring-buffer-only
+# by default; set log.max_bytes to persist.
+# "log.level" = "info"
+
+# Scheduler floor — minimum cron interval users can create (minutes).
+# 5 is the recommended default; self-hosters can lower to 1.
+# "scheduler.min_interval_minutes" = 5
+
+# Webhook public_reachable gate (D-096). Flip to `true` only when
+# the host actually has public reachability (public IP or user-
+# hosted tunnel). Governed by the D-096 no-cloud-relay rule.
+# "collection.webhook.public_reachable" = false
+
+# Storage quotas — per-surface overrides. Defaults in the schema
+# cover typical single-user workloads; raise for heavy mail volume.
+# "vault.quota.total_bytes"               = 52428800     # 50 MB
+# "audit.quota.bytes"                     = 104857600    # 100 MB
+# "cache.quota.bytes"                     = 209715200    # 200 MB
+# "collection.mail.default.quota_bytes"   = 2147483648   # 2 GB
+# "collection.file.default.quota_bytes"   = 5368709120   # 5 GB
+# "collection.webhook.default.quota_bytes" = 209715200   # 200 MB
+
+# LLM free-pool strategy — round_robin (default) or weighted.
+# "llm.free_pool_strategy" = "round_robin"
+
+# Recued cloud API base URL (D-148). Production is the Pro-only host
+# `https://api.recued.cloud` (DDNS update, ACME issue-cert, account
+# sync). Override for staging / dev / test environments; trailing
+# slashes are stripped by each adapter.
+# "cloud.base_url" = "https://api.recued.cloud"

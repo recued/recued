@@ -1,0 +1,84 @@
+{
+  "name": "@recued/server",
+  "version": "26.7.3",
+  "description": "Personal automation server — data warehouse + scheduler + MCP host",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://recued.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/recued/recued.git",
+    "directory": "backend/server"
+  },
+  "keywords": [
+    "recued",
+    "automation",
+    "mcp",
+    "imap",
+    "warehouse"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "recued": "./dist/bin.js"
+  },
+  "files": [
+    "dist/",
+    "config.sample.toml",
+    "scripts/recued.service",
+    "scripts/com.recued.daemon.plist",
+    "scripts/docker-entrypoint.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:reception-uploader": "node scripts/build-reception-uploader.mjs",
+    "build:binary": "npx tsx scripts/build-binary.mjs",
+    "prepack": "npm run build",
+    "dev": "npx tsx --watch src/bin.ts",
+    "start": "npx tsx src/bin.ts",
+    "smoke": "node dist/bin.js --version",
+    "smoke:restart-swap": "npx tsx scripts/smoke-archive-restart-swap.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "better-sqlite3": "^12.8.0",
+    "imapflow": "^1.3.2",
+    "mailparser": "^3.9.8",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@recued/cache": "*",
+    "@recued/config": "*",
+    "@recued/contracts": "*",
+    "@recued/crypto": "*",
+    "@recued/engine": "*",
+    "@recued/gateway": "*",
+    "@recued/ingredient-authoring": "*",
+    "@recued/ingredients": "*",
+    "@recued/instances": "*",
+    "@recued/llm": "*",
+    "@recued/messenger": "*",
+    "@recued/release": "*",
+    "@recued/middleware": "*",
+    "@recued/notification": "*",
+    "@recued/recipes": "*",
+    "@recued/renderer": "*",
+    "@recued/server-network": "*",
+    "@recued/storage": "*",
+    "@recued/storage-gate": "*",
+    "@recued/transforms": "*",
+    "@recued/transport": "*",
+    "@recued/warehouse-events": "*",
+    "@types/mailparser": "^3.4.6",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.27.7"
+  }
+}

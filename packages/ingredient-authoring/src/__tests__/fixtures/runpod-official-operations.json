@@ -1,0 +1,4187 @@
+{
+  "source": {
+    "vendor": "RunPod",
+    "product": "RunPod management and queue-based Serverless APIs",
+    "docs_repository": "https://github.com/runpod/docs",
+    "docs_commit": "97887252ea4f07dd897c1c17f6ef12858e9a743b",
+    "sdk_repository": "https://github.com/runpod/runpod-python",
+    "sdk_commit": "f8fa7b11262fb8516c703abe9e498cce4d69f8e8",
+    "retrieved_on": "2026-07-15",
+    "management_origin": "https://rest.runpod.io",
+    "management_prefix": "/v1",
+    "serverless_origin": "https://api.runpod.ai",
+    "serverless_prefix": "/v2",
+    "official_api_docs": "https://docs.runpod.io/api-reference/overview",
+    "official_job_docs": "https://docs.runpod.io/serverless/endpoints/operation-reference",
+    "official_api_key_docs": "https://docs.runpod.io/get-started/api-keys",
+    "documentary_posture": "The three management leaves pin the immutable official OpenAPI and declare its /v1 server prefix as an explicit wire path alias. The job leaf instead pins exact immutable official documentation and SDK files, omits openapi_source, and never mislabels prose or Python as OpenAPI.",
+    "unauthenticated_route_probe": {
+      "observed_on": "2026-07-15",
+      "endpoint_id": "recued-contract-probe-do-not-exist",
+      "operations": 8,
+      "status": 404,
+      "response": {
+        "status": 404,
+        "title": "Not Found",
+        "detail": "endpoint not found"
+      },
+      "interpretation": "All eight no-credential probes reached the live v2 endpoint router and failed before provider mutation because the synthetic endpoint does not exist. This is routing evidence, not a successful authenticated smoke."
+    }
+  },
+  "documents": [
+    {
+      "key": "management",
+      "kind": "openapi",
+      "path": "api-reference/openapi.json",
+      "url": "https://raw.githubusercontent.com/runpod/docs/97887252ea4f07dd897c1c17f6ef12858e9a743b/api-reference/openapi.json",
+      "sha256": "a0f9286f0d1893fc62f0888e2e3b2e6859bae8597b066a4ee8134f2beb2991cd",
+      "bytes": 154056,
+      "openapi": "3.0.3",
+      "title": "Runpod API",
+      "version": "0.1.0",
+      "paths": 23,
+      "operations": 37,
+      "server": "https://rest.runpod.io/v1",
+      "repository": "docs"
+    }
+  ],
+  "transport_evidence": [
+    {
+      "key": "api_overview",
+      "repository": "docs",
+      "path": "api-reference/overview.mdx",
+      "url": "https://raw.githubusercontent.com/runpod/docs/97887252ea4f07dd897c1c17f6ef12858e9a743b/api-reference/overview.mdx",
+      "sha256": "1742fa905add016d35d22d7bb1d93ba3164dd5ee0669b1090aa2adb057ebc319",
+      "bytes": 1478
+    },
+    {
+      "key": "api_keys",
+      "repository": "docs",
+      "path": "get-started/api-keys.mdx",
+      "url": "https://raw.githubusercontent.com/runpod/docs/97887252ea4f07dd897c1c17f6ef12858e9a743b/get-started/api-keys.mdx",
+      "sha256": "4cc432f289cdc767ddc6f18754d12fe957174ee36e526dd692e258bd95eb4ecd",
+      "bytes": 2197
+    },
+    {
+      "key": "serverless_operations",
+      "repository": "docs",
+      "path": "serverless/endpoints/operation-reference.mdx",
+      "url": "https://raw.githubusercontent.com/runpod/docs/97887252ea4f07dd897c1c17f6ef12858e9a743b/serverless/endpoints/operation-reference.mdx",
+      "sha256": "61b14e25e42c355ba5f780549a7679f95578c83a67e8c8ea2ce4538c5a346ba4",
+      "bytes": 18733
+    },
+    {
+      "key": "sdk_runner",
+      "repository": "sdk",
+      "path": "runpod/endpoint/runner.py",
+      "url": "https://raw.githubusercontent.com/runpod/runpod-python/f8fa7b11262fb8516c703abe9e498cce4d69f8e8/runpod/endpoint/runner.py",
+      "sha256": "98f789b43af1a8cb998978703cb74f610c7264428c4cab0f6e531a81e4243814",
+      "bytes": 9339
+    },
+    {
+      "key": "sdk_config",
+      "repository": "sdk",
+      "path": "runpod/__init__.py",
+      "url": "https://raw.githubusercontent.com/runpod/runpod-python/f8fa7b11262fb8516c703abe9e498cce4d69f8e8/runpod/__init__.py",
+      "sha256": "58f5329c209cff6594ca9b6d15840a3e725b323d243da850a478132e456efbc8",
+      "bytes": 2331
+    }
+  ],
+  "inventory": {
+    "operations": 45,
+    "selected_operations": 42,
+    "excluded_operations": 3,
+    "leaf_packs": 4,
+    "workflows": 7,
+    "connections": 2,
+    "by_source": {
+      "management": 37,
+      "serverless_jobs": 8
+    },
+    "by_protocol": {
+      "documented_rest": 8,
+      "openapi_rest": 37
+    },
+    "by_method": {
+      "DELETE": 5,
+      "GET": 18,
+      "PATCH": 4,
+      "POST": 18
+    },
+    "by_pack": {
+      "runpod-pods-volumes": 15,
+      "runpod-serverless-templates": 12,
+      "runpod-registry-billing": 7,
+      "runpod-serverless-jobs": 8
+    },
+    "selected_by_connection": {
+      "runpod": 34,
+      "runpod_serverless": 8
+    },
+    "selected_by_risk": {
+      "admin": 17,
+      "destructive": 9,
+      "read": 16
+    },
+    "selected_by_approval": {
+      "always": 26,
+      "never": 16
+    },
+    "openapi_pinned_operations": 34,
+    "documented_job_operations": 8,
+    "raw_json_request_bodies": 15,
+    "exact_decimal_parameters": 0,
+    "safe_integer_parameters": 1,
+    "runtime_required_parameters": 1,
+    "omitted_repeated_query_parameters": 5,
+    "omitted_mutating_query_parameters": 1,
+    "json_responses_with_exact_integer_mode": 34,
+    "paginated_operations": 0,
+    "work_entity_sources": 0
+  },
+  "exclusion_categories": {
+    "documentation_endpoint": [
+      "management GET /openapi.json",
+      "management GET /docs"
+    ],
+    "missing_success_contract": [
+      "management POST /pods/{podId}/restart"
+    ]
+  },
+  "exclusions": {
+    "management GET /openapi.json": "RunPod publishes this unauthenticated operation only to serve the machine-readable contract itself. Installing a callable copy adds no account capability and would blur documentary evidence with provider resources.",
+    "management GET /docs": "RunPod publishes this unauthenticated HTML documentation shell rather than a finite JSON account operation. The composition transport must not misrepresent HTML documentation as provider data.",
+    "management POST /pods/{podId}/restart": "The immutable official OpenAPI declares only 400 and 401 responses for RestartPod and no 2xx success response. Without a documented successful status or body, the pack cannot claim a finite executable success contract."
+  },
+  "contract_gaps": {
+    "documentation_endpoints": "GET /openapi.json and GET /docs are retained in the total contract inventory but excluded from user capabilities because they only serve the contract and HTML documentation.",
+    "missing_success_contract": "POST /pods/{podId}/restart is present in the official OpenAPI but declares only 400 and 401 responses. It remains excluded until RunPod publishes a 2xx success contract; the pack does not infer one from the route name.",
+    "serverless_jobs": "RunPod does not include queue execution under the management OpenAPI. The job leaf therefore omits openapi_source: all eight methods and routes come from the hash-pinned official operation reference, while the official Python SDK independently proves the v2 origin, Bearer header, and seven common job routes. The docs-only retry route remains explicitly documentary. A non-mutating live router probe reached all eight paths, but no successful credentialed smoke was available in the authoring environment.",
+    "status_ttl": "The official status documentation says query ttl configures the individual job time-to-live, so it is not a pure read selector despite appearing on GET /status. The pack omits ttl from the read-risk operation instead of allowing a nominal read to alter provider retention state.",
+    "runsync_timeout": "RunPod accepts runsync wait values through 300000 ms and defaults to 90000 ms, but the installed catalog permits at most a 90000 ms operation timeout. The pack sets that maximum timeout and requires an explicit wait selector capped at 85000 ms for response overhead; longer work remains available through async run plus status polling.",
+    "billing_workflow": "The catalog billing operations retain their official optional time filters, while the bundled Serverless billing workflow requires explicit startTime and endTime inputs so an inventory convenience recipe cannot silently request an unbounded history.",
+    "query_arrays": "Five optional OpenAPI array filters use the OpenAPI 3 form-query default with explode=true, which requires repeated query keys. Although the HTTP adapter can repeat array values, the installed catalog closed request-schema contract currently admits only scalar properties. These optional filters are explicitly omitted rather than incorrectly serialized as CSV or exposed through an unvalidated array input.",
+    "version_prefix": "The management ingredient uses the origin-only https://rest.runpod.io base and emits /v1 in every wire path. openapi_source.path_alias.wire_prefix maps those paths back to the official contract paths without hiding the prefix in the base URL.",
+    "exact_request_integers": "All JSON bodies are literal body_raw values, preserving every integer token without JavaScript Number conversion. RunPod documents runsync wait from 1000 through 300000; the pack enforces the runtime-safe 1000-through-85000 subset as exactly representable numbers. The status ttl selector is omitted because it mutates retention.",
+    "exact_response_integers": "Every application/json response opts into unsafe_integers=string so identifiers, durations, byte counts, and billing integers beyond the JavaScript safe range remain exact.",
+    "auth": "RunPod management and queue-job calls both use connection-owned Authorization. They remain separate connection records because https://rest.runpod.io and https://api.runpod.ai are distinct credential-routing origins.",
+    "adjacent_surfaces": "Legacy GraphQL duplicates management capabilities and places its API key in a query parameter; load-balanced endpoints expose user-defined paths; public models are model-specific; and S3-compatible network-volume access uses separate storage credentials. None belongs in this finite account API suite.",
+    "sources": "Pods, endpoints, templates, volumes, registry references, billing records, and queue jobs are infrastructure, runtime, or cost records. None establishes an honest task, note, or project list/read/version contract, so no Source is declared."
+  },
+  "source_eligibility": [
+    {
+      "kind": "task",
+      "eligible": false,
+      "declared": false,
+      "evidence": "Queue jobs execute arbitrary user workloads but are not canonical user work tasks with stable list/read/version sync semantics."
+    },
+    {
+      "kind": "note",
+      "eligible": false,
+      "declared": false,
+      "evidence": "Worker outputs, billing rows, and runtime status are not canonical note records."
+    },
+    {
+      "kind": "project",
+      "eligible": false,
+      "declared": false,
+      "evidence": "Pods, endpoints, templates, and volumes are executable infrastructure resources rather than project records."
+    }
+  ],
+  "operations": [
+    {
+      "key": "management GET /openapi.json",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/openapi.json",
+      "wire_path": null,
+      "operation_id": "GetOpenAPI",
+      "tag": "docs",
+      "deprecated": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": false,
+      "admission_reason": null,
+      "exclusion_reason": "RunPod publishes this unauthenticated operation only to serve the machine-readable contract itself. Installing a callable copy adds no account capability and would blur documentary evidence with provider resources.",
+      "exclusion_category": "documentation_endpoint",
+      "pack": null,
+      "connection": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "static_headers": null,
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management GET /docs",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/docs",
+      "wire_path": null,
+      "operation_id": "GetDocs",
+      "tag": "docs",
+      "deprecated": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "text/html"
+      ],
+      "selected_response_media": "text/html",
+      "success_status": "200",
+      "response_schema_type": "string",
+      "selected": false,
+      "admission_reason": null,
+      "exclusion_reason": "RunPod publishes this unauthenticated HTML documentation shell rather than a finite JSON account operation. The composition transport must not misrepresent HTML documentation as provider data.",
+      "exclusion_category": "documentation_endpoint",
+      "pack": null,
+      "connection": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "static_headers": null,
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management GET /pods",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/pods",
+      "wire_path": "/v1/pods",
+      "operation_id": "ListPods",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "computeType",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.computeType"
+        },
+        {
+          "name": "cpuFlavorId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_repeated_query",
+          "emitted_key": null
+        },
+        {
+          "name": "dataCenterId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_repeated_query",
+          "emitted_key": null
+        },
+        {
+          "name": "desiredStatus",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.desiredStatus"
+        },
+        {
+          "name": "endpointId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.endpointId"
+        },
+        {
+          "name": "gpuTypeId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_repeated_query",
+          "emitted_key": null
+        },
+        {
+          "name": "id",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.id"
+        },
+        {
+          "name": "imageName",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.imageName"
+        },
+        {
+          "name": "includeMachine",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeMachine"
+        },
+        {
+          "name": "includeNetworkVolume",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeNetworkVolume"
+        },
+        {
+          "name": "includeSavingsPlans",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeSavingsPlans"
+        },
+        {
+          "name": "includeTemplate",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeTemplate"
+        },
+        {
+          "name": "includeWorkers",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeWorkers"
+        },
+        {
+          "name": "name",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.name"
+        },
+        {
+          "name": "networkVolumeId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.networkVolumeId"
+        },
+        {
+          "name": "templateId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.templateId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.list_pods",
+      "emitted_args": [
+        {
+          "key": "query.computeType",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.desiredStatus",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.endpointId",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.imageName",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.includeMachine",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeNetworkVolume",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeSavingsPlans",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeTemplate",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeWorkers",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.networkVolumeId",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.templateId",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "d964ed1751d6359d7cad693cc7091fbd770fff6c9b98fb830a35f482a278e0f7",
+      "response_schema_sha256": "742e1dfe0eb7988e73f6ad86017b0dcf6231b68d6db30852562b23762021241c"
+    },
+    {
+      "key": "management POST /pods",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods",
+      "wire_path": "/v1/pods",
+      "operation_id": "CreatePod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "201",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.create_pod",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "be1eebb4fa18a5ce02ee53a8aa976460d9c7758966f3d8cf60e9d8f6bec523e6"
+    },
+    {
+      "key": "management GET /pods/{podId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/pods/{podId}",
+      "wire_path": "/v1/pods/{podId}",
+      "operation_id": "GetPod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "includeMachine",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeMachine"
+        },
+        {
+          "name": "includeNetworkVolume",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeNetworkVolume"
+        },
+        {
+          "name": "includeSavingsPlans",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeSavingsPlans"
+        },
+        {
+          "name": "includeTemplate",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeTemplate"
+        },
+        {
+          "name": "includeWorkers",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeWorkers"
+        },
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.get_pod",
+      "emitted_args": [
+        {
+          "key": "query.includeMachine",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeNetworkVolume",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeSavingsPlans",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeTemplate",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeWorkers",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "cbb27d53dcdfb38aee03eff38f687852e42e57931d7e4f269846db1a433eba7d",
+      "response_schema_sha256": "be1eebb4fa18a5ce02ee53a8aa976460d9c7758966f3d8cf60e9d8f6bec523e6"
+    },
+    {
+      "key": "management PATCH /pods/{podId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "PATCH",
+      "contract_path": "/pods/{podId}",
+      "wire_path": "/v1/pods/{podId}",
+      "operation_id": "UpdatePod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.update_pod_patch",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9cb01fed4f539d0c4dc5bfdda059d76e4b2a88b9f46e7f599d5784dd8166f48f",
+      "response_schema_sha256": "be1eebb4fa18a5ce02ee53a8aa976460d9c7758966f3d8cf60e9d8f6bec523e6"
+    },
+    {
+      "key": "management DELETE /pods/{podId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "DELETE",
+      "contract_path": "/pods/{podId}",
+      "wire_path": "/v1/pods/{podId}",
+      "operation_id": "DeletePod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.delete_pod",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "f1727588e47161da03b17382c562fcabca9c6b42b38c3fea5cab0a900c1958ee",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /pods/{podId}/update",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods/{podId}/update",
+      "wire_path": "/v1/pods/{podId}/update",
+      "operation_id": "UpdatePod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.update_pod_post",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "9cb01fed4f539d0c4dc5bfdda059d76e4b2a88b9f46e7f599d5784dd8166f48f",
+      "response_schema_sha256": "be1eebb4fa18a5ce02ee53a8aa976460d9c7758966f3d8cf60e9d8f6bec523e6"
+    },
+    {
+      "key": "management POST /pods/{podId}/start",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods/{podId}/start",
+      "wire_path": "/v1/pods/{podId}/start",
+      "operation_id": "StartPod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "200",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.start_pod",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "f1727588e47161da03b17382c562fcabca9c6b42b38c3fea5cab0a900c1958ee",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /pods/{podId}/stop",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods/{podId}/stop",
+      "wire_path": "/v1/pods/{podId}/stop",
+      "operation_id": "StopPod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "200",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.stop_pod",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "f1727588e47161da03b17382c562fcabca9c6b42b38c3fea5cab0a900c1958ee",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /pods/{podId}/reset",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods/{podId}/reset",
+      "wire_path": "/v1/pods/{podId}/reset",
+      "operation_id": "ResetPod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "podId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "podId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "200",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "pods.reset_pod",
+      "emitted_args": [
+        {
+          "key": "podId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "f1727588e47161da03b17382c562fcabca9c6b42b38c3fea5cab0a900c1958ee",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /pods/{podId}/restart",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/pods/{podId}/restart",
+      "wire_path": null,
+      "operation_id": "RestartPod",
+      "tag": "pods",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": null,
+      "response_schema_type": null,
+      "selected": false,
+      "admission_reason": null,
+      "exclusion_reason": "The immutable official OpenAPI declares only 400 and 401 responses for RestartPod and no 2xx success response. Without a documented successful status or body, the pack cannot claim a finite executable success contract.",
+      "exclusion_category": "missing_success_contract",
+      "pack": null,
+      "connection": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "static_headers": null,
+      "response_json": null,
+      "request_schema_sha256": null,
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management GET /endpoints",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/endpoints",
+      "wire_path": "/v1/endpoints",
+      "operation_id": "ListEndpoints",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "includeTemplate",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeTemplate"
+        },
+        {
+          "name": "includeWorkers",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeWorkers"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.list_endpoints",
+      "emitted_args": [
+        {
+          "key": "query.includeTemplate",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeWorkers",
+          "type": "boolean",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "5611bcaa4fdfa0fb14530de0e786c0aff445bb6a3864a9902e89c5282761288d",
+      "response_schema_sha256": "c1fd60a8a7ca2bf94360fd22cb7e39798c3680e9f4431b47b27147032a651f4e"
+    },
+    {
+      "key": "management POST /endpoints",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/endpoints",
+      "wire_path": "/v1/endpoints",
+      "operation_id": "CreateEndpoint",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.create_endpoint",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "2d42702c4554a2f21c9a16553e9f2cd137e43d7e5dc7c4eb98935fb0045524e0"
+    },
+    {
+      "key": "management GET /endpoints/{endpointId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/endpoints/{endpointId}",
+      "wire_path": "/v1/endpoints/{endpointId}",
+      "operation_id": "GetEndpoint",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "includeTemplate",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeTemplate"
+        },
+        {
+          "name": "includeWorkers",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeWorkers"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.get_endpoint",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeTemplate",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeWorkers",
+          "type": "boolean",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "786cf5faad4698ab5ba44323bc7a9d8e4afef56cb188ee38934e2101f9395631",
+      "response_schema_sha256": "2d42702c4554a2f21c9a16553e9f2cd137e43d7e5dc7c4eb98935fb0045524e0"
+    },
+    {
+      "key": "management PATCH /endpoints/{endpointId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "PATCH",
+      "contract_path": "/endpoints/{endpointId}",
+      "wire_path": "/v1/endpoints/{endpointId}",
+      "operation_id": "UpdateEndpoint",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.update_endpoint_patch",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "c1e30ce1574d484bfea26db52bd6d1d389411f91df3fc1ee8fce46a13b603be0",
+      "response_schema_sha256": "2d42702c4554a2f21c9a16553e9f2cd137e43d7e5dc7c4eb98935fb0045524e0"
+    },
+    {
+      "key": "management DELETE /endpoints/{endpointId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "DELETE",
+      "contract_path": "/endpoints/{endpointId}",
+      "wire_path": "/v1/endpoints/{endpointId}",
+      "operation_id": "DeleteEndpoint",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.delete_endpoint",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "ef07602266dd3da3a4544b8c37af4b82b6ce66069034403acbac844e9481f541",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /endpoints/{endpointId}/update",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/endpoints/{endpointId}/update",
+      "wire_path": "/v1/endpoints/{endpointId}/update",
+      "operation_id": "UpdateEndpoint",
+      "tag": "endpoints",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "endpoints.update_endpoint_post",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "c1e30ce1574d484bfea26db52bd6d1d389411f91df3fc1ee8fce46a13b603be0",
+      "response_schema_sha256": "2d42702c4554a2f21c9a16553e9f2cd137e43d7e5dc7c4eb98935fb0045524e0"
+    },
+    {
+      "key": "management GET /templates",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/templates",
+      "wire_path": "/v1/templates",
+      "operation_id": "ListTemplates",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "includeEndpointBoundTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeEndpointBoundTemplates"
+        },
+        {
+          "name": "includePublicTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includePublicTemplates"
+        },
+        {
+          "name": "includeRunpodTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeRunpodTemplates"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.list_templates",
+      "emitted_args": [
+        {
+          "key": "query.includeEndpointBoundTemplates",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includePublicTemplates",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeRunpodTemplates",
+          "type": "boolean",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "04c068409bd699eed847e34b4df65aedfd7d782ca61491ca5ed9106b0f989206",
+      "response_schema_sha256": "0bd2cf3f87c1b56d370133f8bafdd168c2e9a4c600b483ced0cd00b4603d5521"
+    },
+    {
+      "key": "management POST /templates",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/templates",
+      "wire_path": "/v1/templates",
+      "operation_id": "CreateTemplate",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.create_template",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "eaad42516d86bed558bedfc0bd42fb946378a5405bcdaddec37df6f3beedd1c3"
+    },
+    {
+      "key": "management GET /templates/{templateId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/templates/{templateId}",
+      "wire_path": "/v1/templates/{templateId}",
+      "operation_id": "GetTemplate",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "includeEndpointBoundTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeEndpointBoundTemplates"
+        },
+        {
+          "name": "includePublicTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includePublicTemplates"
+        },
+        {
+          "name": "includeRunpodTemplates",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.includeRunpodTemplates"
+        },
+        {
+          "name": "templateId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "templateId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.get_template",
+      "emitted_args": [
+        {
+          "key": "query.includeEndpointBoundTemplates",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includePublicTemplates",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "query.includeRunpodTemplates",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "key": "templateId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "fa6dc71f29821a8e357f898d569db9f7d770f1e557eadce95655a0c692e6e1ea",
+      "response_schema_sha256": "eaad42516d86bed558bedfc0bd42fb946378a5405bcdaddec37df6f3beedd1c3"
+    },
+    {
+      "key": "management PATCH /templates/{templateId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "PATCH",
+      "contract_path": "/templates/{templateId}",
+      "wire_path": "/v1/templates/{templateId}",
+      "operation_id": "UpdateTemplate",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "templateId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "templateId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.update_template_patch",
+      "emitted_args": [
+        {
+          "key": "templateId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "392f14029cfdd5c5b0ca0155ebf3ec4721e3aa4e7397c8bac66b652e8ef1222e",
+      "response_schema_sha256": "eaad42516d86bed558bedfc0bd42fb946378a5405bcdaddec37df6f3beedd1c3"
+    },
+    {
+      "key": "management DELETE /templates/{templateId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "DELETE",
+      "contract_path": "/templates/{templateId}",
+      "wire_path": "/v1/templates/{templateId}",
+      "operation_id": "DeleteTemplate",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "templateId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "templateId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.delete_template",
+      "emitted_args": [
+        {
+          "key": "templateId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "d781099c5832c075d84edf6c918e49e080081c9dd8a09e8928a6e6419feab8f7",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /templates/{templateId}/update",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/templates/{templateId}/update",
+      "wire_path": "/v1/templates/{templateId}/update",
+      "operation_id": "UpdateTemplate",
+      "tag": "templates",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "templateId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "templateId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "op": "templates.update_template_post",
+      "emitted_args": [
+        {
+          "key": "templateId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "392f14029cfdd5c5b0ca0155ebf3ec4721e3aa4e7397c8bac66b652e8ef1222e",
+      "response_schema_sha256": "eaad42516d86bed558bedfc0bd42fb946378a5405bcdaddec37df6f3beedd1c3"
+    },
+    {
+      "key": "management GET /networkvolumes",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/networkvolumes",
+      "wire_path": "/v1/networkvolumes",
+      "operation_id": "ListNetworkVolumes",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.list_network_volumes",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "5f02c63ba55e6e8afb9f2fb4844a430a2e7f39a5bdbc1704d8104b8813111f2e"
+    },
+    {
+      "key": "management POST /networkvolumes",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/networkvolumes",
+      "wire_path": "/v1/networkvolumes",
+      "operation_id": "CreateNetworkVolume",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.create_network_volume",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "289bfe24e7819627a9e1da2ffd6c6bbcf437ae4f40e327c2f8c486d7e194d951"
+    },
+    {
+      "key": "management GET /networkvolumes/{networkVolumeId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/networkvolumes/{networkVolumeId}",
+      "wire_path": "/v1/networkvolumes/{networkVolumeId}",
+      "operation_id": "GetNetworkVolume",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "networkVolumeId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "networkVolumeId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.get_network_volume",
+      "emitted_args": [
+        {
+          "key": "networkVolumeId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "d5122d05bf13a0d6874aefd2edcb67a745fc26cda43abf4da37d8d47a324dfa8",
+      "response_schema_sha256": "289bfe24e7819627a9e1da2ffd6c6bbcf437ae4f40e327c2f8c486d7e194d951"
+    },
+    {
+      "key": "management PATCH /networkvolumes/{networkVolumeId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "PATCH",
+      "contract_path": "/networkvolumes/{networkVolumeId}",
+      "wire_path": "/v1/networkvolumes/{networkVolumeId}",
+      "operation_id": "UpdateNetworkVolume",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "networkVolumeId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "networkVolumeId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.update_network_volume_patch",
+      "emitted_args": [
+        {
+          "key": "networkVolumeId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "c5e0aeb67694d6dd2dd1de28e9a17d27d1dfcbe7380c4a7ce7eda352b0a86fbb",
+      "response_schema_sha256": "289bfe24e7819627a9e1da2ffd6c6bbcf437ae4f40e327c2f8c486d7e194d951"
+    },
+    {
+      "key": "management DELETE /networkvolumes/{networkVolumeId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "DELETE",
+      "contract_path": "/networkvolumes/{networkVolumeId}",
+      "wire_path": "/v1/networkvolumes/{networkVolumeId}",
+      "operation_id": "DeleteNetworkVolume",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "networkVolumeId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "networkVolumeId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.delete_network_volume",
+      "emitted_args": [
+        {
+          "key": "networkVolumeId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "d5122d05bf13a0d6874aefd2edcb67a745fc26cda43abf4da37d8d47a324dfa8",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management POST /networkvolumes/{networkVolumeId}/update",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/networkvolumes/{networkVolumeId}/update",
+      "wire_path": "/v1/networkvolumes/{networkVolumeId}/update",
+      "operation_id": "UpdateNetworkVolume",
+      "tag": "network volumes",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "networkVolumeId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "networkVolumeId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "op": "network_volumes.update_network_volume_post",
+      "emitted_args": [
+        {
+          "key": "networkVolumeId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "c5e0aeb67694d6dd2dd1de28e9a17d27d1dfcbe7380c4a7ce7eda352b0a86fbb",
+      "response_schema_sha256": "289bfe24e7819627a9e1da2ffd6c6bbcf437ae4f40e327c2f8c486d7e194d951"
+    },
+    {
+      "key": "management GET /containerregistryauth",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/containerregistryauth",
+      "wire_path": "/v1/containerregistryauth",
+      "operation_id": "ListContainerRegistryAuths",
+      "tag": "container registry auths",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "container_registry_auths.list_container_registry_auths",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": null,
+      "response_schema_sha256": "61365c008f2679ac2b08b697eda30db81338ae8934749b3af5496bb6e11824bd"
+    },
+    {
+      "key": "management POST /containerregistryauth",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "POST",
+      "contract_path": "/containerregistryauth",
+      "wire_path": "/v1/containerregistryauth",
+      "operation_id": "CreateContainerRegistryAuth",
+      "tag": "container registry auths",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "container_registry_auths.create_container_registry_auth",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "0e13c4a7efff6d091b148a32a54162ed573ab87c49b4bc2ccb5dc67617e9219e"
+    },
+    {
+      "key": "management GET /containerregistryauth/{containerRegistryAuthId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/containerregistryauth/{containerRegistryAuthId}",
+      "wire_path": "/v1/containerregistryauth/{containerRegistryAuthId}",
+      "operation_id": "GetContainerRegistryAuth",
+      "tag": "container registry auths",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "containerRegistryAuthId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "containerRegistryAuthId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "container_registry_auths.get_container_registry_auth",
+      "emitted_args": [
+        {
+          "key": "containerRegistryAuthId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2c02debe9c3ffa8029ca55f5d26d9ca3e379bf017253806724828e903951f686",
+      "response_schema_sha256": "0e13c4a7efff6d091b148a32a54162ed573ab87c49b4bc2ccb5dc67617e9219e"
+    },
+    {
+      "key": "management DELETE /containerregistryauth/{containerRegistryAuthId}",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "DELETE",
+      "contract_path": "/containerregistryauth/{containerRegistryAuthId}",
+      "wire_path": "/v1/containerregistryauth/{containerRegistryAuthId}",
+      "operation_id": "DeleteContainerRegistryAuth",
+      "tag": "container registry auths",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "containerRegistryAuthId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "containerRegistryAuthId"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "response_schema_type": null,
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "container_registry_auths.delete_container_registry_auth",
+      "emitted_args": [
+        {
+          "key": "containerRegistryAuthId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
+      "request_schema_sha256": "2c02debe9c3ffa8029ca55f5d26d9ca3e379bf017253806724828e903951f686",
+      "response_schema_sha256": null
+    },
+    {
+      "key": "management GET /billing/pods",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/billing/pods",
+      "wire_path": "/v1/billing/pods",
+      "operation_id": "PodBilling",
+      "tag": "billing",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "bucketSize",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.bucketSize"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "gpuTypeId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.gpuTypeId"
+        },
+        {
+          "name": "grouping",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.grouping"
+        },
+        {
+          "name": "podId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.podId"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.startTime"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "billing.pod_billing",
+      "emitted_args": [
+        {
+          "key": "query.bucketSize",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.gpuTypeId",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.grouping",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.podId",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "2a39f6538f6b9b0a47d163f8dc27fc46e0e68e83dbef5a7432c4420dff6265fb",
+      "response_schema_sha256": "0b7b6d9176ac4191e874806b961304f1264789f3072c3c82deac9d0d71287883"
+    },
+    {
+      "key": "management GET /billing/endpoints",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/billing/endpoints",
+      "wire_path": "/v1/billing/endpoints",
+      "operation_id": "EndpointBilling",
+      "tag": "billing",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "bucketSize",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.bucketSize"
+        },
+        {
+          "name": "dataCenterId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_repeated_query",
+          "emitted_key": null
+        },
+        {
+          "name": "endpointId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.endpointId"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "gpuTypeId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_repeated_query",
+          "emitted_key": null
+        },
+        {
+          "name": "grouping",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.grouping"
+        },
+        {
+          "name": "imageName",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.imageName"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "templateId",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.templateId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "billing.endpoint_billing",
+      "emitted_args": [
+        {
+          "key": "query.bucketSize",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.endpointId",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.grouping",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.imageName",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.templateId",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "08a1a063f9b9352d78dec8f1252b8c2dbfa2da5c0de463bf5b66e834875440a2",
+      "response_schema_sha256": "0b7b6d9176ac4191e874806b961304f1264789f3072c3c82deac9d0d71287883"
+    },
+    {
+      "key": "management GET /billing/networkvolumes",
+      "source": "management",
+      "protocol": "openapi_rest",
+      "method": "GET",
+      "contract_path": "/billing/networkvolumes",
+      "wire_path": "/v1/billing/networkvolumes",
+      "operation_id": "NetworkVolumeBilling",
+      "tag": "billing",
+      "deprecated": false,
+      "security": [
+        "ApiKey"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "bucketSize",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.bucketSize"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "query.startTime"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod OpenAPI defines a finite authenticated JSON resource operation that the REST composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "op": "billing.network_volume_billing",
+      "emitted_args": [
+        {
+          "key": "query.bucketSize",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "e2d7693f30f0ecd869a271a2ea11fd6c890297cea19fd012af0639dd38b20c6e",
+      "response_schema_sha256": "a4bfe2a1cb101e928a518d19a0e33daa5aab361ba252eb4b8d3d8c3dd4fcd30d"
+    },
+    {
+      "key": "serverless_jobs POST /{endpointId}/runsync",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "POST",
+      "contract_path": "/{endpointId}/runsync",
+      "wire_path": "/v2/{endpointId}/runsync",
+      "operation_id": "RunSync",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "wait",
+          "in": "query",
+          "required": false,
+          "emitted_required": true,
+          "schema_type": "integer",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": 1000,
+          "documented_maximum": 300000,
+          "emitted_maximum": 85000,
+          "serialization": "safe_number",
+          "emitted_key": "query.wait"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.run_sync",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.wait",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "c129282e4bf8a7669f576d891b32da7ea9119c44ae1e18178a3e6840c6e3da90",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs POST /{endpointId}/run",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "POST",
+      "contract_path": "/{endpointId}/run",
+      "wire_path": "/v2/{endpointId}/run",
+      "operation_id": "RunAsync",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.run_async",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "395007dfc7d2d260a77d8d97c723320efa0620949b5ce9f8946c14758656f134",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs GET /{endpointId}/status/{jobId}",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "GET",
+      "contract_path": "/{endpointId}/status/{jobId}",
+      "wire_path": "/v2/{endpointId}/status/{jobId}",
+      "operation_id": "GetStatus",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "jobId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "jobId"
+        },
+        {
+          "name": "ttl",
+          "in": "query",
+          "required": false,
+          "emitted_required": false,
+          "schema_type": "integer",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "omitted_mutating_query",
+          "emitted_key": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.get_status",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "jobId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "8584598b1d897d6ec4aa5a2e57547ba9f30b58d39ec80ff49902ec352fd7ccf6",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs GET /{endpointId}/stream/{jobId}",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "GET",
+      "contract_path": "/{endpointId}/stream/{jobId}",
+      "wire_path": "/v2/{endpointId}/stream/{jobId}",
+      "operation_id": "GetStream",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "jobId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "jobId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "array",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.get_stream",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "jobId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "8584598b1d897d6ec4aa5a2e57547ba9f30b58d39ec80ff49902ec352fd7ccf6",
+      "response_schema_sha256": "680a0c8b624d101599cbfaf21fdad15f8ffa05a496b320d60c3dd499cc4664a5"
+    },
+    {
+      "key": "serverless_jobs POST /{endpointId}/cancel/{jobId}",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "POST",
+      "contract_path": "/{endpointId}/cancel/{jobId}",
+      "wire_path": "/v2/{endpointId}/cancel/{jobId}",
+      "operation_id": "CancelJob",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "jobId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "jobId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.cancel_job",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "jobId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "8584598b1d897d6ec4aa5a2e57547ba9f30b58d39ec80ff49902ec352fd7ccf6",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs POST /{endpointId}/retry/{jobId}",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "POST",
+      "contract_path": "/{endpointId}/retry/{jobId}",
+      "wire_path": "/v2/{endpointId}/retry/{jobId}",
+      "operation_id": "RetryJob",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        },
+        {
+          "name": "jobId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "jobId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.retry_job",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "jobId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "8584598b1d897d6ec4aa5a2e57547ba9f30b58d39ec80ff49902ec352fd7ccf6",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs POST /{endpointId}/purge-queue",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "POST",
+      "contract_path": "/{endpointId}/purge-queue",
+      "wire_path": "/v2/{endpointId}/purge-queue",
+      "operation_id": "PurgeQueue",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.purge_queue",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "ef07602266dd3da3a4544b8c37af4b82b6ce66069034403acbac844e9481f541",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    },
+    {
+      "key": "serverless_jobs GET /{endpointId}/health",
+      "source": "serverless_jobs",
+      "protocol": "documented_rest",
+      "method": "GET",
+      "contract_path": "/{endpointId}/health",
+      "wire_path": "/v2/{endpointId}/health",
+      "operation_id": "GetHealth",
+      "tag": "jobs",
+      "deprecated": false,
+      "security": [
+        "Authorization"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "endpointId",
+          "in": "path",
+          "required": true,
+          "emitted_required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "documented_minimum": null,
+          "documented_maximum": null,
+          "emitted_maximum": null,
+          "serialization": "scalar",
+          "emitted_key": "endpointId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "response_schema_type": "object",
+      "selected": true,
+      "admission_reason": "The immutable official RunPod operation reference defines this finite authenticated queue-job route and method. The current official Python SDK independently corroborates the v2 origin, bearer authorization, and common JSON job transport without requiring a caller-controlled credential header.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "op": "jobs.get_health",
+      "emitted_args": [
+        {
+          "key": "endpointId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_schema_sha256": "ef07602266dd3da3a4544b8c37af4b82b6ce66069034403acbac844e9481f541",
+      "response_schema_sha256": "ec36b71d55bc6ebf1d9259a40341a79105e0a79d898ac85f8f613df68d675b0a"
+    }
+  ],
+  "workflows": [
+    {
+      "recipe_id": "pod-inventory-runpod",
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "key": "management GET /pods",
+      "method": "GET",
+      "path": "/v1/pods",
+      "op": "pods.list_pods",
+      "required_args": [],
+      "configured_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "network-volume-inventory-runpod",
+      "pack": "runpod-pods-volumes",
+      "connection": "runpod",
+      "key": "management GET /networkvolumes",
+      "method": "GET",
+      "path": "/v1/networkvolumes",
+      "op": "network_volumes.list_network_volumes",
+      "required_args": [],
+      "configured_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "serverless-endpoint-inventory-runpod",
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "key": "management GET /endpoints",
+      "method": "GET",
+      "path": "/v1/endpoints",
+      "op": "endpoints.list_endpoints",
+      "required_args": [],
+      "configured_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "template-inventory-runpod",
+      "pack": "runpod-serverless-templates",
+      "connection": "runpod",
+      "key": "management GET /templates",
+      "method": "GET",
+      "path": "/v1/templates",
+      "op": "templates.list_templates",
+      "required_args": [],
+      "configured_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "container-registry-inventory-runpod",
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "key": "management GET /containerregistryauth",
+      "method": "GET",
+      "path": "/v1/containerregistryauth",
+      "op": "container_registry_auths.list_container_registry_auths",
+      "required_args": [],
+      "configured_args": [],
+      "supplied_args": [],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "serverless-billing-summary-runpod",
+      "pack": "runpod-registry-billing",
+      "connection": "runpod",
+      "key": "management GET /billing/endpoints",
+      "method": "GET",
+      "path": "/v1/billing/endpoints",
+      "op": "billing.endpoint_billing",
+      "required_args": [],
+      "configured_args": [
+        "query.startTime",
+        "query.endTime"
+      ],
+      "supplied_args": [
+        "query.endTime",
+        "query.startTime"
+      ],
+      "approval": "never"
+    },
+    {
+      "recipe_id": "serverless-health-runpod",
+      "pack": "runpod-serverless-jobs",
+      "connection": "runpod_serverless",
+      "key": "serverless_jobs GET /{endpointId}/health",
+      "method": "GET",
+      "path": "/v2/{endpointId}/health",
+      "op": "jobs.get_health",
+      "required_args": [
+        "endpointId"
+      ],
+      "configured_args": [],
+      "supplied_args": [
+        "endpointId"
+      ],
+      "approval": "never"
+    }
+  ],
+  "generated": [
+    {
+      "slug": "runpod-pods-volumes",
+      "operations": 15,
+      "composition_bytes": 27811
+    },
+    {
+      "slug": "runpod-serverless-templates",
+      "operations": 12,
+      "composition_bytes": 28024
+    },
+    {
+      "slug": "runpod-registry-billing",
+      "operations": 7,
+      "composition_bytes": 10456
+    },
+    {
+      "slug": "runpod-serverless-jobs",
+      "operations": 8,
+      "composition_bytes": 12473
+    }
+  ]
+}

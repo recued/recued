@@ -1,0 +1,36 @@
+# recued-server — binary distribution defaults.
+#
+# Bundled at build time and copied to the user's OS-conventional
+# config path on first run. Users are free to edit this file; edits
+# win over these defaults at every subsequent startup.
+
+[bootstrap]
+# Change any of the fields below and restart the server to apply.
+# {data_path} is expanded at startup — override data_path and log_path
+# auto-follows unless you point it somewhere absolute.
+data_path    = "~/Library/Application Support/Recued"
+bind_host    = "127.0.0.1"
+bind_port    = 7717
+mcp_port     = 7718      # 0 to disable the MCP stdio / port surface
+webhook_port = 0          # 0 to disable the inbound-webhook surface
+log_path     = "{data_path}/logs"
+
+[runtime]
+# Changes take effect immediately — no restart needed.
+"llm.allow_upgrade_default"       = false
+"llm.free_pool_strategy"          = "round_robin"
+"llm.budget"                      = 0
+"vault.quota.per_publisher_bytes" = 1048576
+"vault.quota.total_bytes"         = 52428800
+"data.shared.quota.bytes"         = 104857600
+"shared.max_bytes"                = 52428800
+"cache.max_bytes"                 = 209715200
+"storage.reserve_pct"             = 2
+"log.level"                       = "info"
+"log.max_bytes"                   = 104857600
+"log.rotate_at_pct"               = 75
+"log.debounce_window_s"           = 60
+"log.max_fingerprints"            = 1000
+"scheduler.min_interval_minutes"  = 5
+"recipe.default_timeout_seconds"  = 600
+"tier.grace_period_hours"         = 72

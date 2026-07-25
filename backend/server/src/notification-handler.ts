@@ -1,0 +1,150 @@
+/** D-122 Phase 4.5 — `notification-send` ingredient + rpc handler.
+ *
+ *  Generic outbound notification surface. Alert recipes call this
+ *  rather than channel-specific ingredients (slack-post, telegram-send,
+ *  email-send) so channel choice stays in the recipe's `config` rather
+ *  than its step graph. The handler fan-outs to per-channel
+ *  dispatchers — Slack / Telegram / email route through the existing
+ *  remote-trigger config (D-099); in-app rides the realtime broadcast
+ *  bus (D-121 Phase 6). Each channel's dispatcher reports per-call
+ *  success / failure; the handler aggregates into `delivered_to[]` +
+ *  `failed[]`.
+ *
+ *  Substrate-only landing: the channel implementations are caller-
+ *  injected. Boot wires the live dispatchers; tests inject mocks.
+ *  Channels with no dispatcher report as `failed[]` so recipe authors
+ *  see a clean per-channel signal in the audit log. */
+
+import { NOTIFICATION_DELIVERY_CHANNELS, RpcError } from '@recued/contracts';
+import type {
+  HandlerSlice,
+  NotificationDeliveryChannel,
+  ServerRpcRegistry,
+} from '@recued/contracts';
+import type { WsClient } from './ws-server.js';
+
+/** D-192 seam 10 — the `notification.send` delivery vocabulary, from contracts
+ *  (every declared chat transport + `email` + `in_app`). A new chat transport
+ *  becomes sendable with no edit here. */
+export type NotificationChannel = NotificationDeliveryChannel;
+
+export const ALL_NOTIFICATION_CHANNELS: ReadonlyArray<NotificationChannel> =
+  NOTIFICATION_DELIVERY_CHANNELS;
+
+export interface NotificationPayload {
+  channel: NotificationChannel;
+  text: string;
+  title?: string;
+  link_url?: string;
+}
+
+export interface NotificationDispatchResult {
+  ok: boolean;
+  /** Optional reason surfaced when `ok: false` so the caller's audit
+   *  log can record why a channel failed without parsing prose. */
+  reason?: string;
+}
+
+/** Channel dispatcher signature. The boot composition wires one per
+ *  configured channel; absent dispatchers surface as `failed[]` rather
+ *  than throwing so a misconfigured channel doesn't tank the entire
+ *  notification path. */
+export type NotificationChannelDispatcher = (
+  payload: NotificationPayload,
+) => Promise<NotificationDispatchResult>;
+
+export interface NotificationDeps {
+  /** Per-channel dispatcher map. Channels not present in the map are
+   *  considered unconfigured and surface as `failed[]`. */
+  dispatchers: Partial<Record<NotificationChannel, NotificationChannelDispatcher>>;
+}
+
+export interface NotificationSendArgs {
+  /** Omitted means fan out to every supported channel. Recipes should
+   *  only pass channels when the user expressed a delivery preference. */
+  channels?: NotificationChannel[];
+  text: string;
+  title?: string;
+  link_url?: string;
+}
+
+const isChannel = (s: unknown): s is NotificationChannel =>
+  typeof s === 'string' && (ALL_NOTIFICATION_CHANNELS as readonly string[]).includes(s);
+
+export const handleNotificationSend = async (
+  deps: NotificationDeps,
+  args: NotificationSendArgs,
+): Promise<{ delivered_to: NotificationChannel[]; failed: NotificationChannel[] }> => {
+  if (args.channels !== undefined && (!Array.isArray(args.channels) || args.channels.length === 0)) {
+    throw new RpcError('bad_request', 'notification.send: channels[] is required');
+  }
+  if (typeof args.text !== 'string' || args.text.length === 0) {
+    throw new RpcError('bad_request', 'notification.send: text is required');
+  }
+  const channels = args.channels ?? [...ALL_NOTIFICATION_CHANNELS];
+  for (const channel of channels) {
+    if (!isChannel(channel)) {
+      throw new RpcError(
+        'bad_request',
+        `notification.send: invalid channel '${String(channel)}' (allowed: ${ALL_NOTIFICATION_CHANNELS.join(', ')})`,
+      );
+    }
+  }
+
+  const delivered: NotificationChannel[] = [];
+  const failed: NotificationChannel[] = [];
+
+  // Run channels in parallel; per-channel failure doesn't block
+  // others. The `Promise.all` shape preserves the index alignment so
+  // the per-channel outcome maps back cleanly.
+  const results = await Promise.all(
+    channels.map(async (channel): Promise<{ channel: NotificationChannel; ok: boolean }> => {
+      const dispatcher = deps.dispatchers[channel];
+      if (!dispatcher) return { channel, ok: false };
+      try {
+        const out = await dispatcher({
+          channel,
+          text: args.text,
+          ...(args.title !== undefined ? { title: args.title } : {}),
+          ...(args.link_url !== undefined ? { link_url: args.link_url } : {}),
+        });
+        return { channel, ok: out.ok };
+      } catch {
+        return { channel, ok: false };
+      }
+    }),
+  );
+
+  for (const result of results) {
+    if (result.ok) delivered.push(result.channel);
+    else failed.push(result.channel);
+  }
+
+  return { delivered_to: delivered, failed };
+};
+
+// D-177 N.12 — `notification.send` STAYS a wire method (unlike
+// `collection.mail.send`). Its authorization model is the deliberate
+// endpoint SETUP, not the per-action contract: the user enrolls + assigns +
+// switches on each notification channel (bridge / Slack / Telegram / email),
+// and `notification.send` carries NO recipient — it pushes `text` to the
+// SWITCHED-ON channels, whose destination is the enrolled config
+// (`config.default_recipient` for email). It cannot be aimed at an arbitrary
+// target the way `collection.mail.send`'s per-call `to[]` can, so it is not a
+// trust-bypass. The arbitrary-recipient path (`mail-post` with `to[]`) is the
+// gated kernel ingredient (outbound-send escalation), distinct from this.
+
+type NotificationMethods = 'notification.send';
+
+export const makeNotificationHandlers = (
+  deps: NotificationDeps | undefined,
+): HandlerSlice<ServerRpcRegistry, NotificationMethods, WsClient> | undefined => {
+  if (!deps) return undefined;
+  return {
+    methods: ['notification.send'],
+    handlers: {
+      'notification.send': async (args) =>
+        handleNotificationSend(deps, args as Parameters<typeof handleNotificationSend>[1]),
+    },
+  };
+};

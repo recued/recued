@@ -1,0 +1,29 @@
+{
+  "_comment": "D-178 release pipeline input — copy to release.config.json (gitignored) per release. `release:build` reads it → dist/release/; `release:publish` uploads to R2. base_url sets each artifact's URL in the manifest, so it MUST match where release:publish uploads: with the recommended flat layout (one bucket at releases.recued.com, --prefix ''), base_url = the domain root, so binaries sit beside manifest.json. For a prefixed/cdn layout, base_url's path must equal release:publish's --prefix (the publisher warns on a mismatch). docker digests must be real (pull is digest-anchored, I-2).",
+  "sequence": 1,
+  "expires_at": "2026-08-06T00:00:00Z",
+  "min_launcher_version": 1,
+  "base_url": "https://releases.recued.com",
+  "channels": {
+    "stable": {
+      "version": "26.8.0",
+      "released_at": "2026-07-06T00:00:00Z",
+      "min_supported": "26.6.0",
+      "migration": false,
+      "rollout_pct": 100,
+      "notes_url": "https://recued.com/releases/26.8.0",
+      "docker_baked": { "image": "recued/server:26.8.0", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" },
+      "docker_thin": { "image": "recued/server:26.8.0-managed", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" }
+    },
+    "edge": {
+      "version": "26.8.1",
+      "released_at": "2026-07-06T00:00:00Z",
+      "min_supported": "26.6.0",
+      "migration": false,
+      "rollout_pct": 25,
+      "notes_url": "https://recued.com/releases/26.8.1",
+      "docker_baked": { "image": "recued/server:26.8.1", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" },
+      "docker_thin": { "image": "recued/server:26.8.1-managed", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+# systemd unit for recued (Phase C).
+#
+# Exit-code contract:
+#   0  — clean shutdown; systemd does NOT respawn.
+#   1  — crash; systemd respawns (Restart=on-failure).
+#   3  — explicit restart; systemd respawns via RestartForceExitStatus=3.
+#   4  — lock held; systemd does NOT respawn (RestartPreventExitStatus=4).
+#
+# Install:
+#   sudo cp recued.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now recued
+#
+# journald sets INVOCATION_ID in the child environment, which the
+# supervisor-mode auto-detector keys on for mode=systemd.
+
+[Unit]
+Description=Recued personal automation server
+Documentation=https://recued.com/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=recued
+Group=recued
+# Adjust paths for your install. Binaries usually land under
+# /usr/local/bin; data under /var/lib/recued.
+ExecStart=/usr/local/bin/recued --db /var/lib/recued/recued.db --config /etc/recued/config.toml
+# Explicit mode (skips auto-detect; slightly faster boot).
+Environment=RECUED_SUPERVISOR_MODE=systemd
+
+# Restart policy — map the exit-code contract:
+Restart=on-failure
+RestartSec=1s
+RestartForceExitStatus=3
+RestartPreventExitStatus=4
+
+# SIGTERM → graceful drain. Give the daemon up to 45s before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+
+# Hardening (optional but recommended).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/recued /var/log/recued /etc/recued
+
+[Install]
+WantedBy=multi-user.target

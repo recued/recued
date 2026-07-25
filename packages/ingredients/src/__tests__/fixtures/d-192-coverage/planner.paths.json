@@ -1,0 +1,19 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official Microsoft Graph v1.0 OpenAPI document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0 YAML, ~36 MB full doc; commit-SHA-pinned on microsoftgraph/msgraph-metadata so the URL is byte-stable by construction. Wire paths match doc paths 1:1 (the pack's http base is https://graph.microsoft.com/v1.0 and doc paths are servers-relative) - no path_alias, no per-op openapi_path; the read op's {{task_id}} normalizes positionally against the doc's {plannerTask-id}. Unlike Azure DevOps' additionalProperties fields map, the doc's microsoft.graph.plannerTask schema declares every projected property explicitly (title, percentComplete, dueDateTime, completedDateTime, priority, planId, bucketId, hasDescription) and declares NO version signal on the entity (no @odata.etag / lastModifiedDateTime property) - the remote.version.kind 'none' posture is doc-truthful; percentComplete carries the completion convention verbatim ('When set to 100, the task is considered completed.').",
+    "url": "https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/c60e1f8a558818cbafef1103602b55ec4aa11fb9/openapi/v1.0/openapi.yaml",
+    "sha256": "4c42be96a6d221bc45cde94fbdcd0b92b4c486426d69b3d90359f69c77ac5eaf",
+    "fetched_at": "2026-07-10"
+  },
+  "paths": {
+    "/me/planner/tasks": {
+      "get": {},
+      "post": {}
+    },
+    "/planner/tasks/{plannerTask-id}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    }
+  }
+}

@@ -1,0 +1,279 @@
+/** D-169 P2 — historical-view rpc handlers.
+ *
+ *  The bridge side panel's three list sections (N.5 #2/#3/#4) source
+ *  their "what happened recently" slice from these rpcs on mount + on
+ *  every (re)connect (cursorless re-fetch — spec § A.5 / DL-6). Live bus
+ *  events merge on top of this slice in the client (the rpc-fetched slice
+ *  is the authoritative base; live events resume from reconnect onward).
+ *
+ *  All three are thin reads over EXISTING stores — no bridge-specific
+ *  retention substrate (I-7):
+ *    - `execution.recent`        → D-120 audit log `listRecent`
+ *    - `notification.recent`     → `notification_fired` activity rows
+ *                                  (`listActivitiesByAction`); D-169 P2
+ *                                  makes the block's `notify` durable
+ *    - `notification.pending_asks` → D-158 ask store (`listOpenAsks`)
+ *
+ *  D-169 P2 Slice 3 adds one write alongside these reads, sourced from the
+ *  same notification-block dep:
+ *    - `notification.submitAnswer` → D-158 block `submitAnswer` — the
+ *                                  bridge approval card's first-answer-wins
+ *                                  submit funnel (I-6). Not a retention
+ *                                  substrate; it mutates the existing ask
+ *                                  store the block already owns.
+ *
+ *  Composition shape mirrors `system-status-handler.ts` (the P1 rpc
+ *  template): a deps object with optional sources; an absent source
+ *  resolves the corresponding read to `[]` so a partially-composed boot
+ *  (dbless harness / notification block not wired) still serves an empty
+ *  slice rather than throwing. Local-UI / local-bridge only — these
+ *  methods are omitted from `MCP_TOOL_CATALOG`, the same posture as
+ *  `system.status` (host-activity reads don't cross to MCP-channel
+ *  agents). */
+
+import type {
+  Actor,
+  HandlerSlice,
+  ServerPendingAsk,
+  ServerRecentExecution,
+  ServerRecentNotification,
+  ServerRpcRegistry,
+} from '@recued/contracts';
+// D-161 P3 — actor-lane default + wire-input sanitizer for the aggregate
+// "Recent activity" feed (`execution.recent`).
+import {
+  TIMELINE_DEFAULT_ORIGIN_ACTORS,
+  provenanceAttributionFromSource,
+  sanitizeTimelineOriginFilter,
+} from '@recued/contracts';
+import type { AuditLogStore } from '@recued/storage';
+import type { PendingAsk } from '@recued/notification';
+
+import type { WsClient } from './ws-server.js';
+
+/** Default + ceiling for the `limit` param. The ceiling matches the
+ *  bridge bus-buffer cap (`BRIDGE_BUS_BUFFER_CAP = 50`) loosely — a
+ *  client asking for more than `MAX_LIMIT` is clamped rather than
+ *  refused, so a future surface wanting a deeper history degrades
+ *  gracefully without a contract change. */
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+/** Clamp a caller-supplied `limit` to `[1, MAX_LIMIT]`. An absent,
+ *  non-finite, or non-positive value is treated as unset → `DEFAULT_LIMIT`
+ *  (a `limit` of 0 / negative is an invalid request, not "zero rows"). */
+const clampLimit = (limit: number | undefined): number => {
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1) {
+    return DEFAULT_LIMIT;
+  }
+  return Math.min(MAX_LIMIT, Math.floor(limit));
+};
+
+/** Injected read sources. Every field optional so a partially-composed
+ *  boot still serves (absent → the read returns `[]`). */
+export interface HistoryDeps {
+  /** D-120 audit log — backs `execution.recent` (`listRecent`) +
+   *  `notification.recent` (`listActivitiesByAction('notification_fired')`).
+   *  Absent → both return `[]`. */
+  auditLog?: AuditLogStore;
+  /** D-158 ask-store read — backs `notification.pending_asks`. Injected
+   *  as a thunk over `NotificationBlock.listOpenAsks` so the handler
+   *  never holds the ask store directly. Absent → returns `[]`. */
+  listOpenAsks?: () => Promise<PendingAsk[]>;
+  /** D-169 P2 Slice 3 — submit-answer funnel backing
+   *  `notification.submitAnswer`. Injected as a thunk over
+   *  `NotificationBlock.submitAnswer`; the wire layer closes over the
+   *  `via: 'ui'` channel (the interactive inbound path) so the handler
+   *  never names a channel or holds the block. Absent (partially-composed
+   *  boot) → the rpc is a no-op that still resolves `{ ok: true }`. */
+  submitAnswer?: (ask_id: string, option_id: string) => Promise<void>;
+}
+
+/** Parse a `notification_fired` activity row's JSON `detail` into the
+ *  renderable body. Defensive — a malformed / absent `detail` degrades
+ *  to an empty-text row rather than throwing, so one bad row never fails
+ *  the whole historical fetch. */
+const parseNotificationDetail = (
+  detail: string | undefined,
+): { title?: string; text: string; link_url?: string } => {
+  if (!detail) return { text: '' };
+  try {
+    const parsed = JSON.parse(detail) as Record<string, unknown>;
+    return {
+      ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      ...(typeof parsed.link_url === 'string'
+        ? { link_url: parsed.link_url }
+        : {}),
+    };
+  } catch {
+    return { text: '' };
+  }
+};
+
+/** D-169 P2 — recent recipe executions (N.5 #2). A trimmed projection of
+ *  the D-120 `AuditEntry`. `error_category` carries the first error's
+ *  code when the run produced errors. */
+export const handleExecutionRecent = async (
+  deps: HistoryDeps,
+  req: { limit?: number; origin_actors?: ReadonlyArray<Actor> },
+): Promise<{ executions: ServerRecentExecution[] }> => {
+  if (!deps.auditLog) return { executions: [] };
+  // D-161 P3 — the aggregate feed foregrounds the gold-path lane
+  // (`user_self`+`system`) by default; an explicit `origin_actors` reaches
+  // the agents (`contracted_user`) / reception (`anonymous`) lanes. A `[]` /
+  // malformed filter sanitizes to undefined → the default foreground set,
+  // never an empty feed (I-7: outside-actor rows are filtered from the
+  // default view, never dropped — re-querying the lane returns them).
+  const origin_actors =
+    sanitizeTimelineOriginFilter(req.origin_actors) ?? TIMELINE_DEFAULT_ORIGIN_ACTORS;
+  const rows = await deps.auditLog.listRecent(clampLimit(req.limit), { origin_actors });
+  return {
+    executions: rows.map((e) => {
+      // D-161 P4 — provenance-honesty attribution, DERIVED from the SAME
+      // audit row that feeds `origin_actor` below: the agent identity from
+      // `execution_source`, the contract version from the `contract_snapshot`
+      // the commit already carries (O-3 — render, not store). Defined ONLY
+      // for an outside actor; a first-person row → `undefined` → field
+      // omitted, so the foregrounded gold path stays unchanged (I-9) and an
+      // agent's run never surfaces unattributed (I-10).
+      const attribution = provenanceAttributionFromSource(
+        e.execution_source,
+        e.contract_snapshot,
+      );
+      return {
+        run_id: e.run_id,
+        recipe_id: e.recipe_id,
+        status: e.commit_status,
+        started_at: e.started_at,
+        duration_ms: e.duration_ms,
+        ...(e.errors.length > 0 ? { error_category: e.errors[0].code } : {}),
+        // D-161 P3 — the run's lane, derived from the audit row's write-actor
+        // (`execution_source.actor`; absent → `'system'`). Lets the client
+        // badge / group lanes it reached via an explicit `origin_actors`.
+        origin_actor: e.execution_source?.actor ?? 'system',
+        ...(attribution ? { attribution } : {}),
+      };
+    }),
+  };
+};
+
+/** D-169 P2 — recent fired notifications (N.5 #3). Reads the activity log
+ *  (already newest-first), filters to the `notification_fired` rows, and
+ *  projects each row's JSON `detail` to the renderable body.
+ *
+ *  `listActivities()` is called without a limit because the store lists
+ *  the whole activity table then slices in JS — so a pre-slice `limit`
+ *  would cut the mixed-action stream BEFORE the `notification_fired`
+ *  filter and under-return notifications under heavy non-notify activity.
+ *  Filtering the full set then slicing to `limit` is correct and costs
+ *  the same list-all work. The activity table is bounded by the D-120
+ *  retention pruner; a dedicated indexed `listActivitiesByAction` read is
+ *  a clean follow-on if notification volume ever makes this hot. */
+export const handleNotificationRecent = async (
+  deps: HistoryDeps,
+  req: { limit?: number },
+): Promise<{ notifications: ServerRecentNotification[] }> => {
+  if (!deps.auditLog) return { notifications: [] };
+  const all = await deps.auditLog.listActivities();
+  const rows = all
+    .filter((a) => a.action === 'notification_fired')
+    .slice(0, clampLimit(req.limit));
+  return {
+    notifications: rows.map((a) => {
+      const body = parseNotificationDetail(a.detail);
+      return {
+        id: a.activity_id,
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        text: body.text,
+        ...(body.link_url !== undefined ? { link_url: body.link_url } : {}),
+        fired_at: a.timestamp,
+      };
+    }),
+  };
+};
+
+/** D-169 P2 — currently-open asks (N.5 #4). The ask store returns
+ *  oldest-first; this re-sorts newest-first to match the bridge bus
+ *  buffer's prepend ordering so the seeded base + live `notification.ask`
+ *  frames render in one consistent order. */
+export const handlePendingAsks = async (
+  deps: HistoryDeps,
+): Promise<{ asks: ServerPendingAsk[] }> => {
+  if (!deps.listOpenAsks) return { asks: [] };
+  const open = await deps.listOpenAsks();
+  const sorted = [...open].sort((a, b) => b.created_at - a.created_at);
+  return {
+    asks: sorted.map((p) => ({
+      ask_id: p.ask_id,
+      ...(p.message.title !== undefined ? { title: p.message.title } : {}),
+      text: p.message.text,
+      options: p.options.map((o) => ({ id: o.id, label: o.label })),
+      created_at: p.created_at,
+    })),
+  };
+};
+
+/** D-169 P2 Slice 3 — submit an answer to an open ask (N.5 #4 interactive
+ *  approval card). Funnels into the notification block's `submitAnswer`
+ *  (first-answer-wins dedup across surfaces, D-158 I-6). The block is a
+ *  silent no-op on an unknown / already-answered ask or an option the ask
+ *  never offered, so this always resolves `{ ok: true }`: the rpc
+ *  acknowledges receipt, and the card converges via the
+ *  `notification.ask_closed` bus frame + the next history re-fetch. An
+ *  absent `submitAnswer` dep (partially-composed boot) is a no-op that
+ *  still resolves `{ ok: true }`, matching the read handlers' `[]`
+ *  graceful-absent posture. */
+export const handleSubmitAnswer = async (
+  deps: HistoryDeps,
+  req: { ask_id: string; option_id: string },
+): Promise<{ ok: true }> => {
+  // Defensive shape guard (Codex Slice-3 LOW ×2): only forward well-formed,
+  // non-empty string ids into the block. A malformed wire payload becomes a
+  // no-op `{ ok: true }` rather than reaching the ask store with a bad key —
+  // including a non-object `req` itself (`null` / `undefined` / a primitive),
+  // which would otherwise throw on the `.ask_id` read instead of no-op'ing.
+  // Typed callers are unaffected; the block separately no-ops an unknown /
+  // already-answered ask or an option it never offered.
+  const args = req as { ask_id?: unknown; option_id?: unknown } | null | undefined;
+  if (
+    deps.submitAnswer &&
+    args != null &&
+    typeof args.ask_id === 'string' &&
+    args.ask_id !== '' &&
+    typeof args.option_id === 'string' &&
+    args.option_id !== ''
+  ) {
+    await deps.submitAnswer(args.ask_id, args.option_id);
+  }
+  return { ok: true };
+};
+
+type HistoryMethods =
+  | 'execution.recent'
+  | 'notification.recent'
+  | 'notification.pending_asks'
+  | 'notification.submitAnswer';
+
+/** Compose the historical-view handler slice. Returns `undefined` when no
+ *  deps are wired (the caller drops the slice); each handler self-gates
+ *  per-source via the `[]` fallback so a partial `deps` still serves. */
+export const makeHistoryHandlers = (
+  deps: HistoryDeps | undefined,
+): HandlerSlice<ServerRpcRegistry, HistoryMethods, WsClient> | undefined => {
+  if (!deps) return undefined;
+  return {
+    methods: [
+      'execution.recent',
+      'notification.recent',
+      'notification.pending_asks',
+      'notification.submitAnswer',
+    ],
+    handlers: {
+      'execution.recent': async (req) => handleExecutionRecent(deps, req),
+      'notification.recent': async (req) => handleNotificationRecent(deps, req),
+      'notification.pending_asks': async () => handlePendingAsks(deps),
+      'notification.submitAnswer': async (req) => handleSubmitAnswer(deps, req),
+    },
+  };
+};

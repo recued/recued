@@ -1,0 +1,22 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.1.0, 72 paths; URL is unversioned (drift risk \u2014 re-pin at publish)",
+    "url": "https://developer.todoist.com/openapi.json",
+    "sha256": "50d3a53c02d38c4d4df47811d4587c707f1d5cd5899ecc5ccaf808c9424434bb",
+    "fetched_at": "2026-07-01"
+  },
+  "paths": {
+    "/api/v1/tasks": {
+      "post": {},
+      "get": {}
+    },
+    "/api/v1/tasks/{task_id}": {
+      "delete": {},
+      "get": {},
+      "post": {}
+    },
+    "/api/v1/tasks/{task_id}/close": {
+      "post": {}
+    }
+  }
+}

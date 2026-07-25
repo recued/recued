@@ -1,0 +1,3504 @@
+{
+  "source": "https://docs.wise.com/_bundle/api-reference/index.json?download",
+  "sha256": "cc4e57d58982b669f6873525d12f41eb0e6c4f5d27d9292c6f26556966dec673",
+  "openapi": "3.1.0",
+  "path_count": 201,
+  "operation_count": 242,
+  "selected_operation_count": 59,
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/2026Q2/embedded-flows/link-requests/{embeddedLinkRequestId}",
+      "operation_id": "embeddedLinkRequestGet",
+      "tags": [
+        "link-requests"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/2026Q2/profiles/{profileId}/embedded-flows/link-requests/recipients",
+      "operation_id": "recipientEmbeddedLinkRequestCreate",
+      "tags": [
+        "link-requests"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth/token",
+      "operation_id": "oauthTokenCreate",
+      "tags": [
+        "oauth-token"
+      ],
+      "security": [
+        "BasicAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/twcard-data/v1/clientSideEncryption/fetchEncryptingKey",
+      "operation_id": "cardEncryptionKeyGet",
+      "tags": [
+        "card-sensitive-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/twcard-data/v1/push-provisioning/encrypted-payload/apple-pay",
+      "operation_id": "pushProvisioningApplePayGet",
+      "tags": [
+        "digital-wallet"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/twcard-data/v1/push-provisioning/encrypted-payload/google-pay",
+      "operation_id": "pushProvisioningGooglePayGet",
+      "tags": [
+        "digital-wallet"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/twcard-data/v1/sensitive-card-data/details",
+      "operation_id": "cardSensitiveDetailsGet",
+      "tags": [
+        "card-sensitive-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/twcard-data/v1/sensitive-card-data/pin",
+      "operation_id": "cardPinGet",
+      "tags": [
+        "card-sensitive-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/twcard-data/v1/sensitive-card-data/preset-pin",
+      "operation_id": "cardOrderPresetPin",
+      "tags": [
+        "card-sensitive-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/accounts",
+      "operation_id": "recipientListV1",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/accounts",
+      "operation_id": "recipientCreate",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-recipients",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/accounts/{accountId}",
+      "operation_id": "recipientGetV1",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/accounts/{accountId}/quotes/{quoteId}/compatibility",
+      "operation_id": "recipientCompatibilityCheckV1",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/address-requirements",
+      "operation_id": "addressRequirementsGet",
+      "tags": [
+        "address"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/address-requirements",
+      "operation_id": "addressRequirementsPost",
+      "tags": [
+        "address"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/addresses",
+      "operation_id": "addressList",
+      "tags": [
+        "address"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/addresses",
+      "operation_id": "addressCreate",
+      "tags": [
+        "address"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/addresses/{addressId}",
+      "operation_id": "addressGet",
+      "tags": [
+        "address"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/application/users/{userId}/phone-numbers",
+      "operation_id": "userSecurityPhoneNumberList",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/application/users/{userId}/phone-numbers",
+      "operation_id": "userSecurityPhoneNumberCreate",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/application/users/{userId}/phone-numbers/{phoneNumberId}",
+      "operation_id": "userSecurityPhoneNumberDelete",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/application/users/{userId}/phone-numbers/{phoneNumberId}",
+      "operation_id": "userSecurityPhoneNumberUpdate",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/auth/jose/playground/jwe",
+      "operation_id": "josePlaygroundJweGet",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/jose/playground/jwe",
+      "operation_id": "josePlaygroundJwePost",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/jose/playground/jwe-direct-encryption",
+      "operation_id": "josePlaygroundJweDirectEncryption",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/jose/playground/jws",
+      "operation_id": "josePlaygroundJws",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/jose/playground/jwsjwe",
+      "operation_id": "josePlaygroundJwsJwe",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/jose/request/public-keys",
+      "operation_id": "joseRequestPublicKeysCreate",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/auth/jose/response/public-keys",
+      "operation_id": "joseResponsePublicKeysGet",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/borderless-accounts",
+      "operation_id": "balanceGetV1",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/borderless-accounts/{borderlessAccountId}/conversions",
+      "operation_id": "balanceConvertV1",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/cases",
+      "operation_id": "caseCreate",
+      "tags": [
+        "case"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/cases/{caseId}",
+      "operation_id": "caseGet",
+      "tags": [
+        "case"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/cases/{caseId}/comments",
+      "operation_id": "caseCommentsGet",
+      "tags": [
+        "case"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/cases/{caseId}/comments",
+      "operation_id": "caseCommentCreate",
+      "tags": [
+        "case"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/currencies",
+      "operation_id": "currenciesGet",
+      "tags": [
+        "currencies"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/delivery-estimates/{transferId}",
+      "operation_id": "deliveryEstimateGet",
+      "tags": [
+        "delivery-estimate"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/facetec/public-key",
+      "operation_id": "facetecPublicKeyGet",
+      "tags": [
+        "facetec"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/identity/one-time-token/status",
+      "operation_id": "ottStatusGetV1",
+      "tags": [
+        "sca-ott"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/incoming-transfers/{incomingTransferId}",
+      "operation_id": "getIncomingTransfer",
+      "tags": [
+        "incoming-transfer"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/me",
+      "operation_id": "userGetByToken",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/facemap/verify",
+      "operation_id": "ottFacemapVerify",
+      "tags": [
+        "sca-facemaps"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/partner-device-fingerprint/verify",
+      "operation_id": "ottDeviceFingerprintVerify",
+      "tags": [
+        "sca-device-fingerprints"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/pin/verify",
+      "operation_id": "ottPinVerify",
+      "tags": [
+        "sca-pin"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/sms/trigger",
+      "operation_id": "ottSmsTrigger",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/sms/verify",
+      "operation_id": "ottSmsVerify",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/one-time-token/status",
+      "operation_id": "ottStatusGet",
+      "tags": [
+        "sca-ott"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/voice/trigger",
+      "operation_id": "ottVoiceTrigger",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/voice/verify",
+      "operation_id": "ottVoiceVerify",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/whatsapp/trigger",
+      "operation_id": "ottWhatsappTrigger",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/one-time-token/whatsapp/verify",
+      "operation_id": "ottWhatsappVerify",
+      "tags": [
+        "sca-otp"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles",
+      "operation_id": "profileCreateV1",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/profiles",
+      "operation_id": "profileUpdateV1",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/account-details",
+      "operation_id": "bankAccountDetailsGet",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/account-details-orders",
+      "operation_id": "bankAccountDetailsOrdersListV1",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/account-details-orders",
+      "operation_id": "bankAccountDetailsOrderCreate",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/account-details/payments/{paymentId}/returns",
+      "operation_id": "bankAccountDetailsReturnsCreate",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/activities",
+      "operation_id": "activityList",
+      "tags": [
+        "activity"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/balance-capacity",
+      "operation_id": "balanceCapacity",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/balance-statements/{balanceId}/statement.json",
+      "operation_id": "balanceStatementGet",
+      "tags": [
+        "balance-statement"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/balances/hold-limit-breach",
+      "operation_id": "holdLimitBreachList",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/balances/hold-limit-breach/{holdLimitBreachId}",
+      "operation_id": "holdLimitBreachClose",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/batch-groups/{batchGroupId}/payment-initiations",
+      "operation_id": "batchGroupPaymentInitiationCreate",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/batch-groups/{batchGroupId}/payment-initiations/{paymentInitiationId}",
+      "operation_id": "batchGroupPaymentInitiationGet",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/direct-debit-accounts",
+      "operation_id": "directDebitAccountGet",
+      "tags": [
+        "direct-debit-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/direct-debit-accounts",
+      "operation_id": "directDebitAccountCreate",
+      "tags": [
+        "direct-debit-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/directors",
+      "operation_id": "profileDirectorList",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/directors",
+      "operation_id": "profileDirectorCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/profiles/{profileId}/directors",
+      "operation_id": "profileDirectorUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/excess-money-account",
+      "operation_id": "excessMoneyAccount",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/extension-requirements",
+      "operation_id": "profileExtensionRequirementsGet",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/extension-requirements",
+      "operation_id": "profileExtensionRequirementsPost",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/extensions",
+      "operation_id": "profileExtensionsGet",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/extensions",
+      "operation_id": "profileExtensionsCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/kyc-reviews",
+      "operation_id": "kycReviewList",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/kyc-reviews",
+      "operation_id": "kycReviewCreate",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/kyc-reviews/{kycReviewId}",
+      "operation_id": "kycReviewGetV1",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v1/profiles/{profileId}/kyc-reviews/{kycReviewId}",
+      "operation_id": "kycReviewRedirectUrlUpdate",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/partner-licence-transfers",
+      "operation_id": "transferPartnerLicenceCreate",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/payin-sessions/{payinSessionId}/paynow",
+      "operation_id": "paynowCreate",
+      "tags": [
+        "payins"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/third-party-transfers/{transferId}",
+      "operation_id": "GetThirdPartyTransferV1",
+      "tags": [
+        "third-party-transfer"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/total-funds/{currency}",
+      "operation_id": "totalFunds",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/transfers/{transferId}/deposit-details/bank-transfer",
+      "operation_id": "payinDepositDetailGet",
+      "tags": [
+        "payin-deposit-detail"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/profiles/{profileId}/ubos",
+      "operation_id": "profileUboList",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/ubos",
+      "operation_id": "profileUboCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/profiles/{profileId}/ubos",
+      "operation_id": "profileUboUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/profiles/{profileId}/update-window",
+      "operation_id": "profileUpdateWindowClose",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/update-window",
+      "operation_id": "profileUpdateWindowOpen",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/profiles/{profileId}/verification-documents",
+      "operation_id": "profileVerificationDocumentCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/profiles/{profileId}/verification-documents",
+      "operation_id": "profileVerificationDocumentUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/quotes/{quoteId}/account-requirements",
+      "operation_id": "recipientAccountRequirementsGet",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-recipients",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/quotes/{quoteId}/account-requirements",
+      "operation_id": "recipientAccountRequirementsPost",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-recipients",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/rates",
+      "operation_id": "rateGet",
+      "tags": [
+        "rate"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/settlements",
+      "operation_id": "bulkSettlementJournalCreate",
+      "tags": [
+        "bulk-settlement"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/balance/topup",
+      "operation_id": "simulationBalanceTopup",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/profiles/{profileId}/bank-transactions/import",
+      "operation_id": "simulationBankTransactionImport",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/profiles/{profileId}/swift-in",
+      "operation_id": "simulationSwiftIn",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/profiles/{profileId}/verifications",
+      "operation_id": "simulationVerification",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/spend/profiles/{profileId}/cards/{cardToken}/production",
+      "operation_id": "simulationCardProduction",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/spend/profiles/{profileId}/cards/{cardToken}/transactions/clearing",
+      "operation_id": "simulationCardTransactionClearing",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/spend/profiles/{profileId}/cards/{cardToken}/transactions/reversal",
+      "operation_id": "simulationCardTransactionReversal",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/simulation/transfers/{transferId}/{status}",
+      "operation_id": "simulationTransferStateChange",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/transfers/{transferId}/payout-failure",
+      "operation_id": "simulationTransferPayoutFailure",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/simulation/verify-profile",
+      "operation_id": "simulationVerifyProfile",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/transfer-requirements",
+      "operation_id": "transferRequirementsValidate",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers",
+      "operation_id": "transferList",
+      "tags": [
+        "standard-transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/transfers",
+      "operation_id": "transferCreate",
+      "tags": [
+        "standard-transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers/{transferId}",
+      "operation_id": "transferGet",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/transfers/{transferId}/cancel",
+      "operation_id": "transferCancel",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers/{transferId}/documents/noc",
+      "operation_id": "transferNocGet",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers/{transferId}/payments",
+      "operation_id": "transferPaymentsList",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers/{transferId}/receipt.pdf",
+      "operation_id": "transferReceiptGet",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/transfers/{transferId}/us-combined-receipt.pdf",
+      "operation_id": "transferUsCombinedReceiptGet",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/user/claim-account",
+      "operation_id": "claimAccountCreate",
+      "tags": [
+        "claim-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/user/facemap/enrol",
+      "operation_id": "userSecurityFacemapEnrol",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/user/partner-device-fingerprints",
+      "operation_id": "userSecurityDeviceFingerprintCreate",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/user/pin",
+      "operation_id": "userSecurityPinCreate",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/user/signup/registration_code",
+      "operation_id": "userCreate",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/users/{userId}",
+      "operation_id": "userGetById",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/users/{userId}/contact-email",
+      "operation_id": "userContactEmailGet",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/users/{userId}/contact-email",
+      "operation_id": "userContactEmailSet",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/users/{userId}/facemap/enrol",
+      "operation_id": "userSecurityFacemapDelete",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/users/{userId}/partner-device-fingerprints",
+      "operation_id": "userSecurityDeviceFingerprintList",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/users/{userId}/partner-device-fingerprints/{deviceFingerprintId}",
+      "operation_id": "userSecurityDeviceFingerprintDelete",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/users/{userId}/pin",
+      "operation_id": "userSecurityPinDelete",
+      "tags": [
+        "user-security"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/users/exists",
+      "operation_id": "userCheckExists",
+      "tags": [
+        "user"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/accounts",
+      "operation_id": "recipientList",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-recipients",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/accounts/{accountId}",
+      "operation_id": "recipientDeactivate",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/accounts/{accountId}",
+      "operation_id": "recipientGet",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-recipients",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/accounts/{accountId}/confirmations",
+      "operation_id": "recipientConfirmationsAccept",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/accounts/{accountId}/quotes/{quoteId}/compatibility",
+      "operation_id": "recipientCompatibilityCheck",
+      "tags": [
+        "recipient"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/borderless-accounts-configuration/profiles/{profileId}/available-currencies",
+      "operation_id": "mcaAvailableCurrenciesGet",
+      "tags": [
+        "multi-currency-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/borderless-accounts-configuration/profiles/{profileId}/payin-currencies",
+      "operation_id": "mcaPayinCurrenciesGet",
+      "tags": [
+        "multi-currency-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/profiles",
+      "operation_id": "profileList",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/profiles/{profileId}",
+      "operation_id": "profileGet",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/balance-movements",
+      "operation_id": "balanceMovement",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/profiles/{profileId}/business-profile",
+      "operation_id": "profileBusinessUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/contacts",
+      "operation_id": "contactCreate",
+      "tags": [
+        "contact"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/device-fingerprints",
+      "operation_id": "scaDeviceFingerprintCreate",
+      "tags": [
+        "sca-device-fingerprints"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/profiles/{profileId}/device-fingerprints/{deviceFingerprintId}",
+      "operation_id": "scaDeviceFingerprintDelete",
+      "tags": [
+        "sca-device-fingerprints"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/device-fingerprints/verify",
+      "operation_id": "scaDeviceFingerprintVerify",
+      "tags": [
+        "sca-device-fingerprints"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/profiles/{profileId}/facemaps",
+      "operation_id": "scaFacemapDelete",
+      "tags": [
+        "sca-facemaps"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/facemaps",
+      "operation_id": "scaFacemapCreate",
+      "tags": [
+        "sca-facemaps"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/facemaps/verify",
+      "operation_id": "scaFacemapVerify",
+      "tags": [
+        "sca-facemaps"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/kyc-requirements/{requirementKey}",
+      "operation_id": "kycReviewRequirementSubmit",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/profiles/{profileId}/kyc-reviews/{kycReviewId}",
+      "operation_id": "kycReviewGet",
+      "tags": [
+        "kyc-review"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/profiles/{profileId}/personal-profile",
+      "operation_id": "profilePersonalUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/profiles/{profileId}/pin",
+      "operation_id": "scaPinDelete",
+      "tags": [
+        "sca-pin"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/pin",
+      "operation_id": "scaPinCreate",
+      "tags": [
+        "sca-pin"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/pin/verify",
+      "operation_id": "scaPinVerify",
+      "tags": [
+        "sca-pin"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/sca-sessions/authorise",
+      "operation_id": "scaSessionCreate",
+      "tags": [
+        "sca-sessions"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/{profileId}/third-party-transfers",
+      "operation_id": "createthirdpartytransfer",
+      "tags": [
+        "third-party-transfer"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/profiles/{profileId}/third-party-transfers/{transferId}",
+      "operation_id": "getthirdpartytransfer",
+      "tags": [
+        "third-party-transfer"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/business-profile",
+      "operation_id": "profileBusinessCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/profiles/personal-profile",
+      "operation_id": "profilePersonalCreate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/simulation/profiles/{profileId}/kyc-reviews/{kycReviewId}/requirements",
+      "operation_id": "simulationKycReviewRequirementsList",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/simulation/profiles/{profileId}/kyc-reviews/{kycReviewId}/requirements/add",
+      "operation_id": "simulationKycReviewRequirementsAdd",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/simulation/profiles/{profileId}/kyc-reviews/{kycReviewId}/requirements/submit",
+      "operation_id": "simulationKycReviewRequirementsSubmit",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/simulation/profiles/{profileId}/kyc-reviews/{kycReviewId}/verify",
+      "operation_id": "simulationKycReviewVerify",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/simulation/spend/profiles/{profileId}/cards/{cardToken}/transactions",
+      "operation_id": "simulationCardTransactions",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/simulation/spend/profiles/{profileId}/cards/{cardToken}/transactions/authorisation",
+      "operation_id": "simulationCardTransactionAuthorisation",
+      "tags": [
+        "simulation"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/transfers/{transferId}/invoices/bankingpartner",
+      "operation_id": "transferPayoutInfoGet",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/applications/{clientKey}/subscriptions",
+      "operation_id": "webhookApplicationSubscriptionList",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/applications/{clientKey}/subscriptions",
+      "operation_id": "webhookApplicationSubscriptionCreate",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/applications/{clientKey}/subscriptions/{subscriptionId}",
+      "operation_id": "webhookApplicationSubscriptionDelete",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/applications/{clientKey}/subscriptions/{subscriptionId}",
+      "operation_id": "webhookApplicationSubscriptionGet",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/applications/{clientKey}/subscriptions/{subscriptionId}/test-notifications",
+      "operation_id": "webhookApplicationSubscriptionTest",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/comparisons",
+      "operation_id": "comparisonGetV3",
+      "tags": [
+        "comparison"
+      ],
+      "security": [],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/account-details-orders",
+      "operation_id": "bankAccountDetailsOrdersList",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/additional-verification/upload-evidences",
+      "operation_id": "verificationUploadEvidencesV3",
+      "tags": [
+        "verification"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/bank-details",
+      "operation_id": "bankAccountDetailsBankDetailsCreate",
+      "tags": [
+        "bank-account-details"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/batch-groups",
+      "operation_id": "batchGroupCreate",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/batch-groups/{batchGroupId}",
+      "operation_id": "batchGroupGet",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v3/profiles/{profileId}/batch-groups/{batchGroupId}",
+      "operation_id": "batchGroupUpdate",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/batch-groups/{batchGroupId}/transfers",
+      "operation_id": "batchGroupTransferCreate",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/batch-payments/{batchGroupId}/payments",
+      "operation_id": "batchGroupFund",
+      "tags": [
+        "batch-group"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-batches",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/business-profile/business-representative",
+      "operation_id": "profileBusinessRepresentativeGet",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/profiles/{profileId}/business-profile/business-representative",
+      "operation_id": "profileBusinessRepresentativeUpdate",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/quotes",
+      "operation_id": "quoteCreate",
+      "tags": [
+        "quote"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-quotes",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/quotes/{quoteId}",
+      "operation_id": "quoteGet",
+      "tags": [
+        "quote"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-quotes",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v3/profiles/{profileId}/quotes/{quoteId}",
+      "operation_id": "quoteUpdate",
+      "tags": [
+        "quote"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-quotes",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/subscriptions",
+      "operation_id": "webhookProfileSubscriptionList",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-webhooks",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/subscriptions",
+      "operation_id": "webhookProfileSubscriptionCreate",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-webhooks",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/profiles/{profileId}/subscriptions/{subscriptionId}",
+      "operation_id": "webhookProfileSubscriptionDelete",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-webhooks",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/subscriptions/{subscriptionId}",
+      "operation_id": "webhookProfileSubscriptionGet",
+      "tags": [
+        "webhook"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-webhooks",
+      "reason": "Wise SMB personal-token payout workflow operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/transfers/{transferId}/payments",
+      "operation_id": "transferfund",
+      "tags": [
+        "transfer"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-transfers",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/verification-status/bank-transfer",
+      "operation_id": "profileVerificationStatusCheck",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/profiles/{profileId}/verification-status/required-evidences",
+      "operation_id": "verificationGetRequiredEvidences",
+      "tags": [
+        "verification"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/{profileId}/verification-status/upload-document",
+      "operation_id": "verificationUploadDocument",
+      "tags": [
+        "verification"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/profiles/business-profile",
+      "operation_id": "profileBusinessCreateV3",
+      "tags": [
+        "profile"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/quotes",
+      "operation_id": "quoteCreateUnauthenticated",
+      "tags": [
+        "quote"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/address/validate",
+      "operation_id": "cardOrderValidateAddress",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules",
+      "operation_id": "spendControlsRulesList",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules",
+      "operation_id": "spendControlsRuleCreate",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules/{ruleId}",
+      "operation_id": "spendControlsRuleDelete",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules/applied",
+      "operation_id": "spendControlsAppliedRulesList",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules/apply",
+      "operation_id": "spendControlsRuleApply",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/applications/{clientId}/spend-controls/rules/unapply",
+      "operation_id": "spendControlsRuleUnapply",
+      "tags": [
+        "spend-controls"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/3dsecure/challenge-result",
+      "operation_id": "3dsChallengeResultPost",
+      "tags": [
+        "3ds"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/card-orders",
+      "operation_id": "cardOrderList",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/card-orders",
+      "operation_id": "cardOrderCreate",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/card-orders/{cardOrderId}",
+      "operation_id": "cardOrderGet",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/card-orders/{cardOrderId}/requirements",
+      "operation_id": "cardOrderRequirementsGet",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/spend/profiles/{profileId}/card-orders/{cardOrderId}/status",
+      "operation_id": "cardOrderStatusUpdate",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/card-orders/availability",
+      "operation_id": "cardOrderProgramsGet",
+      "tags": [
+        "card-order"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/cards",
+      "operation_id": "cardList",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}",
+      "operation_id": "cardGet",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/payment-tokens",
+      "operation_id": "pushProvisioningPaymentTokensList",
+      "tags": [
+        "digital-wallet"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/payment-tokens/{paymentTokenUniqueReference}/activation",
+      "operation_id": "digitalWalletActivatePaymentToken",
+      "tags": [
+        "digital-wallet"
+      ],
+      "security": [
+        "UserToken",
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/phone-number",
+      "operation_id": "cardPhoneNumberUpdate",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/production",
+      "operation_id": "cardKioskCollectionProductionGet",
+      "tags": [
+        "card-kiosk-collection"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/production",
+      "operation_id": "cardKioskCollectionProduce",
+      "tags": [
+        "card-kiosk-collection"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/reset-pin-count",
+      "operation_id": "cardPinCountReset",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/spending-permissions",
+      "operation_id": "cardPermissionsGet",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/spending-permissions",
+      "operation_id": "cardPermissionsUpdate",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/spend/profiles/{profileId}/cards/{cardToken}/status",
+      "operation_id": "cardStatusUpdate",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/cards/transactions/{transactionId}",
+      "operation_id": "cardTransactionGetV3",
+      "tags": [
+        "card-transaction"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/dispute-form/file",
+      "operation_id": "disputeFileUploadV3",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/dispute-form/flows/{scheme}/{reason}",
+      "operation_id": "disputeSubmit",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v3/spend/profiles/{profileId}/dispute-form/flows/step/{scheme}/{reason}",
+      "operation_id": "disputeDynamicFlowStep",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/dispute-form/reasons",
+      "operation_id": "disputeReasonsGet",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/disputes",
+      "operation_id": "disputeList",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/disputes/{disputeId}",
+      "operation_id": "disputeGet",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/spend/profiles/{profileId}/disputes/{disputeId}/status",
+      "operation_id": "disputeWithdraw",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v3/spend/profiles/{profileId}/spending-limits",
+      "operation_id": "spendControlsProfileLimitsGet",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/comparisons",
+      "operation_id": "comparisonGet",
+      "tags": [
+        "comparison"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/multi-currency-account/eligibility",
+      "operation_id": "mcaEligibilityGet",
+      "tags": [
+        "multi-currency-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/profiles/{profileId}/balances",
+      "operation_id": "balanceList",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "POST",
+      "path": "/v4/profiles/{profileId}/balances",
+      "operation_id": "balanceCreate",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v4/profiles/{profileId}/balances/{balanceId}",
+      "operation_id": "balanceDelete",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/profiles/{profileId}/balances/{balanceId}",
+      "operation_id": "balanceGet",
+      "tags": [
+        "balance"
+      ],
+      "security": [
+        "UserToken",
+        "PersonalToken"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-balances",
+      "reason": "OpenAPI explicitly permits PersonalToken"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/profiles/{profileId}/multi-currency-account",
+      "operation_id": "mcaGet",
+      "tags": [
+        "multi-currency-account"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/spend/profiles/{profileId}/cards/{cardToken}/spend-limits",
+      "operation_id": "spendLimitsCardGet",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v4/spend/profiles/{profileId}/cards/{cardToken}/spend-limits",
+      "operation_id": "spendLimitsCardUpdate",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v4/spend/profiles/{profileId}/cards/{cardToken}/spend-limits/{granularity}",
+      "operation_id": "spendLimitsCardDelete",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v4/spend/profiles/{profileId}/cards/{cardToken}/spending-permissions",
+      "operation_id": "cardPermissionsBulkUpdate",
+      "tags": [
+        "card"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/spend/profiles/{profileId}/cards/{cardToken}/transactions",
+      "operation_id": "cardTransactionList",
+      "tags": [
+        "card-transaction"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/spend/profiles/{profileId}/cards/transactions/{transactionId}",
+      "operation_id": "cardTransactionGet",
+      "tags": [
+        "card-transaction"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v4/spend/profiles/{profileId}/dispute-form/file",
+      "operation_id": "disputeFileUpload",
+      "tags": [
+        "disputes"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "GET",
+      "path": "/v4/spend/profiles/{profileId}/spend-limits",
+      "operation_id": "spendLimitsProfileGet",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v4/spend/profiles/{profileId}/spend-limits",
+      "operation_id": "spendLimitsProfileUpdate",
+      "tags": [
+        "spend-limits"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
+      "method": "POST",
+      "path": "/v5/profiles/{profileId}/additional-verification/upload-evidences",
+      "operation_id": "verificationUploadEvidences",
+      "tags": [
+        "verification"
+      ],
+      "security": [
+        "UserToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    }
+  ]
+}

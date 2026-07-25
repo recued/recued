@@ -1,0 +1,107 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "apps/webclient"
+    },
+    {
+      "path": "backend/server"
+    },
+    {
+      "path": "packages/approvals"
+    },
+    {
+      "path": "packages/cache"
+    },
+    {
+      "path": "packages/chat"
+    },
+    {
+      "path": "packages/config"
+    },
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/crypto"
+    },
+    {
+      "path": "packages/engine"
+    },
+    {
+      "path": "packages/fts"
+    },
+    {
+      "path": "packages/gateway"
+    },
+    {
+      "path": "packages/ingredient-authoring"
+    },
+    {
+      "path": "packages/ingredients"
+    },
+    {
+      "path": "packages/instances"
+    },
+    {
+      "path": "packages/llm"
+    },
+    {
+      "path": "packages/marketplace"
+    },
+    {
+      "path": "packages/messenger"
+    },
+    {
+      "path": "packages/middleware"
+    },
+    {
+      "path": "packages/middleware-recued"
+    },
+    {
+      "path": "packages/middleware-recued/prompt-cache"
+    },
+    {
+      "path": "packages/notification"
+    },
+    {
+      "path": "packages/provenance"
+    },
+    {
+      "path": "packages/recipes"
+    },
+    {
+      "path": "packages/release"
+    },
+    {
+      "path": "packages/renderer"
+    },
+    {
+      "path": "packages/scheduler"
+    },
+    {
+      "path": "packages/server-network"
+    },
+    {
+      "path": "packages/server-tls"
+    },
+    {
+      "path": "packages/storage"
+    },
+    {
+      "path": "packages/storage-gate"
+    },
+    {
+      "path": "packages/transforms"
+    },
+    {
+      "path": "packages/transport"
+    },
+    {
+      "path": "packages/ui-shared"
+    },
+    {
+      "path": "packages/warehouse-events"
+    }
+  ]
+}

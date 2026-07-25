@@ -1,0 +1,41 @@
+{
+  "_extract": {
+    "note": "resources/methods extract of the pinned official Google Discovery document (crossCheckCatalogGoogleDiscovery reads kind/servicePath/resources); tasks resource only",
+    "url": "https://tasks.googleapis.com/$discovery/rest?version=v1",
+    "sha256": "817b523db9410d477f2a53cbe54edd5df00558b79ccb620f3532ab67692f04b7",
+    "fetched_at": "2026-07-01"
+  },
+  "kind": "discovery#restDescription",
+  "servicePath": "",
+  "resources": {
+    "tasks": {
+      "methods": {
+        "list": {
+          "httpMethod": "GET",
+          "path": "tasks/v1/lists/{tasklist}/tasks",
+          "flatPath": "tasks/v1/lists/{tasklist}/tasks"
+        },
+        "get": {
+          "httpMethod": "GET",
+          "path": "tasks/v1/lists/{tasklist}/tasks/{task}",
+          "flatPath": "tasks/v1/lists/{tasklist}/tasks/{task}"
+        },
+        "insert": {
+          "httpMethod": "POST",
+          "path": "tasks/v1/lists/{tasklist}/tasks",
+          "flatPath": "tasks/v1/lists/{tasklist}/tasks"
+        },
+        "update": {
+          "httpMethod": "PUT",
+          "path": "tasks/v1/lists/{tasklist}/tasks/{task}",
+          "flatPath": "tasks/v1/lists/{tasklist}/tasks/{task}"
+        },
+        "delete": {
+          "httpMethod": "DELETE",
+          "path": "tasks/v1/lists/{tasklist}/tasks/{task}",
+          "flatPath": "tasks/v1/lists/{tasklist}/tasks/{task}"
+        }
+      }
+    }
+  }
+}

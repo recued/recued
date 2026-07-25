@@ -1,0 +1,31 @@
+# recued-server — source distribution defaults.
+#
+# Dev-friendly profile: verbose logs, localhost bind. Used when running
+# the server out of a checked-out repo (npx tsx backend/server/src/bin.ts).
+
+[bootstrap]
+data_path    = "~/Library/Application Support/Recued"
+bind_host    = "127.0.0.1"
+bind_port    = 7717
+mcp_port     = 7718
+webhook_port = 0
+log_path     = "{data_path}/logs"
+
+[runtime]
+"llm.allow_upgrade_default"       = false
+"llm.free_pool_strategy"          = "round_robin"
+"llm.budget"                      = 0
+"vault.quota.per_publisher_bytes" = 1048576
+"vault.quota.total_bytes"         = 52428800
+"data.shared.quota.bytes"         = 104857600
+"shared.max_bytes"                = 52428800
+"cache.max_bytes"                 = 209715200
+"storage.reserve_pct"             = 2
+"log.level"                       = "debug"
+"log.max_bytes"                   = 104857600
+"log.rotate_at_pct"               = 75
+"log.debounce_window_s"           = 60
+"log.max_fingerprints"            = 1000
+"scheduler.min_interval_minutes"  = 5
+"recipe.default_timeout_seconds"  = 600
+"tier.grace_period_hours"         = 72

@@ -1,0 +1,19 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1, 420 paths; URL is unversioned (drift risk \u2014 re-pin at publish)",
+    "url": "https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+    "sha256": "d77af740aeaafd81c506c68343073ccacb7ca81da51494ed342461383d882dc6",
+    "fetched_at": "2026-07-01"
+  },
+  "paths": {
+    "/rest/api/3/search/jql": {
+      "get": {},
+      "post": {}
+    },
+    "/rest/api/3/issue/{issueIdOrKey}": {
+      "delete": {},
+      "get": {},
+      "put": {}
+    }
+  }
+}

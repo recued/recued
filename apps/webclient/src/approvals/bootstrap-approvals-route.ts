@@ -1,0 +1,895 @@
+/** D-174 / R20 — top-level Approvals deep queue: the "waiting on me" yes/no list.
+ *
+ *  `#approvals` is ONE unified, transient pending-decisions list — D-157
+ *  approval gates + D-158 asks interleaved newest-first, with NO gate-vs-ask
+ *  sections (R20 drops the "Approvals vs Asks" taxonomy; it's one "waiting on
+ *  me" concept). Rows clear as they resolve. Runs owns resolved/audit history;
+ *  this route renders only pending work and links outward for audit/detail.
+ *
+ *  The asks sub-state (seed + live `notification.ask`/`ask_closed` refresh +
+ *  first-answer-wins submit) is still managed by the proven `asks-panel` mount,
+ *  run HEADLESS — it owns the IO, this route owns the unified rendering and
+ *  interleaves ask cards with gate cards. (Chat plan-approvals join this list
+ *  in a follow-on slice; the destructive real-confirm lands in the shared card.)
+ */
+
+import {
+  APPROVAL_CARD_STYLES,
+  renderApprovalCard,
+  renderAskCard,
+  renderChatPlanCard,
+  type ApprovalCardDecision,
+  type ChatPlanCardDecision,
+} from '@recued/ui-shared/approval-card';
+import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import type {
+  ServerApprovalResolveResult,
+  ServerApprovalSubscriptionEvent,
+  ServerPendingApproval,
+  ServerPendingAsk,
+} from '@recued/contracts';
+
+import {
+  ASKS_PANEL_STYLES,
+  mountAsksPanel,
+  type AsksListCaller,
+  type AsksPanelMount,
+  type AsksPanelState,
+  type AsksSubmitAnswerCaller,
+} from './asks-panel.js';
+import type { PendingChatPlan } from './pending-chat-plans-store.js';
+import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
+import {
+  classifyRpcError,
+  humanizeRpcError,
+  resolveSurfaceErrorDisplay,
+  type SurfaceErrorEntry,
+} from '../shell/rpc-error-copy.js';
+import { serializeShellRoute } from '../shell/route.js';
+
+// ════════════════════════════════════════════════════════════════
+// Style payload + stable attribute hooks
+// ════════════════════════════════════════════════════════════════
+
+/** Marker on the injected `<style>` tag — re-bootstrap / concurrent
+ *  route instances find it and skip the duplicate injection. */
+export const APPROVALS_ROUTE_STYLES_MARKER = 'data-recued-approvals-styles';
+
+/** The route shell wrapper the route owns inside the caller's `root`.
+ *  `dispose()` removes this node; the injected `<style>` stays (global,
+ *  idempotent, may be shared by a re-mount). */
+export const APPROVALS_ROUTE_HOST_ATTR = 'data-recued-approvals-route';
+
+/** Stable hooks for tests + host introspection. */
+export const APPROVALS_ROUTE_HEADING_ATTR = 'data-recued-approvals-heading';
+export const APPROVALS_ROUTE_SUMMARY_ATTR =
+  'data-recued-approvals-summary';
+/** The single unified pending-decisions list (R20 — gates + asks, no
+ *  per-kind sections). */
+export const APPROVALS_ROUTE_LIST_ATTR =
+  'data-recued-approvals-list';
+/** R17 — a uniform per-card hook carrying the row's id (approval_id / ask_id /
+ *  plan_id), so a run-scoped `#approvals/<id>` deep link from the Runs detail
+ *  can find + highlight the exact card regardless of its kind. */
+export const APPROVALS_ROUTE_FOCUS_ATTR = 'data-recued-approvals-focus';
+export const APPROVALS_ROUTE_EMPTY_ATTR = 'data-recued-approvals-empty';
+export const APPROVALS_ROUTE_LOADING_ATTR = 'data-recued-approvals-loading';
+export const APPROVALS_ROUTE_ERROR_ATTR = 'data-recued-approvals-error';
+
+const APPROVALS_ROUTE_CHROME_STYLES = `
+[${APPROVALS_ROUTE_HOST_ATTR}] {
+  /* Inherit the shell's light/dark tokens instead of hard-pinning light
+     values, which left inner --bg/--surface-sunk elements dark-on-dark
+     in dark mode (visual-UX review). */
+  max-width: var(--wc-content-max, 1080px);
+  margin: 0 auto;
+  padding: 16px;
+  color: var(--fg);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-summary {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* R20 — ONE unified list; gate + ask cards interleaved newest-first. */
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-list {
+  display: grid;
+  gap: 12px;
+}
+/* R17 — the run-scoped deep-link target: a calm accent ring on the one card the
+   user came here to resolve. */
+[${APPROVALS_ROUTE_HOST_ATTR}] [${APPROVALS_ROUTE_LIST_ATTR}] [data-focused="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-summary[hidden],
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-empty[hidden] {
+  display: none;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-loading,
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-error,
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-empty {
+  font-size: 13px;
+  color: var(--muted);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-loading {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-subtle);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-error {
+  color: var(--danger);
+  margin-bottom: 8px;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-empty {
+  margin: 0;
+  display: block;
+  padding: 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-sunk);
+  text-align: center;
+  line-height: 1.5;
+}
+`;
+
+/** Aggregated CSS payload injected once by `bootstrapApprovalsRoute`.
+ *  Order: primitives → shared ask-card/panel → shared approval card →
+ *  route chrome. */
+export const APPROVALS_ROUTE_STYLES = [
+  PRIMITIVE_STYLES,
+  ASKS_PANEL_STYLES,
+  APPROVAL_CARD_STYLES,
+  APPROVALS_ROUTE_CHROME_STYLES,
+].join('\n');
+
+// ════════════════════════════════════════════════════════════════
+// Options + handle
+// ════════════════════════════════════════════════════════════════
+
+export type ApprovalQueueState = 'loading' | 'ready' | 'error';
+
+export type ApprovalListCaller = () => Promise<{
+  approvals: ReadonlyArray<ServerPendingApproval>;
+}>;
+
+export type ApprovalResolveCaller = (args: {
+  approval_id: string;
+  decision: 'approve' | 'reject' | 'cancel';
+  note?: string;
+}) => Promise<ServerApprovalResolveResult>;
+
+export type ApprovalSubscribeCaller = () => Promise<{
+  approvals: ReadonlyArray<ServerPendingApproval>;
+  seq: number;
+}>;
+
+export type ApprovalChangedSubscriber = (
+  listener: (event: ServerApprovalSubscriptionEvent) => void,
+) => () => void;
+
+/** D-174 #4 — soft name-resolution seams for the approval card meta. Both
+ *  reuse callers the host already builds (`recipe.list` / `pair.list`);
+ *  absent or failed, the card falls back to the raw ids. */
+export type ApprovalsRecipeNamesCaller = () => Promise<{
+  recipes: ReadonlyArray<{ recipe_id: string; name?: string }>;
+}>;
+export type ApprovalsPairListCaller = () => Promise<{
+  devices: ReadonlyArray<{ instance_id: string; display_name?: string }>;
+}>;
+
+export interface BootstrapApprovalsRouteOptions {
+  root: HTMLElement;
+  document?: Document;
+  /** `approval.list` caller seam — pending approval gates. */
+  runApprovalList: ApprovalListCaller;
+  /** `approval.resolve` caller seam — approve / reject pending gates. */
+  runApprovalResolve: ApprovalResolveCaller;
+  /** `approval.subscribe` caller seam — opens server push updates. */
+  runApprovalSubscribe: ApprovalSubscribeCaller;
+  /** Raw pair-WS `approval_changed` listener seam produced by
+   *  `approval.subscribe`. */
+  onApprovalChanged?: ApprovalChangedSubscriber;
+  /** `notification.pending_asks` caller seam — forwarded to the asks panel. */
+  runList: AsksListCaller;
+  /** `notification.submitAnswer` caller seam — forwarded to the asks panel. */
+  runSubmitAnswer: AsksSubmitAnswerCaller;
+  /** Broadcast subscription seam. Used for asks and generic approval bus
+   *  invalidations. */
+  subscribe?: BroadcastSubscriber['on'];
+  /** Reconnect seam — fires on each transition into `connected`. The route
+   *  re-arms its one-shot `approval.subscribe` here so a restarted server
+   *  re-registers this client + any stale `liveError` clears, and refreshes
+   *  the list to catch what changed while disconnected. */
+  reconnect?: WebclientReconnectSubscriber;
+  /** D-174 #4 — resolve recipe_id → name for the card meta. */
+  recipeNamesCaller?: ApprovalsRecipeNamesCaller;
+  /** D-174 #4 — resolve initiator_instance → device name for the card meta. */
+  pairListCaller?: ApprovalsPairListCaller;
+  /** R17 — the run-scoped focus deep link. When the route is mounted at
+   *  `#approvals/<id>` (e.g. from a Runs detail "Approval" link), the card whose
+   *  id matches is scrolled into view (once) and highlighted while it is on
+   *  screen. A non-matching / already-resolved id degrades silently to the
+   *  whole queue with no highlight. */
+  initialFocusId?: string;
+  /** R20 (Option A) — live chat-plan aggregation. The bootstrap-scoped store
+   *  (fed by chat.plan_proposed/resolved) the route reads + re-renders off.
+   *  Absent → the route shows only gates + asks (back-compat / test paths). */
+  chatPlans?: {
+    list(): ReadonlyArray<PendingChatPlan>;
+    subscribe(listener: () => void): () => void;
+  };
+  /** R20 — resolve a chat plan: approve → `chat.plan.approve`, reject →
+   *  `chat.plan.cancel` (wire verb unchanged, only the label is "Reject"). The
+   *  `chat.plan_resolved` broadcast then drops the plan from the store, which
+   *  clears the row. */
+  runChatPlanResolve?: (args: {
+    plan_id: string;
+    decision: ChatPlanCardDecision;
+  }) => Promise<unknown>;
+  now?: () => number;
+}
+
+export interface ApprovalsRoute {
+  asksPanel(): AsksPanelMount;
+  getApprovals(): ReadonlyArray<ServerPendingApproval>;
+  getApprovalState(): ApprovalQueueState;
+  getApprovalError(): string | null;
+  refreshApprovals(): Promise<void>;
+  resolveApproval(
+    approval_id: string,
+    decision: ApprovalCardDecision,
+  ): Promise<void>;
+  whenLoaded(): Promise<void>;
+  dispose(): void;
+}
+
+interface ApprovalState {
+  phase: ApprovalQueueState;
+  approvals: ReadonlyArray<ServerPendingApproval>;
+  listError: SurfaceErrorEntry | null;
+  liveError: SurfaceErrorEntry | null;
+  seq: number | null;
+}
+
+interface AskSnapshot {
+  phase: AsksPanelState;
+  asks: ReadonlyArray<ServerPendingAsk>;
+  listError: string | null;
+}
+
+/** One row in the unified pending-decisions list. `sortAt` is an epoch-ms
+ *  timestamp every kind carries — gates/asks use the server `created_at`, chat
+ *  plans the client proposal-arrival stamp — so the list is newest-first. */
+type DecisionRow =
+  | { kind: 'gate'; sortAt: number; id: string; approval: ServerPendingApproval }
+  | { kind: 'ask'; sortAt: number; id: string; ask: ServerPendingAsk }
+  | { kind: 'plan'; sortAt: number; id: string; plan: PendingChatPlan };
+
+const clearChildren = (node: HTMLElement): void => {
+  while (node.firstChild) node.removeChild(node.firstChild);
+};
+
+const plural = (n: number, word: string): string =>
+  n === 1 ? word : `${word}s`;
+
+const recipeHref = (recipe_id: string): string =>
+  serializeShellRoute('recipes', recipe_id);
+
+const runHref = (): string => serializeShellRoute('logs');
+
+const connectionHref = (): string => '#connections';
+
+// ════════════════════════════════════════════════════════════════
+// bootstrapApprovalsRoute
+// ════════════════════════════════════════════════════════════════
+
+export const bootstrapApprovalsRoute = (
+  opts: BootstrapApprovalsRouteOptions,
+): ApprovalsRoute => {
+  const doc = opts.document ?? (globalThis as { document?: Document }).document;
+  if (doc === undefined) {
+    throw new Error(
+      'bootstrapApprovalsRoute: no document available - pass `opts.document` for non-browser environments',
+    );
+  }
+  const now = opts.now ?? Date.now;
+
+  if (
+    doc.head.querySelector(`style[${APPROVALS_ROUTE_STYLES_MARKER}]`) === null
+  ) {
+    const style = doc.createElement('style');
+    style.setAttribute(APPROVALS_ROUTE_STYLES_MARKER, '');
+    style.textContent = APPROVALS_ROUTE_STYLES;
+    doc.head.appendChild(style);
+  }
+
+  let disposed = false;
+  let approvalLoadGeneration = 0;
+  let pendingApprovalLoad: Promise<void> = Promise.resolve();
+  let pendingApprovalSubscribe: Promise<void> = Promise.resolve();
+  const resolving = new Set<string>();
+  const resolveErrors = new Map<string, string>();
+  // R20 — host-owned armed flag for a destructive gate's confirm step. Lives
+  // here (not in the card closure) so a confirm-in-progress survives the route's
+  // benign re-renders (a background bus event shouldn't yank it away). Safety is
+  // the explicit two-step: resolving needs a deliberate Confirm click — there is
+  // NO auto-confirm — and a pending gate is immutable, so the armed decision
+  // stays bound to exactly the reviewed operation. Cleared on resolve success +
+  // (defensively) when the gate leaves the pending set.
+  const armedDestructive = new Set<string>();
+  // R20 — chat-plan resolve in-flight + last-error, per plan_id (same shape as
+  // the gate's resolving / resolveErrors).
+  const resolvingPlans = new Set<string>();
+  const planResolveErrors = new Map<string, string>();
+  const unsubscribers: Array<() => void> = [];
+  // D-174 #4 — id→name maps for the card meta (soft; empty until loaded).
+  let recipeNameById = new Map<string, string>();
+  let deviceLabelById = new Map<string, string>();
+
+  let approvalState: ApprovalState = {
+    phase: 'loading',
+    approvals: [],
+    listError: null,
+    liveError: null,
+    seq: null,
+  };
+  let askSnapshot: AskSnapshot = {
+    phase: 'loading',
+    asks: [],
+    listError: null,
+  };
+
+  const routeRoot = doc.createElement('div');
+  routeRoot.setAttribute(APPROVALS_ROUTE_HOST_ATTR, '');
+
+  const header = doc.createElement('header');
+  header.className = 'approvals-header';
+
+  const heading = doc.createElement('h1');
+  heading.className = 'approvals-title';
+  heading.setAttribute(APPROVALS_ROUTE_HEADING_ATTR, '');
+  heading.textContent = 'Approvals';
+  header.appendChild(heading);
+  routeRoot.appendChild(header);
+
+  const summary = doc.createElement('p');
+  summary.className = 'approvals-summary';
+  summary.setAttribute(APPROVALS_ROUTE_SUMMARY_ATTR, '');
+  routeRoot.appendChild(summary);
+
+  // ONE unified list (R20) — gate + ask cards interleaved newest-first.
+  const list = doc.createElement('div');
+  list.className = 'approvals-list';
+  list.setAttribute(APPROVALS_ROUTE_LIST_ATTR, '');
+  routeRoot.appendChild(list);
+
+  const empty = doc.createElement('p');
+  empty.className = 'approvals-empty';
+  empty.setAttribute(APPROVALS_ROUTE_EMPTY_ATTR, '');
+  empty.textContent = 'All clear.';
+  empty.hidden = true;
+  routeRoot.appendChild(empty);
+
+  opts.root.appendChild(routeRoot);
+
+  // The asks panel runs HEADLESS — it owns ask IO (seed + bus refresh +
+  // submit) but renders nothing; this route renders the ask cards itself,
+  // interleaved with gates. Its (empty) host stays detached from the shell.
+  const detachedAsksHost = doc.createElement('div');
+
+  const chatPlanList = (): ReadonlyArray<PendingChatPlan> =>
+    opts.chatPlans?.list() ?? [];
+
+  const mergedRows = (): DecisionRow[] => {
+    const rows: DecisionRow[] = [
+      ...approvalState.approvals.map(
+        (approval): DecisionRow => ({
+          kind: 'gate',
+          sortAt: approval.created_at,
+          id: approval.approval_id,
+          approval,
+        }),
+      ),
+      ...askSnapshot.asks.map(
+        (ask): DecisionRow => ({
+          kind: 'ask',
+          sortAt: ask.created_at,
+          id: ask.ask_id,
+          ask,
+        }),
+      ),
+      ...chatPlanList().map(
+        (plan): DecisionRow => ({
+          kind: 'plan',
+          sortAt: plan.proposed_at,
+          id: plan.plan_id,
+          plan,
+        }),
+      ),
+    ];
+    // Newest-first; stable id tiebreak so equal-timestamp rows don't churn.
+    return rows.sort((a, b) =>
+      a.sortAt !== b.sortAt ? b.sortAt - a.sortAt : a.id.localeCompare(b.id),
+    );
+  };
+
+  const renderGateCard = (approval: ServerPendingApproval): HTMLElement => {
+    const stale = now() >= approval.timeout_at;
+    // D-174 #4 — fold resolved display names onto the model (ids stay
+    // authoritative; the card prefers the name when present).
+    const recipeName = recipeNameById.get(approval.recipe_id);
+    const deviceLabel = deviceLabelById.get(approval.initiator_instance);
+    const cardModel = {
+      ...approval,
+      ...(recipeName !== undefined ? { recipe_name: recipeName } : {}),
+      ...(deviceLabel !== undefined ? { initiator_label: deviceLabel } : {}),
+    };
+    return renderApprovalCard(
+      doc,
+      cardModel,
+      {
+        onResolve: (decision) =>
+          resolveApprovalFromCard(approval.approval_id, decision),
+        // R20 — destructive gates arm a confirm step instead of resolving on
+        // the first Approve click. Arm/disarm flip the host-owned flag + re-
+        // render so the danger Confirm appears / disappears.
+        onArm: () => {
+          armedDestructive.add(approval.approval_id);
+          renderDecisions();
+        },
+        onDisarm: () => {
+          armedDestructive.delete(approval.approval_id);
+          renderDecisions();
+        },
+      },
+      {
+        links: {
+          recipeHref: recipeHref(approval.recipe_id),
+          connectionHref: connectionHref(),
+          runHref: runHref(),
+        },
+        armed: armedDestructive.has(approval.approval_id),
+        disabled: stale || resolving.has(approval.approval_id),
+        disabledReason: stale
+          ? 'Timed out - refresh queue.'
+          : resolving.has(approval.approval_id)
+            ? 'Resolving...'
+            : undefined,
+        errorMessage: resolveErrors.get(approval.approval_id) ?? null,
+      },
+    );
+  };
+
+  const renderAskRow = (ask: ServerPendingAsk): HTMLElement =>
+    renderAskCard(doc, ask, {
+      onAnswer: (optionId) => panel.submitAnswer(ask.ask_id, optionId),
+    });
+
+  const renderPlanCard = (plan: PendingChatPlan): HTMLElement =>
+    renderChatPlanCard(
+      doc,
+      { plan_id: plan.plan_id, tool: plan.tool, tier: plan.tier, args: plan.args },
+      { onResolve: (decision) => resolvePlanFromCard(plan.plan_id, decision) },
+      {
+        disabled: resolvingPlans.has(plan.plan_id),
+        errorMessage: planResolveErrors.get(plan.plan_id) ?? null,
+      },
+    );
+
+  // R17 — run-scoped focus deep link (`#approvals/<id>`) state.
+  const focusId = opts.initialFocusId;
+  let focusScrolled = false;
+
+  /** Scroll the focus-target card into view ONCE. It can be absent on the first
+   *  (loading) render, so this no-ops until the card appears; the highlight
+   *  itself is re-applied per render in the row loop, so it survives re-paints
+   *  until the card is resolved off the list. */
+  const applyFocus = (): void => {
+    if (focusId === undefined || focusScrolled) return;
+    const target = (Array.from(list.children) as HTMLElement[]).find(
+      (el) => el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === focusId,
+    );
+    if (target === undefined) return;
+    focusScrolled = true;
+    if (typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'center' });
+    }
+  };
+
+  /** Re-paint the whole unified list + the summary / empty chrome. Called on
+   *  every gate OR ask state transition — both kinds live in one list. */
+  const renderDecisions = (): void => {
+    if (disposed) return;
+    clearChildren(list);
+
+    // Defensive — drop armed flags for gates no longer pending (e.g. resolved
+    // on another paired device). A still-pending armed gate is KEPT: a benign
+    // re-render must not disarm a confirm-in-progress.
+    for (const id of [...armedDestructive]) {
+      if (!approvalState.approvals.some((a) => a.approval_id === id)) {
+        armedDestructive.delete(id);
+      }
+    }
+
+    const approvalCount = approvalState.approvals.length;
+    const askCount = askSnapshot.asks.length;
+    const planCount = chatPlanList().length;
+    const total = approvalCount + askCount + planCount;
+
+    // Tier 2 — connection-caused load/subscribe failures defer to the global
+    // offline banner (keep the rows already shown; one calm line only when
+    // there are none). A real error shows inline, humanized. Gate + ask load
+    // errors share the one list now, but each keeps its own data-presence
+    // gate: the gate connection error defers only when GATES are still shown
+    // (an ask load can't keep gate rows on screen, and vice-versa).
+    const errorDisplay = resolveSurfaceErrorDisplay(
+      [approvalState.listError, approvalState.liveError],
+      { hasData: approvalState.approvals.length > 0 },
+    );
+    if (errorDisplay !== null) {
+      const err = doc.createElement('div');
+      err.className = 'approvals-error';
+      err.setAttribute(
+        APPROVALS_ROUTE_ERROR_ATTR,
+        errorDisplay.connectionCaused ? 'connection' : 'error',
+      );
+      err.textContent = errorDisplay.text;
+      list.appendChild(err);
+    }
+    if (askSnapshot.listError !== null) {
+      const askErr = doc.createElement('div');
+      askErr.className = 'approvals-error';
+      askErr.setAttribute(APPROVALS_ROUTE_ERROR_ATTR, 'error');
+      askErr.textContent = `Couldn't load asks: ${askSnapshot.listError}`;
+      list.appendChild(askErr);
+    }
+
+    const stillLoading =
+      total === 0
+      && (approvalState.phase === 'loading' || askSnapshot.phase === 'loading');
+    if (stillLoading) {
+      const loading = doc.createElement('div');
+      loading.className = 'approvals-loading';
+      loading.setAttribute(APPROVALS_ROUTE_LOADING_ATTR, '');
+      loading.textContent = 'Loading pending decisions...';
+      list.appendChild(loading);
+      renderChrome();
+      return;
+    }
+
+    for (const row of mergedRows()) {
+      const card =
+        row.kind === 'gate'
+          ? renderGateCard(row.approval)
+          : row.kind === 'ask'
+            ? renderAskRow(row.ask)
+            : renderPlanCard(row.plan);
+      // R17 — uniform focus hook + highlight for the run-scoped deep link. The
+      // attr is set on EVERY card (so `applyFocus` can find the target); the
+      // highlight flag only on the match (re-applied each paint while it lives).
+      card.setAttribute(APPROVALS_ROUTE_FOCUS_ATTR, row.id);
+      if (focusId !== undefined && row.id === focusId) {
+        card.setAttribute('data-focused', 'true');
+      }
+      list.appendChild(card);
+    }
+    applyFocus();
+    renderChrome();
+  };
+
+  const renderChrome = (): void => {
+    const approvalCount = approvalState.approvals.length;
+    const askCount = askSnapshot.asks.length;
+    const planCount = chatPlanList().length;
+    const total = approvalCount + askCount + planCount;
+
+    summary.textContent =
+      total === 0
+        ? 'No pending decisions.'
+        : `${total} pending ${plural(total, 'decision')} waiting on you.`;
+
+    const allClear =
+      approvalState.phase === 'ready'
+      && askSnapshot.phase === 'ready'
+      && total === 0
+      && approvalState.listError === null
+      && approvalState.liveError === null
+      && askSnapshot.listError === null;
+    empty.hidden = !allClear;
+    // When all-clear the dashed "All clear." panel is the whole message —
+    // drop the redundant "No pending decisions." summary line above it.
+    summary.hidden = allClear;
+  };
+
+  const doRefreshApprovals = (): Promise<void> => {
+    const gen = ++approvalLoadGeneration;
+    pendingApprovalLoad = (async () => {
+      try {
+        const res = await opts.runApprovalList();
+        if (disposed || gen !== approvalLoadGeneration) return;
+        approvalState = {
+          ...approvalState,
+          phase: 'ready',
+          approvals: [...res.approvals],
+          listError: null,
+        };
+        renderDecisions();
+      } catch (err) {
+        if (disposed || gen !== approvalLoadGeneration) return;
+        approvalState = {
+          ...approvalState,
+          phase: 'error',
+          listError: { error: classifyRpcError(err), label: "Couldn't load approval gates" },
+        };
+        renderDecisions();
+      }
+    })();
+    return pendingApprovalLoad;
+  };
+
+  const onApprovalChanged = (event: ServerApprovalSubscriptionEvent): void => {
+    if (approvalState.seq !== null && event.seq <= approvalState.seq) return;
+    approvalState = { ...approvalState, seq: event.seq };
+    void doRefreshApprovals();
+  };
+
+  // Bumped per `startApprovalSubscription` call so a slow in-flight subscribe
+  // (e.g. the mount-time one) can't clobber the baseline a newer reconnect
+  // re-subscribe established.
+  let approvalSubscribeGeneration = 0;
+  const startApprovalSubscription = (
+    params?: { resetSeqBaseline?: boolean },
+  ): void => {
+    const gen = (approvalSubscribeGeneration += 1);
+    pendingApprovalSubscribe = (async () => {
+      try {
+        const res = await opts.runApprovalSubscribe();
+        if (disposed || gen !== approvalSubscribeGeneration) return;
+        approvalState = {
+          ...approvalState,
+          // Normally `Math.max` guards against a slow subscribe response
+          // regressing the seq below an event that already advanced it. But on
+          // a RECONNECT the server may have RESTARTED — its seq epoch resets to
+          // 0, and `Math.max` against the pre-restart high-water would strand
+          // us above every post-restart event, dropping them all as stale (the
+          // exact bug reconnect re-subscribe is meant to fix). So adopt the
+          // snapshot's seq as the new epoch baseline; the generation guard
+          // above keeps a stale in-flight subscribe from undoing it.
+          seq: params?.resetSeqBaseline === true
+            ? res.seq
+            : Math.max(approvalState.seq ?? 0, res.seq),
+          liveError: null,
+          ...(approvalState.phase === 'loading'
+            ? {
+                phase: 'ready' as const,
+                approvals: [...res.approvals],
+                listError: null,
+              }
+            : {}),
+        };
+        renderDecisions();
+      } catch (err) {
+        if (disposed || gen !== approvalSubscribeGeneration) return;
+        approvalState = {
+          ...approvalState,
+          liveError: { error: classifyRpcError(err), label: 'Live approval updates unavailable' },
+        };
+        renderDecisions();
+      }
+    })();
+  };
+
+  const resolveApprovalFromCard = async (
+    approval_id: string,
+    decision: ApprovalCardDecision,
+  ): Promise<void> => {
+    if (resolving.has(approval_id)) return;
+    resolving.add(approval_id);
+    resolveErrors.delete(approval_id);
+    renderDecisions();
+    try {
+      await opts.runApprovalResolve({ approval_id, decision });
+      // Resolved — drop the row + its (now-stale) armed flag. On failure we
+      // keep it armed so the Confirm + inline error stay up for a retry.
+      armedDestructive.delete(approval_id);
+      approvalState = {
+        ...approvalState,
+        phase: 'ready',
+        approvals: approvalState.approvals.filter(
+          (approval) => approval.approval_id !== approval_id,
+        ),
+        listError: null,
+      };
+      renderDecisions();
+      await doRefreshApprovals();
+    } catch (err) {
+      resolveErrors.set(approval_id, humanizeRpcError(err));
+      throw err;
+    } finally {
+      resolving.delete(approval_id);
+      renderDecisions();
+    }
+  };
+
+  const resolvePlanFromCard = async (
+    plan_id: string,
+    decision: ChatPlanCardDecision,
+  ): Promise<void> => {
+    if (opts.runChatPlanResolve === undefined) return;
+    if (resolvingPlans.has(plan_id)) return;
+    resolvingPlans.add(plan_id);
+    planResolveErrors.delete(plan_id);
+    renderDecisions();
+    try {
+      await opts.runChatPlanResolve({ plan_id, decision });
+      // SUCCESS — KEEP the in-flight guard so the card stays disabled until the
+      // `chat.plan_resolved` broadcast drops the plan from the store (Option A
+      // has no list rpc to re-fetch, unlike the asks panel). Re-enabling here
+      // would open a double-fire window: the plan is still displayed but no
+      // longer guarded → a second click sends a second approve. Stale guards
+      // for plans the store has since dropped are pruned in the store listener.
+    } catch (err) {
+      // FAILURE — re-enable for a retry + surface the error inline.
+      resolvingPlans.delete(plan_id);
+      planResolveErrors.set(plan_id, humanizeRpcError(err));
+      renderDecisions();
+      throw err;
+    }
+  };
+
+  const panel = mountAsksPanel({
+    host: detachedAsksHost,
+    document: doc,
+    headless: true,
+    runList: opts.runList,
+    runSubmitAnswer: opts.runSubmitAnswer,
+    ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+    loadingCopy: null,
+    emptyCopy: null,
+    onChange: (next) => {
+      askSnapshot = next;
+      renderDecisions();
+    },
+  });
+
+  if (opts.onApprovalChanged !== undefined) {
+    unsubscribers.push(opts.onApprovalChanged(onApprovalChanged));
+  }
+  if (opts.subscribe !== undefined) {
+    unsubscribers.push(
+      opts.subscribe('approval', () => {
+        if (disposed) return;
+        void doRefreshApprovals();
+      }),
+    );
+  }
+  // R20 — re-render when the live chat-plan store changes (a plan proposed or
+  // resolved on any surface). The store owns the bus subscriptions; this is
+  // just the route's change listener. It also prunes in-flight/error state for
+  // plans the store has dropped (resolved away) so a kept-on-success guard
+  // doesn't linger past the row.
+  if (opts.chatPlans !== undefined) {
+    unsubscribers.push(
+      opts.chatPlans.subscribe(() => {
+        if (disposed) return;
+        const live = new Set(chatPlanList().map((p) => p.plan_id));
+        for (const id of [...resolvingPlans]) {
+          if (!live.has(id)) resolvingPlans.delete(id);
+        }
+        for (const id of [...planResolveErrors.keys()]) {
+          if (!live.has(id)) planResolveErrors.delete(id);
+        }
+        renderDecisions();
+      }),
+    );
+  }
+  // D-174 #4 — load id→name maps once; soft (absent caller / error → ids).
+  const loadRecipeNames = async (): Promise<void> => {
+    if (opts.recipeNamesCaller === undefined) return;
+    try {
+      const { recipes } = await opts.recipeNamesCaller();
+      if (disposed) return;
+      const next = new Map<string, string>();
+      for (const r of recipes) {
+        if (typeof r.name === 'string' && r.name.length > 0) next.set(r.recipe_id, r.name);
+      }
+      recipeNameById = next;
+      renderDecisions();
+    } catch {
+      // Soft enhancement — keep showing the raw recipe id.
+    }
+  };
+  const loadDeviceLabels = async (): Promise<void> => {
+    if (opts.pairListCaller === undefined) return;
+    try {
+      const { devices } = await opts.pairListCaller();
+      if (disposed) return;
+      const next = new Map<string, string>();
+      for (const d of devices) {
+        if (typeof d.display_name === 'string' && d.display_name.length > 0) {
+          next.set(d.instance_id, d.display_name);
+        }
+      }
+      deviceLabelById = next;
+      renderDecisions();
+    } catch {
+      // Soft enhancement — keep showing the raw instance id.
+    }
+  };
+
+  renderDecisions();
+  startApprovalSubscription();
+  void doRefreshApprovals();
+  void loadRecipeNames();
+  void loadDeviceLabels();
+
+  // Re-arm the one-shot `approval.subscribe` on every reconnect. The
+  // mount-time call above covers the first connect (it queues + drains) and
+  // the mounted-while-already-connected case (route navigation); this covers
+  // a later drop+reconnect — where a restarted server kept no subscription
+  // record + a failed boot-time subscribe left a stale `liveError`.
+  if (opts.reconnect !== undefined) {
+    unsubscribers.push(
+      opts.reconnect(() => {
+        if (disposed) return;
+        // resetSeqBaseline: a restarted server's seq epoch starts over, so
+        // adopt the re-subscribe snapshot's seq instead of the stale
+        // pre-restart high-water (else every post-restart event is dropped).
+        startApprovalSubscription({ resetSeqBaseline: true });
+        void doRefreshApprovals();
+      }),
+    );
+  }
+
+  return {
+    asksPanel: () => panel,
+    getApprovals: () => approvalState.approvals,
+    getApprovalState: () => approvalState.phase,
+    getApprovalError: () =>
+      (approvalState.listError ?? approvalState.liveError)?.error.copy ?? null,
+    refreshApprovals: () => doRefreshApprovals(),
+    resolveApproval: (approval_id, decision) =>
+      resolveApprovalFromCard(approval_id, decision),
+    whenLoaded: async () => {
+      await Promise.all([
+        pendingApprovalLoad,
+        pendingApprovalSubscribe,
+        panel.whenLoaded(),
+      ]);
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      for (const unsub of unsubscribers) {
+        try {
+          unsub();
+        } catch {
+          // Subscriber teardown is best effort; DOM and panel teardown continue.
+        }
+      }
+      unsubscribers.length = 0;
+      panel.dispose();
+      try {
+        opts.root.removeChild(routeRoot);
+      } catch {
+        // A detached / fake host can throw on removeChild. The panel is
+        // already disposed and the caller owns the root.
+      }
+    },
+  };
+};

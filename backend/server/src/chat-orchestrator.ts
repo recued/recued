@@ -1,0 +1,3448 @@
+/** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
+ *  turn + tool dispatch loop.
+ *
+ *  The orchestrator runs the chat agent loop **server-side** per the
+ *  D-148 architecture (server is the engine; webclient + Bridge are
+ *  display + HID with no model calls + no tool dispatch). For a single
+ *  user turn:
+ *
+ *    1. Build the chat tail snapshot from prior conversational rows.
+ *    2. Persist the user message to `chat_messages` (encrypted via
+ *       `chat` sub-DEK).
+ *    3. Project the catalog the AI sees:
+ *         - Self-target: union of `InternalToolRegistry.list()`,
+ *           minus per-kind-disabled Tier 2 entries (Mary's Settings
+ *           scope) and per-MCP-disabled Tier 3 entries.
+ *         - Peer-target: `peerDispatcher.listToolEntries(peerName)`
+ *           verbatim (peer-side projection already applied).
+ *       The catalog passed to the AI is the post-capability-filter
+ *       union — no intent-driven narrowing happens here. The prompt-
+ *       cache middleware (D-164 P4) takes over catalog assembly via
+ *       `TurnContext.state` in a later slice; for now the inline
+ *       projection here is the seam.
+ *    4. Compose the AI packet inline (per D-164 P6.0 (b) decision —
+ *       chat-orchestrator owns inline composition, no framework seam):
+ *         - synthetic kernel manifest (`CHAT_MAIN_TURN_INGREDIENT_SLUG`)
+ *         - system prompt (AIOutput shape framing)
+ *         - prompt body (available_tools + commitment_context + assembled
+ *           content parts (`chat_tail` + `user_message`) + prior_tool_calls)
+ *         - per-turn force_layer + model_hint derived from session +
+ *           channel default `'fast'` (D-164 P6.2 / P6.3 channel default)
+ *       Calls the injected `executeAiCall` (the `@recued/llm`
+ *       `executeLLM` closure pre-bound in `wire-chat-orchestrator.ts`)
+ *       directly.
+ *    5. Validate the AI body via `validateAIOutput`. On the INITIAL
+ *       call: failure / executor throw / no-executor → ship empty-
+ *       assistant; emit `engine.budget_exceeded` only when an
+ *       executor was wired (no-executor stays silent — substrate-
+ *       reachable test-harness / pre-LLM-config boot path). On a
+ *       MID-LOOP reinvoke: the loop preserves the LAST valid AI
+ *       response as the assistant content (the planning blurb from
+ *       the prior successful round) + emits
+ *       `recued.multi_turn.round_completed` (`aborted`) +
+ *       `engine.budget_exceeded` to surface the failure (D-137
+ *       Trio #B abort semantics preserved).
+ *    6. Drive the cooperative tool loop (D-137 Trio #B):
+ *         - dispatch every `tool_call` via `dispatch.dispatchTool`
+ *           (existing P1.2 seam — broadcast + audit + tier derivation
+ *           per dispatch),
+ *         - reinvoke the AI with the accumulated `prior_tool_calls`
+ *           threaded into a fresh packet body,
+ *         - cap by `CHAT_MAIN_TURN_TOOL_LOOP_CAP`; emit
+ *           `recued.multi_turn.round_*` + `loop_terminated`
+ *           transparency events on the chat broadcast bus,
+ *         - stream the FINAL synthesised response as one
+ *           `chat.token_streamed` delta.
+ *    7. Persist the assistant message + `tool_calls` provenance +
+ *       emit `chat.message_complete` + `recued.token_usage`.
+ *
+ *  Per § A.2 amendment (2026-05-11) — the chat agent is internal-
+ *  channel per the MCP-as-Agent-Channel invariant. The orchestrator
+ *  MUST dispatch via `InternalToolRegistry.dispatch()` with
+ *  `channel: 'internal_function_call'` + session_id; it MUST NOT loop
+ *  back through the MCP wire (which would conflate channels — firing
+ *  the wire-only audit trigger on Mary's own queries; see the
+ *  `project_mcp_channel_invariant.md` rationale + the channel-isolation
+ *  ratchet for the load-bearing token list).
+ *
+ *  Per § Wire A — every per-turn event lands on the D-121 broadcast
+ *  bus so paired clients render the live conversation without
+ *  polling. Multi-client coherence: a turn that lands on Mary's laptop
+ *  also surfaces on her phone PWA.
+ *
+ *  No new audit kinds — re-uses the closed `chat_session_created` /
+ *  `chat_message_sent` / `chat_tool_call` set from D-137 P1.
+ */
+
+import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
+import {
+  computeConnectionMcpDisabledTier3Names,
+  computeKindGatedTier2Names,
+  aggregateTokenUsageReports,
+  INGREDIENT_KINDS,
+  SAFE_DEFAULT_CHAT_CATALOG_KINDS,
+  type ChatBroadcastEventKind,
+  type ChatDispatchChannel,
+  type ChatDispatchContext,
+  type ChatDispatchResult,
+  type ChatMessage,
+  type ChatModelHint,
+  type ChatModelRoutingLayer,
+  type ChatPickerTarget,
+  type ChatSession,
+  type ChatTailMessage,
+  type ChatToolCall,
+  type ChatToolCatalogScopeState,
+  type ConnectionMcpAnnotationState,
+  type ContractSnapshot,
+  type ExecutionSource,
+  type IngredientKind,
+  type IngredientManifest,
+  type InternalToolRegistry,
+  type ModelTier,
+  type RecuedServerSignature,
+  type ServerEvent,
+  type TransparencyEvent,
+  type Tier1ToolName,
+  type TokenUsageReport,
+  type ToolEntry,
+  type ToolTier,
+  type ChatModelSourceId,
+  type ChatCatalogDeliveryMode,
+  CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
+  isChatModelHint,
+  isChatModelRoutingLayer,
+  isChatModelSourceId,
+  isTier1ToolName,
+  executionSourceContractId,
+} from '@recued/contracts';
+import { planApproval as planApprovalModule, piiEgress } from '@recued/gateway';
+import {
+  createMiddlewareRegistry,
+  runStream,
+  type ContentPromptPart,
+  type EntityPromptPart,
+  type MiddlewareRegistry,
+  type TextPromptPart,
+  type TurnExecutor,
+  type TurnOutput,
+} from '@recued/middleware';
+import {
+  PERSONAL_RECIPES_MATCHES_STATE_KEY,
+  type DispatchPersonalRecipesResult,
+  type PersonalRecipeMatch,
+} from '@recued/middleware-recued';
+import type { Channel, ChannelInbound, SessionStateStore } from '@recued/chat';
+import {
+  estimateConservativeMessagesTokens,
+  transcribe,
+  type LLMFinishReason,
+  type LLMMessageRole,
+  type TranscribeDeps,
+} from '@recued/llm';
+import type {
+  LlmPromptSurface,
+  ResolvedLlmSystemPrompt,
+} from './llm-system-prompt.js';
+import type { AuditLogStore } from '@recued/storage';
+import { ChatVaultLockedError, type ChatStore } from './storage/chat-store.js';
+import type { EventBus } from './events/bus.js';
+import {
+  handleFileRead,
+  type FileReadDeps,
+  type FileReadResponse,
+} from './collections/file/file-read-handler.js';
+// D-160 spec-O-5 — the chat turn MECHANICS (per-round AI call +
+// cooperative tool loop + in-turn enforcement + rich emits) live in
+// `runChatTurn`; the orchestrator drives it through the framework
+// `runStream` loop and ENACTs the registered hooks' before/after-turn
+// decisions off the shared `state` (Stage 3, N.9) + finalize.
+import {
+  ChatContextLengthError,
+  runChatTurn,
+  type RunChatTurnPromptContent,
+  type RunChatTurnResult,
+} from './chat-turn-executor.js';
+import { chatCapacity, createServerChatChannel } from './chat-channel-factory.js';
+// D-160 spec-O-5 Stage 3 — the turn concerns are REGISTERED HOOKS over the
+// shared `state` (N.9): source-binding adapters wrap the real
+// `standing-instructions` / `correction-learning` / `personal-recipes`
+// D-160 middleware objects (see module doc). The orchestrator registers
+// them into its per-turn stream registry; `runStream` drives them.
+import {
+  createChatStreamMiddlewares,
+  CHAT_CATALOG_INPUTS_STATE_KEY,
+  CHAT_CATALOG_RESULT_STATE_KEY,
+  CHAT_TURN_AFTER_INPUTS_STATE_KEY,
+  CORRECTION_LEARNING_MIDDLEWARE_ID,
+  type ChatCatalogBuilder,
+  type ChatCatalogInputs,
+  type ChatScopeSearchInput,
+  type ChatTurnAfterInputs,
+} from './chat-stream-middleware.js';
+import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
+import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
+// D-167 P5 S4 — the always-on PII bookend hooks + the wire-seam enactment.
+// `pii-protect` (first `prompt`) / `pii-restore` (last `update`) bracket the
+// source adapters; the executor closure WRAPS `executeAiCall` to alias every
+// outbound packet + restore every returned body (N.9 ENACT).
+import {
+  createPiiEgressPlanForSession,
+  readPiiEgressPlan,
+  readPiiRedactionSummary,
+  readPiiRestoredText,
+  wrapExecuteAiCallForPii,
+  type PiiEgressHookDeps,
+} from './chat-pii-egress.js';
+import type { RecallResolver } from './chat-recall-index.js';
+import type { SessionForwardedSenderIndex } from './chat-forwarded-sender-index.js';
+import type { ScopedGrantParseDeps } from './chat-scoped-grant-middleware.js';
+import type { ContactStore } from './storage/contact-store.js';
+import type { CorrectionEventsStore } from './storage/correction-events-store.js';
+
+/** D-164 P6.3 — per-tool projection the main-turn packet carries. The
+ *  schema stays opaque to the composer (consumers pre-resolve from the
+ *  slug); the AI sees the slug + `args_schema` + optional
+ *  `description`.
+ *
+ *  D-160 spec-O-5 Stage 1b — exported so `chat-turn-executor.ts`'s
+ *  `composeChatMainTurnPromptParts` (which moved with the turn) can type
+ *  the `available_tools` it receives. D-160 A.8 step 4 — the orchestrator
+ *  PRODUCES this via the `buildCatalog` projection bound to the `catalog`
+ *  before-turn hook; `chat-stream-middleware.ts` imports the type to shape
+ *  the hook's `state` handoff.
+ *
+ *  Lever-2 (2026-07-02) — `args_schema` is OPTIONAL: the index-mode
+ *  projection (`catalogProjection.mode === 'index'`) omits it for Tier-2
+ *  recipe entries, rendering them as `{recipe_slug, description}` only.
+ *  The model then pulls the full invocable definition on demand via the
+ *  `tools.search` Tier-1 meta-tool. Full mode (the launch baseline) always
+ *  sets it. */
+export interface ChatMainTurnTool {
+  readonly recipe_slug: string;
+  readonly args_schema?: unknown;
+  readonly description?: string;
+}
+
+const LLM_GATEWAY_FORBIDDEN_ARG_KEYS: ReadonlySet<string> = new Set([
+  'vault',
+  'context',
+  'execution_context',
+  'executioncontext',
+  'credential',
+  'credentials',
+  'oauth',
+  'secret',
+  'secrets',
+  'password',
+  'passphrase',
+  'api_key',
+  'apikey',
+  'client_secret',
+  'clientsecret',
+  'access_token',
+  'accesstoken',
+  'refresh_token',
+  'refreshtoken',
+  'authorization',
+  'bearer_token',
+  'bearertoken',
+  'private_key',
+  'privatekey',
+]);
+
+const LLM_GATEWAY_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+]);
+
+const normalizedGatewayArgKey = (key: string): string =>
+  key
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+const isGatewayForbiddenArgKey = (key: string): boolean => {
+  const raw = key.trim().toLowerCase();
+  const normalized = normalizedGatewayArgKey(key);
+  return LLM_GATEWAY_PROTOTYPE_KEYS.has(raw)
+    || LLM_GATEWAY_FORBIDDEN_ARG_KEYS.has(normalized);
+};
+
+const asSchemaRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+const schemaDeclaresForbiddenGatewayCarrier = (
+  schema: unknown,
+  seen = new Set<unknown>(),
+): boolean => {
+  const record = asSchemaRecord(schema);
+  if (!record || seen.has(record)) return false;
+  seen.add(record);
+  const properties = asSchemaRecord(record.properties);
+  if (properties) {
+    for (const [key, child] of Object.entries(properties)) {
+      if (isGatewayForbiddenArgKey(key)) return true;
+      if (schemaDeclaresForbiddenGatewayCarrier(child, seen)) return true;
+    }
+  }
+  const items = record.items;
+  return items !== undefined
+    && schemaDeclaresForbiddenGatewayCarrier(items, seen);
+};
+
+const closedLlmGatewayArgSchema = (
+  schema: unknown,
+): Record<string, unknown> | null => {
+  const record = asSchemaRecord(schema);
+  if (!record || record.type !== 'object') return null;
+  const properties = record.properties === undefined
+    ? {}
+    : asSchemaRecord(record.properties);
+  if (!properties || schemaDeclaresForbiddenGatewayCarrier(record)) return null;
+  const required = record.required;
+  if (
+    required !== undefined
+    && (
+      !Array.isArray(required)
+      || required.some(
+        (key) => typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(properties, key),
+      )
+    )
+  ) return null;
+  return {
+    ...record,
+    type: 'object',
+    properties: { ...properties },
+    additionalProperties: false,
+  };
+};
+
+const forbiddenGatewayCarrierPath = (
+  value: unknown,
+  path = '$',
+  seen = new Set<unknown>(),
+): string | null => {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const nested = forbiddenGatewayCarrierPath(value[i], `${path}[${i}]`, seen);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (isGatewayForbiddenArgKey(key)) return `${path}.${key}`;
+    const nested = forbiddenGatewayCarrierPath(nestedValue, `${path}.${key}`, seen);
+    if (nested) return nested;
+  }
+  return null;
+};
+
+const validateGatewaySchemaValue = (
+  schema: unknown,
+  value: unknown,
+  path: string,
+): string | null => {
+  const record = asSchemaRecord(schema);
+  if (!record) return `${path} has an invalid argument schema`;
+  if (Array.isArray(record.enum) && !record.enum.some((candidate) => Object.is(candidate, value))) {
+    return `${path} must be one of the declared enum values`;
+  }
+  switch (record.type) {
+    case 'string':
+      if (typeof value !== 'string') return `${path} must be a string`;
+      if (record.format === 'date-time' && Number.isNaN(Date.parse(value))) {
+        return `${path} must be an ISO 8601 date-time string`;
+      }
+      return null;
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value)
+        ? null
+        : `${path} must be a finite number`;
+    case 'integer':
+      return typeof value === 'number' && Number.isSafeInteger(value)
+        ? null
+        : `${path} must be an integer`;
+    case 'boolean':
+      return typeof value === 'boolean' ? null : `${path} must be a boolean`;
+    case 'array': {
+      if (!Array.isArray(value)) return `${path} must be an array`;
+      if (record.items === undefined) return null;
+      for (let i = 0; i < value.length; i += 1) {
+        const issue = validateGatewaySchemaValue(record.items, value[i], `${path}[${i}]`);
+        if (issue) return issue;
+      }
+      return null;
+    }
+    case 'object': {
+      const object = asSchemaRecord(value);
+      if (!object) return `${path} must be an object`;
+      const properties = asSchemaRecord(record.properties) ?? {};
+      const required = Array.isArray(record.required) ? record.required : [];
+      for (const key of required) {
+        if (typeof key === 'string' && !Object.prototype.hasOwnProperty.call(object, key)) {
+          return `${path}.${key} is required`;
+        }
+      }
+      for (const [key, child] of Object.entries(object)) {
+        const childSchema = properties[key];
+        if (childSchema === undefined) {
+          if (record.additionalProperties === false) {
+            return `${path}.${key} is not a declared argument`;
+          }
+          continue;
+        }
+        const issue = validateGatewaySchemaValue(childSchema, child, `${path}.${key}`);
+        if (issue) return issue;
+      }
+      return null;
+    }
+    default:
+      return `${path} uses an unsupported argument schema type`;
+  }
+};
+
+const validateLlmGatewayToolArguments = (
+  schema: unknown,
+  value: unknown,
+): { readonly ok: true } | { readonly ok: false; readonly detail: string } => {
+  const closed = closedLlmGatewayArgSchema(schema);
+  if (!closed) {
+    return { ok: false, detail: 'llm_gateway tool schema is not a safe closed object schema' };
+  }
+  const carrier = forbiddenGatewayCarrierPath(value);
+  if (carrier) {
+    return {
+      ok: false,
+      detail: `${carrier} is a server-owned vault, context, or credential carrier`,
+    };
+  }
+  const issue = validateGatewaySchemaValue(closed, value, 'args');
+  return issue ? { ok: false, detail: issue } : { ok: true };
+};
+
+/** D-196 — the contract-safe subset of the shared chat registry. Tier 2
+ * entries are pinned installed recipes whose dispatch path threads the
+ * contracted source + fresh snapshot through `handleExecute`. Their argument
+ * schema must also be projectable as a closed object with no server-owned
+ * vault/context/credential carriers. */
+export const isLlmGatewayContractSafeToolEntry = (entry: ToolEntry): boolean =>
+  entry.tier === 2 && closedLlmGatewayArgSchema(entry.arg_schema) !== null;
+
+/** Lever-2 — the catalog delivery mode enum moved to `@recued/contracts`
+ *  (`packages/contracts/src/chat.ts`) so `packages/llm` (the `LLMConfig` that
+ *  persists per-source modes) and the webclient AI/Models page can reference
+ *  it. Re-exported here so existing server importers (`chat-tools-search.ts`,
+ *  `chat-turn-executor.ts`) resolve it unchanged. The server-only
+ *  `ChatCatalogProjectionConfig` (with the index desc-cap) stays local. */
+export type { ChatCatalogDeliveryMode };
+
+/** Lever-2 — does this delivery mode THIN the catalog, and therefore inject
+ *  the `tools.search` recall meta-tool AND emit its system-prompt guidance?
+ *  True for every non-`full` mode (`index` leans Tier-2, `lean-core` drops
+ *  it). The `tools.search` presentation gate (`buildChatMainTurnTools`) and the
+ *  guidance composer (`chat-turn-executor.ts:composeChatMainTurnSystemPrompt`)
+ *  MUST agree on this set: guidance that says "call tools.search" while the
+ *  tool is absent would point the model at a tool it can't see, and a thinned
+ *  catalog with no guidance would strand the model with recipes it can't
+ *  discover. One predicate, both sites. */
+export const catalogModeUsesToolsSearch = (mode: ChatCatalogDeliveryMode): boolean =>
+  mode !== 'full';
+
+/** Lever-2 per-slot — the smart auto-default catalog mode per LLM source
+ *  (canonical definition in `@recued/contracts` so the webclient's "Automatic"
+ *  hint reads the SAME map the resolver does). Applied when `opts.smartDefaults`
+ *  is on (the wire defaults it ON as of 2026-07-03 — the "proven-safe" gate
+ *  cleared; `RECUED_CHAT_CATALOG_SMART_DEFAULTS=0` opts out) and the turn's
+ *  source is known; otherwise the resolver falls to the env-global mode /
+ *  `full`. Re-exported for existing importers. */
+export { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE };
+
+/** Lever-2 per-slot — resolve the catalog mode for a turn's LLM source.
+ *  Precedence: explicit user per-source override → smart default (only for a
+ *  KNOWN source, only when `smartDefaults` on) → env-global fallback → `'full'`.
+ *  An undefined/unpinned source deliberately SKIPS the smart default (we can't
+ *  predict at catalog-build time whether the matcher lands on a cache-harvesting
+ *  BYOK slot or the pool, so the conservative choice never thins an
+ *  unpredictable turn). Pure + exported for unit tests. */
+export const resolveCatalogModeForSource = (
+  source: ChatModelSourceId | undefined,
+  perSource: Partial<Record<ChatModelSourceId, ChatCatalogDeliveryMode>> | undefined,
+  opts: { smartDefaults: boolean; envGlobalMode?: ChatCatalogDeliveryMode },
+): ChatCatalogDeliveryMode => {
+  if (source !== undefined) {
+    const override = perSource?.[source];
+    if (override !== undefined) return override;
+    if (opts.smartDefaults) return CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source];
+  }
+  return opts.envGlobalMode ?? 'full';
+};
+
+/** Lever-2 per-slot — true iff ANY of the given modes thins (so the wire's
+ *  `tools.search` wrapper is enabled). The wrapper is applied ONCE at
+ *  construction and cannot be per-turn; enabling it whenever any source could
+ *  thin makes `tools.search` DISPATCHABLE on the chat path (a read-only,
+ *  chat-only superset), while `buildChatMainTurnTools` drops it from
+ *  PRESENTATION on `full` turns — so a full turn stays byte-identical and a
+ *  live full→index override never yields a leaned catalog with an
+ *  un-dispatchable tool. */
+export const anyCatalogModeUsesToolsSearch = (
+  modes: Iterable<ChatCatalogDeliveryMode>,
+): boolean => {
+  for (const mode of modes) if (catalogModeUsesToolsSearch(mode)) return true;
+  return false;
+};
+
+/** Lever-2 per-slot — normalize the turn's routing (resolved LAYER + source_id)
+ *  to the catalog source, MIRRORING the executor's slot-pin logic
+ *  (`chat-turn-executor.ts`: `pinSlot = forceLayer === 'byok' && source_id ∈
+ *  {slot_1,slot_2}`). A turn only routes to a BYOK slot when the resolved layer
+ *  is `byok` AND the source_id is a slot; a `free_pool` layer routes to the pool
+ *  regardless of a stale session slot pin, and a `byok` layer with a non-slot
+ *  source_id routes byok-UNPINNED. Keying the catalog mode off a raw session
+ *  `source_id` that DISAGREES with the turn's layer would thin (or fail to thin)
+ *  the WRONG model — e.g. session `free_pool` + a `{current:'byok'}` override:
+ *  the LLM routes BYOK unpinned but the raw source_id `free_pool` would thin to
+ *  index. So: `free_pool` layer → `'free_pool'`; `byok` layer + slot → that
+ *  slot; otherwise `undefined` (conservative → env/full, matching the
+ *  unpredictable-source rule). */
+export const resolveCatalogSource = (
+  layer: ChatModelRoutingLayer | undefined,
+  sourceId: ChatModelSourceId | undefined,
+): ChatModelSourceId | undefined => {
+  if (layer === 'free_pool') return 'free_pool';
+  if (layer === 'byok' && (sourceId === 'slot_1' || sourceId === 'slot_2')) return sourceId;
+  return undefined;
+};
+
+/** Lever-2 (2026-07-02) — the catalog projection knob. Read ONCE at
+ *  orchestrator construction (never per-turn), so the projection it drives
+ *  stays turn-invariant and safe inside the D-164 cacheable prefix. */
+export interface ChatCatalogProjectionConfig {
+  readonly mode: ChatCatalogDeliveryMode;
+  /** Index mode only — cap Tier-2 descriptions at this many characters
+   *  (word-safe, ellipsized). Undefined = full description. A fixed config
+   *  value (turn-invariant → prefix-safe). The bench lane A/Bs full vs the
+   *  ~120-char variant; this is the knob it toggles. */
+  readonly indexDescriptionMaxChars?: number;
+}
+
+/** The default projection: the launch baseline (full arg_schema per
+ *  entry). Callers that pass no `catalogProjection` dep get this. */
+export const DEFAULT_CHAT_CATALOG_PROJECTION: ChatCatalogProjectionConfig = {
+  mode: 'full',
+};
+
+/** Lever-2 — parse the prototype catalog-delivery knob from a process-env
+ *  snapshot. `RECUED_CHAT_CATALOG_MODE=index` turns on the thin-index
+ *  projection; `=lean-core` turns on the v2 core-only projection (drops the
+ *  Tier-2 listing entirely); anything else (incl. absent) is the `'full'`
+ *  baseline. `RECUED_CHAT_CATALOG_INDEX_DESC_MAX=<positive int>` (index mode
+ *  ONLY — lean-core has no Tier-2 descriptions to cap) caps Tier-2
+ *  descriptions; absent / non-positive / non-integer / unparseable → full
+ *  descriptions. Parsed with `Number` (not `parseInt`), so malformed values
+ *  like `12.5` / `12abc` / `1e309` are rejected whole rather than silently
+ *  truncated to a partial cap. Pure over the passed snapshot so the wire file
+ *  stays thin and the parse is unit-testable. */
+export const parseChatCatalogProjectionEnv = (
+  env: Record<string, string | undefined>,
+): ChatCatalogProjectionConfig => {
+  const mode = env.RECUED_CHAT_CATALOG_MODE;
+  // lean-core drops Tier-2 wholesale → the desc cap is meaningless, ignored.
+  if (mode === 'lean-core') return { mode: 'lean-core' };
+  if (mode !== 'index') return DEFAULT_CHAT_CATALOG_PROJECTION;
+  const rawMax = env.RECUED_CHAT_CATALOG_INDEX_DESC_MAX;
+  const parsed = rawMax !== undefined ? Number(rawMax) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? { mode: 'index', indexDescriptionMaxChars: parsed }
+    : { mode: 'index' };
+};
+
+/** Lever-2 per-slot — resolve the full per-turn projection for a turn's LLM
+ *  source: the mode via {@link resolveCatalogModeForSource}, wrapped into a
+ *  `ChatCatalogProjectionConfig` with the index desc-cap attached only for
+ *  `index` (lean-core drops Tier-2 wholesale, full carries schemas — neither
+ *  has descriptions to cap). The wire binds this as `catalogProjectionForSource`
+ *  so the orchestrator resolves the projection per turn from the turn's fixed
+ *  source (turn-invariant → D-164 prefix-safe). Pure + exported for tests. */
+export const resolveCatalogProjectionForSource = (
+  source: ChatModelSourceId | undefined,
+  perSource: Partial<Record<ChatModelSourceId, ChatCatalogDeliveryMode>> | undefined,
+  opts: {
+    smartDefaults: boolean;
+    envGlobalMode?: ChatCatalogDeliveryMode;
+    indexDescriptionMaxChars?: number;
+  },
+): ChatCatalogProjectionConfig => {
+  const mode = resolveCatalogModeForSource(source, perSource, opts);
+  return mode === 'index' && opts.indexDescriptionMaxChars !== undefined
+    ? { mode, indexDescriptionMaxChars: opts.indexDescriptionMaxChars }
+    : { mode };
+};
+
+/** Lever-2 — word-safe truncation for the index-mode Tier-2 description.
+ *  Caps at `maxChars`; if the cut lands mid-word it backs up to the last
+ *  space (unless that would discard more than ~40% of the budget — then it
+ *  hard-cuts a single long token), then appends a one-char ellipsis. A
+ *  trailing lone high-surrogate (a non-BMP char split by the cut) is
+ *  dropped so the prompt never carries a broken code point. Deterministic
+ *  → safe inside the turn-invariant cacheable prefix. */
+export const truncateForIndex = (text: string, maxChars: number): string => {
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  const hard = text.slice(0, maxChars);
+  const lastSpace = hard.lastIndexOf(' ');
+  let cut = lastSpace >= Math.floor(maxChars * 0.6) ? hard.slice(0, lastSpace) : hard;
+  // Drop a dangling high-surrogate left by slicing through a surrogate pair.
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) cut = cut.slice(0, -1);
+  return `${cut.trimEnd()}…`;
+};
+
+/** Lever-2 — the index-mode Tier-2 projection: slug + (optionally
+ *  truncated) description, NO `args_schema`. Empty descriptions stay
+ *  omitted (matches full mode). */
+const leanTier2Tool = (
+  entry: ToolEntry,
+  descriptionMaxChars: number | undefined,
+): ChatMainTurnTool => {
+  if (!entry.description) return { recipe_slug: entry.name };
+  const description =
+    descriptionMaxChars !== undefined
+      ? truncateForIndex(entry.description, descriptionMaxChars)
+      : entry.description;
+  return { recipe_slug: entry.name, description };
+};
+
+/** D-164 P6.3 — pure projection of a catalog union to the AI-facing
+ *  `available_tools` list. Mary's per-kind scope (Tier 2 only) and per-
+ *  MCP-connection annotation (Tier 3 only) gate inclusion mechanically.
+ *  Tier 1 entries always surface. Self vs peer-target catalogs flow
+ *  through the same projection; peer catalogs surface every entry as
+ *  Tier 3 from Mary's side per § A.1.1 (the peer-side projection has
+ *  already classified internally).
+ *
+ *  Intent-driven topic narrowing + per-tier capacity caps + recently-
+ *  used tie-break logic are NOT carried over at P6.3 — the prompt-cache
+ *  catalog substrate (D-164 P3) is the salvage path for those
+ *  semantics. */
+const buildChatMainTurnTools = (
+  catalog: ReadonlyArray<ToolEntry>,
+  kindGatedTier2Names: ReadonlySet<string>,
+  disabledTier3Names: ReadonlySet<string>,
+  projection: ChatCatalogProjectionConfig,
+): ReadonlyArray<ChatMainTurnTool> => {
+  const out: ChatMainTurnTool[] = [];
+  for (const entry of catalog) {
+    if (entry.tier === 2 && kindGatedTier2Names.has(entry.name)) continue;
+    if (entry.tier === 3 && disabledTier3Names.has(entry.name)) continue;
+    // Lever-2 per-slot — the tools.search wrapper is enabled construction-wide
+    // (enable-if-ANY-source-thins, since per-source modes are live), so it
+    // appears in the registry on every chat turn. On a `full` turn present
+    // nothing extra: drop it so the full-mode prefix stays BYTE-IDENTICAL to the
+    // pre-lever-2 baseline. Thinning turns (index / lean-core) keep it — it's
+    // their recall / discovery path — and its dispatch stays available in both.
+    if (projection.mode === 'full' && entry.name === TOOLS_SEARCH_TOOL_NAME) continue;
+    // Lever-2 lean-core (v2) mode DROPS every Tier-2 recipe entry — the
+    // catalog carries only the always-present core tools (Tier-1) + MCP peer
+    // tools (Tier-3). Recipes are discovered on demand via `tools.search`,
+    // whose recall corpus is the full exposed Tier-2 set (`inner.listByTier(2)`
+    // in the wire wrapper) independent of THIS projection, so dropping them
+    // here loses no discoverability — only the turn-invariant prefix cost.
+    if (projection.mode === 'lean-core' && entry.tier === 2) continue;
+    // Lever-2 index mode leans ONLY Tier-2 recipe entries: Tier-1 (kernel
+    // lean-core) and Tier-3 (MCP peer) stay full because `tools.search`'s
+    // recall pool is the Tier-2 set — a leaned Tier-1/Tier-3 entry could
+    // never be re-expanded to recover its arg_schema.
+    if (projection.mode === 'index' && entry.tier === 2) {
+      out.push(leanTier2Tool(entry, projection.indexDescriptionMaxChars));
+      continue;
+    }
+    out.push({
+      recipe_slug: entry.name,
+      args_schema: entry.arg_schema,
+      ...(entry.description ? { description: entry.description } : {}),
+    });
+  }
+  return out;
+};
+
+const FRAMEWORK_PROMPT_SOURCE = 'framework';
+
+const buildChatContentPromptParts = (input: {
+  readonly user_message: string;
+  readonly chat_tail: ReadonlyArray<ChatTailMessage>;
+}): readonly ContentPromptPart[] => [
+  ...input.chat_tail.map((message) => ({
+    source: FRAMEWORK_PROMPT_SOURCE,
+    role: 'content' as const,
+    content_kind: 'chat_tail' as const,
+    speaker: message.role,
+    text: message.content,
+    ...(message.turn !== undefined ? { turn: message.turn } : {}),
+  })),
+  {
+    source: FRAMEWORK_PROMPT_SOURCE,
+    role: 'content',
+    content_kind: 'user_message',
+    speaker: 'user',
+    text: input.user_message,
+  },
+];
+
+const assembleChatPromptContent = (
+  parts: readonly ContentPromptPart[],
+): RunChatTurnPromptContent => {
+  const chat_tail: ChatTailMessage[] = [];
+  let user_message = '';
+  for (const part of parts) {
+    if (part.content_kind === 'user_message') {
+      user_message = part.text;
+      continue;
+    }
+    const role = part.speaker;
+    if (role !== 'user' && role !== 'assistant') continue;
+    chat_tail.push({
+      role,
+      content: part.text,
+      ...(part.turn !== undefined ? { turn: part.turn } : {}),
+    });
+  }
+  return { chat_tail, user_message };
+};
+
+/** D-137 P4 § A.7 — pure helper: split a `connection.mcp.<name>` picker
+ *  target into its bare peer name. Returns `null` for the `'self'`
+ *  sentinel + for any malformed string (the rpc layer's
+ *  `ensureValidPickerTarget` upstream already rejects malformed targets;
+ *  this defensive guard keeps the orchestrator reachable even on a test
+ *  harness path that bypasses validation). Module-level (D-160 A.8 step 4)
+ *  so the `buildCatalog` projection and the per-turn `dispatch_peer_name`
+ *  derivation share one definition. Pure; no closure state. */
+const extractPeerName = (target: ChatPickerTarget): string | null => {
+  if (target === 'self') return null;
+  if (!target.startsWith('connection.mcp.')) return null;
+  const name = target.slice('connection.mcp.'.length);
+  if (name.length === 0) return null;
+  return name;
+};
+
+/** D-164 P6.3 — what the bound executor returns: the raw parsed body
+ *  from `executeLLM` + an optional `TokenUsageReport` captured via the
+ *  `onTokenUsage` callback the composer wires around the executor. */
+export interface ChatAiCallResult {
+  readonly body: unknown;
+  readonly usage?: TokenUsageReport;
+  /** Provider-normalized stop reason. The gateway uses `length` to preserve a
+   * truthful output-limit completion even when structured JSON was truncated. */
+  readonly finish_reason?: LLMFinishReason;
+}
+
+/** D-164 P6.3 — the orchestrator's direct AI handle. The chat
+ *  composer in `wire-chat-orchestrator.ts` pre-binds `executeLLM` (from
+ *  `@recued/llm`) with `LLMConfig` / `AdapterRegistry` / `QuotaTracker`
+ *  / `tabProbe` + token-usage capture. Per D-164 P6.0 (b) the orchestrator
+ *  owns inline AI-packet composition + calls this closure directly — no
+ *  framework seam. D-164 P4 (prompt-cache) registers a `before-turn` hook
+ *  that may short-circuit AI dispatch entirely. */
+export type ExecuteChatAiCall = (
+  manifest: IngredientManifest,
+  input: Record<string, unknown>,
+) => Promise<ChatAiCallResult>;
+
+/** Minimal broadcast surface the orchestrator needs from the D-121
+ *  event bus. Narrowed to a single `emit(event)` so harness tests can
+ *  pass a synthetic in-memory bus without spinning the whole D-121
+ *  fan-out apparatus. */
+export interface ChatBroadcastEmitter {
+  emit(event: BroadcastChatEvent): void;
+}
+
+export interface MessengerVoiceTranscriptionDeps {
+  getFileReadDeps?: () => FileReadDeps | undefined;
+  readFile?: (
+    record_id: string,
+  ) => Promise<Pick<FileReadResponse, 'bytes_b64' | 'mime_type' | 'filename'>>;
+  transcribeDeps: TranscribeDeps;
+}
+
+/** The closed-list chat event payloads (per `ChatBroadcastEventKind`
+ *  in contracts) WITHOUT the bus-assigned `cursor` field. The bus
+ *  stamps a monotonic cursor on its way out, so the orchestrator
+ *  emits cursor-less variants. */
+export type BroadcastChatEvent = Extract<ServerEvent, { kind: ChatBroadcastEventKind }> extends infer T
+  ? T extends { cursor: number }
+    ? Omit<T, 'cursor'>
+    : never
+  : never;
+
+/** Bridge from `EventBus` (which stamps cursors itself) to the
+ *  orchestrator's narrow emitter — drop in the bus's `emit` so the
+ *  cursor field comes for free. Production wires through this; tests
+ *  capture into an array. */
+export const broadcastEmitterFromBus = (bus: EventBus): ChatBroadcastEmitter => ({
+  emit: (event) => {
+    bus.emit(event as Parameters<EventBus['emit']>[0]);
+  },
+});
+
+export interface ChatOrchestratorDeps {
+  /** Per-pair chat session/message store. */
+  chatStore: ChatStore;
+  /** D-177 N.11 rule 5 (5.d hot-path) — the per-session forwarded-sender
+   *  candidate index. The orchestrator RECORDS into it right after
+   *  durably persisting a CHAT user turn (`contributor: 'user'`);
+   *  messenger turns are deliberately not recorded until messenger's
+   *  stamping audit (5.f). The gateway reads it via the slice-D seam.
+   *  Optional — absent means scoped grants simply never match. */
+  forwardedSenderIndex?: SessionForwardedSenderIndex;
+  /** D-177 N.11 rule 5 (5.c, slice C) — the scoped-grant parse hook's
+   *  late-bound deps. Threaded into `createChatStreamMiddlewares`; absent
+   *  (or resolving undefined per turn) → the hook is a faithful no-op. */
+  getScopedGrantParseDeps?: () => ScopedGrantParseDeps | undefined;
+  /** Tool-dispatch surface (Tier 1+2+3 via direct function call). */
+  registry: InternalToolRegistry;
+  /** Lever-2 (2026-07-02) — catalog delivery mode + index-desc cap. Absent
+   *  → `DEFAULT_CHAT_CATALOG_PROJECTION` (`{ mode: 'full' }`, the launch
+   *  baseline: full arg_schema per entry in the cacheable prefix).
+   *  Turn-invariant by construction (resolved once at orchestrator build,
+   *  never per-turn) so it stays safe inside the D-164 cacheable prefix.
+   *  The server wires it from `RECUED_CHAT_CATALOG_MODE` via
+   *  `parseChatCatalogProjectionEnv` for the prototype; per-layer default
+   *  wiring (free pool on / BYOK off) follows the bench A/B. */
+  catalogProjection?: ChatCatalogProjectionConfig;
+  /** Lever-2 per-slot — resolve the catalog projection from the TURN's LLM
+   *  source (`resolveModelPref` result), so each source (`free_pool` /
+   *  `slot_1` / `slot_2`) gets its own mode. Called once per turn in
+   *  `buildTurnDriver` from the turn-fixed source, so the projection stays
+   *  turn-invariant (D-164 prefix-safe). Absent → the static
+   *  `catalogProjection` (above) is used for every turn (the pre-per-slot
+   *  behavior). The wire binds this from the live `LLMConfig.catalog_modes`
+   *  via `resolveCatalogProjectionForSource`. */
+  catalogProjectionForSource?: (
+    source: ChatModelSourceId | undefined,
+  ) => ChatCatalogProjectionConfig;
+  /** Resolve the SURFACE's system prompt + wire role — the owner's Settings →
+   *  AI/Models override when they authored one, else that surface's built-in
+   *  default. Bound by the wire as a closure over the live `getLlmConfig()`
+   *  (exactly like `catalogProjectionForSource` above), so a prompt saved in
+   *  Settings takes effect on the NEXT turn without a server restart.
+   *
+   *  `systemToolsAllowed` is read only on the gateway default path (it selects
+   *  the conditional posture line). Absent dep → the built-in defaults, which
+   *  is what every test / harness caller gets. */
+  resolveSystemPrompt?: (
+    surface: LlmPromptSurface,
+    options?: { readonly systemToolsAllowed?: boolean },
+  ) => ResolvedLlmSystemPrompt;
+  /** D-121 broadcast bus. */
+  broadcast?: ChatBroadcastEmitter;
+  /** Audit log — chat lifecycle codes (`chat_session_created`,
+   *  `chat_message_sent`, `chat_tool_call`). Best-effort; failures
+   *  never abort the turn. */
+  auditLog?: AuditLogStore;
+  /** Recued server signature snapshot, used in `picker_at_send` for
+   *  Self-targeted turns. P1.3 wires per-peer signatures when picker
+   *  is on a `connection.mcp.<name>` target. */
+  selfSignature: RecuedServerSignature;
+  /** Display name for `picker_at_send.display_name` on Self turns
+   *  (e.g., "Mary's server"). Defaults to `'Self'`. */
+  selfDisplayName?: string;
+  /** D-164 P6.3 — direct AI handle. Per P6.0 (b) the chat orchestrator
+   *  owns inline AI-packet composition + calls `@recued/llm`
+   *  `executeLLM` directly via this closure. The composer in
+   *  `wire-chat-orchestrator.ts` pre-binds `LLMConfig` / adapters /
+   *  quota / tab probe + token-usage capture. Absent → the orchestrator
+   *  persists an empty-
+   *  assistant message (substrate stays reachable without an AI
+   *  provider). When present, executor throws + validation failures
+   *  map to `engine.budget_exceeded` transparency events + an empty-
+   *  assistant message body. */
+  executeAiCall?: ExecuteChatAiCall;
+  /** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope provider.
+   *  Read on every turn start; the orchestrator translates the
+   *  returned scope into the `kindGatedTier2Names` set that gates the
+   *  AI-facing available_tools projection (`buildChatMainTurnTools`).
+   *  Returning `null` (no row written yet, store unavailable, dbless
+   *  test harness) collapses to the substrate default
+   *  (`SAFE_DEFAULT_CHAT_CATALOG_KINDS`); the orchestrator never
+   *  invents a different set. The provider is invoked synchronously
+   *  per turn so a toggle from Settings surfaces on the next message
+   *  Mary sends without re-priming the orchestrator. */
+  scopeProvider?: () => ChatToolCatalogScopeState | null;
+  /** D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
+   *  annotation provider. Read on every turn start; the orchestrator
+   *  derives the `disabled_tier3_names` set for the inline
+   *  `buildChatMainTurnTools` projection from the annotation snapshot.
+   *  Returning `null` (no rows written yet, dbless test harness)
+   *  collapses to an empty annotation list — `buildChatMainTurnTools`
+   *  then sees an empty disabled set and treats Tier 3 entries (also
+   *  empty without a wired source) as a no-op.
+   *
+   *  This is the *transparency-side* projection of Mary's per-tool
+   *  classifications: the Tier 3 *catalog* is gated at the
+   *  `InternalToolRegistry` factory level (the `tier3Source` option,
+   *  which is plumbed alongside this provider in `bin.ts`). Both
+   *  consume the same annotation snapshot but for different
+   *  downstream concerns:
+   *
+   *    - **Registry tier3Source** — projects the catalog (only
+   *      enabled + classified tools surface as `ToolEntry`).
+   *    - **Orchestrator annotationProvider** — derives the disabled
+   *      set so the renderer's transparency drawer can show "X
+   *      Tier 3 tools were cached but not visible (Mary hasn't
+   *      classified / disabled them)" without re-reading the
+   *      annotation store. */
+  annotationProvider?: () => ReadonlyArray<ConnectionMcpAnnotationState> | null;
+  /** D-137 P3 § A.11 — plan-approval registry. The orchestrator's
+   *  `dispatchTool` checks the store BEFORE invoking the registry
+   *  for write tools (`requiresPlanApproval(entry)`):
+   *
+   *    - SAME-TURN cancelled plan → returns `plan_cancelled` without
+   *      dispatching (cancel is turn-scoped; later turns re-propose).
+   *    - Consumable approval for `(session, tool, args_hash)` —
+   *      turn-AGNOSTIC, single-use, TTL-bounded — → consumes it
+   *      (`consumed_at` stamp + `chat_plan_consumed` audit) and
+   *      dispatch proceeds normally.
+   *    - Otherwise → mints a proposal (or re-emits the same turn's
+   *      still-proposed one), emits `chat.plan_proposed`, returns
+   *      `awaiting_approval` so the main-turn loop sees the pause +
+   *      surfaces an approval card to Mary.
+   *
+   *  Rpc handlers (`chat.plan.approve` / `chat.plan.cancel`) flip the
+   *  status + emit `chat.plan_resolved`. The next main-turn re-issue
+   *  of the tool call (Mary's follow-up message) consumes the
+   *  approval + proceeds — the user-driven re-issue path, kept over
+   *  automatic resumption so the substrate stays
+   *  orchestrator-loop-oblivious (re-run over resume).
+   *
+   *  Omitting the dep collapses write-gating to a no-op (tests +
+   *  dbless harness path); the orchestrator dispatches every tool
+   *  through the registry as before. */
+  planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  /** D-137 P4 § A.7 — peer-dispatch seam. When wired AND the per-turn
+   *  picker target is `connection.mcp.<name>`:
+   *    - Tool catalog → `peerDispatcher.listToolEntries(name)`
+   *      (the peer's annotation-projected catalog; NOT Mary's local
+   *      Tier 1/2/3 union).
+   *    - Tool dispatch → `peerDispatcher.dispatch({ peer_name, ... })`
+   *      (outbound MCP `tools/call` via the named connection).
+   *    - `picker_at_send.signature` → `peerDispatcher.getPeerSignature
+   *      (name)` (falls back to `selfSignature` if absent so the
+   *      message row always carries a non-null signature).
+   *    - Provenance `target_server: <peer_name>` per § A.8.
+   *
+   *  When undefined OR the dispatcher returns absent metadata, peer-
+   *  target dispatches surface `connection_unavailable` reason —
+   *  substrate-stays-reachable posture; the renderer paints "Bob's
+   *  tools aren't available right now" instead of throwing. The full
+   *  outbound MCP wiring (D-125 P4.2 client + per-peer health
+   *  monitoring) lands as a P4 follow-on slice. */
+  peerDispatcher?: PeerDispatcher;
+  /** D-160 Stage 3 — the live first-party middleware registry (built in
+   *  `wire-chat-orchestrator.ts`). The orchestrator builds the
+   *  source-binding adapters (`chat-stream-middleware.ts`) from it +
+   *  registers them into its per-turn stream registry; each adapter
+   *  sources its real middleware from `registry.enabled()`, so the
+   *  registry's per-middleware enabled-state gates whether it runs.
+   *  Omitting the dep leaves the stream registry empty — the turn runs
+   *  through `runStream` with no producers (the orchestrator owns the AI
+   *  call regardless), exactly as before. */
+  middlewareRegistry?: MiddlewareRegistry;
+  /** D-160 Stage 3 — per-pair correction-event store: the source the
+   *  `correction-learning` `before-turn` hook seeds from. Absent → that
+   *  adapter no-ops. */
+  getCorrectionEventsStore?: () => CorrectionEventsStore | undefined;
+  /** D-160 Stage 3 — per-pair contact store: the source the
+   *  `personal-recipes` `after-turn` hook seeds its per-contact lookup
+   *  from. Absent → that adapter no-ops. */
+  getContactStore?: () => ContactStore | undefined;
+  /** D-172 A.9 — voice-only messenger notes are the user's utterance.
+   *  When the optional file-read + audio-model deps are live, the
+   *  orchestrator reads the just-ingested audio ref and transcribes it before
+   *  appending the durable user row. Missing deps / read failures /
+   *  transcription failures fall back to the P4 pending affordance. */
+  messengerVoiceTranscription?: MessengerVoiceTranscriptionDeps;
+  /** D-160 A.8 step 5 — per-turn scope-search fan-out producer: the
+   *  `{ args, sources }` the registered `scope-search` `before-turn` hook
+   *  seeds onto shared `state`, the dep that fires the scope-search →
+   *  confidence-shape chain. This is the SEAM slot — left UNWIRED on the live
+   *  chat path BY DESIGN, not merely "not yet landed" (investigated +
+   *  confirmed 2026-06-02; D-160 O-5). The turn-level pipeline is a two-sided
+   *  seam with both ends absent in single-stage: no pre-AI intent signal to
+   *  derive the fan-out `args` from (a `before-turn` hook fires before the AI
+   *  call + the whole tool loop; the Stage-1 classifier that would supply
+   *  intent was deleted in D-164 P6.5/6.6) AND no consumer of the results
+   *  (`confidence-shape:result` has no reader; `scope-search:result` only
+   *  feeds the chain's own confidence-shape stage). The
+   *  productive fan-out runs COMPLETE at TOOL-dispatch level in
+   *  `chat-tool-handlers.ts` (`contact.search` / `deal.search`) — there the
+   *  AI's tool args are the intent signal and the AI reading the envelope is
+   *  the consumer. So absent this dep both hooks are faithful no-ops
+   *  (behavior-preserving); lighting it up = the full D-137-chat refactor
+   *  (turn-level pre-fetch + § A.5 confidence-pattern UX consumer + a new
+   *  intent signal), a product decision, NOT a producer hand-off. The dep is
+   *  kept as the proven plug-in point (the s5 e2e test pins that a wired
+   *  producer fires the fan-out mid-turn). See `chat-stream-middleware.ts`'s
+   *  file-header block for the full account. */
+  getScopeSearchInput?: () => ChatScopeSearchInput | undefined;
+  /** D-167 P5 S4 — the per-pair session alias-ledger store (one per chat
+   *  substrate, RAM-only, never synced). When present, the always-on
+   *  `pii-protect` / `pii-restore` bookend hooks are registered into the
+   *  stream registry and the executor closure wraps `executeAiCall` to alias
+   *  every outbound packet + restore every returned body. Absent → no PII
+   *  bookends + the executor uses the raw `executeAiCall` (PII unwired). */
+  piiLedgerStore?: piiEgress.SessionLedgerStore;
+  /** D-167 P5 S4 — resolves which packet fields carry a `MetaField.privacy`
+   *  tag. Defaults to `noopFieldPrivacyResolver` (inert until D-165 supplies
+   *  a runtime schema source). */
+  fieldPrivacyResolver?: piiEgress.FieldPrivacyResolver;
+  /** D-167 (recall path) — builds the contact recall RESOLVER the PII egress aliases
+   *  a `memory.*` result against (closing the cross-session memory-recall leak).
+   *  Threaded into the `pii-protect` hook deps; called lazily per recalling turn.
+   *  Absent → recall aliasing off (the ledger-only scan still runs). */
+  getContactKnownValueIndex?: () => RecallResolver | undefined;
+  /** Override the clock — tests pin to fixed instants. */
+  now?: () => number;
+  /** Override turn-id minting — tests inject deterministic ids. */
+  mintId?: () => string;
+}
+
+export interface ChatTurnInput {
+  session_id: string;
+  message: string;
+  picker_state: { current: ChatPickerTarget };
+  model_pref?: {
+    current: ChatModelRoutingLayer;
+    model_hint?: ChatModelHint;
+    source_id?: ChatModelSourceId;
+  };
+  /** D-193 — the requesting user's IANA timezone from the surface
+   *  (webclient reads `Intl…resolvedOptions().timeZone`). Threads to the
+   *  chat prompt's current-time anchor so the model resolves wall-clock
+   *  times ("remind me at 3pm") in the user's zone. Absent ⇒ server-local. */
+  time_zone?: string;
+  /** Ack-before-run seam — fires ONCE at the turn's COMMIT POINT
+   *  (session resolved + chat tail read + the user message durably
+   *  appended), before the model-bound body runs. The rpc layer
+   *  (`handleSend`) resolves the `chat.send` ack here so a slow model
+   *  can no longer surface as a misleading rpc timeout; everything
+   *  that can reject a turn for CALLER reasons (unknown session, a
+   *  locked vault failing the tail read) still throws BEFORE this
+   *  fires and rejects the rpc as before. `runTurn`'s own returned
+   *  promise keeps its resolve-at-completion contract (full
+   *  `ChatTurnAck` incl. `total_usage`) — direct callers (tests, the
+   *  messenger reuse) are unaffected; a caller that omits this gets
+   *  exactly the old ack-after-run behavior. */
+  on_accepted?: (ack: { turn_id: string }) => void;
+}
+
+export interface ChatTurnAck {
+  turn_id: string;
+  /** D-137 Trio #E — per-turn aggregated token usage across the initial
+   *  main turn + every main-turn re-invocation round in the tool loop.
+   *  Pure sum via `aggregateTokenUsageReports`. Undefined on turns that
+   *  never produced an AI usage report (no executor wired, or every
+   *  call short-circuited before any provider call landed). Field is
+   *  observability-only — the orchestrator never gates on it. */
+  total_usage?: TokenUsageReport;
+}
+
+/** D-196 — one stateless OpenAI-compatible customer turn over the shared chat
+ * orchestrator. The surface adapter owns HTTP/history/model-route details;
+ * the orchestrator owns the same structured-output validation, recovery, and
+ * cooperative tool loop used by normal chat. */
+export interface LlmGatewayTurnInput {
+  readonly session_id: string;
+  readonly user_id: string;
+  readonly contract_id: string;
+  readonly content: RunChatTurnPromptContent;
+  /** Exact inbound-token grants, expressed in the chat registry's tool-name
+   * namespace. The gateway currently admits only pinned Tier-2 recipes. Tier-1
+   * owner-local handlers remain excluded until individually source/read-fenced;
+   * Tier-3 peers are excluded because they spend owner outbound credentials. */
+  readonly allowed_tool_names: ReadonlyArray<string>;
+  /** Re-resolve token + contract authority immediately before each actual
+   * top-level dispatch. Returning null is a live kill switch. */
+  readonly resolve_contract_snapshot: (call: {
+    readonly tool_name: string;
+    readonly arg_values: unknown;
+  }) => ContractSnapshot | null | Promise<ContractSnapshot | null>;
+  readonly execute_ai_call: ExecuteChatAiCall;
+  readonly model_layer: ChatModelRoutingLayer;
+  readonly model_hint?: ChatModelHint;
+  readonly model_source_id?: ChatModelSourceId;
+  readonly input_token_budget?: number;
+  readonly llm_gateway_tool_usage?: LlmGatewayToolUsageMeter;
+  /** The gateway's system prompt + wire role, resolved by the HTTP handler
+   *  (`resolveLlmSystemPrompt('llm_gateway', …)`) — the owner's override when
+   *  authored, else the built-in gateway default (chat base + contract-scoping
+   *  posture). Resolved there rather than here because the handler is the only
+   *  place `system_tools_allowed` is authoritative: it RE-DERIVES the flag after
+   *  the post-body reauthorization, and both gateway providers must agree on
+   *  one prompt.
+   *
+   *  Absent → `runChatTurn`'s built-in chat prompt (the pre-existing behavior,
+   *  and what direct harness callers get). */
+  readonly system_prompt?: string;
+  readonly system_role?: LLMMessageRole;
+}
+
+export interface LlmGatewayTurnResult {
+  readonly turn_id: string;
+  readonly assistant_content: string;
+  readonly tool_calls?: ChatToolCall[];
+  readonly usage?: TokenUsageReport;
+  readonly post_effect_outcome?: LlmGatewayPostEffectOutcome;
+}
+
+export type LlmGatewayPostEffectStatus = 'completed' | 'partial' | 'in_doubt';
+
+/** OpenAI-compatible responses carry this namespaced extension when provider
+ * synthesis fails after at least one actual tool dispatch. It is explicitly
+ * non-retryable: the caller can inspect/reconcile without duplicating effects. */
+export interface LlmGatewayPostEffectOutcome {
+  readonly status: LlmGatewayPostEffectStatus;
+  readonly error_code:
+    | 'context_length_exceeded'
+    | 'llm_gateway_provider_failed'
+    | 'llm_gateway_authority_changed';
+  readonly message: string;
+  readonly retryable: false;
+  readonly dispatched_tool_calls: number;
+}
+
+/** D-160 A.8 step 6 — the input a `messenger` turn runs over.
+ *
+ *  The caller — the downstream BYO Slack/Telegram transport + verified
+ *  webhook-inbound wiring (DEFERRED; outside this chat-files lane, the same
+ *  way the s5 `getScopeSearchInput` producer was a deferred seam) — builds
+ *  the messenger `Channel` from `@recued/messenger` over a `connection.
+ *  notification` token and registers `onInbound(runMessengerTurn)`. The
+ *  channel's `ingest` produces the framework-shaped `inbound` (the
+ *  `messenger-<vendor>` surface + the `(messenger × actor)` `ExecutionSource`
+ *  + the I-7 `dispatch_depth` hop token) and records the user row into the
+ *  shared session store; the orchestrator then drives the turn over the SAME
+ *  `streamRegistry` (the s5 hooks) + the SAME `runChatTurn` mechanics as chat
+ *  — that IS the step-6 reuse. The framework's post-`update` `out.message`
+ *  delivers the final answer over the channel's transport. */
+export interface MessengerTurnInput {
+  /** The caller-built messenger `Channel` (over a BYO transport). The
+   *  framework delivers the final assistant `message` over it (token /
+   *  transparency / done events are dropped by the messenger surface). */
+  channel: Channel;
+  /** The session-state store the messenger channel was built with — the
+   *  SAME instance chat uses, so the two surfaces are one conversation
+   *  (N.5). The framework reads turn history from it; the channel records
+   *  both turns into it. */
+  sessionStore: SessionStateStore;
+  /** The verified inbound the channel produced from `ingest` — carrying the
+   *  surface, text, `from`, `(messenger × actor)` source, the I-7
+   *  `dispatch_depth` hop token, and ts. */
+  inbound: ChannelInbound;
+  /** Optional model-routing override; absent → the shared session's routing
+   *  (or `local` when no chat session exists for this conversation yet — a
+   *  messenger turn never throws on a missing session, unlike chat). A
+   *  messenger turn is always a Self turn (no peer picker). */
+  model_pref?: {
+    current: ChatModelRoutingLayer;
+    model_hint?: ChatModelHint;
+    source_id?: ChatModelSourceId;
+  };
+}
+
+/** D-153 P2.C — local-owner identifier baked into every chat
+ *  `ExecutionSource`. Recued's single-user-server invariant (one server
+ *  == one human identity, per `project_single_user_warehouse_invariant`)
+ *  means the channel's `user_id` is a constant for stdio / WS clients
+ *  paired to this server. Multi-tenant deployments would replace this
+ *  with the authenticated principal; today the field is shape-required
+ *  by `ExecutionSource['chat']` but has no per-call variance. Mirrors
+ *  the `STDIO_MCP_*` constants in `mcp-server.ts`. */
+const LOCAL_CHAT_USER_ID = 'local';
+
+/** D-153 P2.C — build the channel-shaped `ExecutionSource` for a chat
+ *  dispatch. Today the orchestrator's only chat surface is the local
+ *  owner driving their own server (`actor: 'user_self'`); the
+ *  `contracted_user` chat variant (and a self-restricted `user_self`
+ *  carrying a `contract_id` — D-161 N.3) land when the full contracts
+ *  substrate (open question #21) does. No `ContractSnapshot` is paired
+ *  because this unrestricted `'user_self'` carries no `contract_id`
+ *  (spec line 408: "user_self is the default for
+ *  user / chat / messenger when the user is acting through their own
+ *  client"). */
+/** D-177 P5a (N.10) — `turn_id`, when supplied, rides the chat
+ *  `ExecutionSource` onto every commit the dispatch writes, so the
+ *  batched-approval origin unit can group same-turn holds
+ *  (`deriveOriginUnit`: chat ⇒ `turn`). Optional — a source minted
+ *  outside a turn boundary falls back to the `correlation_id` stand-in. */
+const buildChatExecutionSource = (
+  session_id: string,
+  turn_id?: string,
+): ExecutionSource => ({
+  channel: 'chat',
+  actor: 'user_self',
+  chat_session_id: session_id,
+  user_id: LOCAL_CHAT_USER_ID,
+  ...(turn_id !== undefined && turn_id.length > 0 ? { turn_id } : {}),
+});
+
+const mediaOnlyAffordance = (media: NonNullable<ChannelInbound['media']>): string => {
+  if (isVoiceOnlyMedia(media)) {
+    return 'Voice message received. Transcription is not configured yet.';
+  }
+  return 'Attachment received.';
+};
+
+const isVoiceOnlyMedia = (media: NonNullable<ChannelInbound['media']>): boolean =>
+  media.length === 1 && media[0]?.media_class === 'voice';
+
+const transcribeMessengerVoiceOnly = async (
+  deps: MessengerVoiceTranscriptionDeps | undefined,
+  media: NonNullable<ChannelInbound['media']>,
+): Promise<string | null> => {
+  if (!deps || !isVoiceOnlyMedia(media)) return null;
+  const record_id = media[0]?.file_id;
+  if (!record_id) return null;
+
+  try {
+    const fileReadDeps = deps.getFileReadDeps?.();
+    const file = fileReadDeps
+      ? await handleFileRead(fileReadDeps, { record_id })
+      : deps.readFile
+        ? await deps.readFile(record_id)
+        : null;
+    if (!file) return null;
+    const result = await transcribe(
+      {
+        audio: Buffer.from(file.bytes_b64, 'base64'),
+        mime_type: file.mime_type,
+        filename: file.filename,
+      },
+      deps.transcribeDeps,
+    );
+    return result.text;
+  } catch {
+    return null;
+  }
+};
+
+/** Internal-channel dispatch context builder. Strictly enforces the
+ *  channel invariant: `internal_function_call` requires session_id +
+ *  forbids mcp_token_id (asserted at the registry layer too).
+ *
+ *  D-153 P2.C — threads the turn's `ExecutionSource` onto the ctx so
+ *  registry-routed Tier 1 `recipe.run` + Tier 2 dispatches arrive at
+ *  the execute-handler with the per-cell policy gate primed. The source
+ *  is the turn's REAL channel-minted identity when the caller threads
+ *  one (the messenger turn passes its inbound's `(messenger ×
+ *  user_self)` source, so messenger dispatches are gated under the
+ *  MESSENGER cell + session-granted per Slack / Telegram thread —
+ *  no longer disguised as chat); absent, the chat-shaped default
+ *  stands (chat's own turns + the public `dispatch` seam's per-Tier-1
+ *  callers). A contract-scoped shared-turn caller also threads its
+ *  dispatch-time `ContractSnapshot`; owner chat/messenger omit it. */
+const buildInternalDispatchCtx = (
+  session_id: string,
+  turn_id: string,
+  execution_source?: ExecutionSource,
+  contract_snapshot?: ContractSnapshot,
+  dispatch_depth?: number,
+): ChatDispatchContext => ({
+  channel: 'internal_function_call' as ChatDispatchChannel,
+  session_id,
+  turn_id,
+  // D-177 P5a — the chat turn rides the source (N.10 `turn_id` plumbing),
+  // so every commit a Tier 1/2/3 dispatch writes carries its origin turn.
+  // (The messenger variant carries no turn_id — its D-177 origin unit is
+  // the run, per `deriveOriginUnit`'s N.10 table.)
+  execution_source: execution_source ?? buildChatExecutionSource(session_id, turn_id),
+  ...(contract_snapshot !== undefined ? { contract_snapshot } : {}),
+  // D-160 P3 / I-7 — the turn's hop token rides beside the source so a
+  // re-entrant messenger fire's tool dispatches run at their true depth.
+  ...(dispatch_depth !== undefined ? { dispatch_depth } : {}),
+});
+
+/** D-196 llm_gateway-only customer usage seam. The HTTP gateway will inject one
+ *  instance per admitted customer turn; owner chat, messenger, mcp_chat, and
+ *  direct MCP omit it and therefore preserve their existing counting behavior.
+ *
+ *  This seam deliberately surrounds one top-level model-emitted tool dispatch,
+ *  not registry/recipe internals. A seller-authored recipe may fan out to many
+ *  ingredient calls while remaining one customer-visible `tool_call` unit. */
+export interface LlmGatewayToolUsageCall {
+  readonly session_id: string;
+  readonly turn_id: string;
+  readonly tool_name: string;
+  readonly arg_values: unknown;
+  readonly picker_target: ChatPickerTarget;
+}
+
+export type LlmGatewayToolUsageAdmission =
+  | { readonly admitted: true }
+  | {
+      readonly admitted: false;
+      readonly result: Extract<ChatDispatchResult, { ok: false }>;
+    };
+
+export interface LlmGatewayToolUsageMeter {
+  /** Check the gateway customer's `tool_call` allowance immediately before
+   *  actual local/peer dispatch. A denial returns a model-facing tool result
+   *  and must not cross the dispatch boundary. */
+  admit(
+    call: LlmGatewayToolUsageCall,
+  ): LlmGatewayToolUsageAdmission | Promise<LlmGatewayToolUsageAdmission>;
+  /** Record exactly one successfully-dispatched top-level tool call. Rollup
+   *  failures are observability failures and do not rewrite the tool result. */
+  record(call: LlmGatewayToolUsageCall): void | Promise<void>;
+  /** Cancel the admission reservation when actual dispatch fails or throws. */
+  release(call: LlmGatewayToolUsageCall): void | Promise<void>;
+}
+
+/** P1.2 scaffold dispatch helper. Public so future per-Tier-1 wiring
+ *  (P1.3) can call through one seam that handles broadcast emission +
+ *  audit + provenance + result_ref bookkeeping.
+ *
+ *  **Codex P2 fold (D-137 P1.2 review).** `tier` is no longer a
+ *  caller-supplied parameter — it is derived from `registry.getByName
+ *  (tool_name).tier` so provenance + audit rows can never be mislabeled
+ *  by future tool-loop glue. Unknown tools resolve to tier 2 (recipe-
+ *  engine layer; the registry's `dispatch` returns `unknown_tool` for
+ *  those). */
+export interface OrchestratorDispatch {
+  /** Dispatch a tool call within a turn, broadcasting the start /
+   *  complete events + emitting an audit row. Returns the result for
+   *  the orchestrator's tool-loop bookkeeping.
+   *
+   *  D-137 P4 § A.7 — `picker_target` discriminates the dispatch path:
+   *    - `'self'`             → InternalToolRegistry (Tier 1/2/3 union).
+   *    - `connection.mcp.<n>` → PeerDispatcher (outbound MCP tools/call
+   *      via the named connection). The seam stays open: when no
+   *      peer dispatcher is wired (current test harnesses), peer-
+   *      target dispatches return `connection_unavailable`. */
+  dispatchTool(args: {
+    session_id: string;
+    turn_id: string;
+    tool_name: string;
+    arg_values: unknown;
+    picker_target: ChatPickerTarget;
+    /** The turn's REAL channel-minted `ExecutionSource` — threaded by the
+     *  turn driver so a messenger turn's dispatches are gated under the
+     *  `(messenger × user_self)` cell (and session-granted per Slack /
+     *  Telegram thread) rather than disguised as chat. Absent → the
+     *  chat-shaped default (`buildChatExecutionSource`), preserving every
+     *  pre-existing caller of this public seam. */
+    execution_source?: ExecutionSource;
+    /** Contract snapshot paired with a contract-bearing execution source.
+     *  Gateway turns must thread both together; owner chat omits both. */
+    contract_snapshot?: ContractSnapshot;
+    /** D-196 gateway-only per-tool usage hook. Omitted by every other chat/MCP
+     *  surface so sharing the turn engine cannot silently double-count them. */
+    llm_gateway_tool_usage?: LlmGatewayToolUsageMeter;
+    /** The turn's I-7 hop token (`ChannelInbound.dispatch_depth`),
+     *  riding beside the source (D-160 P3) so the Gateway's
+     *  `MAX_DISPATCH_DEPTH` ceiling bounds re-entrant messenger loops
+     *  THROUGH tool dispatches. Absent → the execute path's depth-0
+     *  default. */
+    dispatch_depth?: number;
+  }): Promise<ChatDispatchResult>;
+}
+
+/** D-137 P4 § A.7 — peer-dispatch seam. Production wires this through
+ *  the D-125 P4.2 outbound MCP client (`packages/ingredients/src/
+ *  connection-mcp.ts`); tests inject a synthetic dispatcher that
+ *  records call shapes + returns canned results. The orchestrator
+ *  never reaches into the outbound MCP wire directly — every cross-
+ *  server call funnels through this interface so audit + transparency
+ *  + provenance emit uniformly.
+ *
+ *  When undefined on the orchestrator deps, peer-target dispatches
+ *  return `connection_unavailable` (substrate stays reachable; the
+ *  AI's chat tail sees a clean "Bob's tools aren't available right
+ *  now" path rather than an exception).
+ *
+ *  The `peer_name` argument is the bare connection name (NOT the
+ *  `connection.mcp.<name>` form — the orchestrator strips the prefix
+ *  before invocation; the dispatcher looks up the underlying D-125
+ *  connection record by `kind: 'mcp'` + `name`).
+ *
+ *  `tool_name` is the FORMATTED Tier 3 entry name
+ *  (`<peer_name>.<upstream_tool>`); the dispatcher strips the
+ *  `<peer_name>.` prefix when emitting the upstream MCP `tools/call`
+ *  `params.name`. Mirrors `formatTier3ToolName`'s convention — keeps
+ *  one identifier shape across the chat substrate + the outbound
+ *  wire. */
+export interface PeerDispatcher {
+  dispatch(args: {
+    peer_name: string;
+    tool_name: string;
+    arg_values: unknown;
+  }): Promise<ChatDispatchResult>;
+  /** Project the peer's annotation `tools_list_cache.tools` + per-tool
+   *  classifications into the `ToolEntry[]` the orchestrator's
+   *  catalog selection layer consumes when the picker is on this peer.
+   *  Returning an empty array is valid (peer with zero classified
+   *  tools — picker entry visibility upstream filters this case out;
+   *  the orchestrator's capability-filter layer then sees an empty
+   *  catalog and the main turn surfaces a "no tools available" path). */
+  listToolEntries(peer_name: string): ReadonlyArray<ToolEntry>;
+  /** Returns the peer's most-recent probed signature when known;
+   *  drives `picker_at_send.signature` on the chat message row. When
+   *  absent (no signature in the annotation store), the orchestrator
+   *  falls back to `selfSignature` so the message row always carries
+   *  a non-null signature shape. */
+  getPeerSignature(peer_name: string): RecuedServerSignature | null;
+}
+
+export interface ChatOrchestrator {
+  /** Start a turn — persists the user message, mints a turn_id, and
+   *  emits a `chat.message_complete` placeholder once the turn loop
+   *  completes (P1.2 ships an empty-assistant immediate ack; P1.3 fills
+   *  in the main turn + the actual tool loop). */
+  runTurn(input: ChatTurnInput): Promise<ChatTurnAck>;
+  /** D-160 A.8 step 6 — run one `messenger` turn over the SAME
+   *  `streamRegistry` (the s5 hooks) + the SAME `runChatTurn` mechanics as
+   *  `runTurn`, via the framework `runStream` loop with a caller-injected
+   *  messenger `Channel` (the BYO Slack/Telegram transport + webhook-inbound
+   *  wiring is the deferred downstream consumer). The framework's
+   *  post-`update` `out.message` delivers the final answer over the channel's
+   *  transport. */
+  runMessengerTurn(input: MessengerTurnInput): Promise<ChatTurnAck>;
+  /** D-196 — stateless contracted-customer adapter over the SAME
+   * `runChatTurn` mechanics as owner chat. It deliberately skips durable owner
+   * history and owner-private middleware, projects a contract catalog, and
+   * obtains a fresh snapshot for every tool dispatch. */
+  runLlmGatewayTurn?(input: LlmGatewayTurnInput): Promise<LlmGatewayTurnResult>;
+  /** D-160 N.5 — the ONE chat-history store both surfaces share. The
+   *  orchestrator builds it once (the cache-only store over the durable
+   *  ChatStore that warms `runStream`'s history reads); the messenger
+   *  wiring builds its channel over THIS instance and passes it back
+   *  through `MessengerTurnInput.sessionStore`, so chat and messenger
+   *  are one conversation seen through two windows. */
+  sessionStore: SessionStateStore;
+  /** Expose the dispatch seam so per-Tier-1 wiring in P1.3 can
+   *  invoke through the same audit + broadcast envelope. */
+  dispatch: OrchestratorDispatch;
+}
+
+const safeLogActivity = async (
+  auditLog: AuditLogStore | undefined,
+  action: Parameters<AuditLogStore['logActivity']>[0]['action'],
+  target: string,
+  detail?: string,
+): Promise<void> => {
+  if (!auditLog) return;
+  try {
+    await auditLog.logActivity({
+      activity_id: '',
+      timestamp: Date.now(),
+      action,
+      target,
+      ...(detail ? { detail } : {}),
+    });
+  } catch {
+    // Audit failures are observability-only; never abort the turn.
+  }
+};
+
+const safeBroadcast = (
+  broadcast: ChatBroadcastEmitter | undefined,
+  event: BroadcastChatEvent,
+): void => {
+  if (!broadcast) return;
+  try {
+    broadcast.emit(event);
+  } catch {
+    // Broadcast failures are observability-only; never abort the turn.
+  }
+};
+
+/** Resolve the model-pref discriminator on a turn. Falls back to the
+ *  bare comfort layer `'byok'` (D-191: "local" is no longer a routing
+ *  layer); ignores garbage input. */
+const resolveModelPref = (
+  session: ChatSession | null,
+  override?: { current: string },
+): ChatModelRoutingLayer => {
+  if (override && isChatModelRoutingLayer(override.current)) {
+    return override.current;
+  }
+  if (session && isChatModelRoutingLayer(session.model_routing.current)) {
+    return session.model_routing.current;
+  }
+  return 'byok';
+};
+
+/** § A.14 slot-aware chat routing — resolve the BYOK slot capability hint on
+ *  a turn: a per-turn override wins, else the session's stored hint, else
+ *  `undefined` (the turn uses its default tier). The hint selects WHICH BYOK
+ *  slot resolves (D-191: routing is `slot_1`/`slot_2`/`free_pool` — there is
+ *  no force-local layer). */
+const resolveModelHint = (
+  session: ChatSession | null,
+  override?: { model_hint?: unknown },
+): ChatModelHint | undefined => {
+  if (override && isChatModelHint(override.model_hint)) {
+    return override.model_hint;
+  }
+  if (session && isChatModelHint(session.model_routing.model_hint)) {
+    return session.model_routing.model_hint;
+  }
+  return undefined;
+};
+
+/** D-191 Phase 6 — resolve the picked slot key on a turn: a per-turn override
+ *  wins, else the session's stored `source_id`, else undefined. Only a valid
+ *  `ChatModelSourceId`; the turn pins `slot_1`/`slot_2` at the matcher
+ *  (`free_pool` / undefined → no pin, normal routing). */
+const resolveModelSourceId = (
+  session: ChatSession | null,
+  override?: { source_id?: unknown },
+): ChatModelSourceId | undefined => {
+  if (override && isChatModelSourceId(override.source_id)) {
+    return override.source_id;
+  }
+  if (session && isChatModelSourceId(session.model_routing.source_id)) {
+    return session.model_routing.source_id;
+  }
+  return undefined;
+};
+
+/** Resolve the tier discriminator for a Self-picker tool dispatch.
+ *  Tier 2 / Tier 3 enumeration lands in Wave 2; P1.2 maps all known
+ *  Tier 1 names to tier 1 + everything else to tier 2 (recipe
+ *  lookups) as a placeholder. P1.3 widens this against the registry's
+ *  `getByName(name)?.tier` once Tier 2 + Tier 3 entries surface. */
+const resolveTier = (
+  registry: InternalToolRegistry,
+  tool_name: string,
+): 1 | 2 | 3 => {
+  const entry = registry.getByName(tool_name);
+  if (entry) {
+    return entry.tier;
+  }
+  // Conservative fallback — names not in the registry surface a Tier 2
+  // dispatch shape (the audit consumer treats unknown_tool below).
+  return isTier1ToolName(tool_name as Tier1ToolName) ? 1 : 2;
+};
+
+/** D-137 P1.4 — Project recent chat history into the main-turn
+ *  `chat_tail` shape. Tail length is the local `CHAT_TAIL_LIMIT` (=3);
+ *  we pull the last N user/assistant pairs and drop tool/system rows
+ *  (those carry provenance + state shifts, not conversational
+ *  context).
+ *
+ *  Codex P1.4 review P2 fold — `ChatVaultLockedError` is a signal
+ *  (the user's vault has been re-locked) NOT a transient storage
+ *  error. Rethrow it so the orchestrator surface fails the turn
+ *  cleanly instead of silently sending a degraded packet to the AI.
+ *  Any other read failure (corrupt row, transient IO) still degrades
+ *  to an empty tail — the substrate stays reachable on data-quality
+ *  issues without losing the turn entirely. */
+const CHAT_TAIL_LIMIT = 3;
+
+const buildChatTail = async (
+  chatStore: ChatStore,
+  session_id: string,
+): Promise<ReadonlyArray<ChatTailMessage>> => {
+  try {
+    const messages = await chatStore.listMessages(session_id);
+    const conversational = messages.filter(
+      (m): m is ChatMessage & { role: 'user' | 'assistant' } =>
+        m.role === 'user' || m.role === 'assistant',
+    );
+    return conversational
+      .slice(-CHAT_TAIL_LIMIT)
+      .map((m) => ({ role: m.role, content: m.content }));
+  } catch (e) {
+    if (e instanceof ChatVaultLockedError) {
+      // Locked vault is a load-bearing user state, not a transient
+      // read failure. Surface it to the orchestrator's runTurn caller
+      // so the rpc handler can map to a clean 401/locked error envelope
+      // rather than processing a turn against a vault the user has
+      // since re-locked.
+      throw e;
+    }
+    return [];
+  }
+};
+
+/** D-137 W2.2 § A.1.1 — Project Mary's per-kind catalog scope state
+ *  into the `Set<IngredientKind>` `buildChatMainTurnTools` consumes.
+ *
+ *  Two distinct cases:
+ *    - **Missing snapshot** (`null` / `undefined` / non-array
+ *      `enabled_kinds`) — the orchestrator has no idea what Mary
+ *      wants (store-unavailable race, dbless test harness,
+ *      pre-init boot window). Fall back to
+ *      `SAFE_DEFAULT_CHAT_CATALOG_KINDS` so the substrate stays
+ *      reachable.
+ *    - **Explicit empty** (`enabled_kinds: []`) — Mary deliberately
+ *      disabled every kind via the Settings page (the contracts
+ *      validator + Settings UI explicitly support this as "disable
+ *      every Tier 2 kind"). Respect it verbatim; promoting an empty
+ *      scope back to defaults would silently override Mary's intent.
+ *
+ *  Codex W2.2 review P1 fold — the prior `out.size === 0 → fall back
+ *  to safe defaults` branch conflated those two cases and let a
+ *  saved-empty setting silently re-enable every safe-default kind.
+ *
+ *  Off-list values in the persisted blob are already caught upstream
+ *  (contracts validator at write time + store-side `parseEnabledKinds-
+ *  Json` at read time, which returns null on any non-IngredientKind
+ *  member and triggers the missing-snapshot branch). The defensive
+ *  filter below is belt-and-braces for hand-edited rows that slipped
+ *  past both layers. Pure; no clock, no I/O. */
+export const resolveEnabledKinds = (
+  scope: ChatToolCatalogScopeState | null | undefined,
+): ReadonlySet<IngredientKind> => {
+  if (!scope || !Array.isArray(scope.enabled_kinds)) {
+    return new Set<IngredientKind>(SAFE_DEFAULT_CHAT_CATALOG_KINDS);
+  }
+  const out = new Set<IngredientKind>();
+  for (const k of scope.enabled_kinds) {
+    if (typeof k === 'string' && INGREDIENT_KINDS.has(k as IngredientKind)) {
+      out.add(k as IngredientKind);
+    }
+  }
+  return out;
+};
+
+export const createChatOrchestrator = (
+  deps: ChatOrchestratorDeps,
+): ChatOrchestrator => {
+  const now = deps.now ?? Date.now;
+  const mintId = deps.mintId ?? randomUUID;
+  const selfDisplayName = deps.selfDisplayName ?? 'Self';
+
+  // D-160 — the framework substrate the chat turn runs THROUGH.
+  // The channel carries the generic streaming delta (the `TurnExecutor`
+  // closure's `ctx.out.token` → sink → bus) + the framework's out-stream
+  // projection; its bus is the orchestrator's own broadcast emitter (the
+  // sink emits exactly that shape), so token deltas land on the same
+  // D-121 bus as the rich direct emits. `deliverFinalMessage: false`
+  // keeps `chat.message_complete` owned by the RICH finalize below (it
+  // carries the full ChatMessage row that the channel — holding only the
+  // assistant text mid-stream — cannot). The cache-only session store
+  // warms `runStream`'s history read; durable rows stay owned by the
+  // finalize. Built once; `preload` per turn rebuilds the per-session cache.
+  const streamChannelBus = deps.broadcast ?? { emit: () => {} };
+  const { channel: streamChannel, sessionStore: streamSessionStore } =
+    createServerChatChannel({
+      bus: streamChannelBus,
+      chatStore: deps.chatStore,
+      userId: LOCAL_CHAT_USER_ID,
+      deliverFinalMessage: false,
+    });
+
+  // D-160 Stage 3 (N.9 / A.8 step 3) — the turn concerns are REGISTERED
+  // HOOKS over the shared `state`: build the source-binding adapters from
+  // the live first-party registry + the existing per-pair stores, and
+  // register them so `runStream` drives them at each lifecycle hook
+  // (`standing-instructions` Checkpoint 1 + `scope-search` + `correction-
+  // learning` in the before-turn phase; `standing-instructions` Checkpoint 2
+  // + `confidence-shape` + `personal-recipes` in the after-turn phase). Each
+  // adapter honours the first-party registry's enabled-state + no-ops without
+  // its source getter; `scope-search` / `confidence-shape` (A.8 step 5) are
+  // bound but FAITHFUL NO-OPS on the live chat path BY DESIGN — the turn-level
+  // `getScopeSearchInput` producer is a two-sided seam (no pre-AI intent
+  // signal in single-stage + no consumer of the results; the productive
+  // fan-out runs at TOOL level in `chat-tool-handlers.ts`). See the
+  // `getScopeSearchInput` dep doc above + `chat-stream-middleware.ts`'s
+  // file-header block. The source adapters are built only when a `middlewareRegistry`
+  // is wired — absent it (the dbless test harness / pre-LLM-config boot
+  // path) the registry carries only the always-built `catalog` hook (A.8
+  // step 4, below) + any PII bookends; `runStream` still drives them.
+  // D-167 P5 S4 — the always-on PII bookends' source bindings. Built whenever
+  // a session alias-ledger store is wired, INDEPENDENT of the first-party
+  // registry (the bookends are never gated on a per-middleware enabled-state).
+  // Aliasing is UNCONDITIONAL — there is no egress posture to resolve (D-191
+  // retired force-local routing; the per-turn picker is the routing control,
+  // and the reversible alias travels with the data whichever way the turn
+  // routes).
+  const piiHookDeps: PiiEgressHookDeps | undefined = deps.piiLedgerStore
+    ? {
+        ledgerStore: deps.piiLedgerStore,
+        ...(deps.fieldPrivacyResolver
+          ? { resolver: deps.fieldPrivacyResolver }
+          : {}),
+        ...(deps.getContactKnownValueIndex
+          ? { getContactKnownValueIndex: deps.getContactKnownValueIndex }
+          : {}),
+      }
+    : undefined;
+
+  // D-160 A.8 step 4 — the catalog projection the `catalog` before-turn
+  // hook DECIDES. This is the FORMER inline before-turn catalog gather (the
+  // post-capability-filter Tier 1/2/3 union → AI-facing `available_tools`),
+  // lifted behind a closure the stream adapter calls so the catalog becomes
+  // a registered hook (not an inline call). Pure over the per-pair deps
+  // (`registry` / `peerDispatcher` / `scopeProvider` / `annotationProvider`)
+  // + the per-turn picker target; the hook writes the result to shared
+  // `state`, the executor ENACTs it. The D-164 P3 6-section catalog
+  // substrate is the salvage path that replaces this projection's internals
+  // later — this slice establishes the wiring (catalog source depends on the
+  // picker target per D-137 P4 § A.7: self → local Tier 1/2/3 union; peer →
+  // the peer's already-classified projection, NO self fallback / local
+  // gates).
+  // Lever-2 — the static fallback projection (absent dep → launch baseline,
+  // full arg_schema per entry). Per-slot: `resolveTurnProjection` resolves the
+  // projection from the TURN's source (turn-fixed → still turn-invariant /
+  // D-164 prefix-safe); the `catalog` before-turn hook receives it per turn.
+  const catalogProjection = deps.catalogProjection ?? DEFAULT_CHAT_CATALOG_PROJECTION;
+  const resolveTurnProjection = (
+    source: ChatModelSourceId | undefined,
+  ): ChatCatalogProjectionConfig =>
+    deps.catalogProjectionForSource
+      ? deps.catalogProjectionForSource(source)
+      : catalogProjection;
+  const buildCatalog: ChatCatalogBuilder = (picker_target, projection) => {
+    const peerName = extractPeerName(picker_target);
+    const catalogEntries =
+      peerName !== null
+        ? deps.peerDispatcher
+          ? deps.peerDispatcher.listToolEntries(peerName)
+          : []
+        : deps.registry.list();
+    const enabledKinds = resolveEnabledKinds(
+      deps.scopeProvider ? deps.scopeProvider() : null,
+    );
+    const kindGatedTier2Names =
+      peerName !== null
+        ? new Set<string>()
+        : computeKindGatedTier2Names(catalogEntries, enabledKinds);
+    const annotations = deps.annotationProvider ? deps.annotationProvider() : null;
+    const disabledTier3Names =
+      peerName !== null
+        ? new Set<string>()
+        : annotations
+          ? computeConnectionMcpDisabledTier3Names(annotations)
+          : new Set<string>();
+    return buildChatMainTurnTools(
+      catalogEntries,
+      kindGatedTier2Names,
+      disabledTier3Names,
+      projection,
+    );
+  };
+
+  // The stream registry is now ALWAYS populated: the `catalog` hook (A.8
+  // step 4) is built from the always-present `buildCatalog`, so — unlike the
+  // pre-step-4 path that stayed empty without a `middlewareRegistry` / PII —
+  // there is always at least one producer (the inline catalog gather it
+  // replaces ran on every turn, so the hook must too). The `middlewareRegistry`
+  // / `piiHookDeps` arms inside `createChatStreamMiddlewares` still gate the
+  // source adapters / PII bookends; absent both, the registry carries the lone
+  // catalog hook.
+  const streamRegistry = createMiddlewareRegistry();
+  for (const middleware of createChatStreamMiddlewares({
+    ...(deps.middlewareRegistry ? { registry: deps.middlewareRegistry } : {}),
+    buildCatalog,
+    ...(deps.getCorrectionEventsStore
+      ? { getCorrectionEventsStore: deps.getCorrectionEventsStore }
+      : {}),
+    ...(deps.getContactStore ? { getContactStore: deps.getContactStore } : {}),
+    ...(deps.getScopeSearchInput
+      ? { getScopeSearchInput: deps.getScopeSearchInput }
+      : {}),
+    ...(deps.getScopedGrantParseDeps
+      ? { getScopedGrantParseDeps: deps.getScopedGrantParseDeps }
+      : {}),
+    ...(piiHookDeps ? { pii: piiHookDeps } : {}),
+    now,
+  })) {
+    streamRegistry.register(middleware);
+  }
+
+  /** D-137 P4 § A.7 — `picker_at_send` builder. Self turns carry the
+   *  orchestrator's own signature; peer turns carry the peer's probed
+   *  signature when the dispatcher knows it (falls back to Self so the
+   *  message row always has a non-null shape — the absent-peer case
+   *  surfaces as `connection_unavailable` at dispatch time, never as a
+   *  malformed row). */
+  const buildPickerAtSend = (target: ChatPickerTarget): ChatMessage['picker_at_send'] => {
+    if (target === 'self') {
+      return { display_name: selfDisplayName, signature: deps.selfSignature };
+    }
+    const peerName = target.startsWith('connection.mcp.')
+      ? target.slice('connection.mcp.'.length)
+      : target;
+    const peerSig = deps.peerDispatcher?.getPeerSignature(peerName) ?? null;
+    return {
+      display_name: peerName,
+      signature: peerSig ?? deps.selfSignature,
+    };
+  };
+
+
+  /** D-137 P4 § A.7 — peer dispatch path. Routes through
+   *  `peerDispatcher.dispatch` instead of the local InternalToolRegistry.
+   *  Audit + broadcast envelopes mirror the Self path but record the
+   *  channel + tier honestly:
+   *    - `channel: 'mcp_wire'` (peer dispatch goes over the wire from
+   *      Mary's perspective; the audit row distinguishes from internal-
+   *      channel Self dispatches).
+   *    - `tier: 3` (every peer-routed tool is a Tier 3 entry per
+   *      § A.1.1; the peer's own InternalToolRegistry classifies
+   *      Tier 1/2/3 internally, but Mary's side sees only Tier 3
+   *      connection.mcp.* entries).
+   *
+   *  When `peerDispatcher` is unwired, returns
+   *  `{ ok: false, reason: 'connection_unavailable' }` so the AI's
+   *  chat tail sees a clean degraded path. */
+  const dispatchToolToPeer = async (args: {
+    session_id: string;
+    turn_id: string;
+    tool_name: string;
+    arg_values: unknown;
+    peerName: string;
+  }): Promise<ChatDispatchResult> => {
+    const { session_id, turn_id, tool_name, arg_values, peerName } = args;
+    const tier: ToolTier = 3;
+    if (!deps.peerDispatcher) {
+      const result: ChatDispatchResult = {
+        ok: false,
+        reason: 'connection_unavailable',
+        detail: `peer dispatcher not wired for connection.mcp.${peerName}`,
+      };
+      safeBroadcast(deps.broadcast, {
+        kind: 'chat.tool_call_completed',
+        session_id,
+        turn_id,
+        tool_name,
+        tier,
+        status: 'error',
+        reason: result.reason,
+        detail: result.detail!,
+      });
+      return result;
+    }
+    safeBroadcast(deps.broadcast, {
+      kind: 'chat.tool_call_started',
+      session_id,
+      turn_id,
+      tool_name,
+      tier,
+      args: arg_values,
+    });
+    const startedAt = now();
+    const result = await deps.peerDispatcher.dispatch({
+      peer_name: peerName,
+      tool_name,
+      arg_values,
+    });
+    const durationMs = now() - startedAt;
+    if (result.ok) {
+      // D-182 — a failed peer (Tier-3) recipe run (run_failed set by
+      // wrapRecipeRunResult) reads as an ERROR row too, mirroring the local path;
+      // the model-facing result stays ok:true (returned unchanged below).
+      if (result.run_failed) {
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: 'execution_error',
+          detail: result.run_failed.detail,
+        });
+      } else {
+        const result_ref = `${session_id}:${turn_id}:${tool_name}`;
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'ok',
+          result_ref,
+        });
+      }
+      void safeLogActivity(
+        deps.auditLog,
+        'chat_tool_call',
+        `${session_id}:${turn_id}:${tool_name}`,
+        JSON.stringify({
+          channel: 'mcp_wire' satisfies ChatDispatchChannel,
+          tier,
+          status: result.run_failed ? 'error' : 'ok',
+          peer_name: peerName,
+          duration_ms: durationMs,
+        }),
+      );
+      return result;
+    }
+    safeBroadcast(deps.broadcast, {
+      kind: 'chat.tool_call_completed',
+      session_id,
+      turn_id,
+      tool_name,
+      tier,
+      status: 'error',
+      reason: result.reason,
+      ...(result.detail ? { detail: result.detail } : {}),
+    });
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_tool_call',
+      `${session_id}:${turn_id}:${tool_name}`,
+      JSON.stringify({
+        channel: 'mcp_wire' satisfies ChatDispatchChannel,
+        tier,
+        status: 'error',
+        reason: result.reason,
+        peer_name: peerName,
+        duration_ms: durationMs,
+      }),
+    );
+    return result;
+  };
+
+  const dispatchTool: OrchestratorDispatch['dispatchTool'] = async ({
+    session_id,
+    turn_id,
+    tool_name,
+    arg_values,
+    picker_target,
+    execution_source,
+    contract_snapshot,
+    llm_gateway_tool_usage,
+    dispatch_depth,
+  }) => {
+    // D-137 P4 § A.7 — peer-target detection. Peer-routed dispatches
+    // go through the outbound MCP wire; Self-routed go through the
+    // local registry. The plan-approval gate runs BEFORE the routing
+    // split so write-classified peer tools pause behind the same
+    // plan-approval card as local writes (Codex P4 review P1 fold
+    // #1 — the gate keys off classification, not channel, and must
+    // apply uniformly to both paths).
+    const peerName = extractPeerName(picker_target);
+
+    // Codex P2 fold (D-137 P1.2 review) — tier derived from the
+    // resolved ToolEntry. For peer dispatches the entry comes from
+    // the peer's `listToolEntries(peerName)` projection (the local
+    // InternalToolRegistry doesn't know peer tools, so we'd otherwise
+    // mislabel as Tier 2). Falls back to Tier 3 for any peer-routed
+    // dispatch whose name isn't in the peer's catalog — keeps the
+    // audit row honest about the channel even when the catalog is
+    // stale.
+    let entry: ToolEntry | null;
+    let tier: ToolTier;
+    if (peerName !== null) {
+      entry = deps.peerDispatcher
+        ? (deps.peerDispatcher.listToolEntries(peerName).find(
+            (e) => e.name === tool_name,
+          ) ?? null)
+        : null;
+      tier = entry?.tier ?? 3;
+    } else {
+      entry = deps.registry.getByName(tool_name);
+      tier = resolveTier(deps.registry, tool_name);
+    }
+
+    // D-196 shared-turn hardening — a gateway meter is valid only on a
+    // known, contract-bound customer-chat dispatch. Resolve this structural
+    // authority before usage admission or actual tool work. With no meter,
+    // owner chat/messenger retain their exact existing behavior.
+    if (llm_gateway_tool_usage !== undefined) {
+      if (entry === null) {
+        return { ok: false, reason: 'unknown_tool' };
+      }
+      if (!isLlmGatewayContractSafeToolEntry(entry)) {
+        return {
+          ok: false,
+          reason: 'classification_blocked',
+          detail: 'llm_gateway dispatch is limited to contract-safe Tier 2 recipes',
+        };
+      }
+      const sourceContractId = execution_source
+        ? executionSourceContractId(execution_source)
+        : undefined;
+      if (
+        execution_source?.channel !== 'chat'
+        || execution_source.actor !== 'contracted_user'
+        || sourceContractId === undefined
+        || contract_snapshot === undefined
+        || contract_snapshot.contract_id !== sourceContractId
+      ) {
+        return {
+          ok: false,
+          reason: 'classification_blocked',
+          detail:
+            'llm_gateway tool dispatch requires a matching contracted chat source and contract snapshot',
+        };
+      }
+    }
+
+    // D-137 P3 § A.11 — plan-approval gate. When a write tool is
+    // dispatched, check the plan registry FIRST. Outcomes, in
+    // precedence order:
+    //   - SAME-TURN cancelled plan exists → return `plan_cancelled`
+    //     without dispatching + without re-proposing (cancel is
+    //     turn-scoped per the `plan_cancelled` contract: a later
+    //     turn's re-issue mints a fresh proposal).
+    //   - A consumable approval exists for `(session, tool, args)` —
+    //     turn-AGNOSTIC, since approval lands after the proposing
+    //     turn ended and the re-issue carries a new turn_id —
+    //     → CONSUME it (single-use `consumed_at` stamp, TTL-bounded,
+    //     args-hash-bound) + fall through to normal dispatch.
+    //   - Otherwise → mint a proposal (or re-emit the same turn's
+    //     still-proposed one), broadcast `chat.plan_proposed`,
+    //     return `awaiting_approval`. Mary approves the card; the
+    //     main-turn re-issues on her next message; the gate consumes
+    //     the approval + dispatches.
+    //
+    // Tier 1 reads bypass the gate entirely (classification check
+    // collapses `'read'` to false in `requiresPlanApproval`); the
+    // gate only runs for write-classified entries OR `'unknown'`
+    // entries that carry a write-class `risk_tier` /
+    // `destructive_hint: true` hint.
+    //
+    // D-137 P4 Codex review P1 fold #1 — peer dispatches MUST run
+    // through the same gate. Peer tools classified `'write'` (e.g.
+    // Mary classified `bob.mail.send` as write in Settings) pause
+    // behind the same approval card as Self writes; the gate keys
+    // off `entry.classification`, not the channel.
+    if (deps.planApprovalStore && entry && planApprovalModule.requiresPlanApproval(entry)) {
+      // Codex P3 review P1 fold #2 — bind the gate lookup to the
+      // exact dispatch args. Different args (the main-turn re-invokes
+      // with a new recipient on the same tool) mint a fresh proposal
+      // rather than silently inheriting the prior approval.
+      const argsHash = planApprovalModule.computePlanArgsHash(arg_values);
+      const sameTurn = deps.planApprovalStore.findLatest(
+        session_id,
+        turn_id,
+        tool_name,
+        argsHash,
+      );
+      if (sameTurn && sameTurn.status === 'cancelled') {
+        const result: ChatDispatchResult = {
+          ok: false,
+          reason: 'plan_cancelled',
+          detail: `plan_id=${sameTurn.plan_id}`,
+        };
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: result.reason,
+          detail: result.detail!,
+        });
+        return result;
+      }
+      const approved = deps.planApprovalStore.findApprovedForDispatch(
+        session_id,
+        tool_name,
+        argsHash,
+        now(),
+      );
+      if (approved) {
+        // Spend the approval AT the dispatch decision — before the
+        // dispatch runs, so a failed dispatch consumes it too and
+        // the retry re-proposes loudly rather than silently
+        // re-running on a stale grant. One approve = one execution.
+        deps.planApprovalStore.markConsumed(approved.plan_id, now());
+        void safeLogActivity(
+          deps.auditLog,
+          'chat_plan_consumed',
+          `${session_id}:${turn_id}:${tool_name}`,
+          JSON.stringify({
+            plan_id: approved.plan_id,
+            tier,
+            // Cross-turn provenance: approved against THIS turn's
+            // proposal or an earlier turn's — the audit row is how
+            // an operator traces which card authorized the dispatch.
+            approved_turn_id: approved.turn_id,
+          }),
+        );
+        // Fall through to normal dispatch below.
+      } else {
+        // No consumable approval — pause behind a card. Re-emit the
+        // same turn's still-proposed plan for reconnect /
+        // multi-client coherence (a late-surfacing client still sees
+        // the pending card without re-issuing the rpc); mint a FRESH
+        // proposal otherwise — including when the same turn holds a
+        // spent (consumed / TTL-expired) approval: that grant is
+        // used up, so this dispatch is a new ask, not a re-emit.
+        const reEmit =
+          sameTurn && sameTurn.status === 'proposed' ? sameTurn : undefined;
+        const proposal =
+          reEmit ??
+          planApprovalModule.buildPlanProposal({
+            session_id,
+            turn_id,
+            tool: tool_name,
+            tier,
+            classification: entry.classification,
+            args: arg_values,
+            mintId,
+            now,
+          });
+        if (!reEmit) {
+          deps.planApprovalStore.put(proposal);
+          void safeLogActivity(
+            deps.auditLog,
+            'chat_plan_proposed',
+            `${session_id}:${turn_id}:${tool_name}`,
+            JSON.stringify({
+              plan_id: proposal.plan_id,
+              tier,
+              classification: entry.classification,
+            }),
+          );
+        }
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.plan_proposed',
+          session_id,
+          turn_id,
+          plan_id: proposal.plan_id,
+          tool: tool_name,
+          tier,
+          args: proposal.args,
+        });
+        const result: ChatDispatchResult = {
+          ok: false,
+          reason: 'awaiting_approval',
+          detail: `plan_id=${proposal.plan_id}`,
+        };
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: result.reason,
+          detail: result.detail!,
+        });
+        return result;
+      }
+    }
+
+    // D-196 — usage admission owns the last pre-dispatch boundary, after
+    // known-tool, contract-carrier, and plan-approval checks. The optional
+    // injection is the scope fence: normal chat/messenger and direct MCP never
+    // provide it, so they cannot be charged by this hook.
+    const llmGatewayUsageCall: LlmGatewayToolUsageCall = {
+      session_id,
+      turn_id,
+      tool_name,
+      arg_values,
+      picker_target,
+    };
+    if (llm_gateway_tool_usage !== undefined) {
+      let admission: LlmGatewayToolUsageAdmission;
+      try {
+        admission = await llm_gateway_tool_usage.admit(llmGatewayUsageCall);
+      } catch (e) {
+        admission = {
+          admitted: false,
+          result: {
+            ok: false,
+            reason: 'capacity_gap',
+            detail:
+              `llm_gateway tool usage admission failed: ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+          },
+        };
+      }
+      if (!admission.admitted) {
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: admission.result.reason,
+          ...(admission.result.detail !== undefined
+            ? { detail: admission.result.detail }
+            : {}),
+        });
+        return admission.result;
+      }
+    }
+
+    const recordLlmGatewayToolUsage = async (): Promise<void> => {
+      if (llm_gateway_tool_usage === undefined) return;
+      try {
+        await llm_gateway_tool_usage.record(llmGatewayUsageCall);
+      } catch (e) {
+        console.warn(
+          `[llm_gateway] seller customer tool_call rollup failed for ${tool_name}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    };
+    const releaseLlmGatewayToolUsage = async (): Promise<void> => {
+      if (llm_gateway_tool_usage === undefined) return;
+      try {
+        await llm_gateway_tool_usage.release(llmGatewayUsageCall);
+      } catch (e) {
+        console.warn(
+          `[llm_gateway] seller customer tool_call reservation release failed for ${tool_name}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    };
+
+    // D-137 P4 Codex review P1 fold #1 — post-gate routing split.
+    // Peer-target dispatches now route through `dispatchToolToPeer`
+    // (which still runs its own broadcast + audit envelope tuned to
+    // `channel: 'mcp_wire'` + `tier: 3`). Self-target falls through
+    // to the local InternalToolRegistry path below. The gate above
+    // ran uniformly for both paths.
+    if (peerName !== null) {
+      let result: ChatDispatchResult;
+      try {
+        result = await dispatchToolToPeer({
+          session_id,
+          turn_id,
+          tool_name,
+          arg_values,
+          peerName,
+        });
+      } catch (error) {
+        await releaseLlmGatewayToolUsage();
+        throw error;
+      }
+      if (result.ok && !result.run_held && !result.run_failed) {
+        await recordLlmGatewayToolUsage();
+      } else {
+        await releaseLlmGatewayToolUsage();
+      }
+      return result;
+    }
+
+    safeBroadcast(deps.broadcast, {
+      kind: 'chat.tool_call_started',
+      session_id,
+      turn_id,
+      tool_name,
+      tier,
+      args: arg_values,
+    });
+    const startedAt = now();
+    let result: ChatDispatchResult;
+    try {
+      result = await deps.registry.dispatch(
+        tool_name,
+        arg_values,
+        buildInternalDispatchCtx(
+          session_id,
+          turn_id,
+          execution_source,
+          contract_snapshot,
+          dispatch_depth,
+        ),
+      );
+    } catch (e) {
+      await releaseLlmGatewayToolUsage();
+      throw e;
+    }
+    const durationMs = now() - startedAt;
+    if (result.ok) {
+      // D-182 — a recipe run that FAILED (not held for approval) reads as an ERROR
+      // row in the user's activity, even though the model-facing result stays
+      // `ok: true` (the tuned anti-loop posture — the model still gets the full
+      // errors[] via `return result` below to narrate). Without this, a failed cli
+      // run showed a misleading "used X ✓".
+      if (result.run_failed) {
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'error',
+          reason: 'execution_error',
+          detail: result.run_failed.detail,
+        });
+      } else {
+        const result_ref = `${session_id}:${turn_id}:${tool_name}`;
+        safeBroadcast(deps.broadcast, {
+          kind: 'chat.tool_call_completed',
+          session_id,
+          turn_id,
+          tool_name,
+          tier,
+          status: 'ok',
+          result_ref,
+        });
+      }
+      void safeLogActivity(
+        deps.auditLog,
+        'chat_tool_call',
+        `${session_id}:${turn_id}:${tool_name}`,
+        JSON.stringify({
+          channel: 'internal_function_call' satisfies ChatDispatchChannel,
+          tier,
+          status: result.run_failed ? 'error' : 'ok',
+          duration_ms: durationMs,
+        }),
+      );
+      if (result.run_held || result.run_failed) await releaseLlmGatewayToolUsage();
+      else await recordLlmGatewayToolUsage();
+      return result;
+    }
+    safeBroadcast(deps.broadcast, {
+      kind: 'chat.tool_call_completed',
+      session_id,
+      turn_id,
+      tool_name,
+      tier,
+      status: 'error',
+      reason: result.reason,
+      ...(result.detail ? { detail: result.detail } : {}),
+    });
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_tool_call',
+      `${session_id}:${turn_id}:${tool_name}`,
+      JSON.stringify({
+        channel: 'internal_function_call' satisfies ChatDispatchChannel,
+        tier,
+        status: 'error',
+        reason: result.reason,
+        duration_ms: durationMs,
+      }),
+    );
+    await releaseLlmGatewayToolUsage();
+    return result;
+  };
+
+  // D-160 A.8 step 6 — the channel-agnostic turn driver shared by the chat
+  // `runTurn` and the messenger `runMessengerTurn` (N.9 inversion-of-control:
+  // the framework owns the loop; the channel-specifics are injected). It
+  // builds the per-turn shared `state` (seeded with the `catalog` hook's
+  // inputs) + the `TurnExecutor` closure that READS the before-turn hooks'
+  // decisions off the shared `state` + prompt draft, ENACTs the SI
+  // Checkpoint 1 transparency + the PII egress plan, runs `runChatTurn` (the
+  // surface-agnostic MECHANICS — per-round AI call + cooperative tool loop +
+  // in-turn enforcement), stashes the after-turn inputs, and maps
+  // `RunChatTurnResult` → the framework `TurnOutput`. BOTH surfaces run THIS
+  // executor over the SAME constructor-built `streamRegistry` (the s5 hooks)
+  // via `runStream` — that IS the step-6 reuse — differing only in the
+  // injected `Channel` + inbound + finalize.
+  //
+  // The rich SI-transparency + `runChatTurn` tool-call / multi-turn events
+  // route through the injected `emit`, so the messenger surface (whose
+  // out-stream is a selective projection that renders neither — N.6) passes a
+  // no-op while chat passes its D-121 bus emitter (the webclient renders the
+  // live stream). The GENERIC final delta still flows through `ctx.out.token`
+  // → the channel sink: chat streams it to the webclient, the messenger
+  // channel drops `token` events and delivers only the final `message` via
+  // its transport (the framework's post-`update` `out.message`).
+  const buildTurnDriver = (params: {
+    readonly session_id: string;
+    readonly turn_id: string;
+    readonly picker_target: ChatPickerTarget;
+    readonly dispatch_peer_name: string | null;
+    /** The turn's REAL channel-minted `ExecutionSource` — chat's
+     *  `buildChatExecutionSource` or the messenger inbound's
+     *  `(messenger × user_self)` source. Threaded through `runChatTurn`
+     *  onto every tool dispatch so the execute-handler's policy gate +
+     *  session-grant machinery key the TRUE `(channel × actor)` cell. */
+    readonly execution_source: ExecutionSource;
+    /** Snapshot paired with a contract-bearing shared-turn source. */
+    readonly contract_snapshot?: ContractSnapshot;
+    /** Per-request gateway counter. Omitted by normal chat/messenger. */
+    readonly llm_gateway_tool_usage?: LlmGatewayToolUsageMeter;
+    /** The turn's I-7 hop token (`ChannelInbound.dispatch_depth`) —
+     *  rides beside the source through the same dispatch chain (D-160
+     *  P3), so a re-entrant messenger fire's tool dispatches carry
+     *  their true dispatch-tree depth into the Gateway ceiling. */
+    readonly dispatch_depth: number;
+    readonly content_parts: readonly ContentPromptPart[];
+    readonly model_layer: ChatModelRoutingLayer;
+    readonly model_hint?: ChatModelHint;
+    /** D-191 Phase 6 — the picked slot key, threaded so the turn pins it. */
+    readonly model_source_id?: ChatModelSourceId;
+    /** D-193 — the requesting user's IANA timezone (surface-supplied);
+     *  threads to `runChatTurn` → the current-time prompt anchor. */
+    readonly time_zone?: string;
+    readonly emit: (event: BroadcastChatEvent) => void;
+  }): {
+    streamState: Map<string, unknown>;
+    turnExecutor: TurnExecutor;
+    getCapturedResult: () => RunChatTurnResult | undefined;
+    /** The turn's captured egress packets (aliased, per AI call) — read after
+     *  the turn to persist as egress history against the assistant message. */
+    getEgressPrompts: () => readonly string[];
+  } => {
+    const { session_id, turn_id, picker_target, emit } = params;
+    const streamState = new Map<string, unknown>();
+    // Lever-2 per-slot — resolve the catalog projection ONCE for this turn from
+    // the turn's ACTUAL routing (layer + source_id), normalized via
+    // `resolveCatalogSource` so the catalog thins the SAME model the executor
+    // routes to (a layer override without a matching source pin must not thin
+    // the wrong source). The SAME object feeds the catalog build (via the seed
+    // below) and the system-prompt `catalog_mode` (below) → presentation +
+    // guidance agree; turn-fixed routing → turn-invariant (D-164 prefix-safe).
+    const perTurnProjection = resolveTurnProjection(
+      resolveCatalogSource(params.model_layer, params.model_source_id),
+    );
+    // DECIDE inputs → seed `state` for the `catalog` before-turn hook (A.8
+    // step 4): it reads the per-turn picker target off the shared `state`,
+    // assembles `available_tools` via the bound `buildCatalog`, and writes
+    // them back for the executor to ENACT (N.9). Seeded pre-`runStream` so
+    // the before-turn `prompt` hook sees it (the framework treats this
+    // caller-provided map identically to its default; pre-seeding keys a
+    // hook reads is the caller's responsibility — `pipeline.ts` § `state`).
+    streamState.set(CHAT_CATALOG_INPUTS_STATE_KEY, {
+      picker_target,
+      projection: perTurnProjection,
+    } satisfies ChatCatalogInputs);
+    let capturedTurnResult: RunChatTurnResult | undefined;
+    // Egress history (D-167 transparency): the aliased model-bound packets sent
+    // this turn, one per AI call, collected by the PII wrapper's sink and
+    // persisted against the assistant message after it's appended.
+    const egressPrompts: string[] = [];
+    const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
+      // ENACT (N.9): read the before-turn hooks' decisions. The
+      // `correction-learning` hook contributed its flat "recent
+      // corrections — …" summary to the prompt draft (filter to its
+      // source so the SI hook's own pre-synthesis prompt contribution
+      // never leaks into the turn's correction context — preserving the
+      // prior gather, which captured ONLY correction-learning's parts);
+      // the `standing-instructions` Checkpoint 1 hook wrote its
+      // pre-synthesis result to `state`.
+      const correctionContext = ctx.prompt
+        .parts()
+        .filter(
+          (part): part is TextPromptPart =>
+            (part.role === 'system' || part.role === 'context')
+            && part.source === CORRECTION_LEARNING_MIDDLEWARE_ID,
+        )
+        .map((part) => part.text);
+      const content = assembleChatPromptContent([
+        ...params.content_parts,
+        ...ctx.prompt.parts().filter((part): part is ContentPromptPart => part.role === 'content'),
+      ]);
+      // ENACT (N.9) the PII egress plan `pii-protect` DECIDED in the before-turn
+      // phase. Read it HERE (hoisted ahead of its wire-seam use below) so the
+      // prefetch gather can alias its entity payload against the turn's SHARED
+      // session ledger — the same ledger the wire seam later uses for tool
+      // results + content text, so one contact renders to one alias everywhere.
+      const piiPlan = readPiiEgressPlan(ctx.state);
+      // D-167 — collect the prompt-cache before-turn hook's STRUCTURED `entity`
+      // parts (raw records + a `render`) but DON'T alias them here. They thread
+      // through the executor wrapper into the SINGLE wire seam, where they alias
+      // against the turn's shared session ledger alongside everything else — one
+      // PII enforcement point, no eager second pass racing the seam over the
+      // ledger. The wrapper drops them on an inactive / external-egress plan (it
+      // returns the raw executor), so no unrequested raw warehouse PII egresses
+      // and their raw records never enter the JSON packet. See `aliasChatAiInput`
+      // + docs/d-160-n10-part-pii-pending-design.md.
+      const prefetchEntityParts = ctx.prompt
+        .parts()
+        .filter(
+          (part): part is EntityPromptPart =>
+            part.role === 'entity' && part.source === PROMPT_CACHE_MIDDLEWARE_ID,
+        );
+      // ENACT (N.9): the `catalog` before-turn hook DECIDED `available_tools`
+      // off the seeded picker target. Fall back to an empty list defensively
+      // — in practice the hook always runs (always wired + seeded), so this
+      // equals the former inline `availableTools`.
+      const availableTools =
+        (ctx.state.get(CHAT_CATALOG_RESULT_STATE_KEY) as
+          | ReadonlyArray<ChatMainTurnTool>
+          | undefined) ?? [];
+
+      // ENACT (N.9) the PII egress plan (read above): wrap `executeAiCall` so
+      // every outbound packet is aliased (incl. the tool loop's per-reinvoke
+      // `prior_tool_calls`, which carry fresh warehouse PII) and every returned
+      // body restored before `runChatTurn` sees it — only the cloud LLM sees
+      // aliases. An absent plan (PII unwired) or an inactive plan (external-
+      // egress surface) leaves the raw executor untouched (behavior-preserving).
+      // D-191 — aliasing is the sole PII protection; the wrap is aliasing-only
+      // (no cloud-egress posture / force-local injection).
+      const executeAiCallForTurn =
+        deps.executeAiCall !== undefined && piiPlan !== undefined
+          ? wrapExecuteAiCallForPii(
+              deps.executeAiCall,
+              piiPlan,
+              (p) => {
+                egressPrompts.push(p);
+              },
+              prefetchEntityParts,
+            )
+          : deps.executeAiCall;
+
+      // The OWNER surfaces (chat + messenger — `buildTurnDriver`'s only two
+      // callers) resolve the `chat` prompt. Absent dep → the built-in default.
+      // The gateway does NOT come through here; it resolves its own surface in
+      // `runLlmGatewayTurn`, so an owner's chat persona can never reach an
+      // external caller.
+      const chatSystemPrompt = deps.resolveSystemPrompt?.('chat');
+
+      const result = await runChatTurn(
+        {
+          session_id,
+          turn_id,
+          picker_target,
+          dispatch_peer_name: params.dispatch_peer_name,
+          execution_source: params.execution_source,
+          ...(chatSystemPrompt !== undefined
+            ? {
+                system_prompt: chatSystemPrompt.prompt,
+                system_role: chatSystemPrompt.role,
+              }
+            : {}),
+          ...(params.contract_snapshot !== undefined
+            ? { contract_snapshot: params.contract_snapshot }
+            : {}),
+          ...(params.llm_gateway_tool_usage !== undefined
+            ? { llm_gateway_tool_usage: params.llm_gateway_tool_usage }
+            : {}),
+          dispatch_depth: params.dispatch_depth,
+          available_tools: availableTools,
+          content,
+          correction_context: correctionContext,
+          // Lever-2 per-slot — the PER-TURN catalog delivery mode (resolved
+          // from the turn's source) drives the system-prompt guidance. Same
+          // `perTurnProjection` object that fed the catalog build → presentation
+          // + guidance agree by construction. Thinning modes append their own
+          // guidance; full leaves the baseline prompt byte-identical.
+          catalog_mode: perTurnProjection.mode,
+          model_layer: params.model_layer,
+          ...(params.model_hint ? { model_hint: params.model_hint } : {}),
+          ...(params.model_source_id
+            ? { model_source_id: params.model_source_id }
+            : {}),
+          ...(params.time_zone ? { time_zone: params.time_zone } : {}),
+        },
+        {
+          ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
+          registry: deps.registry,
+          ...(deps.peerDispatcher ? { peerDispatcher: deps.peerDispatcher } : {}),
+          dispatchTool,
+          emit,
+          now,
+        },
+      );
+      capturedTurnResult = result;
+
+      // DECIDE → write `state`: stash the after-turn inputs the `update`
+      // hooks consume — but ONLY when the turn produced an `AIOutput`. The
+      // stash's PRESENCE is the gate the SI Checkpoint 2 + personal-recipes
+      // adapters read; absent it (the conflict-halt / no-executor /
+      // provider-failure paths) neither after-turn hook reads its store —
+      // exactly the prior in-`else`-only after-turn placement.
+      if (result.final_ai_output !== undefined) {
+        ctx.state.set(CHAT_TURN_AFTER_INPUTS_STATE_KEY, {
+          events: result.final_ai_output.events,
+          tool_call_kinds: result.tool_calls?.map((tc) => tc.tool_name) ?? [],
+        } satisfies ChatTurnAfterInputs);
+      }
+
+      // The GENERIC final delta moves to the framework path: produce it
+      // via `ctx.out.token` (out-stream → channel sink → the single
+      // `chat.token_streamed`). Gate it exactly as the prior in-function
+      // emit was — only on a successful AI turn (`final_ai_output`
+      // present) with non-empty content; the conflict / no-executor /
+      // provider-failure paths emit no delta. `tool_calls` is NOT mapped
+      // onto `TurnOutput.tool_calls` — the framework projects that into
+      // channel-note transparency the chat turn does not emit; the rich
+      // `chat.tool_call_*` events already emit directly above.
+      // D-167 P5 S4 — `result.assistant_content` is already PII-restored: the
+      // wrapped `executeAiCall` restores every returned body (response + args
+      // + events) before `runChatTurn` assembles it, so this streamed delta —
+      // like the persisted + broadcast message — carries real values. The
+      // wrap seam is the single primary restore across all surfaces;
+      // `pii-restore` re-verifies the durable text as the final backstop.
+      if (result.final_ai_output !== undefined && result.assistant_content.length > 0) {
+        await ctx.out.token(ctx.turn_id, result.assistant_content);
+      }
+      return {
+        text: result.assistant_content,
+        ...(result.usage !== undefined ? { tokens: result.usage.total_tokens } : {}),
+      };
+    };
+    return {
+      streamState,
+      turnExecutor,
+      getCapturedResult: () => capturedTurnResult,
+      getEgressPrompts: () => egressPrompts,
+    };
+  };
+
+  const runTurn = async (input: ChatTurnInput): Promise<ChatTurnAck> => {
+    const session = deps.chatStore.getSession(input.session_id);
+    if (!session) {
+      throw new Error(
+        `chat-orchestrator: session ${input.session_id} not found (create a session first via chat.session.create)`,
+      );
+    }
+    const turn_id = mintId();
+    const picker_target = input.picker_state.current as ChatPickerTarget;
+    const pickerAtSend = buildPickerAtSend(picker_target);
+    const modelLayer = resolveModelPref(session, input.model_pref);
+    const modelHint = resolveModelHint(session, input.model_pref);
+    const modelSourceId = resolveModelSourceId(session, input.model_pref);
+    const modelUsed = {
+      provider:
+        session.model_routing.provider
+        ?? modelLayer,
+      model_id: session.model_routing.model_id ?? 'unknown',
+    };
+
+    // 1a) Build the chat tail FIRST — the prompt content parts carry the
+    //     prior conversation as `chat_tail` AND the current turn as
+    //     `user_message`. If we appended the user row before reading the tail,
+    //     the AI would see the current message twice (once as tail-last + once
+    //     as user_message). Codex P1.4 review P2 fold — read tail before append.
+    const chat_tail = await buildChatTail(deps.chatStore, input.session_id);
+
+    // 1b) Persist the user turn immediately so reconnect-replay sees
+    //     it even if the orchestrator crashes mid-turn.
+    const userMessageId = mintId();
+    await deps.chatStore.appendMessage({
+      id: userMessageId,
+      session_id: input.session_id,
+      role: 'user',
+      content: input.message,
+      target_server: picker_target,
+      picker_at_send: pickerAtSend,
+      model_used: modelUsed,
+      ts: now(),
+    });
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_message_sent',
+      `${input.session_id}:${userMessageId}`,
+      JSON.stringify({
+        role: 'user',
+        target_server: picker_target,
+        model_used: modelUsed,
+        tool_call_count: 0,
+      }),
+    );
+    // D-177 5.d/5.f — feed the forwarded-sender index from the just-
+    // persisted USER turn (chat channel only). Best-effort: a candidate
+    // that fails to record only means a scoped grant degrades to asking.
+    try {
+      deps.forwardedSenderIndex?.recordUserTurn(
+        input.session_id,
+        input.message,
+        now(),
+      );
+    } catch {
+      /* degrade toward asking — never fail the committed turn */
+    }
+
+    // 1c) COMMIT POINT — the user message is durable; everything that
+    //     rejects for caller reasons already threw above. Fire the
+    //     ack-before-run seam so the rpc layer can resolve `chat.send`
+    //     now; the model-bound body below streams its outcome over the
+    //     broadcast bus (`message_complete` on success, the
+    //     `engine.turn_failed` failure event from the rpc layer's
+    //     completion watcher on a shell throw). A throwing callback
+    //     must not kill the committed turn.
+    try {
+      input.on_accepted?.({ turn_id });
+    } catch {
+      /* observability-only seam — never fail the committed turn */
+    }
+
+    // 2) The AI-facing catalog (the post-capability-filter Tier 1/2/3
+    //    union → `available_tools`) is now assembled by the `catalog`
+    //    before-turn HOOK (A.8 step 4), not inline here: the shell seeds
+    //    the per-turn picker target onto the shared `state` (below), the
+    //    hook DECIDES `available_tools` via the bound `buildCatalog`
+    //    projection + writes it back, and the executor ENACTs it off
+    //    `state` (N.9). The peer name is still derived here for the
+    //    `runChatTurn` input (`dispatch_peer_name`); `extractPeerName` is
+    //    pure + idempotent, so the hook re-deriving it is free.
+    const dispatchPeerName = extractPeerName(picker_target);
+
+    // 3) Run the turn THROUGH the framework `runStream` loop (Stage 3).
+    //    The turn CONCERNS are now registered hooks over the shared
+    //    `state`: the before-turn `prompt` hooks (`standing-instructions`
+    //    Checkpoint 1 + `correction-learning`) run BEFORE this executor,
+    //    DECIDING and writing `state` / contributing to the prompt draft;
+    //    the after-turn `update` hooks (`standing-instructions`
+    //    Checkpoint 2 + `personal-recipes`) run AFTER it. The MECHANICS
+    //    (per-round AI call + cooperative tool loop + in-turn enforcement
+    //    — SI tier-bounds clamp, conflict-halt short-circuit, tag_response
+    //    append — + the RICH tool-call / multi-turn transparency emits)
+    //    stay in `runChatTurn`, adapted onto a `TurnExecutor` closure that
+    //    READS the before-turn hooks' decisions off the shared `state` +
+    //    prompt draft, ENACTs the SI Checkpoint 1 transparency, and maps
+    //    `RunChatTurnResult` → `TurnOutput`. The packet shape stays owned
+    //    inline (inside `runChatTurn`); the rich events emit directly onto
+    //    the D-121 bus via the injected null-safe `emit`. The shell passes
+    //    its own per-turn `streamState` so it can ENACT the after-turn
+    //    hooks' decisions on finalize (below).
+    // Build the channel-agnostic turn driver (the shared executor core +
+    // per-turn `state`). Chat passes its D-121 bus emitter so the rich
+    // SI-transparency + tool-call events stream to the webclient; the SAME
+    // driver backs `runMessengerTurn` over the SAME `streamRegistry`.
+    const { streamState, turnExecutor, getCapturedResult, getEgressPrompts } = buildTurnDriver({
+      session_id: input.session_id,
+      turn_id,
+      picker_target,
+      dispatch_peer_name: dispatchPeerName,
+      // The same chat source the stream's inbound carries (below) — the
+      // turn's dispatches and its policy-consulting hooks see one identity.
+      execution_source: buildChatExecutionSource(input.session_id, turn_id),
+      // A webclient HID turn is a genuine top-level user action (the chat
+      // channel has no egress→ingress re-trigger path) — depth 0, matching
+      // the stream inbound below.
+      dispatch_depth: 0,
+      content_parts: buildChatContentPromptParts({
+        user_message: input.message,
+        chat_tail,
+      }),
+      model_layer: modelLayer,
+      ...(modelHint ? { model_hint: modelHint } : {}),
+      ...(modelSourceId ? { model_source_id: modelSourceId } : {}),
+      ...(input.time_zone ? { time_zone: input.time_zone } : {}),
+      emit: (event) => safeBroadcast(deps.broadcast, event),
+    });
+
+    // The channel records the triggering user message before the stream;
+    // the shell already persisted it durably to the ChatStore (1b), and
+    // `preload` here warms the cache-only session store so `runStream`'s
+    // history read is consistent within the session.
+    //
+    // BEST-EFFORT: this preload MUST NOT fail the turn. The user row is
+    // already committed (1b), so a throw here would strand it with no
+    // assistant completion (and a retry would duplicate the user turn).
+    // Most source-binding hooks read per-pair STORES + the shared `state`,
+    // not the framework `history`, and the closure uses the shell's
+    // already-gathered content parts — so the warm is inert for them. The ONE
+    // history reader is the D-164 entity prefetch (`createPromptCacheSource` →
+    // `contributePrefetch`); for it the warm matters, and the degrade-to-EMPTY
+    // guarantee below keeps a FAILED warm a no-op (not a stale prior-turn read)
+    // — `createChatStoreSessionStateStore` clears the session cache on a failed
+    // `listMessages`. A locked vault at turn start was
+    // already surfaced by `buildChatTail` BEFORE the user append (it
+    // rethrows `ChatVaultLockedError`); the turn's real vault dependency
+    // is the assistant append below, unchanged from the pre-flip path. On
+    // any read failure, degrade to an unwarmed (empty) cache — exactly
+    // what `runStream` would read without a preload at all.
+    try {
+      await streamSessionStore.preload(input.session_id);
+    } catch {
+      // Degrade to an unwarmed cache; never strand the committed turn.
+    }
+    const inbound: ChannelInbound = {
+      session_id: input.session_id,
+      surface: 'chat',
+      text: input.message,
+      from: LOCAL_CHAT_USER_ID,
+      source: buildChatExecutionSource(input.session_id, turn_id),
+      // A webclient HID turn is a genuine top-level user action — the
+      // chat channel has no egress→ingress re-trigger path (D-160 P3).
+      dispatch_depth: 0,
+      ts: now(),
+    };
+    const streamSummary = await runStream({
+      registry: streamRegistry,
+      channel: streamChannel,
+      sessionStore: streamSessionStore,
+      inbound,
+      runTurn: turnExecutor,
+      capacity: chatCapacity(),
+      // The shell's own per-turn scratch — the registered hooks DECIDE
+      // into it (the SI Checkpoint 1/2 results, the personal-recipe
+      // matches), the executor reads the before-turn decisions out of it,
+      // and the shell ENACTs the after-turn decisions off it on finalize
+      // (below). Per-turn (never constructor-captured) so concurrent
+      // turns never share scratch.
+      state: streamState,
+      // Pin the framework turn id to the shell's pre-minted id so every
+      // event a turn emits — the rich direct emits AND the framework
+      // out-stream delta — shares one `turn_id`.
+      mintId: () => turn_id,
+    });
+
+    // D-164 — the prompt-cache before-turn gate may resolve the turn
+    // deterministically via `ctx.resolve` (the deterministic short-circuit),
+    // skipping the LLM. On that path the executor never ran, so there is no
+    // captured result; the framework surfaces the resolved answer as
+    // `streamSummary.final_text`. On every normal turn `getCapturedResult()`
+    // is defined and this is behaviour-preserving.
+    const capturedResult = getCapturedResult();
+    const turnResult = capturedResult ?? { assistant_content: '' };
+    // D-167 P5 S4 — prefer `pii-restore`'s verified-restored assistant text
+    // for the durable + broadcast message (the zero-failure total-restore
+    // guarantee enacted on the persisted surface). The wire seam already
+    // restored the returned body, so this equals the turn's content on the
+    // happy path; it falls back to the turn's own content when PII is unwired
+    // / inactive (no `pii-restore` ran). On a gate short-circuit (no captured
+    // result) the resolved `final_text` is the answer — no provider egress
+    // ran, so it is the owner's own warehouse data going straight to the owner.
+    const assistantContent =
+      readPiiRestoredText(streamState)
+      ?? (capturedResult === undefined ? streamSummary.final_text : undefined)
+      ?? turnResult.assistant_content;
+    const assistantToolCalls = turnResult.tool_calls;
+    const totalUsage = turnResult.usage;
+    // D-167 P5 S4 — the per-turn redaction summary the wire seam accumulated
+    // across the tool loop's egress packets; stamped on the assistant audit
+    // row below (omitted when nothing was redacted — the comfort / noop path).
+    const piiRedactionSummary = readPiiRedactionSummary(
+      readPiiEgressPlan(streamState),
+    );
+
+    // 4) ENACT the registered hooks' after-turn decisions (N.9): the
+    //    `update` hooks wrote their results to the shared `streamState`
+    //    during `runStream`; read them here to surface them. Each result
+    //    is present iff its hook ran — which (via the after-turn-stash
+    //    gate the executor wrote) is iff the turn produced an `AIOutput`
+    //    AND its source + registry were wired + enabled — so the prior
+    //    "after-turn gathers run iff `final_ai_output`, each a no-op
+    //    without its registry / store" gating is preserved by construction.
+    //
+    // `personal-recipes` matches over the turn's `AIOutput.events[]`.
+    // Surfaced on the assistant audit row below; firing them is a deferred
+    // follow-on (no chat → recipe.invoke seam yet, and chat events rarely
+    // carry `subject_contact_id` until contact-resolution is wired). `[]`
+    // when the hook did not run / matched nothing.
+    const personalRecipeMatches: readonly PersonalRecipeMatch[] =
+      (streamState.get(PERSONAL_RECIPES_MATCHES_STATE_KEY) as
+        | DispatchPersonalRecipesResult
+        | undefined)?.matches ?? [];
+
+    // D-137 Trio #E follow-on — emit the per-turn token aggregate as
+    // a transparency event after the body / loop has resolved.
+    // Summary-only redaction by default; the audit row carries the
+    // same structured payload for the benchmark + future billing
+    // surface. Emitted only when at least one provider call produced
+    // usage (no event on no-adapter turns or pure-fallback paths).
+    if (totalUsage !== undefined) {
+      safeBroadcast(deps.broadcast, {
+        kind: 'chat.transparency',
+        session_id: input.session_id,
+        turn_id,
+        event: {
+          kind: 'recued.token_usage',
+          input_tokens: totalUsage.input_tokens,
+          output_tokens: totalUsage.output_tokens,
+          total_tokens: totalUsage.total_tokens,
+          ...(totalUsage.cache_read_input_tokens !== undefined
+            ? { cache_read_input_tokens: totalUsage.cache_read_input_tokens }
+            : {}),
+          ...(totalUsage.cache_write_input_tokens !== undefined
+            ? { cache_write_input_tokens: totalUsage.cache_write_input_tokens }
+            : {}),
+          ...(totalUsage.reasoning_tokens !== undefined
+            ? { reasoning_tokens: totalUsage.reasoning_tokens }
+            : {}),
+        },
+      });
+    }
+
+    const assistantMessageId = mintId();
+    const assistantMessage = await deps.chatStore.appendMessage({
+      id: assistantMessageId,
+      session_id: input.session_id,
+      role: 'assistant',
+      content: assistantContent,
+      target_server: picker_target,
+      picker_at_send: pickerAtSend,
+      model_used: modelUsed,
+      ts: now(),
+      ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
+    });
+    // Persist this turn's egress history (the aliased packets the PII wrapper
+    // captured) against the assistant message. Best-effort: the message is
+    // already durable, so a capture-store failure must never fail the turn.
+    const egressPrompts = getEgressPrompts();
+    if (egressPrompts.length > 0) {
+      try {
+        await deps.chatStore.appendEgress(
+          input.session_id,
+          assistantMessageId,
+          egressPrompts.map((prompt, call_index) => ({
+            call_index,
+            prompt,
+            model_id: modelUsed.model_id,
+            ts: now(),
+          })),
+        );
+      } catch (err) {
+        console.error('[chat] egress-history capture failed', err);
+      }
+    }
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_message_sent',
+      `${input.session_id}:${assistantMessageId}`,
+      JSON.stringify({
+        role: 'assistant',
+        target_server: picker_target,
+        model_used: modelUsed,
+        tool_call_count: assistantToolCalls?.length ?? 0,
+        // D-137 Trio #E follow-on — durable per-turn token usage. The
+        // benchmark + future billing surface read this row to compute
+        // per-turn cost (tokens × rates at report time). Counts only;
+        // never user content; safe to persist on every assistant
+        // message. Omitted when the turn produced no AI usage report.
+        ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+        // D-160 O-5 (light slice) — personal recipes this turn's
+        // extraction events matched. Surfaces the match on the durable
+        // audit row (D-120 Memory reads it); firing is a deferred
+        // follow-on. Substrate-stable ids only (recipe_id / contact_id /
+        // verbatim topic) — no raw user content. Omitted when none matched.
+        ...(personalRecipeMatches.length > 0
+          ? {
+              personal_recipe_matches: personalRecipeMatches.map((m) => ({
+                recipe_id: m.recipe_id,
+                contact_id: m.contact_id,
+                topic: m.topic,
+              })),
+            }
+          : {}),
+        // D-167 P5 S4 — per-turn PII redaction summary (count by kind across
+        // the turn's egress packets). The ledger itself never reaches audit —
+        // only this count summary does (spec §"Gateway"). Omitted when
+        // nothing was redacted (comfort / noop-resolver path).
+        ...(piiRedactionSummary !== undefined
+          ? { redaction_summary: piiRedactionSummary }
+          : {}),
+      }),
+    );
+
+    safeBroadcast(deps.broadcast, {
+      kind: 'chat.message_complete',
+      session_id: input.session_id,
+      turn_id,
+      final: assistantMessage,
+    });
+
+    return {
+      turn_id,
+      ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+    };
+  };
+
+  // D-160 A.8 step 6 (N.9) — run one `messenger` turn over the SAME
+  // `streamRegistry` (the s5 hooks) + the SAME `runChatTurn` mechanics as
+  // chat, via the framework `runStream` loop with the caller-injected
+  // messenger `Channel`. This IS the step-6 "reuse": the channel-specifics
+  // (Channel + inbound + finalize) are injected; the turn concerns + the
+  // mechanics are shared. The messenger surface renders a selective
+  // projection (N.6) — only the final assistant `message`, delivered over
+  // its transport by the framework's post-`update` `out.message`; token
+  // deltas + transparency notes are dropped by the messenger channel.
+  //
+  // Slim finalize (user-confirmed seam scope): the framework + the messenger
+  // channel own delivery (transport.send) + session-store recording; there is
+  // NO chat rich finalize. The s5 hooks run unchanged over the same registry,
+  // so their after-turn results simply are not surfaced here (the slim cut).
+  //
+  // Two boundaries the same-registry reuse inherits, documented honestly
+  // (Codex review folds — neither is a regression this slice introduces):
+  //  · PII: the always-on `pii-protect` / `pii-restore` bookends EXECUTE on a
+  //    messenger turn but DECIDE inactive — D-163 `owns_llm_egress` classifies
+  //    a `messenger-*` surface as external-egress (`shouldAliasForEgress` →
+  //    false; `packages/gateway/.../egress-aliasing.ts`), so the turn passes
+  //    real values to the LLM, the documented external-egress behavior (same
+  //    as a raw MCP data-tool). A messenger turn is therefore NOT PII-aliased
+  //    today. The one thing the prefetch wiring must respect: the SPECULATIVE
+  //    entity prefetch (`createPromptCacheSource`) is gated OFF on an inactive
+  //    plan (it renders only when `plan.active`), so a messenger turn never adds
+  //    UNREQUESTED warehouse PII to the external-egress packet — only the user's
+  //    own explicit content + tool results flow raw, as designed.
+  //    The D-160 messenger channel DOES restore + deliver via Recued's
+  //    own transport, so whether to flip `owns_llm_egress` true for it (alias
+  //    the LLM yet still restore on delivery) is a deliberate D-163/D-167
+  //    follow-on — NOT decided in this chat-files lane (the gate lives in
+  //    `packages/gateway/`). No real PII leaks meanwhile: no live messenger
+  //    transport is wired (the deferred downstream consumer).
+  //  · Dispatch: tool / recipe dispatch reuses chat's `dispatchTool` — and
+  //    (the D-160 P3 thread-through, landed with the messenger
+  //    execution-source threading slice) carries the turn's REAL identity:
+  //    the channel-minted `(messenger × user_self)` inbound source + the
+  //    I-7 `dispatch_depth` hop token ride `buildTurnDriver` →
+  //    `runChatTurn` → `dispatchTool` → `buildInternalDispatchCtx`, so a
+  //    tool dispatched FROM a messenger turn is policy-evaluated on the
+  //    MESSENGER cell (execute-handler `POLICY_GATED_USER_CHANNELS`),
+  //    session-granted per `messenger:<vendor>:<from>` thread, and
+  //    depth-bounded by the Gateway ceiling on re-entrant fires.
+  //
+  // Durable ChatStore persistence of messenger turns + the webclient "second
+  // window" `chat.message_complete` (the full "one conversation, two windows"
+  // UX) are likewise DEFERRED to the downstream transport wiring; this slice
+  // proves the reuse.
+  const runMessengerTurn = async (
+    input: MessengerTurnInput,
+  ): Promise<ChatTurnAck> => {
+    const { inbound } = input;
+    const session_id = inbound.session_id;
+    const turn_id = mintId();
+    // A messenger turn is always a Self turn — the user is messaging their
+    // own server over an external app; there is no peer-server picker. The
+    // catalog hook builds the Self Tier 1/2/3 union.
+    const picker_target: ChatPickerTarget = 'self';
+    // Model routing rides the SHARED chat session when one exists (one
+    // conversation, two windows); a conversation only ever touched over
+    // messenger has no chat session, so default to `local`
+    // (`resolveModelPref(null)`) and NEVER throw — unlike chat's `runTurn`, a
+    // messenger turn must not require a pre-created session.
+    const session = deps.chatStore.getSession(session_id);
+    const modelLayer = resolveModelPref(session, input.model_pref);
+    const modelHint = resolveModelHint(session, input.model_pref);
+    const modelSourceId = resolveModelSourceId(session, input.model_pref);
+    const modelUsed = {
+      provider:
+        session?.model_routing.provider
+        ?? modelLayer,
+      model_id: session?.model_routing.model_id ?? 'unknown',
+    };
+
+    // One conversation: the turn reasons over the SAME durable tail chat
+    // reads. Build the tail before appending the current messenger row so
+    // the current user message does not appear twice in the AI packet.
+    const chat_tail = await buildChatTail(deps.chatStore, session_id);
+    const pickerAtSend = buildPickerAtSend(picker_target);
+    if (!session) {
+      deps.chatStore.createSession({
+        id: session_id,
+        now: inbound.ts,
+        picker_state: { current: picker_target },
+      });
+    }
+    const userAttachments = inbound.media;
+    let userText = inbound.text;
+    let effectiveInbound = inbound;
+    let voiceTranscribed = false;
+    if (userText.trim().length === 0 && userAttachments && isVoiceOnlyMedia(userAttachments)) {
+      const transcript = await transcribeMessengerVoiceOnly(
+        deps.messengerVoiceTranscription,
+        userAttachments,
+      );
+      if (transcript !== null) {
+        userText = transcript;
+        effectiveInbound = { ...inbound, text: transcript };
+        voiceTranscribed = true;
+      }
+    }
+
+    const userMessageId = mintId();
+    await deps.chatStore.appendMessage({
+      id: userMessageId,
+      session_id,
+      role: 'user',
+      content: userText,
+      target_server: picker_target,
+      picker_at_send: pickerAtSend,
+      model_used: modelUsed,
+      ts: inbound.ts,
+      ...(userAttachments && userAttachments.length > 0
+        ? { attachments: userAttachments }
+        : {}),
+    });
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_message_sent',
+      `${session_id}:${userMessageId}`,
+      JSON.stringify({
+        role: 'user',
+        surface: inbound.surface,
+        model_used: modelUsed,
+        attachment_count: userAttachments?.length ?? 0,
+      }),
+    );
+
+    if (!voiceTranscribed && userText.trim().length === 0 && userAttachments && userAttachments.length > 0) {
+      await input.channel.deliver({
+        kind: 'message',
+        session_id,
+        turn_id,
+        text: mediaOnlyAffordance(userAttachments),
+      });
+      return { turn_id };
+    }
+
+    // Reuse the SAME executor core + `streamRegistry`. The messenger surface
+    // renders neither token deltas nor transparency notes (N.6), so the rich
+    // SI / tool-call emits route to a no-op `emit`; the final answer reaches
+    // the user via the framework's `out.message` → the messenger transport.
+    const { streamState, turnExecutor, getCapturedResult } = buildTurnDriver({
+      session_id,
+      turn_id,
+      picker_target,
+      dispatch_peer_name: null,
+      // The channel-minted `(messenger × user_self)` source — the turn's
+      // tool dispatches are gated under the MESSENGER policy cell and
+      // session-granted per Slack / Telegram thread
+      // (`deriveChannelSessionId` → `messenger:<vendor>:<from>`), no
+      // longer disguised as chat dispatches. The I-7 hop token rides
+      // beside it: a re-entrant fire's dispatches carry the ingest depth,
+      // so the Gateway loop ceiling bounds messenger→trigger→messenger
+      // THROUGH tool dispatches (codex fold).
+      execution_source: inbound.source,
+      dispatch_depth: inbound.dispatch_depth,
+      content_parts: buildChatContentPromptParts({
+        user_message: userText,
+        chat_tail,
+      }),
+      model_layer: modelLayer,
+      ...(modelHint ? { model_hint: modelHint } : {}),
+      ...(modelSourceId ? { model_source_id: modelSourceId } : {}),
+      emit: () => {},
+    });
+
+    // Drive the turn through the framework loop over the INJECTED messenger
+    // channel + the verified inbound (its `dispatch_depth` is the I-7 hop
+    // token the channel stamped — the gateway bounds a
+    // `messenger`→trigger→`messenger` loop on it, D-160 P3). The channel
+    // already recorded the inbound user row on `ingest`, so the framework
+    // reads a consistent history without a preload (the base session store
+    // exposes no `preload`; durable hydration is the caller's concern).
+    await runStream({
+      registry: streamRegistry,
+      channel: input.channel,
+      sessionStore: input.sessionStore,
+      inbound: effectiveInbound,
+      runTurn: turnExecutor,
+      capacity: chatCapacity(),
+      // Per-turn scratch (never constructor-captured) so concurrent turns
+      // across surfaces never share state.
+      state: streamState,
+      // Pin the framework turn id to the pre-minted id so the streamed delta
+      // + the final message share one `turn_id`.
+      mintId: () => turn_id,
+    });
+
+    const turnResult = getCapturedResult() ?? { assistant_content: '' };
+    const totalUsage = turnResult.usage;
+    // A minimal audit row keeps the messenger turn traceable (surface-tagged
+    // so Memory / the benchmark tell the surfaces apart). Counts only; never
+    // user content. Durable ChatStore persistence is the deferred follow-on.
+    void safeLogActivity(
+      deps.auditLog,
+      'chat_message_sent',
+      `${session_id}:${turn_id}`,
+      JSON.stringify({
+        role: 'assistant',
+        surface: inbound.surface,
+        model_used: modelUsed,
+        tool_call_count: turnResult.tool_calls?.length ?? 0,
+        ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+      }),
+    );
+
+    return {
+      turn_id,
+      ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+    };
+  };
+
+  const runLlmGatewayTurn = async (
+    input: LlmGatewayTurnInput,
+  ): Promise<LlmGatewayTurnResult> => {
+    const turn_id = mintId();
+    const executionSource: Extract<
+      ExecutionSource,
+      { channel: 'chat'; actor: 'contracted_user' }
+    > = {
+      channel: 'chat',
+      actor: 'contracted_user',
+      chat_session_id: input.session_id,
+      user_id: input.user_id,
+      contract_id: input.contract_id,
+      turn_id,
+    };
+    const allowedNames = new Set(input.allowed_tool_names);
+    const contractCatalog = deps.registry
+      .list()
+      .filter(
+        (entry) =>
+          isLlmGatewayContractSafeToolEntry(entry)
+          && allowedNames.has(entry.name),
+      )
+      .map((entry) => ({
+        ...entry,
+        // The generic Tier-2 catalog may come from an older/test source whose
+        // object schema omitted the closure keyword. The gateway projection is
+        // always closed, and dispatch validates against the same normalized
+        // schema below.
+        arg_schema: closedLlmGatewayArgSchema(entry.arg_schema)!,
+      }));
+    // Contract turns use the full projection over the already-small granted
+    // catalog. In particular, `tools.search` is not an authority-expansion
+    // path: full mode omits it, and no ungranted recipe can be discovered.
+    const availableTools = buildChatMainTurnTools(
+      contractCatalog,
+      new Set<string>(),
+      new Set<string>(),
+      { mode: 'full' },
+    );
+
+    // Stateless gateway completions share chat's exact per-call PII alias /
+    // restore seam, but not its durable owner session ledger. A request-local
+    // store retains stable aliases across tool-loop rounds and is collected
+    // with the completion, avoiding both owner-ledger crossover and leaks from
+    // the gateway's one-shot session ids.
+    const gatewayPiiPlan = piiHookDeps
+      ? createPiiEgressPlanForSession(
+          {
+            ...piiHookDeps,
+            ledgerStore: piiEgress.createSessionLedgerStore(),
+          },
+          input.session_id,
+          'chat',
+        )
+      : undefined;
+    const validateGatewayEgress = input.input_token_budget !== undefined
+      ? (aiInput: Record<string, unknown>): void => {
+          const system = aiInput['llm.system_prompt'];
+          const prompt = aiInput['llm.prompt'];
+          if (
+            typeof system === 'string'
+            && typeof prompt === 'string'
+            && estimateConservativeMessagesTokens([
+              { role: 'system', content: system },
+              { role: 'user', content: prompt },
+            ]) > input.input_token_budget!
+          ) {
+            throw new ChatContextLengthError();
+          }
+        }
+      : undefined;
+    const executeAiCall = gatewayPiiPlan
+      ? wrapExecuteAiCallForPii(
+          input.execute_ai_call,
+          gatewayPiiPlan,
+          undefined,
+          undefined,
+          validateGatewayEgress,
+        )
+      : input.execute_ai_call;
+    let observedGatewayUsage: TokenUsageReport | undefined;
+    const executeGatewayAiCall: ExecuteChatAiCall = async (manifest, aiInput) => {
+      const callResult = await executeAiCall(manifest, aiInput);
+      observedGatewayUsage = aggregateTokenUsageReports(
+        observedGatewayUsage,
+        callResult.usage,
+      );
+      return callResult;
+    };
+
+    let completedDispatches = 0;
+    let partialDispatches = 0;
+    let inDoubtDispatches = 0;
+    let nonEffectDispatches = 0;
+    const dispatchedToolCalls = (): number =>
+      completedDispatches + partialDispatches + inDoubtDispatches;
+    const buildPostEffectOutcome = (
+      error_code: LlmGatewayPostEffectOutcome['error_code'],
+    ): LlmGatewayPostEffectOutcome | null => {
+      const dispatched = dispatchedToolCalls();
+      if (dispatched === 0) return null;
+      const status: LlmGatewayPostEffectStatus = inDoubtDispatches > 0
+        ? 'in_doubt'
+        : partialDispatches > 0 || nonEffectDispatches > 0
+          ? 'partial'
+          : 'completed';
+      const failure = error_code === 'context_length_exceeded'
+        ? 'the remaining model context was exhausted'
+        : error_code === 'llm_gateway_authority_changed'
+          ? 'live gateway authority changed before final synthesis'
+          : 'the model provider failed during final synthesis';
+      const message = status === 'completed'
+        ? `Tool work completed, but ${failure}. Do not retry automatically; the effect already ran.`
+        : status === 'partial'
+          ? `Some requested tool work did not complete before ${failure}. Do not retry automatically; inspect any affected state first.`
+          : `Tool work may have taken effect before ${failure}. Do not retry automatically; reconcile the affected state first.`;
+      return {
+        status,
+        error_code,
+        message,
+        retryable: false,
+        dispatched_tool_calls: dispatched,
+      };
+    };
+
+    let result: RunChatTurnResult;
+    try {
+      result = await runChatTurn(
+        {
+          session_id: input.session_id,
+          turn_id,
+          picker_target: 'self',
+          dispatch_peer_name: null,
+          execution_source: executionSource,
+          // The GATEWAY's own prompt — never the owner's chat one. Handler-
+          // resolved (it owns `system_tools_allowed`); absent only for direct
+          // harness callers, who fall through to the built-in chat prompt.
+          ...(input.system_prompt !== undefined
+            ? { system_prompt: input.system_prompt }
+            : {}),
+          ...(input.system_role !== undefined
+            ? { system_role: input.system_role }
+            : {}),
+          ...(input.llm_gateway_tool_usage !== undefined
+            ? { llm_gateway_tool_usage: input.llm_gateway_tool_usage }
+            : {}),
+          dispatch_depth: 0,
+          available_tools: availableTools,
+          content: input.content,
+          correction_context: [],
+          catalog_mode: 'full',
+          model_layer: input.model_layer,
+          ...(input.model_hint !== undefined
+            ? { model_hint: input.model_hint }
+            : {}),
+          ...(input.model_source_id !== undefined
+            ? { model_source_id: input.model_source_id }
+            : {}),
+          ...(input.input_token_budget !== undefined
+            ? { input_token_budget: input.input_token_budget }
+            : {}),
+        },
+        {
+          executeAiCall: executeGatewayAiCall,
+          registry: deps.registry,
+          dispatchTool: async (call) => {
+            const entry = deps.registry.getByName(call.tool_name);
+            if (
+              entry === null
+              || !isLlmGatewayContractSafeToolEntry(entry)
+              || !allowedNames.has(call.tool_name)
+            ) {
+              nonEffectDispatches += 1;
+              return {
+                ok: false,
+                reason: 'classification_blocked',
+                detail: 'llm_gateway tool is not granted by this customer token',
+              };
+            }
+            const argsValidation = validateLlmGatewayToolArguments(
+              entry.arg_schema,
+              call.arg_values,
+            );
+            if (!argsValidation.ok) {
+              nonEffectDispatches += 1;
+              return {
+                ok: false,
+                reason: 'invalid_args',
+                detail: argsValidation.detail,
+              };
+            }
+            let snapshot: ContractSnapshot | null;
+            try {
+              snapshot = await input.resolve_contract_snapshot({
+                tool_name: call.tool_name,
+                arg_values: call.arg_values,
+              });
+            } catch {
+              snapshot = null;
+            }
+            if (snapshot === null || snapshot.contract_id !== input.contract_id) {
+              nonEffectDispatches += 1;
+              return {
+                ok: false,
+                reason: 'connection_unavailable',
+                detail: 'llm_gateway token or contract is no longer active for this tool',
+              };
+            }
+            try {
+              const dispatchResult = await dispatchTool({
+                ...call,
+                execution_source: executionSource,
+                contract_snapshot: snapshot,
+                ...(input.llm_gateway_tool_usage !== undefined
+                  ? { llm_gateway_tool_usage: input.llm_gateway_tool_usage }
+                  : {}),
+              });
+              if (dispatchResult.ok) {
+                if (dispatchResult.run_held) nonEffectDispatches += 1;
+                else if (dispatchResult.run_failed) partialDispatches += 1;
+                else completedDispatches += 1;
+              } else if (
+                dispatchResult.reason === 'execution_error'
+                || dispatchResult.reason === 'run_cancelled'
+              ) {
+                // A cancelled run may have been killed after its operation
+                // started (or before a queued call started). The result does not
+                // distinguish those cases, so a later synthesis failure must be
+                // in-doubt rather than represented as safely pre-effect.
+                inDoubtDispatches += 1;
+              } else {
+                nonEffectDispatches += 1;
+              }
+              return dispatchResult;
+            } catch (error) {
+              // The registry crossed its dispatch boundary but did not return an
+              // outcome. Treat it as in-doubt; retrying could duplicate an effect.
+              inDoubtDispatches += 1;
+              throw error;
+            }
+          },
+          emit: () => {},
+          now,
+        },
+      );
+    } catch (error) {
+      const rawCode = error !== null && typeof error === 'object'
+        ? (error as { code?: unknown }).code
+        : undefined;
+      const errorCode: LlmGatewayPostEffectOutcome['error_code'] | null =
+        error instanceof ChatContextLengthError || rawCode === 'AI_TOKEN_BUDGET_EXCEEDED'
+          ? 'context_length_exceeded'
+          : rawCode === 'llm_gateway_authority_changed'
+            ? 'llm_gateway_authority_changed'
+            : null;
+      const outcome = errorCode ? buildPostEffectOutcome(errorCode) : null;
+      if (outcome) {
+        return {
+          turn_id,
+          assistant_content: outcome.message,
+          ...(observedGatewayUsage !== undefined
+            ? { usage: observedGatewayUsage }
+            : {}),
+          post_effect_outcome: outcome,
+        };
+      }
+      throw error;
+    }
+    if (result.tool_loop_failure !== undefined) {
+      const outcome = buildPostEffectOutcome('llm_gateway_provider_failed');
+      if (outcome) {
+        return {
+          turn_id,
+          assistant_content: outcome.message,
+          ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
+          ...(result.usage !== undefined ? { usage: result.usage } : {}),
+          post_effect_outcome: outcome,
+        };
+      }
+    }
+    if (result.final_ai_output === undefined) {
+      throw new Error('llm_gateway shared chat turn did not produce a valid AI output');
+    }
+    return {
+      turn_id,
+      assistant_content: result.assistant_content,
+      ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+    };
+  };
+
+  return {
+    runTurn,
+    runMessengerTurn,
+    runLlmGatewayTurn,
+    sessionStore: streamSessionStore,
+    dispatch: { dispatchTool },
+  };
+};

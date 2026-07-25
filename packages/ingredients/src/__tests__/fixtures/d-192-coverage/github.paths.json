@@ -1,0 +1,18 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.3, 789 paths, commit-pinned URL",
+    "url": "https://raw.githubusercontent.com/github/rest-api-description/b150df103aaab9f965a4d85aaaffa768e714fa7f/descriptions/api.github.com/api.github.com.json",
+    "sha256": "99cd66559d8e0cad34c55ba26aa3f8d84fda395ffc78ebae3329358415482d52",
+    "fetched_at": "2026-07-01"
+  },
+  "paths": {
+    "/repos/{owner}/{repo}/issues": {
+      "get": {},
+      "post": {}
+    },
+    "/repos/{owner}/{repo}/issues/{issue_number}": {
+      "get": {},
+      "patch": {}
+    }
+  }
+}

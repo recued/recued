@@ -1,0 +1,1068 @@
+{
+  "_meta": {
+    "note": "Paths-only extract of the pinned official Deel aggregate OpenAPI 3.1 document. crossCheckCatalogOpenApi reads paths; REST and SCIM wire prefixes are supplied by each composition path_alias.",
+    "source_url": "https://developer.deel.com/openapi/endpoints-5.json",
+    "sha256": "c572722bce37959afe8a23d3af038442ac615203e57ca8d06aac595075e8c773"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/invoices/{id}/download": {
+      "get": {}
+    },
+    "/invoices/{invoice_id}": {
+      "get": {}
+    },
+    "/payments/{payment_id}/breakdown": {
+      "get": {}
+    },
+    "/invoices/deel": {
+      "get": {}
+    },
+    "/invoices": {
+      "get": {}
+    },
+    "/payments": {
+      "get": {}
+    },
+    "/refund-statements": {
+      "get": {}
+    },
+    "/adjustments": {
+      "post": {}
+    },
+    "/adjustments/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/contracts/{contract_id}/adjustments": {
+      "get": {}
+    },
+    "/adjustments/categories": {
+      "get": {}
+    },
+    "/it/assets": {
+      "get": {}
+    },
+    "/it/assets/{asset_id}": {
+      "get": {}
+    },
+    "/ats/applications/{application_id}/feedbacks": {
+      "get": {}
+    },
+    "/ats/interviews": {
+      "get": {}
+    },
+    "/ats/openings": {
+      "get": {}
+    },
+    "/ats/upsertions/bulk-tags": {
+      "post": {}
+    },
+    "/ats/application-sources": {
+      "get": {}
+    },
+    "/ats/applications/{application_id}/notes": {
+      "post": {}
+    },
+    "/ats/applications/{application_id}/interview-plan-stages": {
+      "post": {}
+    },
+    "/ats/applications": {
+      "post": {},
+      "get": {}
+    },
+    "/ats/applications/{application_id}": {
+      "get": {}
+    },
+    "/ats/attachments/{attachable_type_slug}/{attachable_id}/{attachment_type_slug}": {
+      "get": {}
+    },
+    "/ats/candidates": {
+      "post": {},
+      "get": {}
+    },
+    "/ats/candidates/{candidate_id}/tags": {
+      "post": {}
+    },
+    "/ats/departments": {
+      "get": {}
+    },
+    "/ats/email-templates": {
+      "get": {}
+    },
+    "/ats/employment-types": {
+      "get": {}
+    },
+    "/ats/hiring-members": {
+      "get": {}
+    },
+    "/ats/job-boards/{job_board_id}/job-postings": {
+      "get": {}
+    },
+    "/ats/job-postings/{job_posting_id}": {
+      "get": {}
+    },
+    "/ats/job-postings": {
+      "get": {}
+    },
+    "/ats/jobs": {
+      "post": {},
+      "get": {}
+    },
+    "/ats/locations": {
+      "get": {}
+    },
+    "/ats/offers": {
+      "get": {}
+    },
+    "/ats/reasons": {
+      "get": {}
+    },
+    "/ats/tags": {
+      "get": {}
+    },
+    "/candidates": {
+      "post": {}
+    },
+    "/consent_token": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/amendments": {
+      "post": {},
+      "get": {}
+    },
+    "/contracts/{contract_id}/documents": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/invite": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/preview": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/invitations": {
+      "delete": {},
+      "post": {}
+    },
+    "/contracts/{contract_id}/payment_cycles": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/signatures": {
+      "post": {}
+    },
+    "/contracts/{contract_id}": {
+      "patch": {},
+      "get": {}
+    },
+    "/equity/exercise/{public_id}": {
+      "patch": {}
+    },
+    "/contracts": {
+      "post": {},
+      "get": {}
+    },
+    "/equity/exercise": {
+      "post": {}
+    },
+    "/contracts/termination-reasons": {
+      "get": {}
+    },
+    "/workers/contracts/{contract_id}/reject": {
+      "post": {}
+    },
+    "/workers/contracts/{contract_id}/pdf": {
+      "get": {}
+    },
+    "/contract-templates": {
+      "get": {}
+    },
+    "/workers/amendments/{amendment_id}/sign": {
+      "post": {}
+    },
+    "/workers/contracts/{contract_id}/signatures": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/platform-payment": {
+      "patch": {}
+    },
+    "/eor/employment_cost": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/cost-centers": {
+      "post": {}
+    },
+    "/legal-entities/{legal_entity_id}/cost-centers": {
+      "get": {}
+    },
+    "/legal-entities/{legal_entity_id}/cost-centers/synchronize": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/custom_fields/{id}": {
+      "delete": {}
+    },
+    "/contracts/custom_fields/{id}": {
+      "get": {}
+    },
+    "/contracts/custom_fields": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/custom_fields": {
+      "put": {}
+    },
+    "/people/{worker_id}/custom_fields/{id}": {
+      "delete": {}
+    },
+    "/people/custom_fields/{id}": {
+      "get": {}
+    },
+    "/people/custom_fields": {
+      "get": {}
+    },
+    "/people/{worker_id}/custom_fields": {
+      "get": {},
+      "put": {}
+    },
+    "/daas/payslips": {
+      "get": {}
+    },
+    "/daas/banks/{bank_id}": {
+      "patch": {}
+    },
+    "/employee-info/contract-types/{type}/countries/{country}": {
+      "get": {}
+    },
+    "/benefits/legal-entities/{id}/employees/{employee_id}": {
+      "get": {}
+    },
+    "/benefits/legal-entities/{legal_entity_id}/contracts/{contract_id}/plans/{plan_id}": {
+      "get": {}
+    },
+    "/eor/workers/contracts/{contract_id}/project-assignment/acknowledge": {
+      "post": {}
+    },
+    "/eor/contracts/amendments/data-points/configuration": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}/accept": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}/confirm": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}/pdf": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/amendments": {
+      "post": {},
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/validation/settings": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}/effective-date-limitations": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/{amendment_id}/sign": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/amendments/validate": {
+      "post": {}
+    },
+    "/eor/{contract_id}/benefits": {
+      "get": {}
+    },
+    "/eor": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/details": {
+      "get": {}
+    },
+    "/eor/contract/{contract_id}": {
+      "patch": {}
+    },
+    "/eor/contracts/{contract_id}/documents/{type}": {
+      "get": {}
+    },
+    "/eor/contract/{oid}/cancel": {
+      "post": {}
+    },
+    "/eor/contract/{oid}/delay-onboarding": {
+      "patch": {}
+    },
+    "/forms/eor/create-contract/{country_code}": {
+      "get": {}
+    },
+    "/eor/start-date": {
+      "get": {}
+    },
+    "/eor/additional-costs/{country}": {
+      "get": {}
+    },
+    "/eor/benefits": {
+      "get": {}
+    },
+    "/eor/validations/{country_code}": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/documents/{type}/sign": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/employee-information": {
+      "patch": {}
+    },
+    "/eor/job-scopes": {
+      "get": {}
+    },
+    "/eor/job-scopes/validate": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/review-client-sign-offs": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/required-information": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/time-offs": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/attachments/{attachment_id}": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/restricted-dates": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/resignations/review-pto": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/review-employee-sign-offs": {
+      "post": {}
+    },
+    "/eor/workers/{worker_id}/payslips": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/project-assignment/accept": {
+      "post": {}
+    },
+    "/eor/contracts/{contract_id}/project-assignment": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/project-assignment/checkin": {
+      "get": {},
+      "post": {}
+    },
+    "/eor/{oid}/terminations/{terminationId}": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/termination": {
+      "post": {}
+    },
+    "/eor/{oid}/terminations/resignation": {
+      "post": {}
+    },
+    "/eor/{oid}/terminations/regular": {
+      "post": {}
+    },
+    "/eor/worker": {
+      "post": {}
+    },
+    "/eor/workers/contracts/{contract_id}/employee-agreement/download": {
+      "get": {}
+    },
+    "/eor/workers/contracts/{contract_id}/offer-letter": {
+      "get": {}
+    },
+    "/eor/workers/contracts/{contract_id}/signatures": {
+      "post": {}
+    },
+    "/eor/workers/banks-guide/country/{country}/currency/{currency}": {
+      "get": {}
+    },
+    "/eor/workers/banks/guide": {
+      "get": {}
+    },
+    "/eor/worker/benefits": {
+      "get": {}
+    },
+    "/eor/workers/compliance-documents/{document_id}/acknowledgement": {
+      "post": {}
+    },
+    "/eor/workers/compliance-documents/{document_id}/templates/download": {
+      "get": {}
+    },
+    "/eor/workers/compliance-documents/{document_id}/download": {
+      "get": {}
+    },
+    "/eor/workers/compliance-documents": {
+      "get": {}
+    },
+    "/eor/workers/compliance-documents/{document_id}": {
+      "post": {}
+    },
+    "/eor/workers/contracts/{contract_id}/hr-documents": {
+      "get": {}
+    },
+    "/eor/workers/contracts/{contract_id}/additional-information": {
+      "post": {},
+      "patch": {}
+    },
+    "/eor/workers/banks": {
+      "post": {}
+    },
+    "/eor/workers/tax-documents": {
+      "get": {}
+    },
+    "/eor/mailboxes/change-password": {
+      "post": {}
+    },
+    "/eor/workers/contracts/{contract_id}/offboarding/resignation-letter": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/offboarding/resignation": {
+      "post": {}
+    },
+    "/eor/workers/resignations": {
+      "get": {}
+    },
+    "/eor/workers/contracts/{contract_id}/offboarding/resignation-letter/sign": {
+      "post": {}
+    },
+    "/eor/workers/contracts/{contract_id}/offboarding": {
+      "post": {}
+    },
+    "/eor/workers/{worker_id}/payslips/{payslip_id}/download": {
+      "get": {}
+    },
+    "/equities-tokens/tax-events": {
+      "post": {}
+    },
+    "/forms/eor/create-contract/definitions": {
+      "post": {}
+    },
+    "/forms/eor/worker-additional-fields/{country_code}": {
+      "get": {}
+    },
+    "/gp/workers/{id}/payslips/{payslip_id}/download": {
+      "get": {}
+    },
+    "/cycles/{cycle_id}/payroll-report": {
+      "get": {}
+    },
+    "/forms/gp/worker-additional-fields/{country_code}": {
+      "get": {}
+    },
+    "/gp/contracts/{contract_id}/employment-type": {
+      "patch": {}
+    },
+    "/gp/contracts/{contract_id}/job-title": {
+      "patch": {}
+    },
+    "/contracts/gp": {
+      "post": {}
+    },
+    "/gp/workers/{worker_id}/terminations": {
+      "post": {}
+    },
+    "/groups/{id}/clone": {
+      "post": {}
+    },
+    "/groups": {
+      "post": {},
+      "get": {}
+    },
+    "/groups/{id}": {
+      "delete": {},
+      "patch": {}
+    },
+    "/eor/contracts/{contract_id}/hrx-documents/{document_id}": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/hrx-documents": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/ic-invoicing-taxes": {
+      "post": {},
+      "get": {},
+      "patch": {}
+    },
+    "/contracts/{contract_id}/ic-invoicing-taxes/{tax_type}": {
+      "delete": {}
+    },
+    "/immigration/client/cases": {
+      "post": {},
+      "get": {}
+    },
+    "/immigration/visa-requirement/business": {
+      "get": {}
+    },
+    "/immigration/client/cases/{id}": {
+      "get": {}
+    },
+    "/immigration/workers/cases/{case_id}": {
+      "get": {}
+    },
+    "/immigration/documents/{id}": {
+      "get": {}
+    },
+    "/immigration/visa-types/{country_code}": {
+      "get": {}
+    },
+    "/immigration/workers/cases": {
+      "get": {}
+    },
+    "/immigration/workers/{worker_id}/cases/{case_id}/required-document": {
+      "get": {}
+    },
+    "/immigration/workers/{worker_id}/onboarding-case": {
+      "get": {}
+    },
+    "/immigration/workers/{worker_id}/cases/{case_id}/required-document/{document_request_id}": {
+      "post": {}
+    },
+    "/integrations/consent": {
+      "get": {}
+    },
+    "/invoice-adjustments": {
+      "post": {},
+      "get": {}
+    },
+    "/invoice-adjustments/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/contracts/{contract_id}/invoice-adjustments": {
+      "get": {}
+    },
+    "/invoice-adjustments/{id}/reviews": {
+      "post": {}
+    },
+    "/knowledge-hub/country-guide/{country_code}": {
+      "get": {}
+    },
+    "/engage/learning/actionable-journeys": {
+      "get": {}
+    },
+    "/legal-entities": {
+      "post": {},
+      "get": {}
+    },
+    "/legal-entities/{id}": {
+      "delete": {},
+      "patch": {}
+    },
+    "/benefits/legal-entities/{id}": {
+      "get": {}
+    },
+    "/industries": {
+      "get": {}
+    },
+    "/legal-entities/{legal_entity_id}/payroll-events": {
+      "get": {}
+    },
+    "/lookups/job-titles": {
+      "get": {}
+    },
+    "/lookups/countries": {
+      "get": {}
+    },
+    "/lookups": {
+      "get": {}
+    },
+    "/lookups/seniorities": {
+      "get": {}
+    },
+    "/lookups/currencies": {
+      "get": {}
+    },
+    "/lookups/time-off-types": {
+      "get": {}
+    },
+    "/magic-link": {
+      "post": {}
+    },
+    "/managers": {
+      "post": {},
+      "get": {}
+    },
+    "/managers/magic-links": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/milestones": {
+      "post": {},
+      "get": {}
+    },
+    "/contracts/{contract_id}/milestones/{milestone_id}": {
+      "delete": {},
+      "get": {}
+    },
+    "/contracts/{contract_id}/off-cycle-payments": {
+      "post": {},
+      "get": {}
+    },
+    "/contracts/{contract_id}/off-cycle-payments/{id}": {
+      "get": {}
+    },
+    "/offboarding/tracker": {
+      "get": {}
+    },
+    "/offboarding/tracker/{id}": {
+      "get": {}
+    },
+    "/offboarding/tracker/hris_profile/{oid}": {
+      "get": {}
+    },
+    "/onboarding/tracker/hris_profile/{hris_profile_id}": {
+      "get": {}
+    },
+    "/onboarding/tracker/{tracker_id}": {
+      "get": {}
+    },
+    "/onboarding/tracker": {
+      "get": {}
+    },
+    "/it/orders": {
+      "get": {}
+    },
+    "/it/orders/{order_id}": {
+      "get": {}
+    },
+    "/hris/organization_structures": {
+      "post": {},
+      "get": {}
+    },
+    "/hris/organization_structures/{hris_org_structure_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/hris/organization_structures/external/{external_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/hris/organization_structures/{hrisOrgStr_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/hris/organization-structures/teams/{team_id}/custom-fields": {
+      "get": {},
+      "patch": {}
+    },
+    "/people/{id}/department": {
+      "put": {}
+    },
+    "/organizations/tasks": {
+      "get": {}
+    },
+    "/organizations/children": {
+      "post": {}
+    },
+    "/roles": {
+      "post": {},
+      "get": {}
+    },
+    "/organizations": {
+      "get": {}
+    },
+    "/teams": {
+      "get": {}
+    },
+    "/departments": {
+      "get": {}
+    },
+    "/working-locations": {
+      "get": {}
+    },
+    "/roles/{roleId}": {
+      "patch": {}
+    },
+    "/payouts/employees/methods": {
+      "post": {},
+      "get": {}
+    },
+    "/payouts/auto-withdrawal-setting": {
+      "patch": {},
+      "get": {}
+    },
+    "/payouts/contractors/methods": {
+      "post": {},
+      "get": {}
+    },
+    "/payouts/employees/methods/{id}": {
+      "delete": {}
+    },
+    "/payouts/employees/methods/bank_transfers/requirements": {
+      "post": {}
+    },
+    "/payouts/contractors/methods/bank_transfers/requirements": {
+      "get": {}
+    },
+    "/payouts/contractors/methods/bank_transfers/supported_routes": {
+      "get": {}
+    },
+    "/payouts/balances": {
+      "get": {}
+    },
+    "/payouts/withdrawals": {
+      "post": {}
+    },
+    "/payouts/contractors/methods/{id}": {
+      "put": {}
+    },
+    "/payouts/contractors/settings/auto_withdraw": {
+      "post": {}
+    },
+    "/benefits/legal-entities/{id}/year-to-date-pay": {
+      "get": {}
+    },
+    "/gp/workers/{id}/payslips": {
+      "get": {}
+    },
+    "/benefits/legal-entities/{legal_entity_id}/paystubs": {
+      "get": {}
+    },
+    "/people": {
+      "post": {},
+      "get": {}
+    },
+    "/pwac": {
+      "post": {}
+    },
+    "/people/me": {
+      "get": {}
+    },
+    "/people/{hris_profile_id}": {
+      "get": {}
+    },
+    "/people/{id}/working-location": {
+      "put": {}
+    },
+    "/people/{worker_id}/personal": {
+      "get": {},
+      "patch": {}
+    },
+    "/people/external/{worker_id}/personal": {
+      "get": {},
+      "patch": {}
+    },
+    "/benefits/legal-entities/{id}/benefits/401k/activate": {
+      "post": {}
+    },
+    "/benefits/legal-entities/{id}/401k/plans/clean-up": {
+      "post": {}
+    },
+    "/benefits/legal-entities/{legal_entity_id}/401k/plans": {
+      "post": {}
+    },
+    "/benefits/legal-entities/{legal_entity_id}/401k/plans/{plan_id}": {
+      "put": {}
+    },
+    "/it/policies": {
+      "get": {}
+    },
+    "/hris/positions/apply_changes": {
+      "post": {}
+    },
+    "/hris/positions/profile/{hris_profile_id}": {
+      "get": {}
+    },
+    "/hris/positions/profile/{hrisProfileId}": {
+      "get": {}
+    },
+    "/profiles": {
+      "patch": {}
+    },
+    "/timesheets/presets": {
+      "post": {}
+    },
+    "/timesheets/root-presets": {
+      "post": {},
+      "get": {}
+    },
+    "/timesheets/presets/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/contracts/{contract_id}/timesheets/presets": {
+      "get": {}
+    },
+    "/timesheets/root-presets/{id}": {
+      "get": {}
+    },
+    "/refund-statements/{refund_statement_id}/breakdown": {
+      "get": {}
+    },
+    "/gp/reports/{id}/gross_to_net/csv": {
+      "get": {}
+    },
+    "/reports/payroll/cycles/{cycle_id}/gross-to-net": {
+      "get": {}
+    },
+    "/gp/reports/{id}/gross_to_net": {
+      "get": {}
+    },
+    "/gp/legal-entities/{legal_entity_id}/reports": {
+      "get": {}
+    },
+    "/screenings/manual-verification": {
+      "post": {}
+    },
+    "/veriff/session": {
+      "post": {}
+    },
+    "/screenings/aml/{entity_type}/{entity_id}": {
+      "get": {}
+    },
+    "/screenings/verification-method": {
+      "get": {}
+    },
+    "/screenings/kyc/details": {
+      "get": {}
+    },
+    "/screenings/kyc/external": {
+      "post": {}
+    },
+    "/ServiceProviderConfig": {
+      "get": {}
+    },
+    "/contracts/{contract_id}/tasks": {
+      "post": {},
+      "get": {}
+    },
+    "/contracts/{contract_id}/tasks/{task_id}": {
+      "delete": {}
+    },
+    "/contracts/{contract_id}/tasks/{task_id}/reviews": {
+      "post": {}
+    },
+    "/contracts/{contract_id}/tasks/many/reviews": {
+      "post": {}
+    },
+    "/tasks/{task_id}": {
+      "patch": {}
+    },
+    "/contracts/{contract_id}/terminations": {
+      "delete": {},
+      "post": {}
+    },
+    "/time_offs/review": {
+      "post": {}
+    },
+    "/time_offs/{time_off_id}": {
+      "delete": {},
+      "patch": {}
+    },
+    "/time_offs": {
+      "post": {},
+      "get": {}
+    },
+    "/time_offs/profile/{hris_profile_id}/entitlements": {
+      "get": {}
+    },
+    "/time_offs/time-off-events": {
+      "get": {}
+    },
+    "/time_offs/dailies": {
+      "get": {}
+    },
+    "/time_offs/profile/{hris_profile_id}/policies": {
+      "get": {}
+    },
+    "/time_offs/profile/{hris_profile_id}": {
+      "get": {}
+    },
+    "/time_offs/global-payroll/sync": {
+      "post": {}
+    },
+    "/time_offs/policy-validation-templates": {
+      "get": {}
+    },
+    "/time_offs/validate": {
+      "post": {}
+    },
+    "/time_tracking/shift_rates": {
+      "post": {},
+      "get": {}
+    },
+    "/time_tracking/shift_rates/{external_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/time-tracking/timesheets/upload-url": {
+      "post": {}
+    },
+    "/time-tracking/timesheets/{timesheet_id}": {
+      "get": {}
+    },
+    "/time-tracking/timesheets/{timesheet_id}/review": {
+      "post": {}
+    },
+    "/time_tracking/shifts/raw": {
+      "post": {}
+    },
+    "/time_tracking/shifts": {
+      "post": {},
+      "get": {}
+    },
+    "/time_tracking/shifts/{external_id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/time_tracking/shifts/bulk-delete": {
+      "post": {}
+    },
+    "/timesheets": {
+      "post": {},
+      "get": {}
+    },
+    "/timesheets/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/contracts/{contract_id}/timesheets": {
+      "get": {}
+    },
+    "/timesheets/{id}/reviews": {
+      "post": {}
+    },
+    "/accounts-payable/vendor-bills": {
+      "post": {}
+    },
+    "/accounts-payable/vendor-bills/{vendor_bill_id}/attachments": {
+      "post": {}
+    },
+    "/Users": {
+      "get": {}
+    },
+    "/Users/{hris_profile_id}": {
+      "get": {}
+    },
+    "/Users/.search": {
+      "post": {}
+    },
+    "/webhooks": {
+      "post": {},
+      "get": {}
+    },
+    "/webhooks/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/webhooks/events/types": {
+      "get": {}
+    },
+    "/escalations/workers/me/hrx": {
+      "get": {}
+    },
+    "/gp/workers/{worker_id}/banks": {
+      "post": {},
+      "get": {}
+    },
+    "/gp/workers/contracts/{contract_id}/additional-information": {
+      "post": {},
+      "patch": {}
+    },
+    "/gp/workers/{worker_id}/banks/{bank_id}": {
+      "patch": {}
+    },
+    "/gp/workers/{worker_id}/banks/guide": {
+      "get": {}
+    },
+    "/gp/workers/{worker_id}/address": {
+      "patch": {}
+    },
+    "/gp/workers/{worker_id}/compensation": {
+      "patch": {}
+    },
+    "/gp/workers/{worker_id}/employee-information": {
+      "patch": {}
+    },
+    "/gp/workers/{worker_id}/pto-policy": {
+      "patch": {}
+    },
+    "/hris/worker_relations/profile/{hrisProfileOid}/parent": {
+      "put": {}
+    },
+    "/hris/worker_relations/profile/external/{profile_id}/parent": {
+      "put": {}
+    },
+    "/hris/worker_relations/profile": {
+      "post": {}
+    },
+    "/hris/worker_relations/profile/{hris_profile_oid}/child": {
+      "put": {}
+    },
+    "/hris/worker_relations/profile/external/{profileId}/child": {
+      "put": {}
+    },
+    "/hris/worker_relations/types": {
+      "post": {},
+      "get": {}
+    },
+    "/hris/worker_relations/profile/external": {
+      "post": {}
+    },
+    "/hris/worker_relations/profile/{hrisProfileOid}": {
+      "delete": {},
+      "get": {}
+    },
+    "/hris/worker_relations/profile/external/{profileId}": {
+      "delete": {}
+    },
+    "/hris/worker_relations/types/{type_id}": {
+      "delete": {}
+    },
+    "/hris/worker_relations/types/external/{externalId}": {
+      "delete": {},
+      "patch": {}
+    },
+    "/hris/worker_relations/profile/external/{profile_id}": {
+      "get": {}
+    },
+    "/hris/worker_relations/types/{typeId}": {
+      "patch": {}
+    },
+    "/workers/session": {
+      "post": {}
+    },
+    "/workers/{worker_id}/session": {
+      "delete": {}
+    },
+    "/ic/workers/invoices/{invoice_id}/pdf": {
+      "get": {}
+    },
+    "/onboarding/workers/individual": {
+      "post": {}
+    },
+    "/worker": {
+      "post": {}
+    },
+    "/ic/workers/invoices/{invoice_id}": {
+      "get": {}
+    },
+    "/workers/compliance-documents": {
+      "get": {}
+    },
+    "/ic/workers/transactions": {
+      "get": {}
+    },
+    "/onboarding/workers/legal-entity": {
+      "post": {}
+    }
+  }
+}

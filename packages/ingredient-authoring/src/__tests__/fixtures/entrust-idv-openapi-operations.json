@@ -1,0 +1,1562 @@
+{
+  "repository": "https://github.com/onfido/onfido-openapi-spec",
+  "commit": "a369b60beab89b7cd3c54ee99ac821fda892ff52",
+  "tag": "v6.2.0",
+  "url": "https://raw.githubusercontent.com/onfido/onfido-openapi-spec/a369b60beab89b7cd3c54ee99ac821fda892ff52/generated/artifacts/openapi/openapi.json",
+  "sha256": "9b24d1628c8be132b5ff553e1f80fc33ab01d270601c7f7a17c1834c906e1fcf",
+  "openapi": "3.0.0",
+  "api_version": "v3.6",
+  "server": "https://api.{region}.onfido.com/v3.6",
+  "live_origin": "https://api.eu.onfido.com",
+  "supported_origins": [
+    "https://api.eu.onfido.com",
+    "https://api.us.onfido.com",
+    "https://api.ca.onfido.com"
+  ],
+  "wire_prefix": "/v3.6",
+  "byte_length": 307608,
+  "path_count": 63,
+  "operation_count": 84,
+  "selected_operation_count": 80,
+  "excluded_operation_count": 4,
+  "admission": {
+    "current_api_reference": "https://documentation.identity.entrust.com/api/latest/",
+    "official_openapi_reference": "https://github.com/onfido/onfido-openapi-spec",
+    "authentication_reference": "https://documentation.identity.entrust.com/api/latest/#authentication",
+    "region_reference": "https://documentation.identity.entrust.com/api/latest/#api-regions",
+    "api_migration_reference": "https://documentation.identity.entrust.com/api/api-v3-to-v3.6-migration-guide",
+    "sdk_token_reference": "https://documentation.identity.entrust.com/sdk/web",
+    "evidence_reference": "https://documentation.identity.entrust.com/guide/etsi-certified-idv/"
+  },
+  "contract_gaps": {
+    "multipart_uploads": "The current static REST composition serializes JSON body fields and has no multipart form/file construction primitive, so the four multipart upload operations are explicit exclusions.",
+    "regional_server_template": "The official OpenAPI server is https://api.{region}.onfido.com/v3.6 for eu, us, and ca. The pack pins a representative EU origin, marks the connection per-org, and keeps /v3.6 binding-owned so enrollment selects the tenant region without caller-controlled routing.",
+    "token_authentication": "The official API accepts Token token=<API_TOKEN> and also documents OAuth2 client credentials. The current connection-requirement union cannot perform a client-credentials exchange, so this pack enrolls a connection-owned Authorization header for the complete Token value; an externally minted bearer can also be pasted as that complete header value.",
+    "post_idempotency": "The official v3.6 bundle does not document an idempotency request header. POST mutations remain non-idempotent and approval-gated; the pack does not invent a caller header.",
+    "sensitive_responses": "Workflow-run, webhook, biometric-token, passkey, and binary-evidence reads can materialize secret or highly sensitive data and are therefore marked sensitive-read. Bundled workflows suppress token and secret fields."
+  },
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/addresses/pick",
+      "wire_path": "/v3.6/addresses/pick",
+      "operation_id": "find_addresses",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/advanced_electronic_signature/documents",
+      "wire_path": "/v3.6/advanced_electronic_signature/documents",
+      "operation_id": "download_aes_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/applicants",
+      "wire_path": "/v3.6/applicants",
+      "operation_id": "list_applicants",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/applicants",
+      "wire_path": "/v3.6/applicants",
+      "operation_id": "create_applicant",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/applicants/{applicant_id}",
+      "wire_path": "/v3.6/applicants/{applicant_id}",
+      "operation_id": "delete_applicant",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/applicants/{applicant_id}",
+      "wire_path": "/v3.6/applicants/{applicant_id}",
+      "operation_id": "find_applicant",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "PUT",
+      "path": "/applicants/{applicant_id}",
+      "wire_path": "/v3.6/applicants/{applicant_id}",
+      "operation_id": "update_applicant",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/applicants/{applicant_id}/consents",
+      "wire_path": "/v3.6/applicants/{applicant_id}/consents",
+      "operation_id": "find_applicant_consents",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/applicants/{applicant_id}/restore",
+      "wire_path": "/v3.6/applicants/{applicant_id}/restore",
+      "operation_id": "restore_applicant",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/biometric_tokens/{user_id}",
+      "wire_path": "/v3.6/biometric_tokens/{user_id}",
+      "operation_id": "invalidate_biometric_tokens",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/biometric_tokens/{user_id}",
+      "wire_path": "/v3.6/biometric_tokens/{user_id}",
+      "operation_id": "list_biometric_tokens",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/biometric_tokens/{user_id}/{token_uuid}",
+      "wire_path": "/v3.6/biometric_tokens/{user_id}/{token_uuid}",
+      "operation_id": "invalidate_biometric_token",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/biometric_tokens/{user_id}/{token_uuid}",
+      "wire_path": "/v3.6/biometric_tokens/{user_id}/{token_uuid}",
+      "operation_id": "find_biometric_token",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "PUT",
+      "path": "/biometric_tokens/{user_id}/{token_uuid}",
+      "wire_path": "/v3.6/biometric_tokens/{user_id}/{token_uuid}",
+      "operation_id": "update_biometric_token",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/checks",
+      "wire_path": "/v3.6/checks",
+      "operation_id": "list_checks",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/checks",
+      "wire_path": "/v3.6/checks",
+      "operation_id": "create_check",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/checks/{check_id}",
+      "wire_path": "/v3.6/checks/{check_id}",
+      "operation_id": "find_check",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/checks/{check_id}/download",
+      "wire_path": "/v3.6/checks/{check_id}/download",
+      "operation_id": "download_check",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/checks/{check_id}/resume",
+      "wire_path": "/v3.6/checks/{check_id}/resume",
+      "operation_id": "resume_check",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/documents",
+      "wire_path": "/v3.6/documents",
+      "operation_id": "list_documents",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/documents",
+      "wire_path": "/v3.6/documents",
+      "operation_id": "upload_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "reason": "multipart/form-data file upload cannot be represented by the current static JSON REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/documents/{document_id}",
+      "wire_path": "/v3.6/documents/{document_id}",
+      "operation_id": "find_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/documents/{document_id}/download",
+      "wire_path": "/v3.6/documents/{document_id}/download",
+      "operation_id": "download_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/documents/{document_id}/nfc_face",
+      "wire_path": "/v3.6/documents/{document_id}/nfc_face",
+      "operation_id": "download_nfc_face",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/documents/{document_id}/video/download",
+      "wire_path": "/v3.6/documents/{document_id}/video/download",
+      "operation_id": "download_document_video",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/extractions",
+      "wire_path": "/v3.6/extractions",
+      "operation_id": "extract",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/id_photos",
+      "wire_path": "/v3.6/id_photos",
+      "operation_id": "list_id_photos",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/id_photos",
+      "wire_path": "/v3.6/id_photos",
+      "operation_id": "upload_id_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "reason": "multipart/form-data file upload cannot be represented by the current static JSON REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/id_photos/{id_photo_id}",
+      "wire_path": "/v3.6/id_photos/{id_photo_id}",
+      "operation_id": "find_id_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/id_photos/{id_photo_id}/download",
+      "wire_path": "/v3.6/id_photos/{id_photo_id}/download",
+      "operation_id": "download_id_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_photos",
+      "wire_path": "/v3.6/live_photos",
+      "operation_id": "list_live_photos",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/live_photos",
+      "wire_path": "/v3.6/live_photos",
+      "operation_id": "upload_live_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "reason": "multipart/form-data file upload cannot be represented by the current static JSON REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/live_photos/{live_photo_id}",
+      "wire_path": "/v3.6/live_photos/{live_photo_id}",
+      "operation_id": "find_live_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_photos/{live_photo_id}/download",
+      "wire_path": "/v3.6/live_photos/{live_photo_id}/download",
+      "operation_id": "download_live_photo",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_videos",
+      "wire_path": "/v3.6/live_videos",
+      "operation_id": "list_live_videos",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_videos/{live_video_id}",
+      "wire_path": "/v3.6/live_videos/{live_video_id}",
+      "operation_id": "find_live_video",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_videos/{live_video_id}/download",
+      "wire_path": "/v3.6/live_videos/{live_video_id}/download",
+      "operation_id": "download_live_video",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/live_videos/{live_video_id}/frame",
+      "wire_path": "/v3.6/live_videos/{live_video_id}/frame",
+      "operation_id": "download_live_video_frame",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/motion_captures",
+      "wire_path": "/v3.6/motion_captures",
+      "operation_id": "list_motion_captures",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/motion_captures/{motion_capture_id}",
+      "wire_path": "/v3.6/motion_captures/{motion_capture_id}",
+      "operation_id": "find_motion_capture",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/motion_captures/{motion_capture_id}/download",
+      "wire_path": "/v3.6/motion_captures/{motion_capture_id}/download",
+      "operation_id": "download_motion_capture",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/motion_captures/{motion_capture_id}/frame",
+      "wire_path": "/v3.6/motion_captures/{motion_capture_id}/frame",
+      "operation_id": "download_motion_capture_frame",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/passkeys/{username}",
+      "wire_path": "/v3.6/passkeys/{username}",
+      "operation_id": "delete_passkeys",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/passkeys/{username}",
+      "wire_path": "/v3.6/passkeys/{username}",
+      "operation_id": "list_passkeys",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/passkeys/{username}/{passkey_id}",
+      "wire_path": "/v3.6/passkeys/{username}/{passkey_id}",
+      "operation_id": "delete_passkey",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/passkeys/{username}/{passkey_id}",
+      "wire_path": "/v3.6/passkeys/{username}/{passkey_id}",
+      "operation_id": "find_passkey",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "PUT",
+      "path": "/passkeys/{username}/{passkey_id}",
+      "wire_path": "/v3.6/passkeys/{username}/{passkey_id}",
+      "operation_id": "update_passkey",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/ping",
+      "wire_path": "/v3.6/ping",
+      "operation_id": "ping",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "text/plain"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/qualified_electronic_signature/documents",
+      "wire_path": "/v3.6/qualified_electronic_signature/documents",
+      "operation_id": "download_qes_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/repeat_attempts/{report_id}",
+      "wire_path": "/v3.6/repeat_attempts/{report_id}",
+      "operation_id": "list_repeat_attempts",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/reports",
+      "wire_path": "/v3.6/reports",
+      "operation_id": "list_reports",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/reports/{report_id}",
+      "wire_path": "/v3.6/reports/{report_id}",
+      "operation_id": "find_report",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/reports/{report_id}/cancel",
+      "wire_path": "/v3.6/reports/{report_id}/cancel",
+      "operation_id": "cancel_report",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/reports/{report_id}/resume",
+      "wire_path": "/v3.6/reports/{report_id}/resume",
+      "operation_id": "resume_report",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/results_feedback",
+      "wire_path": "/v3.6/results_feedback",
+      "operation_id": "post_results_feedback",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/sdk_token",
+      "wire_path": "/v3.6/sdk_token",
+      "operation_id": "generate_sdk_token",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/signing_documents",
+      "wire_path": "/v3.6/signing_documents",
+      "operation_id": "list_signing_documents",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/signing_documents",
+      "wire_path": "/v3.6/signing_documents",
+      "operation_id": "upload_signing_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "multipart/form-data"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "reason": "multipart/form-data file upload cannot be represented by the current static JSON REST composition"
+    },
+    {
+      "method": "GET",
+      "path": "/signing_documents/{signing_document_id}",
+      "wire_path": "/v3.6/signing_documents/{signing_document_id}",
+      "operation_id": "find_signing_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/signing_documents/{signing_document_id}/download",
+      "wire_path": "/v3.6/signing_documents/{signing_document_id}/download",
+      "operation_id": "download_signing_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "*/*"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/simple_electronic_signature/documents",
+      "wire_path": "/v3.6/simple_electronic_signature/documents",
+      "operation_id": "download_ses_document",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/watchlist_monitors",
+      "wire_path": "/v3.6/watchlist_monitors",
+      "operation_id": "list_watchlist_monitors",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/watchlist_monitors",
+      "wire_path": "/v3.6/watchlist_monitors",
+      "operation_id": "create_watchlist_monitor",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/watchlist_monitors/{monitor_id}",
+      "wire_path": "/v3.6/watchlist_monitors/{monitor_id}",
+      "operation_id": "delete_watchlist_monitor",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/watchlist_monitors/{monitor_id}",
+      "wire_path": "/v3.6/watchlist_monitors/{monitor_id}",
+      "operation_id": "find_watchlist_monitor",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/watchlist_monitors/{monitor_id}/matches",
+      "wire_path": "/v3.6/watchlist_monitors/{monitor_id}/matches",
+      "operation_id": "list_watchlist_monitor_matches",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "PATCH",
+      "path": "/watchlist_monitors/{monitor_id}/matches",
+      "wire_path": "/v3.6/watchlist_monitors/{monitor_id}/matches",
+      "operation_id": "update_watchlist_monitor_match",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/watchlist_monitors/{monitor_id}/new_report",
+      "wire_path": "/v3.6/watchlist_monitors/{monitor_id}/new_report",
+      "operation_id": "force_report_creation_from_watchlist_monitor",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-authentication",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/webhooks",
+      "wire_path": "/v3.6/webhooks",
+      "operation_id": "list_webhooks",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/webhooks",
+      "wire_path": "/v3.6/webhooks",
+      "operation_id": "create_webhook",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "DELETE",
+      "path": "/webhooks/{webhook_id}",
+      "wire_path": "/v3.6/webhooks/{webhook_id}",
+      "operation_id": "delete_webhook",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/webhooks/{webhook_id}",
+      "wire_path": "/v3.6/webhooks/{webhook_id}",
+      "operation_id": "find_webhook",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "PUT",
+      "path": "/webhooks/{webhook_id}",
+      "wire_path": "/v3.6/webhooks/{webhook_id}",
+      "operation_id": "update_webhook",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/webhooks/resend",
+      "wire_path": "/v3.6/webhooks/resend",
+      "operation_id": "resend_webhooks",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-platform",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs",
+      "wire_path": "/v3.6/workflow_runs",
+      "operation_id": "list_workflow_runs",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow_runs",
+      "wire_path": "/v3.6/workflow_runs",
+      "operation_id": "create_workflow_run",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}",
+      "operation_id": "find_workflow_run",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}/evidence_folder",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/evidence_folder",
+      "operation_id": "download_evidence_folder",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/zip"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}/signed_evidence_file",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/signed_evidence_file",
+      "operation_id": "download_signed_evidence_file",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}/tasks",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/tasks",
+      "operation_id": "list_tasks",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}/tasks/{task_id}",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/tasks/{task_id}",
+      "operation_id": "find_task",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow_runs/{workflow_run_id}/tasks/{task_id}/complete",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/tasks/{task_id}/complete",
+      "operation_id": "complete_task",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [],
+      "selected": true,
+      "pack": "entrust-idv-verification",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow_runs/{workflow_run_id}/timeline_file",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/timeline_file",
+      "operation_id": "create_timeline_file",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow_runs/{workflow_run_id}/timeline_file/{timeline_file_id}",
+      "wire_path": "/v3.6/workflow_runs/{workflow_run_id}/timeline_file/{timeline_file_id}",
+      "operation_id": "find_timeline_file",
+      "security": [
+        "Token",
+        "OAuth2ClientCredentials"
+      ],
+      "deprecated": false,
+      "request_media": [],
+      "response_media": [
+        "application/pdf"
+      ],
+      "selected": true,
+      "pack": "entrust-idv-evidence",
+      "reason": "nondeprecated official Token-authenticated operation with buildable static REST transport; the official operation also documents OAuth client credentials"
+    }
+  ]
+}

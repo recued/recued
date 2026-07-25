@@ -1,0 +1,2073 @@
+/** D-174 D14 — Settings -> AI / Models consolidated LLM config page.
+ *
+ * Frontend-only assembly over existing RPCs. The page wires the controls whose
+ * server seams already exist and renders honest pending rows for controls whose
+ * backend write path is not present in this checkout.
+ */
+
+import {
+  CHAT_CATALOG_DELIVERY_MODES,
+  CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
+  isChatCatalogDeliveryMode,
+  isChatModelSourceId,
+  type ChatCatalogDeliveryMode,
+  type ChatModelSourceId,
+  type HousekeepingConfigRow,
+  type ServerConfigField,
+  type ServerConfigValue,
+  type ServerLlmCallerSystemPolicy,
+  type ServerLlmMessageRole,
+  type ServerLlmPrompt,
+  type ServerLlmPromptSurface,
+} from '@recued/contracts';
+
+import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  buildChatModelDefaultModel,
+  reduceChatDefaultModelPrefChanged,
+  type ChatModelDefaultRenderModel,
+} from './chat-model-default.js';
+import {
+  mountLlmResultCacheCard,
+  type LlmResultCacheCardMount,
+  type LlmResultCacheClearCaller,
+  type LlmResultCacheStatsCaller,
+} from './llm-result-cache-card-mount.js';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+
+export const AI_MODELS_PAGE_ATTR = 'data-recued-ai-models-page';
+export const AI_MODELS_PAGE_STATE_ATTR = 'data-recued-ai-models-page-state';
+export const AI_MODELS_CONTROL_ATTR = 'data-recued-ai-models-control';
+export const AI_MODELS_PENDING_CONTROL_ATTR =
+  'data-recued-ai-models-pending-control';
+export const AI_MODELS_FAIL_LOUD_ATTR = 'data-recued-ai-models-fail-loud';
+// D-174 R28 — a transient banner for a FAILED write action (save slot,
+// add/remove/toggle pool entry, save budget). Distinct from FAIL_LOUD
+// (an unmatched stored default) and the load-error list (read failures).
+export const AI_MODELS_ACTION_ERROR_ATTR = 'data-recued-ai-models-action-error';
+export const AI_MODELS_POOL_REMOVE_ATTR = 'data-recued-ai-models-pool-remove';
+export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
+  'data-recued-ai-models-model-pref';
+/** D-174 R28 Slice A — the empty-state "add a source" jump button (Preference
+ *  tab with zero configured sources → Providers). */
+export const AI_MODELS_MODEL_PREF_EMPTY_JUMP_ATTR =
+  'data-recued-ai-models-model-pref-empty-jump';
+export const AI_MODELS_SLOT_SAVE_ATTR = 'data-recued-ai-models-slot-save';
+/** Per-source model context-window input. Values are `slot_1`, `slot_2`, or
+ *  `free_pool:new` for the API-entry creation form. */
+export const AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR =
+  'data-recued-ai-models-context-window-input';
+export const AI_MODELS_POOL_TOGGLE_ATTR = 'data-recued-ai-models-pool-toggle';
+export const AI_MODELS_BUDGET_SAVE_ATTR = 'data-recued-ai-models-budget-save';
+export const AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR =
+  'data-recued-ai-models-allow-byok-toggle';
+export const AI_MODELS_PAUSE_BUTTON_ATTR = 'data-recued-ai-models-pause';
+// Lever-2 per-slot (Phase 3) — the per-source chat-catalog delivery-mode
+// `<select>`. Its value is the source id (`slot_1` / `slot_2` / `free_pool`)
+// so a test / host can locate the control for a given source.
+export const AI_MODELS_CATALOG_MODE_SELECT_ATTR =
+  'data-recued-ai-models-catalog-mode';
+// Internal sub-view tab strip — splits the dense page into Preference /
+// Providers / Usage so each surface gets a focused view rather than one
+// long scroll (mirrors the Housekeeping panel's tab strip). Tab state is
+// mount-local; all panels stay in the DOM and CSS toggles visibility off
+// `data-active`.
+export const AI_MODELS_TAB_ATTR = 'data-recued-ai-models-tab';
+export const AI_MODELS_TAB_PANEL_ATTR = 'data-recued-ai-models-tab-panel';
+export const AI_MODELS_PROMPT_SECTION_ATTR = 'data-recued-ai-models-prompt';
+export const AI_MODELS_PROMPT_TEXT_ATTR = 'data-recued-ai-models-prompt-text';
+export const AI_MODELS_PROMPT_ROLE_ATTR = 'data-recued-ai-models-prompt-role';
+export const AI_MODELS_PROMPT_SAVE_ATTR = 'data-recued-ai-models-prompt-save';
+export const AI_MODELS_PROMPT_RESET_ATTR = 'data-recued-ai-models-prompt-reset';
+export const AI_MODELS_PROMPT_BADGE_ATTR = 'data-recued-ai-models-prompt-badge';
+export const AI_MODELS_PROMPT_POLICY_ATTR = 'data-recued-ai-models-prompt-policy';
+export const AI_MODELS_PROMPT_POLICY_HINT_ATTR = 'data-recued-ai-models-prompt-policy-hint';
+export const AI_MODELS_PROMPT_ALWAYS_ATTR = 'data-recued-ai-models-prompt-always';
+
+/** The AI / Models page's internal sub-views. */
+type AiModelsTab = 'preference' | 'providers' | 'prompts' | 'usage';
+const AI_MODELS_TABS: ReadonlyArray<{ id: AiModelsTab; label: string }> = [
+  { id: 'preference', label: 'Preference' },
+  { id: 'providers', label: 'Providers' },
+  { id: 'prompts', label: 'System prompts' },
+  { id: 'usage', label: 'Usage & budget' },
+];
+
+type LlmConfigRecord = Record<string, unknown>;
+type LlmSlotKey = 'slot_1' | 'slot_2';
+type LlmSlotRecord = Record<string, unknown>;
+type FreePoolEntryRecord = Record<string, unknown>;
+
+export type AiModelsPageState = 'loading' | 'ready' | 'error';
+
+export type ChatDefaultModelPrefGetCaller = () => Promise<{
+  source_id: ChatModelSourceId | null;
+  updated_at: number;
+}>;
+
+export type ChatDefaultModelPrefSetCaller = (args: {
+  source_id: ChatModelSourceId;
+}) => Promise<{
+  source_id: ChatModelSourceId;
+  updated_at: number;
+}>;
+
+export type AiModelsLlmConfigGetCaller = () => Promise<{
+  config: LlmConfigRecord;
+}>;
+
+/** D-174 R28 — field-level write callers. Each edits ONE slot / pool
+ *  entry server-side, so two surfaces editing different slots no longer
+ *  clobber via the whole-config `setLLMConfig` blob (last-write-wins). */
+export type AiModelsLlmSlotSetCaller = (args: {
+  slot_key: LlmSlotKey;
+  slot: LlmSlotRecord | null;
+}) => Promise<{ ok: true }>;
+
+/** D-174 R28 Slice C — write the dedicated embeddings slot. No `slot_key`
+ *  (there is exactly one); a recipe/housekeeping source kept off the chat
+ *  model-select surface. */
+export type AiModelsEmbeddingsSlotSetCaller = (args: {
+  slot: LlmSlotRecord | null;
+}) => Promise<{ ok: true }>;
+
+export type AiModelsFreePoolEntryUpsertCaller = (args: {
+  entry: FreePoolEntryRecord;
+}) => Promise<{ ok: true }>;
+
+export type AiModelsFreePoolEntryRemoveCaller = (args: {
+  id: string;
+}) => Promise<{ ok: true; removed: boolean }>;
+
+export type AiModelsFreePoolEntryEnabledCaller = (args: {
+  id: string;
+  enabled: boolean;
+}) => Promise<{ ok: true; found: boolean }>;
+
+/** Lever-2 per-slot (Phase 3) — set ONE LLM source's chat-catalog delivery
+ *  mode (`full` | `index` | `lean-core`), or `null` to clear that source's
+ *  override (falling back to the server's resolved default). Field-level
+ *  read-modify-write server-side — never clobbers the other sources. */
+export type AiModelsSetChatCatalogModeCaller = (args: {
+  source_id: ChatModelSourceId;
+  mode: ChatCatalogDeliveryMode | null;
+}) => Promise<{ ok: true }>;
+
+/** Read every surface's system prompt — the effective text + role AND the
+ *  built-in default, so the editor can pre-fill with real text and offer a
+ *  reset. */
+export type AiModelsLlmPromptsGetCaller = () => Promise<{
+  prompts: ReadonlyArray<ServerLlmPrompt>;
+}>;
+
+/** Replace one surface's system prompt + wire role. `null` on either clears it
+ *  — that IS the reset-to-default, and the server restores the built-in
+ *  byte-for-byte by deleting the row. */
+export type AiModelsLlmPromptSetCaller = (args: {
+  surface: ServerLlmPromptSurface;
+  role_instructions: string | null;
+  role: ServerLlmMessageRole | null;
+  caller_system_policy?: ServerLlmCallerSystemPolicy | null;
+}) => Promise<{ ok: true }>;
+
+export type AiModelsConfigSchemaGetCaller = () => Promise<{
+  schema: ReadonlyArray<ServerConfigField>;
+}>;
+
+export type AiModelsConfigFieldSetCaller = (args: {
+  key: string;
+  value: ServerConfigValue;
+}) => Promise<{ ok: true }>;
+
+export type AiModelsHousekeepingConfigReadCaller =
+  () => Promise<HousekeepingConfigRow>;
+
+export type AiModelsHousekeepingConfigWriteCaller = (args: {
+  preset: HousekeepingConfigRow['preset'];
+  allow_byok_background?: boolean;
+  pause_background_ai_until?: number | null;
+}) => Promise<{ ok: true; effective: HousekeepingConfigRow }>;
+
+export interface MountAiModelsPageOptions {
+  host: HTMLElement;
+  document?: Document;
+  runGetDefaultModelPref?: ChatDefaultModelPrefGetCaller;
+  runSetDefaultModelPref?: ChatDefaultModelPrefSetCaller;
+  runGetLLMConfig?: AiModelsLlmConfigGetCaller;
+  runSetLLMSlot?: AiModelsLlmSlotSetCaller;
+  runSetEmbeddingsSlot?: AiModelsEmbeddingsSlotSetCaller;
+  runUpsertFreePoolEntry?: AiModelsFreePoolEntryUpsertCaller;
+  runRemoveFreePoolEntry?: AiModelsFreePoolEntryRemoveCaller;
+  runSetFreePoolEntryEnabled?: AiModelsFreePoolEntryEnabledCaller;
+  runSetChatCatalogMode?: AiModelsSetChatCatalogModeCaller;
+  runGetLlmPrompts?: AiModelsLlmPromptsGetCaller;
+  runSetLlmPrompt?: AiModelsLlmPromptSetCaller;
+  runGetConfigSchema?: AiModelsConfigSchemaGetCaller;
+  runSetConfigField?: AiModelsConfigFieldSetCaller;
+  runReadHousekeepingConfig?: AiModelsHousekeepingConfigReadCaller;
+  runWriteHousekeepingConfig?: AiModelsHousekeepingConfigWriteCaller;
+  runCacheStats?: LlmResultCacheStatsCaller;
+  runCacheClear?: LlmResultCacheClearCaller;
+  now?: () => number;
+  subscribe?: BroadcastSubscriber['on'];
+}
+
+export interface AiModelsResolvedState {
+  state: AiModelsPageState;
+  modelPreference: ChatModelDefaultRenderModel;
+  llmConfig: LlmConfigRecord | null;
+  configSchema: ReadonlyArray<ServerConfigField>;
+  housekeepingConfig: HousekeepingConfigRow | null;
+  llmPrompts: ReadonlyArray<ServerLlmPrompt>;
+  loadErrors: ReadonlyArray<string>;
+  failLoud: string | null;
+}
+
+export interface AiModelsPageMount {
+  getState(): AiModelsResolvedState;
+  refresh(): Promise<void>;
+  whenLoaded(): Promise<void>;
+  /** Set the global default to a configured source (slot id or `'free_pool'`,
+   *  from the resolved model's options). Persists the source's layer + § A.14
+   *  slot hint. */
+  setModelPreference(sourceId: ChatModelSourceId): Promise<void>;
+  saveByokSlot(slotKey: LlmSlotKey, patch: {
+    provider: string;
+    model: string;
+    api_key?: string;
+    base_url?: string;
+    speed?: 'fast' | 'quality' | 'thinking';
+    supports_json?: boolean;
+    /** Per-slot daily token budget. 0 (or omitted) = unlimited; a
+     *  positive value caps the slot's daily consumption. */
+    daily_budget_tokens?: number;
+    /** Provider/model context-window capacity. Persisted only when supplied as
+     *  a positive safe integer; omission preserves the current slot value. */
+    context_window_tokens?: number;
+  }): Promise<void>;
+  clearByokSlot(slotKey: LlmSlotKey): Promise<void>;
+  /** D-174 R28 Slice C — save the dedicated embeddings slot (provider /
+   *  model / key / base_url). Its `model` field is the embeddings model.
+   *  A recipe/housekeeping source only — never a chat model-select option. */
+  saveEmbeddingsSlot(patch: {
+    provider: string;
+    model: string;
+    api_key?: string;
+    base_url?: string;
+  }): Promise<void>;
+  clearEmbeddingsSlot(): Promise<void>;
+  addFreePoolApiEntry(entry: {
+    id: string;
+    provider: string;
+    model: string;
+    api_key: string;
+    base_url?: string;
+    speed?: 'fast' | 'quality' | 'thinking';
+    supports_json?: boolean;
+    enabled?: boolean;
+    /** Provider/model context-window capacity. Omitted unless supplied as a
+     *  positive safe integer; there is no guessed provider default. */
+    context_window_tokens?: number;
+  }): Promise<void>;
+  setFreePoolEntryEnabled(id: string, enabled: boolean): Promise<void>;
+  /** D-174 R28 — remove a free-pool entry by id (the prior gap: pool was
+   *  add + toggle only). */
+  removeFreePoolEntry(id: string): Promise<void>;
+  /** Lever-2 per-slot (Phase 3) — set a source's chat-catalog delivery mode,
+   *  or `null` to clear the override (fall back to the server default). */
+  setChatCatalogMode(
+    source: ChatModelSourceId,
+    mode: ChatCatalogDeliveryMode | null,
+  ): Promise<void>;
+  /** Write one surface's ROLE + INSTRUCTIONS (block 1), its wire role, and — on
+   *  the gateway — the caller-system policy. Block 1 only: Recued's core and
+   *  feature text are composed around it and are not writable from here. A blank
+   *  box is read as a reset. */
+  saveLlmPrompt(
+    surface: ServerLlmPromptSurface,
+    draft: PromptDraft,
+  ): Promise<void>;
+  /** Clear the override. The built-in comes back byte-for-byte — the server
+   *  deletes the row, and absence IS the default. */
+  resetLlmPrompt(surface: ServerLlmPromptSurface): Promise<void>;
+  setBudget(tokens: number): Promise<void>;
+  setAllowByokBackground(allow: boolean): Promise<void>;
+  setPauseBackgroundAiUntil(until: number | null): Promise<void>;
+  cacheCard(): LlmResultCacheCardMount | null;
+  dispose(): void;
+}
+
+const CONTROL_COPY: Readonly<Record<string, { title: string; body: string }>> = {
+  prompts: {
+    title: 'System prompts',
+    body: 'Pending backend support.',
+  },
+  byok: {
+    title: 'BYOK slots',
+    body: 'Fast and quality/thinking provider slots used when chat or runtime work selects BYOK.',
+  },
+  free_pool: {
+    title: 'Free pool',
+    body: 'Free-tier provider entries used before paid BYOK when policy allows it.',
+  },
+  model_pref: {
+    title: 'Model preference',
+    body: 'Global source every non-overridden chat session inherits.',
+  },
+  embeddings: {
+    title: 'Embeddings model',
+    body: 'A dedicated provider + model for embeddings (semantic search / clustering), used by recipes and housekeeping — never chat. OpenAI-compatible is the common case (e.g. text-embedding-3-small, or a self-hosted endpoint via Base URL); Google works too. Anthropic publishes no embeddings model.',
+  },
+  cache: {
+    title: 'LLM result cache',
+    body: 'Deterministic short-circuit cache for repeated LLM results.',
+  },
+  ai_policy: {
+    title: 'AI usage policy',
+    body: 'Background BYOK permission and Pause-AI window.',
+  },
+  budget: {
+    title: 'Instance token budget',
+    body: 'Daily LLM token ceiling for this server instance.',
+  },
+} as const;
+
+/** Lever-2 per-slot (Phase 3) — the catalog-mode `<select>` option labels
+ *  (kept short; the full "what does this mean" copy lives in
+ *  {@link CATALOG_MODE_LEGEND}). Keyed off the contracts enum so a new mode is a
+ *  compile error here until it gets a label. */
+const CATALOG_MODE_LABELS: Readonly<
+  Record<ChatCatalogDeliveryMode, string>
+> = {
+  full: 'Full catalog',
+  index: 'Index (lean list)',
+  'lean-core': 'Lean core (search)',
+};
+
+/** One-word mode names for inline sentences (the "Automatic" hint). */
+const CATALOG_MODE_SHORT: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
+  full: 'Full',
+  index: 'Index',
+  'lean-core': 'Lean core',
+};
+
+/** The plain-language "how to choose" explanation per mode, shown in the
+ *  collapsible legend under the control. This is the answer to "what does each
+ *  mode do and when do I want it". */
+const CATALOG_MODE_LEGEND: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
+  full: 'Every tool is listed with its full input schema. Most reliable, largest prompt. Best for BYOK slots, where the prompt is cached and nearly free after the first call.',
+  index: 'Tools are listed by name and summary; the model fetches a tool’s schema on demand. Big token savings with routing intact. Best for the free pool, which has no prompt cache.',
+  'lean-core': 'Only the core tools are listed; the model searches to discover recipes. Biggest savings, best on capable models. Advanced.',
+};
+
+/** Per-surface framing for the System prompts tab. The copy's job is to say WHO
+ *  reads each block — the gateway one is read by strangers, and that single fact
+ *  is what changes how you write it. */
+const PROMPT_SURFACE_COPY: Readonly<Record<ServerLlmPromptSurface, {
+  title: string;
+  body: string;
+}>> = {
+  chat: {
+    title: 'Chat',
+    body: 'Read by your own chat and by messenger turns (Slack / Telegram). Set who the assistant is and what to check before it answers — "you are a lawyer", "always look at the calendar first".',
+  },
+  llm_gateway: {
+    title: 'LLM gateway',
+    body: 'Read on every request to your OpenAI-compatible gateway — by whoever holds a token, not by you. One block for the whole door. This is where you say what the door is FOR: Recued only fences the caller, it never tells the model what job it is doing.',
+  },
+};
+
+/** The wire-role options. A TRANSPORT knob, not the role you write above — it
+ *  exists because some OpenAI-compatible endpoints (parts of the free pool, some
+ *  reasoning models) reject a `system` role outright. */
+const PROMPT_ROLE_LABELS: Readonly<Record<ServerLlmMessageRole, string>> = {
+  system: 'system (default)',
+  user: 'user',
+  assistant: 'assistant',
+};
+
+const PROMPT_ROLES: ReadonlyArray<ServerLlmMessageRole> = [
+  'system',
+  'user',
+  'assistant',
+];
+
+const CALLER_SYSTEM_POLICIES: ReadonlyArray<ServerLlmCallerSystemPolicy> = [
+  'context',
+  'append',
+  'replace',
+  'ignore',
+];
+
+const DEFAULT_CALLER_SYSTEM_POLICY: ServerLlmCallerSystemPolicy = 'context';
+
+/** One surface's unsaved edits. `role_instructions` is BLOCK 1 — never the whole
+ *  prompt; there is no client-side path to Recued's core or feature text. */
+export interface PromptDraft {
+  role_instructions: string;
+  role: ServerLlmMessageRole;
+  caller_system_policy: ServerLlmCallerSystemPolicy;
+}
+
+const CALLER_SYSTEM_POLICY_LABELS: Readonly<
+  Record<ServerLlmCallerSystemPolicy, string>
+> = {
+  context: 'As context (default)',
+  append: 'Add to yours',
+  replace: 'Use instead of yours',
+  ignore: 'Ignore it',
+};
+
+/** What each policy actually does, in the owner's terms. The trade the owner is
+ *  really making on `replace` is their BEHAVIOURAL guardrails inside capability
+ *  they already granted — say that plainly rather than leaving them to find out. */
+const CALLER_SYSTEM_POLICY_HINTS: Readonly<
+  Record<ServerLlmCallerSystemPolicy, string>
+> = {
+  context: "The customer's system prompt reaches the model as context. Your instructions win a conflict. Their app keeps working.",
+  append: "The customer's system prompt is added to yours as real instructions. They can shape tone and task; they cannot remove your text.",
+  replace: "The customer's system prompt is used instead of yours. They steer the model however they like within the tools you granted — your wording no longer applies.",
+  ignore: "The customer's system prompt is dropped. The model never sees it, so anything their app configured there stops working.",
+};
+
+const stringifyError = (err: unknown): string =>
+  humanizeRpcError(err);
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+const asString = (value: unknown): string =>
+  typeof value === 'string' ? value : '';
+
+const asBoolean = (value: unknown, fallback: boolean): boolean =>
+  typeof value === 'boolean' ? value : fallback;
+
+const asPositiveSafeInteger = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+
+const parsePositiveSafeInteger = (value: string): number | undefined => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return asPositiveSafeInteger(Number(trimmed));
+};
+
+const cloneConfig = (config: LlmConfigRecord | null): LlmConfigRecord => {
+  const source = config ?? {};
+  const next: LlmConfigRecord = { ...source };
+  for (const key of ['slot_1', 'slot_2', 'embeddings_slot'] as const) {
+    const slot = asRecord(source[key]);
+    if (slot) next[key] = { ...slot };
+  }
+  const pool = Array.isArray(source.free_pool) ? source.free_pool : [];
+  next.free_pool = pool.map((entry) => {
+    const record = asRecord(entry);
+    return record ? { ...record } : entry;
+  });
+  // Lever-2 per-slot (Phase 3) — the per-source catalog-mode map is a flat
+  // `{source: mode}` object; copy it so a local edit (setChatCatalogMode)
+  // never mutates a shared snapshot returned by getState().
+  const catalogModes = asRecord(source.catalog_modes);
+  if (catalogModes) next.catalog_modes = { ...catalogModes };
+  return next;
+};
+
+const getSlot = (
+  config: LlmConfigRecord | null,
+  key: LlmSlotKey,
+): LlmSlotRecord | null => asRecord(config?.[key]);
+
+/** D-174 R28 Slice C — read the dedicated embeddings slot (a separate
+ *  config key from slot_1 / slot_2). */
+const getEmbeddingsSlot = (
+  config: LlmConfigRecord | null,
+): LlmSlotRecord | null => asRecord(config?.embeddings_slot);
+
+const getPoolEntries = (
+  config: LlmConfigRecord | null,
+): FreePoolEntryRecord[] =>
+  (Array.isArray(config?.free_pool) ? config!.free_pool : [])
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is FreePoolEntryRecord => entry !== null);
+
+/** Lever-2 per-slot (Phase 3) — read a source's EXPLICIT catalog-mode
+ *  override from the persisted `catalog_modes` map. Absent / malformed → the
+ *  source has no override (the `<select>` shows "Automatic"). */
+const getCatalogMode = (
+  config: LlmConfigRecord | null,
+  source: ChatModelSourceId,
+): ChatCatalogDeliveryMode | undefined => {
+  const modes = asRecord(config?.catalog_modes);
+  const value = modes?.[source];
+  return isChatCatalogDeliveryMode(value) ? value : undefined;
+};
+
+const findConfigField = (
+  schema: ReadonlyArray<ServerConfigField>,
+  key: string,
+): ServerConfigField | null => schema.find((field) => field.key === key) ?? null;
+
+const computeFailLoud = (
+  pref: ChatModelDefaultRenderModel,
+): string | null => {
+  if (pref.kind !== 'resolved') return null;
+  // The options ARE the configured sources, so an unmatched stored default
+  // means the saved source was removed / is unavailable. Fail loud + prompt
+  // the user to pick one (rather than silently routing somewhere else).
+  return pref.matched
+    ? null
+    : 'No AI model is available for your current default. Choose a configured source above.';
+};
+
+const removeChildren = (el: HTMLElement): void => {
+  while (el.firstChild) el.removeChild(el.firstChild);
+};
+
+const appendText = (doc: Document, parent: HTMLElement, text: string): HTMLElement => {
+  const span = doc.createElement('span');
+  span.textContent = text;
+  parent.appendChild(span);
+  return span;
+};
+
+const appendHeading = (
+  doc: Document,
+  parent: HTMLElement,
+  level: 'h3' | 'h4',
+  text: string,
+): HTMLElement => {
+  const heading = doc.createElement(level);
+  heading.textContent = text;
+  parent.appendChild(heading);
+  return heading;
+};
+
+const appendButton = (
+  doc: Document,
+  parent: HTMLElement,
+  label: string,
+  onClick: () => void,
+  attrs: ReadonlyArray<readonly [string, string]> = [],
+): HTMLButtonElement => {
+  const button = doc.createElement('button') as HTMLButtonElement;
+  button.type = 'button';
+  button.textContent = label;
+  for (const [k, v] of attrs) button.setAttribute(k, v);
+  button.addEventListener('click', onClick);
+  parent.appendChild(button);
+  return button;
+};
+
+const appendInput = (
+  doc: Document,
+  parent: HTMLElement,
+  label: string,
+  value: string,
+  attrs: ReadonlyArray<readonly [string, string]> = [],
+): HTMLInputElement => {
+  const wrap = doc.createElement('label');
+  wrap.className = 'ai-models-field';
+  appendText(doc, wrap, label);
+  const input = doc.createElement('input') as HTMLInputElement;
+  input.value = value;
+  for (const [k, v] of attrs) input.setAttribute(k, v);
+  wrap.appendChild(input);
+  parent.appendChild(wrap);
+  return input;
+};
+
+const markControl = (el: HTMLElement, id: string): void => {
+  el.setAttribute(AI_MODELS_CONTROL_ATTR, id);
+};
+
+export const mountAiModelsPage = (
+  opts: MountAiModelsPageOptions,
+): AiModelsPageMount => {
+  const doc = opts.document ?? (globalThis as { document?: Document }).document;
+  if (doc === undefined) {
+    throw new Error(
+      'mountAiModelsPage: no document available — pass `opts.document` for non-browser environments',
+    );
+  }
+
+  let disposed = false;
+  let state: AiModelsPageState = 'loading';
+  // Mount-local active sub-view (the Preference / Providers / Usage tab).
+  let aiTab: AiModelsTab = 'preference';
+  // The raw global-default snapshot (a `source_id`); the rendered
+  // `modelPreference` is DERIVED from it + the LLM config (the picker options
+  // are the configured sources), recomputed whenever either changes.
+  let modelPrefSnapshot:
+    | { source_id: ChatModelSourceId | null; updated_at: number }
+    | null = null;
+  let llmConfig: LlmConfigRecord | null = null;
+  let modelPreference: ChatModelDefaultRenderModel = buildChatModelDefaultModel(
+    modelPrefSnapshot,
+    llmConfig,
+  );
+  const recomputeModelPreference = (): void => {
+    modelPreference = buildChatModelDefaultModel(modelPrefSnapshot, llmConfig);
+  };
+  let configSchema: ServerConfigField[] = [];
+  let housekeepingConfig: HousekeepingConfigRow | null = null;
+  let llmPrompts: ServerLlmPrompt[] = [];
+  /** In-flight edits, per surface, before Save. Kept out of `llmPrompts` (the
+   *  server's truth) so a re-render never silently discards what the owner is
+   *  mid-way through typing. */
+  const promptDrafts = new Map<ServerLlmPromptSurface, PromptDraft>();
+  let loadErrors: string[] = [];
+  // D-174 R28 — last failed write action (cleared on the next success).
+  // The render-layer button handlers fire actions through `surface(...)`
+  // so an unwired caller / rejected rpc shows as a banner instead of an
+  // unhandled promise rejection.
+  let actionError: string | null = null;
+  let pendingLoad: Promise<void> = Promise.resolve();
+
+  /** Run a write action, surfacing failures as the action-error banner
+   *  (and clearing a stale banner on success). */
+  const surface = (p: Promise<unknown>): void => {
+    void p.then(
+      () => {
+        if (disposed || actionError === null) return;
+        actionError = null;
+        render();
+      },
+      (err) => {
+        if (disposed) return;
+        actionError = stringifyError(err);
+        render();
+      },
+    );
+  };
+
+  const wrapper = doc.createElement('div');
+  wrapper.setAttribute(AI_MODELS_PAGE_ATTR, '');
+  wrapper.setAttribute(AI_MODELS_PAGE_STATE_ATTR, state);
+  wrapper.className = 'ai-models-page';
+  const dynamicHost = doc.createElement('div');
+  wrapper.appendChild(dynamicHost);
+  opts.host.appendChild(wrapper);
+
+  let cacheCard: LlmResultCacheCardMount | null = null;
+  // Hoisted so `render()` can re-parent the persistent cache-card host
+  // into the Usage tab panel each render (re-parent, not recreate — the
+  // sub-mount's subscription + state survive). Left detached here; render
+  // places it.
+  let cacheHost: HTMLElement | null = null;
+  if (opts.runCacheStats !== undefined) {
+    cacheHost = doc.createElement('div');
+    cacheHost.setAttribute(AI_MODELS_CONTROL_ATTR, 'cache');
+    cacheCard = mountLlmResultCacheCard({
+      host: cacheHost,
+      runStats: opts.runCacheStats,
+      ...(opts.runCacheClear !== undefined ? { runClear: opts.runCacheClear } : {}),
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
+      ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+    });
+  }
+
+  const renderPending = (parent: HTMLElement, id: string): void => {
+    const row = doc.createElement('div');
+    row.className = 'ai-models-pending';
+    row.setAttribute(AI_MODELS_PENDING_CONTROL_ATTR, id);
+    appendHeading(doc, row, 'h4', CONTROL_COPY[id]?.title ?? id);
+    appendText(doc, row, CONTROL_COPY[id]?.body ?? 'Pending backend support.');
+    parent.appendChild(row);
+  };
+
+  const renderModelPreference = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'model_pref');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.model_pref.title);
+    appendText(doc, section, CONTROL_COPY.model_pref.body);
+
+    if (modelPreference.kind === 'loading') {
+      appendText(doc, section, ' Loading current preference.');
+    } else if (modelPreference.kind === 'empty') {
+      // D-174 R28 Slice A defect fix — resolved-EMPTY (no configured source) is
+      // NOT a transient load. Tell the user + jump to Providers (the Preference
+      // tab is inert until a source exists there).
+      appendText(
+        doc,
+        section,
+        ' No model sources yet — add a BYOK slot or a free-pool entry.',
+      );
+      appendButton(
+        doc,
+        section,
+        'Add a model source',
+        () => {
+          setAiTab('providers');
+        },
+        [[AI_MODELS_MODEL_PREF_EMPTY_JUMP_ATTR, '']],
+      );
+    } else {
+      const optionsWrap = doc.createElement('div');
+      optionsWrap.className = 'ai-models-choice-row';
+      for (const option of modelPreference.options) {
+        appendButton(
+          doc,
+          optionsWrap,
+          `${option.selected ? 'Selected: ' : ''}${option.label}`,
+          () => {
+            surface(api.setModelPreference(option.id));
+          },
+          [
+            [AI_MODELS_MODEL_PREF_BUTTON_ATTR, option.id],
+            ['aria-pressed', option.selected ? 'true' : 'false'],
+          ],
+        );
+      }
+      section.appendChild(optionsWrap);
+    }
+
+    const fail = computeFailLoud(modelPreference);
+    if (fail !== null) {
+      const alert = doc.createElement('div');
+      alert.setAttribute(AI_MODELS_FAIL_LOUD_ATTR, '');
+      alert.textContent = fail;
+      section.appendChild(alert);
+    }
+    parent.appendChild(section);
+  };
+
+  // Lever-2 per-slot (Phase 3) — the per-source chat-catalog delivery-mode
+  // control. Gated on `runSetChatCatalogMode`: with no setter wired the
+  // control is omitted (the mode stays the server default). Renders an
+  // instant-apply `<select>` whose selection is the source's EXPLICIT
+  // override, or "Automatic" when unset. The Automatic hint states the SHIPPED
+  // default (CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE — the same map the server
+  // resolver reads, so the two can't drift); it says "uses", not "always",
+  // because an operator CAN override it server-side (`=0` opt-out or an
+  // env-global mode), which the webclient can't read.
+  const renderCatalogModeControl = (
+    parent: HTMLElement,
+    source: ChatModelSourceId,
+  ): void => {
+    if (!opts.runSetChatCatalogMode) return;
+    const current = getCatalogMode(llmConfig, source);
+    const wrap = doc.createElement('label');
+    wrap.className = 'ai-models-field';
+    appendText(doc, wrap, 'Chat tool catalog');
+    const select = doc.createElement('select') as HTMLSelectElement;
+    select.setAttribute(AI_MODELS_CATALOG_MODE_SELECT_ATTR, source);
+    const autoOption = doc.createElement('option') as HTMLOptionElement;
+    autoOption.value = '';
+    autoOption.textContent = 'Automatic (recommended)';
+    select.appendChild(autoOption);
+    for (const mode of CHAT_CATALOG_DELIVERY_MODES) {
+      const option = doc.createElement('option') as HTMLOptionElement;
+      option.value = mode;
+      option.textContent = CATALOG_MODE_LABELS[mode];
+      select.appendChild(option);
+    }
+    // Setting `.value` selects the matching <option> in a real browser (and
+    // is a plain field in the test's fake DOM). An unset override → the
+    // empty-valued Automatic option.
+    select.value = current ?? '';
+    select.addEventListener('change', () => {
+      // Empty value → clear the override (Automatic, `null`); a known mode
+      // sets it. A stray non-mode value falls back to a clear, never a throw.
+      const mode = isChatCatalogDeliveryMode(select.value) ? select.value : null;
+      surface(api.setChatCatalogMode(source, mode));
+    });
+    wrap.appendChild(select);
+    parent.appendChild(wrap);
+    // Per-source hint: what "Automatic" resolves to HERE (the shipped default),
+    // so the recommended choice is legible without opening the legend.
+    const autoMode = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source];
+    const sourceWord = source === 'free_pool' ? 'the free pool' : 'a BYOK slot';
+    const hint = doc.createElement('span');
+    hint.className = 'ai-models-hint';
+    hint.textContent =
+      `Applies immediately. Automatic uses ${CATALOG_MODE_SHORT[autoMode]} for ${sourceWord}.`;
+    parent.appendChild(hint);
+    // A collapsed "how to choose" legend explaining each mode. Native
+    // <details> — no JS, low visual noise closed, full copy on demand.
+    const legend = doc.createElement('details');
+    legend.className = 'ai-models-mode-legend';
+    const summary = doc.createElement('summary');
+    summary.textContent = 'What do these modes mean?';
+    legend.appendChild(summary);
+    const dl = doc.createElement('dl');
+    for (const mode of CHAT_CATALOG_DELIVERY_MODES) {
+      const dt = doc.createElement('dt');
+      dt.textContent = CATALOG_MODE_LABELS[mode];
+      dl.appendChild(dt);
+      const dd = doc.createElement('dd');
+      dd.textContent = CATALOG_MODE_LEGEND[mode];
+      dl.appendChild(dd);
+    }
+    legend.appendChild(dl);
+    parent.appendChild(legend);
+  };
+
+  const renderSlot = (parent: HTMLElement, slotKey: LlmSlotKey): void => {
+    const slot = getSlot(llmConfig, slotKey);
+    const title = slotKey === 'slot_1' ? 'Slot 1: fast' : 'Slot 2: quality / thinking';
+    const card = doc.createElement('div');
+    card.className = 'ai-models-slot';
+    card.setAttribute(AI_MODELS_CONTROL_ATTR, slotKey);
+    appendHeading(doc, card, 'h4', title);
+    appendText(
+      doc,
+      card,
+      slot
+        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        : ' Not configured.',
+    );
+    const provider = appendInput(doc, card, 'Provider', asString(slot?.provider));
+    const model = appendInput(doc, card, 'Model', asString(slot?.model));
+    const baseUrl = appendInput(doc, card, 'Base URL', asString(slot?.base_url));
+    const apiKey = appendInput(
+      doc,
+      card,
+      'API key',
+      '',
+      [['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required']],
+    );
+    // The key never round-trips to the browser (the server redacts it to
+    // `has_key`); mask the field so a typed-but-unsaved key isn't shoulder-
+    // surfed, and leaving it blank preserves the stored key server-side.
+    apiKey.type = 'password';
+    // Per-slot daily token budget (D-079/D-094, reinstated). Blank / 0 =
+    // unlimited; over budget, the slot stops matching until the next daily
+    // reset (enforced in the LLM match layer).
+    const budgetRaw = slot?.daily_budget_tokens;
+    const budget = appendInput(
+      doc,
+      card,
+      'Daily token budget',
+      typeof budgetRaw === 'number' && budgetRaw > 0 ? String(budgetRaw) : '',
+      [['placeholder', 'Blank = unlimited'], ['inputmode', 'numeric']],
+    );
+    budget.type = 'number';
+    const contextWindow = appendInput(
+      doc,
+      card,
+      'Context window (tokens)',
+      asPositiveSafeInteger(slot?.context_window_tokens)?.toString() ?? '',
+      [
+        [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, slotKey],
+        ['placeholder', 'e.g. 128000'],
+        ['inputmode', 'numeric'],
+        ['min', '1'],
+        ['step', '1'],
+      ],
+    );
+    contextWindow.type = 'number';
+    appendButton(
+      doc,
+      card,
+      'Save slot',
+      () => {
+        const budgetNum = Number(budget.value);
+        const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
+        surface(api.saveByokSlot(slotKey, {
+          provider: provider.value,
+          model: model.value,
+          ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
+          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
+          daily_budget_tokens:
+            budget.value.trim().length > 0 && Number.isFinite(budgetNum) && budgetNum > 0
+              ? budgetNum
+              : 0,
+          ...(contextWindowTokens !== undefined
+            ? { context_window_tokens: contextWindowTokens }
+            : {}),
+        }));
+      },
+      [[AI_MODELS_SLOT_SAVE_ATTR, slotKey]],
+    );
+    appendButton(doc, card, 'Clear slot', () => {
+      surface(api.clearByokSlot(slotKey));
+    });
+    // Instant-apply per-source catalog-mode control (distinct from the
+    // Save-gated slot fields above), placed after the buttons so it reads
+    // as its own control.
+    renderCatalogModeControl(card, slotKey);
+    parent.appendChild(card);
+  };
+
+  // D-174 R28 Slice C — the dedicated embeddings slot card. Mirrors a BYOK
+  // slot card (provider / model / key / base_url) but with NO daily-budget
+  // or speed fields (embeddings has no tier ladder / budget cutoff), and it
+  // routes to the embeddings-only setter. Lives in the Providers tab — it is
+  // NOT a chat model-select option (embeddings is recipe/housekeeping-only).
+  const renderEmbeddingsSlot = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'embeddings');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.embeddings.title);
+    appendText(doc, section, CONTROL_COPY.embeddings.body);
+    if (!opts.runGetLLMConfig || !opts.runSetEmbeddingsSlot) {
+      renderPending(section, 'embeddings');
+      parent.appendChild(section);
+      return;
+    }
+    const slot = getEmbeddingsSlot(llmConfig);
+    const card = doc.createElement('div');
+    card.className = 'ai-models-slot';
+    card.setAttribute(AI_MODELS_CONTROL_ATTR, 'embeddings_slot');
+    appendHeading(doc, card, 'h4', 'Embeddings slot');
+    appendText(
+      doc,
+      card,
+      slot
+        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        : ' Not configured.',
+    );
+    const provider = appendInput(doc, card, 'Provider', asString(slot?.provider));
+    const model = appendInput(
+      doc,
+      card,
+      'Model',
+      asString(slot?.model),
+      [['placeholder', 'e.g. text-embedding-3-small']],
+    );
+    const baseUrl = appendInput(doc, card, 'Base URL', asString(slot?.base_url));
+    const apiKey = appendInput(
+      doc,
+      card,
+      'API key',
+      '',
+      [['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required']],
+    );
+    // Same handling as the BYOK card: the key never round-trips (server
+    // redacts to `has_key`), so mask it; leaving it blank keeps the stored key.
+    apiKey.type = 'password';
+    appendButton(
+      doc,
+      card,
+      'Save slot',
+      () => {
+        surface(api.saveEmbeddingsSlot({
+          provider: provider.value,
+          model: model.value,
+          ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
+          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
+        }));
+      },
+      [[AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot']],
+    );
+    appendButton(doc, card, 'Clear slot', () => {
+      surface(api.clearEmbeddingsSlot());
+    });
+    parent.appendChild(card);
+  };
+
+  const renderByok = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'byok');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.byok.title);
+    appendText(doc, section, CONTROL_COPY.byok.body);
+    if (!opts.runGetLLMConfig || !opts.runSetLLMSlot) {
+      renderPending(section, 'byok');
+    } else {
+      renderSlot(section, 'slot_1');
+      renderSlot(section, 'slot_2');
+    }
+    parent.appendChild(section);
+  };
+
+  const renderFreePool = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'free_pool');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.free_pool.title);
+    appendText(doc, section, CONTROL_COPY.free_pool.body);
+    if (!opts.runGetLLMConfig || !opts.runUpsertFreePoolEntry) {
+      renderPending(section, 'free_pool');
+      parent.appendChild(section);
+      return;
+    }
+    // Pool-wide catalog-mode control (one `free_pool` source, not per-entry),
+    // at the top of the live section.
+    renderCatalogModeControl(section, 'free_pool');
+    const entries = getPoolEntries(llmConfig);
+    if (entries.length === 0) {
+      appendText(doc, section, ' No free-pool entries configured.');
+    }
+    for (const entry of entries) {
+      const id = asString(entry.id);
+      const row = doc.createElement('div');
+      row.className = 'ai-models-pool-row';
+      row.setAttribute(AI_MODELS_CONTROL_ATTR, `free_pool:${id}`);
+      appendText(
+        doc,
+        row,
+        `${id || 'entry'}: ${asString(entry.provider) || asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
+      );
+      if (id.length > 0) {
+        appendButton(
+          doc,
+          row,
+          entry.enabled === false ? 'Enable' : 'Disable',
+          () => {
+            surface(api.setFreePoolEntryEnabled(id, entry.enabled === false));
+          },
+          [[AI_MODELS_POOL_TOGGLE_ATTR, id]],
+        );
+        appendButton(
+          doc,
+          row,
+          'Remove',
+          () => {
+            surface(api.removeFreePoolEntry(id));
+          },
+          [[AI_MODELS_POOL_REMOVE_ATTR, id]],
+        );
+      }
+      section.appendChild(row);
+    }
+    const add = doc.createElement('div');
+    add.className = 'ai-models-add-pool';
+    const id = appendInput(doc, add, 'ID', '');
+    const provider = appendInput(doc, add, 'Provider', 'openai-compatible');
+    const model = appendInput(doc, add, 'Model', '');
+    const key = appendInput(doc, add, 'API key', '');
+    key.type = 'password';
+    const baseUrl = appendInput(doc, add, 'Base URL', '');
+    const contextWindow = appendInput(
+      doc,
+      add,
+      'Context window (tokens)',
+      '',
+      [
+        [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, 'free_pool:new'],
+        ['placeholder', 'e.g. 128000'],
+        ['inputmode', 'numeric'],
+        ['min', '1'],
+        ['step', '1'],
+      ],
+    );
+    contextWindow.type = 'number';
+    appendButton(doc, add, 'Add API entry', () => {
+      const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
+      surface(api.addFreePoolApiEntry({
+        id: id.value,
+        provider: provider.value,
+        model: model.value,
+        api_key: key.value,
+        ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
+        ...(contextWindowTokens !== undefined
+          ? { context_window_tokens: contextWindowTokens }
+          : {}),
+      }));
+    });
+    section.appendChild(add);
+    parent.appendChild(section);
+  };
+
+  const renderAiPolicy = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'ai_policy');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.ai_policy.title);
+    appendText(doc, section, CONTROL_COPY.ai_policy.body);
+    if (!opts.runReadHousekeepingConfig || !opts.runWriteHousekeepingConfig) {
+      renderPending(section, 'ai_policy');
+      parent.appendChild(section);
+      return;
+    }
+    const allow = housekeepingConfig?.allow_byok_background === true;
+    appendText(doc, section, ` Background BYOK: ${allow ? 'allowed' : 'free pool only'}.`);
+    appendButton(
+      doc,
+      section,
+      allow ? 'Disable background BYOK' : 'Allow background BYOK',
+      () => {
+        surface(api.setAllowByokBackground(!allow));
+      },
+      [[AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR, allow ? 'false' : 'true']],
+    );
+    const pause = housekeepingConfig?.pause_background_ai_until ?? null;
+    appendText(
+      doc,
+      section,
+      pause === null ? ' Pause-AI: not active.' : ` Pause-AI until ${new Date(pause).toISOString()}.`,
+    );
+    appendButton(
+      doc,
+      section,
+      'Pause 1h',
+      () => {
+        surface(api.setPauseBackgroundAiUntil((opts.now ?? Date.now)() + 60 * 60 * 1000));
+      },
+      [[AI_MODELS_PAUSE_BUTTON_ATTR, '1h']],
+    );
+    appendButton(
+      doc,
+      section,
+      'Resume AI',
+      () => {
+        surface(api.setPauseBackgroundAiUntil(null));
+      },
+      [[AI_MODELS_PAUSE_BUTTON_ATTR, 'resume']],
+    );
+    parent.appendChild(section);
+  };
+
+  /** The System prompts tab — one card per surface.
+   *
+   *  THE EDITABLE BOX IS BLOCK 1 ONLY: who the model is and what to weigh
+   *  ("You are a dental assistant for Dr. Chen. Check the calendar before
+   *  answering about appointments."). Recued's core text (the AIOutput wire
+   *  contract) and its feature text (tool mechanics, the approvals posture, the
+   *  gateway's contract-scoping lines) are composed AROUND it and are not
+   *  reachable from here — so the card renders them READ-ONLY underneath. An
+   *  owner should be able to SEE everything else the model is told: a fence you
+   *  cannot read is indistinguishable from a fence that is not there. */
+  const renderPrompts = (parent: HTMLElement): void => {
+    if (!opts.runGetLlmPrompts || !opts.runSetLlmPrompt) {
+      renderPending(parent, 'prompts');
+      return;
+    }
+    for (const record of llmPrompts) {
+      const copy = PROMPT_SURFACE_COPY[record.surface];
+      const draft = promptDrafts.get(record.surface) ?? {
+        role_instructions: record.role_instructions,
+        role: record.role,
+        caller_system_policy:
+          record.caller_system_policy ?? DEFAULT_CALLER_SYSTEM_POLICY,
+      };
+      const section = doc.createElement('section');
+      section.className = 'ai-models-prompt';
+      section.setAttribute(AI_MODELS_PROMPT_SECTION_ATTR, record.surface);
+
+      const head = doc.createElement('div');
+      head.className = 'ai-models-prompt-head';
+      appendHeading(doc, head, 'h3', copy.title);
+      const badge = doc.createElement('span');
+      badge.className = 'ai-models-prompt-badge';
+      badge.setAttribute(
+        AI_MODELS_PROMPT_BADGE_ATTR,
+        record.is_default ? 'default' : 'custom',
+      );
+      badge.textContent = record.is_default ? 'Default' : 'Customised';
+      head.appendChild(badge);
+      section.appendChild(head);
+
+      const body = doc.createElement('p');
+      body.className = 'ai-models-prompt-body';
+      body.textContent = copy.body;
+      section.appendChild(body);
+
+      const area = doc.createElement('textarea');
+      area.className = 'ai-models-prompt-text';
+      area.setAttribute(AI_MODELS_PROMPT_TEXT_ATTR, record.surface);
+      area.rows = 8;
+      area.spellcheck = false;
+      area.value = draft.role_instructions;
+      area.addEventListener('input', () => {
+        promptDrafts.set(record.surface, {
+          ...draft,
+          role_instructions: area.value,
+        });
+        render();
+      });
+      section.appendChild(area);
+
+      const controls = doc.createElement('div');
+      controls.className = 'ai-models-prompt-controls';
+
+      // llm_gateway only — what a CALLER's own system message may do. The door
+      // is OpenAI-compatible, so a customer sending one is normal; the honest
+      // answer to "what authority does it carry" depends on what the door is
+      // for, which only the owner knows.
+      if (record.caller_system_policy !== undefined) {
+        const policyLabel = doc.createElement('label');
+        policyLabel.className = 'ai-models-field';
+        appendText(doc, policyLabel, "Customer's own system prompt");
+        const policySelect = doc.createElement('select');
+        policySelect.setAttribute(AI_MODELS_PROMPT_POLICY_ATTR, record.surface);
+        for (const policy of CALLER_SYSTEM_POLICIES) {
+          const option = doc.createElement('option');
+          option.value = policy;
+          option.textContent = CALLER_SYSTEM_POLICY_LABELS[policy];
+          policySelect.appendChild(option);
+        }
+        policySelect.value = draft.caller_system_policy;
+        policySelect.addEventListener('change', () => {
+          const next = CALLER_SYSTEM_POLICIES.includes(
+            policySelect.value as ServerLlmCallerSystemPolicy,
+          )
+            ? policySelect.value as ServerLlmCallerSystemPolicy
+            : DEFAULT_CALLER_SYSTEM_POLICY;
+          promptDrafts.set(record.surface, {
+            ...draft,
+            caller_system_policy: next,
+          });
+          render();
+        });
+        policyLabel.appendChild(policySelect);
+        const policyHint = doc.createElement('small');
+        policyHint.setAttribute(AI_MODELS_PROMPT_POLICY_HINT_ATTR, record.surface);
+        policyHint.textContent =
+          CALLER_SYSTEM_POLICY_HINTS[draft.caller_system_policy];
+        policyLabel.appendChild(policyHint);
+        controls.appendChild(policyLabel);
+      }
+
+      const roleLabel = doc.createElement('label');
+      roleLabel.className = 'ai-models-field';
+      appendText(doc, roleLabel, 'Delivered as');
+      const roleSelect = doc.createElement('select');
+      roleSelect.setAttribute(AI_MODELS_PROMPT_ROLE_ATTR, record.surface);
+      for (const role of PROMPT_ROLES) {
+        const option = doc.createElement('option');
+        option.value = role;
+        option.textContent = PROMPT_ROLE_LABELS[role];
+        roleSelect.appendChild(option);
+      }
+      roleSelect.value = draft.role;
+      roleSelect.addEventListener('change', () => {
+        const role = PROMPT_ROLES.includes(roleSelect.value as ServerLlmMessageRole)
+          ? roleSelect.value as ServerLlmMessageRole
+          : 'system';
+        promptDrafts.set(record.surface, { ...draft, role });
+        render();
+      });
+      roleLabel.appendChild(roleSelect);
+      const roleHint = doc.createElement('small');
+      roleHint.textContent =
+        'Transport only. Leave on system unless your provider rejects a system message.';
+      roleLabel.appendChild(roleHint);
+      controls.appendChild(roleLabel);
+
+      appendButton(
+        doc,
+        controls,
+        'Save',
+        () => {
+          surface(api.saveLlmPrompt(record.surface, draft));
+        },
+        [[AI_MODELS_PROMPT_SAVE_ATTR, record.surface]],
+      );
+      // Offered even on a Default record: the owner may have typed into the box
+      // without saving, and "put it back" should not require them to have
+      // committed the mistake first.
+      appendButton(
+        doc,
+        controls,
+        'Reset to default',
+        () => {
+          surface(api.resetLlmPrompt(record.surface));
+        },
+        [[AI_MODELS_PROMPT_RESET_ATTR, record.surface]],
+      );
+      section.appendChild(controls);
+
+      // Everything the owner CANNOT edit, shown so they know it is there. This
+      // is what makes the fence legible instead of merely present.
+      const always = doc.createElement('details');
+      always.className = 'ai-models-prompt-always';
+      always.setAttribute(AI_MODELS_PROMPT_ALWAYS_ATTR, record.surface);
+      const summary = doc.createElement('summary');
+      summary.textContent =
+        'Recued always adds this (not editable — it is how the engine works)';
+      always.appendChild(summary);
+      const pre = doc.createElement('pre');
+      pre.className = 'ai-models-prompt-always-text';
+      pre.textContent = record.always_on_text.join('\n\n');
+      always.appendChild(pre);
+      section.appendChild(always);
+
+      parent.appendChild(section);
+    }
+  };
+
+  const renderBudget = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'budget');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.budget.title);
+    appendText(doc, section, CONTROL_COPY.budget.body);
+    const budget = findConfigField(configSchema, 'llm.budget');
+    if (!budget || !opts.runGetConfigSchema || !opts.runSetConfigField) {
+      renderPending(section, 'budget');
+    } else {
+      const input = appendInput(doc, section, 'Daily tokens', String(budget.value));
+      input.type = 'number';
+      appendButton(
+        doc,
+        section,
+        'Save budget',
+        () => {
+          surface(api.setBudget(Number(input.value)));
+        },
+        [[AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget']],
+      );
+    }
+    parent.appendChild(section);
+  };
+
+  /** Switch the internal sub-view. Pure re-render — no rpc. */
+  const setAiTab = (tab: AiModelsTab): void => {
+    if (disposed || aiTab === tab) return;
+    aiTab = tab;
+    render();
+  };
+
+  const render = (): void => {
+    if (disposed) return;
+    wrapper.setAttribute(AI_MODELS_PAGE_STATE_ATTR, state);
+    removeChildren(dynamicHost);
+    // The settings route already renders the section's "AI / Models"
+    // heading (<h2>); the page no longer repeats it as an <h3> (the
+    // duplicate-header review finding).
+    if (state === 'loading') {
+      appendText(doc, dynamicHost, 'Loading AI configuration.');
+    }
+    if (loadErrors.length > 0) {
+      const list = doc.createElement('ul');
+      for (const err of loadErrors) {
+        const item = doc.createElement('li');
+        item.textContent = err;
+        list.appendChild(item);
+      }
+      dynamicHost.appendChild(list);
+    }
+    if (actionError !== null) {
+      const alert = doc.createElement('div');
+      alert.setAttribute(AI_MODELS_ACTION_ERROR_ATTR, '');
+      alert.textContent = actionError;
+      dynamicHost.appendChild(alert);
+    }
+
+    // ── Internal sub-view tab strip + one panel per tab ─────────────
+    // All panels stay in the DOM; CSS hides the inactive ones off
+    // `data-active`, so the page reads as a focused view instead of a
+    // long scroll. Mirrors the Housekeeping panel's tab pattern.
+    const tabStrip = doc.createElement('nav');
+    tabStrip.className = 'ai-models-tabs';
+    tabStrip.setAttribute('role', 'tablist');
+    tabStrip.setAttribute('aria-label', 'AI / Models sections');
+    for (const tab of AI_MODELS_TABS) {
+      const btn = appendButton(
+        doc,
+        tabStrip,
+        tab.label,
+        () => {
+          setAiTab(tab.id);
+        },
+        [
+          [AI_MODELS_TAB_ATTR, tab.id],
+          ['role', 'tab'],
+          ['aria-selected', aiTab === tab.id ? 'true' : 'false'],
+          ['data-active', aiTab === tab.id ? 'true' : 'false'],
+        ],
+      );
+      btn.className = 'ai-models-tab';
+    }
+    dynamicHost.appendChild(tabStrip);
+
+    const panels = {} as Record<AiModelsTab, HTMLElement>;
+    for (const tab of AI_MODELS_TABS) {
+      const panel = doc.createElement('div');
+      panel.className = 'ai-models-tabpanel';
+      panel.setAttribute(AI_MODELS_TAB_PANEL_ATTR, tab.id);
+      panel.setAttribute('data-active', aiTab === tab.id ? 'true' : 'false');
+      panels[tab.id] = panel;
+      dynamicHost.appendChild(panel);
+    }
+
+    renderModelPreference(panels.preference);
+    renderByok(panels.providers);
+    renderFreePool(panels.providers);
+    renderEmbeddingsSlot(panels.providers);
+    renderPrompts(panels.prompts);
+    renderAiPolicy(panels.usage);
+    renderBudget(panels.usage);
+    // The LLM result cache card is a persistent sub-mount — re-parent its
+    // host into the Usage panel each render (the sub-mount keeps working).
+    if (cacheHost !== null) panels.usage.appendChild(cacheHost);
+  };
+
+  /** Re-read the prompt state from the server. Called after every write —
+   *  `is_default` and the effective prompt are both server-derived, so the
+   *  client never guesses them. */
+  const reloadLlmPrompts = async (): Promise<void> => {
+    if (!opts.runGetLlmPrompts) return;
+    const snapshot = await opts.runGetLlmPrompts();
+    if (disposed) return;
+    llmPrompts = [...snapshot.prompts];
+    render();
+  };
+
+  const refresh = async (): Promise<void> => {
+    state = 'loading';
+    loadErrors = [];
+    render();
+    const tasks: Array<Promise<void>> = [];
+    if (opts.runGetLlmPrompts) {
+      tasks.push(
+        opts.runGetLlmPrompts()
+          .then((snapshot) => {
+            llmPrompts = [...snapshot.prompts];
+          })
+          .catch((err) => {
+            loadErrors.push(`system prompts: ${stringifyError(err)}`);
+          }),
+      );
+    }
+    if (opts.runGetDefaultModelPref) {
+      tasks.push(
+        opts.runGetDefaultModelPref()
+          .then((snapshot) => {
+            modelPrefSnapshot = snapshot;
+          })
+          .catch((err) => {
+            loadErrors.push(`model preference: ${stringifyError(err)}`);
+          }),
+      );
+    }
+    if (opts.runGetLLMConfig) {
+      tasks.push(
+        opts.runGetLLMConfig()
+          .then((snapshot) => {
+            llmConfig = cloneConfig(snapshot.config);
+          })
+          .catch((err) => {
+            loadErrors.push(`LLM config: ${stringifyError(err)}`);
+          }),
+      );
+    }
+    if (opts.runGetConfigSchema) {
+      tasks.push(
+        opts.runGetConfigSchema()
+          .then((snapshot) => {
+            configSchema = [...snapshot.schema];
+          })
+          .catch((err) => {
+            loadErrors.push(`config schema: ${stringifyError(err)}`);
+          }),
+      );
+    }
+    if (opts.runReadHousekeepingConfig) {
+      tasks.push(
+        opts.runReadHousekeepingConfig()
+          .then((snapshot) => {
+            housekeepingConfig = snapshot;
+          })
+          .catch((err) => {
+            loadErrors.push(`AI usage policy: ${stringifyError(err)}`);
+          }),
+      );
+    }
+    await Promise.all(tasks);
+    if (disposed) return;
+    // Both the default snapshot + the LLM config have settled — derive the
+    // picker model from BOTH (the options are the configured sources).
+    recomputeModelPreference();
+    state = loadErrors.length > 0 ? 'error' : 'ready';
+    render();
+  };
+
+  // D-174 R28 — apply a just-written config locally AFTER the server
+  // confirmed the field-level write. Re-derives the default picker since a
+  // source may have appeared / disappeared, changing the selection match.
+  // (Writes go through the field-level `runSetLLMSlot` / `runUpsert…` /
+  // `runRemove…` callers; this only mirrors the confirmed result in the UI.)
+  const commitLocal = (next: LlmConfigRecord): void => {
+    llmConfig = cloneConfig(next);
+    recomputeModelPreference();
+    render();
+  };
+
+  const api: AiModelsPageMount = {
+    getState: () => ({
+      state,
+      modelPreference,
+      llmConfig: llmConfig === null ? null : cloneConfig(llmConfig),
+      configSchema: [...configSchema],
+      housekeepingConfig,
+      llmPrompts: [...llmPrompts],
+      loadErrors: [...loadErrors],
+      failLoud: computeFailLoud(modelPreference),
+    }),
+    refresh: () => {
+      pendingLoad = refresh();
+      return pendingLoad;
+    },
+    whenLoaded: () => pendingLoad,
+    setModelPreference: async (sourceId) => {
+      if (!opts.runSetDefaultModelPref) {
+        throw new Error('AI / Models: chat.default_model_pref.set caller is not wired');
+      }
+      // D-174 R28 Slice A — the picker and the rpc both speak `source_id`, so
+      // we persist the chosen id directly (no layer/hint round-trip; the server
+      // resolves source_id → {layer, model_hint} live). Guard against a stale id
+      // (the source vanished between render + click).
+      const known =
+        modelPreference.kind === 'resolved'
+        && modelPreference.options.some((o) => o.id === sourceId);
+      if (!known) return;
+      const next = await opts.runSetDefaultModelPref({ source_id: sourceId });
+      modelPrefSnapshot = next;
+      recomputeModelPreference();
+      render();
+    },
+    saveByokSlot: async (slotKey, patch) => {
+      if (!opts.runSetLLMSlot) {
+        throw new Error('AI / Models: server.setLLMSlot caller is not wired');
+      }
+      const current = getSlot(llmConfig, slotKey) ?? {};
+      // `current` is the REDACTED slot (carries `has_key`, never `api_key`).
+      // Strip the wire-only fields so they don't ride back to the server.
+      const carry = { ...current };
+      delete carry.has_key;
+      delete carry.api_key;
+      const nextSlot: LlmSlotRecord = {
+        ...carry,
+        provider: patch.provider.trim(),
+        model: patch.model.trim(),
+        // Blank => empty string: the server PRESERVES the existing key (the
+        // secret never crossed the wire so we can't echo it). A typed value
+        // sets the new key.
+        api_key:
+          patch.api_key !== undefined && patch.api_key.trim().length > 0
+            ? patch.api_key
+            : '',
+        speed: patch.speed ?? (slotKey === 'slot_1' ? 'fast' : 'thinking'),
+        supports_json: patch.supports_json ?? asBoolean(current.supports_json, true),
+      };
+      if (patch.base_url !== undefined) {
+        if (patch.base_url.trim().length > 0) {
+          nextSlot.base_url = patch.base_url.trim();
+        } else {
+          delete nextSlot.base_url;
+        }
+      }
+      if (patch.daily_budget_tokens !== undefined) {
+        // 0 / non-positive clears the cap (unlimited); a positive value sets it.
+        if (patch.daily_budget_tokens > 0) {
+          nextSlot.daily_budget_tokens = patch.daily_budget_tokens;
+        } else {
+          delete nextSlot.daily_budget_tokens;
+        }
+      }
+      const contextWindowTokens = asPositiveSafeInteger(
+        patch.context_window_tokens,
+      );
+      if (contextWindowTokens !== undefined) {
+        nextSlot.context_window_tokens = contextWindowTokens;
+      } else {
+        const sameModelCapability =
+          asString(current.provider) === nextSlot.provider
+          && asString(current.model) === nextSlot.model
+          && asString(current.base_url) === asString(nextSlot.base_url);
+        if (!sameModelCapability) {
+          // Context capacity belongs to the concrete provider/model/endpoint,
+          // not the slot key. Never carry a large-model claim onto a changed
+          // model; leaving it absent makes llm_gateway fail closed until the
+          // new capability is entered.
+          delete nextSlot.context_window_tokens;
+        }
+      }
+      // Field-level write: only this slot crosses the wire, so a concurrent
+      // edit to the OTHER slot can't clobber it (vs the old whole-blob save).
+      await opts.runSetLLMSlot({ slot_key: slotKey, slot: nextSlot });
+      // Mirror the server's redacted shape locally: drop the api_key marker
+      // and carry `has_key`, computed the same way the server resolves the
+      // blank-preserve (key typed => set; blank + unchanged provider+base_url
+      // => the stored key is preserved; otherwise it is dropped). Without
+      // this the slot would flip to "keyless" after a metadata-only save.
+      const keyProvided =
+        patch.api_key !== undefined && patch.api_key.trim().length > 0;
+      const sameContext =
+        asString(current.provider) === nextSlot.provider
+        && asString(current.base_url) === asString(nextSlot.base_url);
+      const localHasKey = keyProvided || (current.has_key === true && sameContext);
+      const next = cloneConfig(llmConfig);
+      if (localHasKey) {
+        const localSlot: LlmSlotRecord = { ...nextSlot };
+        delete localSlot.api_key;
+        localSlot.has_key = true;
+        next[slotKey] = localSlot;
+      } else {
+        // A blank key with a CHANGED provider/base_url leaves the slot with no
+        // key; the server requires one for EVERY slot (loadSlot drops a keyless
+        // one, local or remote), so mirror that as unconfigured rather than
+        // showing a slot the server just dropped.
+        next[slotKey] = null;
+      }
+      commitLocal(next);
+    },
+    clearByokSlot: async (slotKey) => {
+      if (!opts.runSetLLMSlot) {
+        throw new Error('AI / Models: server.setLLMSlot caller is not wired');
+      }
+      await opts.runSetLLMSlot({ slot_key: slotKey, slot: null });
+      const next = cloneConfig(llmConfig);
+      next[slotKey] = null;
+      commitLocal(next);
+    },
+    saveEmbeddingsSlot: async (patch) => {
+      if (!opts.runSetEmbeddingsSlot) {
+        throw new Error('AI / Models: server.setEmbeddingsSlot caller is not wired');
+      }
+      const current = getEmbeddingsSlot(llmConfig) ?? {};
+      // `current` is the REDACTED slot (carries `has_key`, never `api_key`).
+      const carry = { ...current };
+      delete carry.has_key;
+      delete carry.api_key;
+      const nextSlot: LlmSlotRecord = {
+        ...carry,
+        provider: patch.provider.trim(),
+        model: patch.model.trim(),
+        // Blank => empty string: the server PRESERVES the existing key (the
+        // secret never crossed the wire). A typed value sets the new key.
+        api_key:
+          patch.api_key !== undefined && patch.api_key.trim().length > 0
+            ? patch.api_key
+            : '',
+      };
+      if (patch.base_url !== undefined) {
+        if (patch.base_url.trim().length > 0) {
+          nextSlot.base_url = patch.base_url.trim();
+        } else {
+          delete nextSlot.base_url;
+        }
+      }
+      await opts.runSetEmbeddingsSlot({ slot: nextSlot });
+      // Mirror the server's redacted shape locally (same blank-preserve
+      // resolution as saveByokSlot): key typed => set; blank + unchanged
+      // provider+base_url => stored key preserved; otherwise dropped.
+      const keyProvided =
+        patch.api_key !== undefined && patch.api_key.trim().length > 0;
+      const sameContext =
+        asString(current.provider) === nextSlot.provider
+        && asString(current.base_url) === asString(nextSlot.base_url);
+      const localHasKey = keyProvided || (current.has_key === true && sameContext);
+      const next = cloneConfig(llmConfig);
+      if (localHasKey) {
+        const localSlot: LlmSlotRecord = { ...nextSlot };
+        delete localSlot.api_key;
+        localSlot.has_key = true;
+        next.embeddings_slot = localSlot;
+      } else {
+        // A blank key with a CHANGED provider/base_url leaves the slot keyless;
+        // the server's loadSlot drops a keyless slot, so mirror it as cleared.
+        next.embeddings_slot = null;
+      }
+      commitLocal(next);
+    },
+    clearEmbeddingsSlot: async () => {
+      if (!opts.runSetEmbeddingsSlot) {
+        throw new Error('AI / Models: server.setEmbeddingsSlot caller is not wired');
+      }
+      await opts.runSetEmbeddingsSlot({ slot: null });
+      const next = cloneConfig(llmConfig);
+      next.embeddings_slot = null;
+      commitLocal(next);
+    },
+    addFreePoolApiEntry: async (entry) => {
+      if (!opts.runUpsertFreePoolEntry) {
+        throw new Error('AI / Models: server.upsertFreePoolEntry caller is not wired');
+      }
+      const record: FreePoolEntryRecord = {
+        id: entry.id,
+        type: 'api',
+        provider: entry.provider,
+        model: entry.model,
+        api_key: entry.api_key,
+        speed: entry.speed ?? 'fast',
+        supports_json: entry.supports_json ?? true,
+        enabled: entry.enabled ?? true,
+        ...(entry.base_url !== undefined && entry.base_url.trim().length > 0
+          ? { base_url: entry.base_url.trim() }
+          : {}),
+        ...(asPositiveSafeInteger(entry.context_window_tokens) !== undefined
+          ? { context_window_tokens: entry.context_window_tokens }
+          : {}),
+      };
+      await opts.runUpsertFreePoolEntry({ entry: record });
+      // Mirror the redacted server shape locally — drop the plaintext key and
+      // carry `has_key`, so page state matches what a re-read returns and the
+      // typed secret doesn't linger in the local config clone.
+      const localEntry: FreePoolEntryRecord = { ...record, has_key: true };
+      delete localEntry.api_key;
+      const next = cloneConfig(llmConfig);
+      const pool = getPoolEntries(next).filter((row) => asString(row.id) !== entry.id);
+      pool.push(localEntry);
+      next.free_pool = pool;
+      commitLocal(next);
+    },
+    setFreePoolEntryEnabled: async (id, enabled) => {
+      if (!opts.runSetFreePoolEntryEnabled) {
+        throw new Error('AI / Models: server.setFreePoolEntryEnabled caller is not wired');
+      }
+      await opts.runSetFreePoolEntryEnabled({ id, enabled });
+      const next = cloneConfig(llmConfig);
+      next.free_pool = getPoolEntries(next).map((entry) =>
+        asString(entry.id) === id ? { ...entry, enabled } : entry,
+      );
+      commitLocal(next);
+    },
+    removeFreePoolEntry: async (id) => {
+      if (!opts.runRemoveFreePoolEntry) {
+        throw new Error('AI / Models: server.removeFreePoolEntry caller is not wired');
+      }
+      await opts.runRemoveFreePoolEntry({ id });
+      const next = cloneConfig(llmConfig);
+      next.free_pool = getPoolEntries(next).filter((entry) => asString(entry.id) !== id);
+      commitLocal(next);
+    },
+    setChatCatalogMode: async (source, mode) => {
+      if (!opts.runSetChatCatalogMode) {
+        throw new Error('AI / Models: server.setChatCatalogMode caller is not wired');
+      }
+      // Field-level write: only this source's mode crosses the wire, so a
+      // concurrent edit to another source can't clobber it (the server does
+      // a read-modify-write over the persisted `catalog_modes` map).
+      await opts.runSetChatCatalogMode({ source_id: source, mode });
+      // Mirror the server's map locally after it confirms: `null` clears the
+      // source's override; a mode sets it. Drop the map entirely once empty
+      // so getState() byte-matches an unconfigured re-read.
+      const next = cloneConfig(llmConfig);
+      const modes = { ...(asRecord(next.catalog_modes) ?? {}) };
+      if (mode === null) {
+        delete modes[source];
+      } else {
+        modes[source] = mode;
+      }
+      if (Object.keys(modes).length > 0) {
+        next.catalog_modes = modes;
+      } else {
+        delete next.catalog_modes;
+      }
+      commitLocal(next);
+    },
+    saveLlmPrompt: async (surfaceId, draft) => {
+      if (!opts.runSetLlmPrompt) {
+        throw new Error('AI / Models: server.setLlmPrompt caller is not wired');
+      }
+      // A blank box means "reset", not "ship a model with no role at all" — the
+      // server reads null and blank identically, and this keeps the local mirror
+      // agreeing with it.
+      const trimmed = draft.role_instructions.trim();
+      const next = trimmed.length > 0 ? trimmed : null;
+      await opts.runSetLlmPrompt({
+        surface: surfaceId,
+        role_instructions: next,
+        role: next === null ? null : draft.role,
+        ...(surfaceId === 'llm_gateway'
+          ? { caller_system_policy: draft.caller_system_policy }
+          : {}),
+      });
+      // Re-read rather than mirror locally: `is_default` and the composed
+      // preview are both server-derived (a cleared row falls back to the
+      // built-in), and guessing either here is how the badge starts lying.
+      promptDrafts.delete(surfaceId);
+      await reloadLlmPrompts();
+    },
+    resetLlmPrompt: async (surfaceId) => {
+      if (!opts.runSetLlmPrompt) {
+        throw new Error('AI / Models: server.setLlmPrompt caller is not wired');
+      }
+      await opts.runSetLlmPrompt({
+        surface: surfaceId,
+        role_instructions: null,
+        role: null,
+        ...(surfaceId === 'llm_gateway' ? { caller_system_policy: null } : {}),
+      });
+      promptDrafts.delete(surfaceId);
+      await reloadLlmPrompts();
+    },
+    setBudget: async (tokens) => {
+      if (!opts.runSetConfigField) {
+        throw new Error('AI / Models: server.setConfigField caller is not wired');
+      }
+      await opts.runSetConfigField({ key: 'llm.budget', value: tokens });
+      configSchema = configSchema.map((field) =>
+        field.key === 'llm.budget' ? { ...field, value: tokens } : field,
+      );
+      render();
+    },
+    setAllowByokBackground: async (allow) => {
+      if (!opts.runWriteHousekeepingConfig || housekeepingConfig === null) {
+        throw new Error('AI / Models: housekeeping.config.write caller is not wired');
+      }
+      const result = await opts.runWriteHousekeepingConfig({
+        preset: housekeepingConfig.preset,
+        allow_byok_background: allow,
+      });
+      housekeepingConfig = result.effective;
+      render();
+    },
+    setPauseBackgroundAiUntil: async (until) => {
+      if (!opts.runWriteHousekeepingConfig || housekeepingConfig === null) {
+        throw new Error('AI / Models: housekeeping.config.write caller is not wired');
+      }
+      const result = await opts.runWriteHousekeepingConfig({
+        preset: housekeepingConfig.preset,
+        pause_background_ai_until: until,
+      });
+      housekeepingConfig = result.effective;
+      render();
+    },
+    cacheCard: () => cacheCard,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      if (cacheCard !== null) cacheCard.dispose();
+      wrapper.remove();
+    },
+  };
+
+  const unsubscribers: Array<() => void> = [];
+  if (
+    opts.subscribe !== undefined
+    && (
+      opts.runGetDefaultModelPref !== undefined
+      || opts.runSetDefaultModelPref !== undefined
+    )
+  ) {
+    unsubscribers.push(
+      opts.subscribe('chat.default_model_pref_changed', (event) => {
+        const maybe = event as {
+          kind?: unknown;
+          source_id?: unknown;
+          updated_at?: unknown;
+        };
+        if (
+          maybe.kind !== 'chat.default_model_pref_changed'
+          || typeof maybe.updated_at !== 'number'
+        ) {
+          return;
+        }
+        // D-174 R28 Slice A — the Settings picker keys on `source_id` (the
+        // event's transient `{layer, model_hint}` snapshot is for the chat-
+        // thread reducer, not here). An off-list / absent id reads as `null`
+        // (no selection) via `isChatModelSourceId` inside the builder.
+        modelPrefSnapshot = {
+          source_id: isChatModelSourceId(maybe.source_id)
+            ? maybe.source_id
+            : null,
+          updated_at: maybe.updated_at,
+        };
+        modelPreference = reduceChatDefaultModelPrefChanged(
+          modelPreference,
+          modelPrefSnapshot,
+          llmConfig,
+        );
+        render();
+      }),
+    );
+  }
+
+  render();
+  pendingLoad = refresh();
+  return api;
+};
+
+export const AI_MODELS_PAGE_STYLES = `
+[${AI_MODELS_PAGE_ATTR}] {
+  display: grid;
+  gap: 14px;
+}
+[${AI_MODELS_PAGE_ATTR}] section,
+[${AI_MODELS_PAGE_ATTR}] .ai-models-slot,
+[${AI_MODELS_PAGE_ATTR}] .ai-models-pool-row,
+[${AI_MODELS_PAGE_ATTR}] .ai-models-pending {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+[${AI_MODELS_PAGE_ATTR}] h3,
+[${AI_MODELS_PAGE_ATTR}] h4 {
+  margin: 0 0 8px;
+}
+[${AI_MODELS_PAGE_ATTR}] button {
+  margin: 8px 8px 0 0;
+}
+/* System prompts — the textarea is the surface, so give it real room. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-badge {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-badge[${AI_MODELS_PROMPT_BADGE_ATTR}='custom'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-body {
+  margin: 0 0 10px;
+  color: var(--text-dim);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated, transparent);
+  color: inherit;
+  resize: vertical;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-always {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-always > summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-always-text {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+/* Internal sub-view tab strip — Preference / Providers / System prompts / Usage. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+[${AI_MODELS_PAGE_ATTR}] button.ai-models-tab {
+  margin: 0 0 -1px;
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg-muted);
+  padding: 7px 10px;
+  cursor: pointer;
+}
+[${AI_MODELS_PAGE_ATTR}] button.ai-models-tab:hover { color: var(--fg); }
+[${AI_MODELS_PAGE_ATTR}] button.ai-models-tab[data-active="true"] {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+[${AI_MODELS_PAGE_ATTR}] button.ai-models-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-tabpanel[data-active="false"] { display: none; }
+/* Model-preference picker reads as a real segmented control: the
+   aria-pressed option carries the accent so the current source is
+   obvious at a glance (review: the choices looked like three identical
+   bare buttons). */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-choice-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-choice-row button {
+  margin: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-choice-row button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-field {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+[${AI_MODELS_PAGE_ATTR}] input {
+  max-width: 420px;
+  padding: 6px 8px;
+}
+[${AI_MODELS_PAGE_ATTR}] select {
+  max-width: 420px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+/* Lever-2 per-slot (Phase 3) — the catalog-mode control's helper line. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* Lever-2 per-slot (Phase 3) — the collapsible "how to choose" mode legend. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-mode-legend {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-mode-legend > summary {
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-mode-legend dl {
+  margin: 6px 0 0;
+  display: grid;
+  gap: 4px 10px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-mode-legend dt {
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 4px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-mode-legend dd {
+  margin: 0;
+  line-height: 1.45;
+}
+[${AI_MODELS_FAIL_LOUD_ATTR}] {
+  margin-top: 10px;
+  border-left: 3px solid var(--danger);
+  padding: 8px 10px;
+  font-weight: 600;
+}
+[${AI_MODELS_PENDING_CONTROL_ATTR}] {
+  color: var(--fg-muted);
+}
+`;

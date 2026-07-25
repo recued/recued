@@ -1,0 +1,78 @@
+{
+  "name": "recued",
+  "version": "26.7.3",
+  "private": true,
+  "description": "Self-hosted Recued server and webclient",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/recued/recued.git"
+  },
+  "homepage": "https://github.com/recued/recued#readme",
+  "bugs": {
+    "url": "https://github.com/recued/recued/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "apps/webclient",
+    "backend/server",
+    "packages/approvals",
+    "packages/cache",
+    "packages/chat",
+    "packages/config",
+    "packages/contracts",
+    "packages/crypto",
+    "packages/engine",
+    "packages/fts",
+    "packages/gateway",
+    "packages/ingredient-authoring",
+    "packages/ingredients",
+    "packages/instances",
+    "packages/llm",
+    "packages/marketplace",
+    "packages/messenger",
+    "packages/middleware",
+    "packages/middleware-recued",
+    "packages/middleware-recued/prompt-cache",
+    "packages/notification",
+    "packages/provenance",
+    "packages/recipes",
+    "packages/release",
+    "packages/renderer",
+    "packages/scheduler",
+    "packages/server-network",
+    "packages/server-tls",
+    "packages/storage",
+    "packages/storage-gate",
+    "packages/transforms",
+    "packages/transport",
+    "packages/ui-shared",
+    "packages/warehouse-events"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "build:server": "npm run build --workspace @recued/server",
+    "build:webclient": "npm run build:bundle:prod --workspace @recued/webclient",
+    "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "e2e:webclient": "node apps/webclient/e2e/harness/build-harness.mjs && playwright test -c apps/webclient/e2e/playwright.config.ts kitchen-render.spec.ts full-app.spec.ts",
+    "start": "npm start --workspace @recued/server",
+    "dev": "npm run dev --workspace @recued/server",
+    "ci": "npm run build && npm run build:server && npm run build:webclient && npm run typecheck:tests && npm test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.5.2",
+    "esbuild": "^0.27.7",
+    "fake-indexeddb": "^6.2.5",
+    "tsx": "^4.23.1",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.2"
+  },
+  "overrides": {
+    "rolldown": "1.0.3"
+  }
+}

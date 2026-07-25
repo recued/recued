@@ -1,0 +1,18 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official Azure DevOps Work Item Tracking 7.1 document (crossCheckCatalogOpenApi reads only `paths`); swagger 2.0, 62 paths; commit-SHA-pinned on MicrosoftDocs/vsts-rest-api-specs so the URL is byte-stable by construction. The doc's ONLY WIQL path carries a `{team}` segment the pack's wire path omits (a team-optional route) - reconciled at proof time by the list op's per-op RestExecutionBinding.openapi_path (D-192 CORE #8a), NOT a surface path_alias (every other segment matches 1:1). The `fields` map on WorkItem is additionalProperties in this doc, so no `System.*` field NAME is doc-traceable here - field-name authority is Microsoft's well-known work-item field reference (learn.microsoft.com), mirrored by the pack's own entities.work_item field_paths.",
+    "url": "https://raw.githubusercontent.com/MicrosoftDocs/vsts-rest-api-specs/3785641890ef409f82134f5d2fcccb2b2631ab9c/specification/wit/7.1/workItemTracking.json",
+    "sha256": "08e2a20ff9337f06a714066be91e12fccf68ee0ee6e2ae917ee2cae08cd18025",
+    "fetched_at": "2026-07-09"
+  },
+  "paths": {
+    "/{organization}/{project}/{team}/_apis/wit/wiql": {
+      "post": {}
+    },
+    "/{organization}/{project}/_apis/wit/workitems/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    }
+  }
+}

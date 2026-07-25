@@ -1,0 +1,46 @@
+# recued — reference docker-compose (Phase E, D-107).
+#
+# Copy this file next to a `config.toml` of your choice, then run:
+#   docker compose up -d
+#
+# The service is self-contained: SQLite data + blob CAS lives in the
+# named volume, config is bind-mounted read-only.
+
+services:
+  recued:
+    image: recued/server:26.7.3
+    container_name: recued
+    restart: unless-stopped
+    # D-105 exit-code contract. `on-failure` respects the supervisor's
+    # "restart vs crash" distinction via docker-entrypoint's exit-4
+    # interception. Use `unless-stopped` in production to survive
+    # daemon restarts; swap to `always` if you want recovery even
+    # after manual `docker stop`.
+    ports:
+      - "7717:7717"   # pair port (ext ↔ server)
+      - "7718:7718"   # MCP port (Claude Desktop, Cursor, etc.)
+      # Uncomment when enabling inbound webhooks (D-096). You also
+      # need `collection.webhook.public_reachable=true` in the runtime
+      # config and a public address or tunnel in front of this port.
+      # - "7719:7719"
+    volumes:
+      - recued-data:/var/lib/recued
+      - recued-logs:/var/log/recued
+      - ./config.toml:/etc/recued/config.toml:ro
+    environment:
+      # Optional: human-readable server name for the heartbeat
+      # envelope and the extension pair UI.
+      RECUED_SERVER_NAME: "home-server"
+      # Uncomment when the webhook port is publicly reachable
+      # (Caddy / ngrok / Tailscale / Cloudflare Tunnel in front).
+      # RECUED_PUBLIC_REACHABLE: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7717/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  recued-data:
+  recued-logs:

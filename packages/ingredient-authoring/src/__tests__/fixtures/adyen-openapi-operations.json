@@ -1,0 +1,4989 @@
+{
+  "repository": "https://github.com/Adyen/adyen-openapi",
+  "commit": "8ca5e35a2df8646fbed1793daeba735ebfcb821b",
+  "operation_count": 276,
+  "selected_operation_count": 250,
+  "excluded_operation_count": 26,
+  "specs": [
+    {
+      "key": "checkout",
+      "filename": "CheckoutService-v72.json",
+      "url": "https://raw.githubusercontent.com/Adyen/adyen-openapi/8ca5e35a2df8646fbed1793daeba735ebfcb821b/json/CheckoutService-v72.json",
+      "sha256": "f64ab36dbfa9eb6dea681872f2318b6dd264d6d4f8b6954551d8f6c41ce5ebd7",
+      "openapi": "3.1.0",
+      "api_version": "72",
+      "server": "https://checkout-test.adyen.com/v72",
+      "live_origin": "https://company-checkout-live.adyenpayments.com",
+      "wire_prefix": "/checkout/v72",
+      "byte_length": 887326,
+      "path_count": 26,
+      "operation_count": 28,
+      "selected_operation_count": 25
+    },
+    {
+      "key": "management",
+      "filename": "ManagementService-v3.json",
+      "url": "https://raw.githubusercontent.com/Adyen/adyen-openapi/8ca5e35a2df8646fbed1793daeba735ebfcb821b/json/ManagementService-v3.json",
+      "sha256": "f634b6afa6536597c0885dab710a35feec94ba34fe77f95056f3a15d318ab212",
+      "openapi": "3.1.0",
+      "api_version": "3",
+      "server": "https://management-test.adyen.com/v3",
+      "live_origin": "https://management-live.adyen.com",
+      "wire_prefix": "/v3",
+      "byte_length": 1232885,
+      "path_count": 85,
+      "operation_count": 140,
+      "selected_operation_count": 131
+    },
+    {
+      "key": "balance",
+      "filename": "BalancePlatformService-v2.json",
+      "url": "https://raw.githubusercontent.com/Adyen/adyen-openapi/8ca5e35a2df8646fbed1793daeba735ebfcb821b/json/BalancePlatformService-v2.json",
+      "sha256": "0ec7e1e654c7d3b2e4c712f73825bae445232e27856a59ea1b9e0f4be62dad57",
+      "openapi": "3.1.0",
+      "api_version": "2",
+      "server": "https://balanceplatform-api-test.adyen.com/bcl/v2",
+      "live_origin": "https://balanceplatform-api-live.adyen.com",
+      "wire_prefix": "/bcl/v2",
+      "byte_length": 758474,
+      "path_count": 62,
+      "operation_count": 91,
+      "selected_operation_count": 80
+    },
+    {
+      "key": "transfers",
+      "filename": "TransferService-v4.json",
+      "url": "https://raw.githubusercontent.com/Adyen/adyen-openapi/8ca5e35a2df8646fbed1793daeba735ebfcb821b/json/TransferService-v4.json",
+      "sha256": "86ddb9fb0723d82bc7d954f0d09936b3a7088c5e4c5895f4668935eef49d3a6e",
+      "openapi": "3.1.0",
+      "api_version": "4",
+      "server": "https://balanceplatform-api-test.adyen.com/btl/v4",
+      "live_origin": "https://balanceplatform-api-live.adyen.com",
+      "wire_prefix": "/btl/v4",
+      "byte_length": 251960,
+      "path_count": 10,
+      "operation_count": 12,
+      "selected_operation_count": 9
+    },
+    {
+      "key": "disputes",
+      "filename": "DisputeService-v30.json",
+      "url": "https://raw.githubusercontent.com/Adyen/adyen-openapi/8ca5e35a2df8646fbed1793daeba735ebfcb821b/json/DisputeService-v30.json",
+      "sha256": "2379cba0a5508a61f50503e796fa9b74ad328d0759953e7b8258e179980291d8",
+      "openapi": "3.1.0",
+      "api_version": "30",
+      "server": "https://ca-test.adyen.com/ca/services/DisputeService/v30",
+      "live_origin": "https://ca-live.adyen.com",
+      "wire_prefix": "/ca/services/DisputeService/v30",
+      "byte_length": 38386,
+      "path_count": 5,
+      "operation_count": 5,
+      "selected_operation_count": 5
+    }
+  ],
+  "admission": {
+    "official_source_reference": "https://docs.adyen.com/development-resources/documentation-tools/",
+    "authentication_reference": "https://docs.adyen.com/development-resources/api-authentication/",
+    "live_endpoints_reference": "https://docs.adyen.com/development-resources/live-endpoints",
+    "disputes_live_sdk_reference": "https://github.com/Adyen/adyen-node-api-library/blob/10930685b26fdd4374eca13d41e2bd178f9c3923/src/service.ts",
+    "idempotency_reference": "https://docs.adyen.com/development-resources/api-idempotency",
+    "checkout_reference": "https://docs.adyen.com/api-explorer/Checkout/72/overview",
+    "management_reference": "https://docs.adyen.com/api-explorer/Management/3/overview",
+    "balance_reference": "https://docs.adyen.com/api-explorer/balanceplatform/2/overview",
+    "transfers_reference": "https://docs.adyen.com/api-explorer/transfers/4/overview",
+    "disputes_reference": "https://docs.adyen.com/api-explorer/Disputes/30/overview"
+  },
+  "contract_gaps": {
+    "operation_security": "The current official OpenAPI omits operation security metadata for validateShopperId, 38 late-added Balance Platform operations, and cashouts. The official API-level documentation still requires X-API-Key, so those buildable routes remain admitted and connection-owned.",
+    "request_body_requiredness": "The official OpenAPI omits requestBody.required on most mutations while their referenced schemas declare required fields. The generator enumerates provider-required schema leaves for non-GET JSON bodies and does not invent values.",
+    "dynamic_sca": "Optional WWW-Authenticate SCA headers are not caller arguments and may require an out-of-band SCA-capable integration. The two scaAssociations mutations where that header is required are excluded."
+  },
+  "operations": [
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/accountHolders",
+      "wire_path": "/bcl/v2/accountHolders",
+      "operation_id": "post-accountHolders",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/accountHolders/{id}",
+      "wire_path": "/bcl/v2/accountHolders/{id}",
+      "operation_id": "get-accountHolders-id",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/accountHolders/{id}",
+      "wire_path": "/bcl/v2/accountHolders/{id}",
+      "operation_id": "patch-accountHolders-id",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/accountHolders/{id}/balanceAccounts",
+      "wire_path": "/bcl/v2/accountHolders/{id}/balanceAccounts",
+      "operation_id": "get-accountHolders-id-balanceAccounts",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/accountHolders/{id}/taxForms",
+      "wire_path": "/bcl/v2/accountHolders/{id}/taxForms",
+      "operation_id": "get-accountHolders-id-taxForms",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/accountHolders/{id}/taxFormSummary",
+      "wire_path": "/bcl/v2/accountHolders/{id}/taxFormSummary",
+      "operation_id": "get-accountHolders-id-taxFormSummary",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/accountHolders/{id}/transactionRules",
+      "wire_path": "/bcl/v2/accountHolders/{id}/transactionRules",
+      "operation_id": "get-accountHolders-id-transactionRules",
+      "tags": [
+        "Account holders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balanceAccounts",
+      "wire_path": "/bcl/v2/balanceAccounts",
+      "operation_id": "post-balanceAccounts",
+      "tags": [
+        "Balance accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules",
+      "operation_id": "get-balanceAccounts-balanceAccountId-payoutSchedules",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules",
+      "operation_id": "post-balanceAccounts-balanceAccountId-payoutSchedules",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "operation_id": "delete-balanceAccounts-balanceAccountId-payoutSchedules-id",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "operation_id": "get-balanceAccounts-balanceAccountId-payoutSchedules-id",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}",
+      "operation_id": "patch-balanceAccounts-balanceAccountId-payoutSchedules-id",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}/executions",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/payoutSchedules/{id}/executions",
+      "operation_id": "get-balanceAccounts-balanceAccountId-payoutSchedules-id-executions",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{balanceAccountId}/sweeps",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/sweeps",
+      "operation_id": "get-balanceAccounts-balanceAccountId-sweeps",
+      "tags": [
+        "Custom payout schedules (sweeps)"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balanceAccounts/{balanceAccountId}/sweeps",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/sweeps",
+      "operation_id": "post-balanceAccounts-balanceAccountId-sweeps",
+      "tags": [
+        "Custom payout schedules (sweeps)"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "operation_id": "delete-balanceAccounts-balanceAccountId-sweeps-sweepId",
+      "tags": [
+        "Custom payout schedules (sweeps)"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "operation_id": "get-balanceAccounts-balanceAccountId-sweeps-sweepId",
+      "tags": [
+        "Custom payout schedules (sweeps)"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "wire_path": "/bcl/v2/balanceAccounts/{balanceAccountId}/sweeps/{sweepId}",
+      "operation_id": "patch-balanceAccounts-balanceAccountId-sweeps-sweepId",
+      "tags": [
+        "Custom payout schedules (sweeps)"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}",
+      "operation_id": "get-balanceAccounts-id",
+      "tags": [
+        "Balance accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/balanceAccounts/{id}",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}",
+      "operation_id": "patch-balanceAccounts-id",
+      "tags": [
+        "Balance accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}/paymentInstruments",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/paymentInstruments",
+      "operation_id": "get-balanceAccounts-id-paymentInstruments",
+      "tags": [
+        "Balance accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}/transactionRules",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transactionRules",
+      "operation_id": "get-balanceAccounts-id-transactionRules",
+      "tags": [
+        "Balance accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}/transferLimits",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits",
+      "operation_id": "get-balanceAccounts-id-transferLimits",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balanceAccounts/{id}/transferLimits",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits",
+      "operation_id": "post-balanceAccounts-id-transferLimits",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/balanceAccounts/{id}/transferLimits/{transferLimitId}",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits/{transferLimitId}",
+      "operation_id": "delete-balanceAccounts-id-transferLimits-transferLimitId",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}/transferLimits/{transferLimitId}",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits/{transferLimitId}",
+      "operation_id": "get-balanceAccounts-id-transferLimits-transferLimitId",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balanceAccounts/{id}/transferLimits/approve",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits/approve",
+      "operation_id": "post-balanceAccounts-id-transferLimits-approve",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balanceAccounts/{id}/transferLimits/current",
+      "wire_path": "/bcl/v2/balanceAccounts/{id}/transferLimits/current",
+      "operation_id": "get-balanceAccounts-id-transferLimits-current",
+      "tags": [
+        "Transfer limits - balance account level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{balancePlatformId}/payoutSchedules",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/payoutSchedules",
+      "operation_id": "get-balancePlatforms-balancePlatformId-payoutSchedules",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{balancePlatformId}/payoutSchedules/{id}",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/payoutSchedules/{id}",
+      "operation_id": "get-balancePlatforms-balancePlatformId-payoutSchedules-id",
+      "tags": [
+        "Managed payout schedules"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings",
+      "operation_id": "get-balancePlatforms-balancePlatformId-webhooks-webhookId-settings",
+      "tags": [
+        "Balances"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings",
+      "operation_id": "post-balancePlatforms-balancePlatformId-webhooks-webhookId-settings",
+      "tags": [
+        "Balances"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "operation_id": "delete-balancePlatforms-balancePlatformId-webhooks-webhookId-settings-settingId",
+      "tags": [
+        "Balances"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "operation_id": "get-balancePlatforms-balancePlatformId-webhooks-webhookId-settings-settingId",
+      "tags": [
+        "Balances"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "wire_path": "/bcl/v2/balancePlatforms/{balancePlatformId}/webhooks/{webhookId}/settings/{settingId}",
+      "operation_id": "patch-balancePlatforms-balancePlatformId-webhooks-webhookId-settings-settingId",
+      "tags": [
+        "Balances"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{id}",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}",
+      "operation_id": "get-balancePlatforms-id",
+      "tags": [
+        "Platform"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{id}/accountHolders",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/accountHolders",
+      "operation_id": "get-balancePlatforms-id-accountHolders",
+      "tags": [
+        "Platform"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{id}/transactionRules",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/transactionRules",
+      "operation_id": "get-balancePlatforms-id-transactionRules",
+      "tags": [
+        "Platform"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{id}/transferLimits",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/transferLimits",
+      "operation_id": "get-balancePlatforms-id-transferLimits",
+      "tags": [
+        "Transfer limits - balance platform level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/balancePlatforms/{id}/transferLimits",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/transferLimits",
+      "operation_id": "post-balancePlatforms-id-transferLimits",
+      "tags": [
+        "Transfer limits - balance platform level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/balancePlatforms/{id}/transferLimits/{transferLimitId}",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/transferLimits/{transferLimitId}",
+      "operation_id": "delete-balancePlatforms-id-transferLimits-transferLimitId",
+      "tags": [
+        "Transfer limits - balance platform level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/balancePlatforms/{id}/transferLimits/{transferLimitId}",
+      "wire_path": "/bcl/v2/balancePlatforms/{id}/transferLimits/{transferLimitId}",
+      "operation_id": "get-balancePlatforms-id-transferLimits-transferLimitId",
+      "tags": [
+        "Transfer limits - balance platform level"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/cardorders",
+      "wire_path": "/bcl/v2/cardorders",
+      "operation_id": "get-cardorders",
+      "tags": [
+        "Card orders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/cardorders/{id}/items",
+      "wire_path": "/bcl/v2/cardorders/{id}/items",
+      "operation_id": "get-cardorders-id-items",
+      "tags": [
+        "Card orders"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/grantAccounts/{id}",
+      "wire_path": "/bcl/v2/grantAccounts/{id}",
+      "operation_id": "get-grantAccounts-id",
+      "tags": [
+        "Grant accounts"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/grantOffers",
+      "wire_path": "/bcl/v2/grantOffers",
+      "operation_id": "get-grantOffers",
+      "tags": [
+        "Grant offers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/grantOffers/{grantOfferId}",
+      "wire_path": "/bcl/v2/grantOffers/{grantOfferId}",
+      "operation_id": "get-grantOffers-grantOfferId",
+      "tags": [
+        "Grant offers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/mandates",
+      "wire_path": "/bcl/v2/mandates",
+      "operation_id": "get-mandates",
+      "tags": [
+        "Direct debit mandates"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/mandates/{mandateId}",
+      "wire_path": "/bcl/v2/mandates/{mandateId}",
+      "operation_id": "get-mandates-mandateId",
+      "tags": [
+        "Direct debit mandates"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/mandates/{mandateId}",
+      "wire_path": "/bcl/v2/mandates/{mandateId}",
+      "operation_id": "patch-mandates-mandateId",
+      "tags": [
+        "Direct debit mandates"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/mandates/{mandateId}/cancel",
+      "wire_path": "/bcl/v2/mandates/{mandateId}/cancel",
+      "operation_id": "post-mandates-mandateId-cancel",
+      "tags": [
+        "Direct debit mandates"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/networkTokens/{networkTokenId}",
+      "wire_path": "/bcl/v2/networkTokens/{networkTokenId}",
+      "operation_id": "get-networkTokens-networkTokenId",
+      "tags": [
+        "Network tokens"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/networkTokens/{networkTokenId}",
+      "wire_path": "/bcl/v2/networkTokens/{networkTokenId}",
+      "operation_id": "patch-networkTokens-networkTokenId",
+      "tags": [
+        "Network tokens"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/paymentInstrumentGroups",
+      "wire_path": "/bcl/v2/paymentInstrumentGroups",
+      "operation_id": "post-paymentInstrumentGroups",
+      "tags": [
+        "Payment instrument groups"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstrumentGroups/{id}",
+      "wire_path": "/bcl/v2/paymentInstrumentGroups/{id}",
+      "operation_id": "get-paymentInstrumentGroups-id",
+      "tags": [
+        "Payment instrument groups"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstrumentGroups/{id}/transactionRules",
+      "wire_path": "/bcl/v2/paymentInstrumentGroups/{id}/transactionRules",
+      "operation_id": "get-paymentInstrumentGroups-id-transactionRules",
+      "tags": [
+        "Payment instrument groups"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/paymentInstruments",
+      "wire_path": "/bcl/v2/paymentInstruments",
+      "operation_id": "post-paymentInstruments",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{id}",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}",
+      "operation_id": "get-paymentInstruments-id",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/paymentInstruments/{id}",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}",
+      "operation_id": "patch-paymentInstruments-id",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{id}/networkTokenActivationData",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}/networkTokenActivationData",
+      "operation_id": "get-paymentInstruments-id-networkTokenActivationData",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "network-token activation secret material is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/paymentInstruments/{id}/networkTokenActivationData",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}/networkTokenActivationData",
+      "operation_id": "post-paymentInstruments-id-networkTokenActivationData",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "network-token activation secret material is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{id}/networkTokens",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}/networkTokens",
+      "operation_id": "get-paymentInstruments-id-networkTokens",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{id}/reveal",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}/reveal",
+      "operation_id": "get-paymentInstruments-id-reveal",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "card PAN, CVC, and expiry reveal is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{id}/transactionRules",
+      "wire_path": "/bcl/v2/paymentInstruments/{id}/transactionRules",
+      "operation_id": "get-paymentInstruments-id-transactionRules",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "wire_path": "/bcl/v2/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "operation_id": "delete-paymentInstruments-paymentInstrumentId-authorisedCardUsers",
+      "tags": [
+        "Authorized card users"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "wire_path": "/bcl/v2/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "operation_id": "get-paymentInstruments-paymentInstrumentId-authorisedCardUsers",
+      "tags": [
+        "Authorized card users"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "wire_path": "/bcl/v2/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "operation_id": "patch-paymentInstruments-paymentInstrumentId-authorisedCardUsers",
+      "tags": [
+        "Authorized card users"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "wire_path": "/bcl/v2/paymentInstruments/{paymentInstrumentId}/authorisedCardUsers",
+      "operation_id": "post-paymentInstruments-paymentInstrumentId-authorisedCardUsers",
+      "tags": [
+        "Authorized card users"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/paymentInstruments/reveal",
+      "wire_path": "/bcl/v2/paymentInstruments/reveal",
+      "operation_id": "post-paymentInstruments-reveal",
+      "tags": [
+        "Payment instruments"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "card-secret reveal is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/pins/change",
+      "wire_path": "/bcl/v2/pins/change",
+      "operation_id": "post-pins-change",
+      "tags": [
+        "Manage card PIN"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "card PIN mutation is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/pins/reveal",
+      "wire_path": "/bcl/v2/pins/reveal",
+      "operation_id": "post-pins-reveal",
+      "tags": [
+        "Manage card PIN"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "card PIN reveal is intentionally excluded"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/publicKey",
+      "wire_path": "/bcl/v2/publicKey",
+      "operation_id": "get-publicKey",
+      "tags": [
+        "Manage card PIN"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/registeredDevices",
+      "wire_path": "/bcl/v2/registeredDevices",
+      "operation_id": "get-registeredDevices",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/registeredDevices",
+      "wire_path": "/bcl/v2/registeredDevices",
+      "operation_id": "post-registeredDevices",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/registeredDevices/{deviceId}/associations",
+      "wire_path": "/bcl/v2/registeredDevices/{deviceId}/associations",
+      "operation_id": "patch-registeredDevices-deviceId-associations",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/registeredDevices/{deviceId}/associations",
+      "wire_path": "/bcl/v2/registeredDevices/{deviceId}/associations",
+      "operation_id": "post-registeredDevices-deviceId-associations",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/registeredDevices/{id}",
+      "wire_path": "/bcl/v2/registeredDevices/{id}",
+      "operation_id": "delete-registeredDevices-id",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/registeredDevices/{id}",
+      "wire_path": "/bcl/v2/registeredDevices/{id}",
+      "operation_id": "patch-registeredDevices-id",
+      "tags": [
+        "Manage SCA devices"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/scaAssociations",
+      "wire_path": "/bcl/v2/scaAssociations",
+      "operation_id": "delete-scaAssociations",
+      "tags": [
+        "SCA association management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": false,
+      "reason": "required per-request SCA credential cannot be produced by a static REST composition"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/scaAssociations",
+      "wire_path": "/bcl/v2/scaAssociations",
+      "operation_id": "get-scaAssociations",
+      "tags": [
+        "SCA association management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/scaAssociations",
+      "wire_path": "/bcl/v2/scaAssociations",
+      "operation_id": "patch-scaAssociations",
+      "tags": [
+        "SCA association management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": false,
+      "reason": "required per-request SCA credential cannot be produced by a static REST composition"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/scaDevices",
+      "wire_path": "/bcl/v2/scaDevices",
+      "operation_id": "post-scaDevices",
+      "tags": [
+        "SCA device management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/scaDevices/{deviceId}",
+      "wire_path": "/bcl/v2/scaDevices/{deviceId}",
+      "operation_id": "patch-scaDevices-deviceId",
+      "tags": [
+        "SCA device management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/scaDevices/{deviceId}/scaAssociations",
+      "wire_path": "/bcl/v2/scaDevices/{deviceId}/scaAssociations",
+      "operation_id": "post-scaDevices-deviceId-scaAssociations",
+      "tags": [
+        "SCA device management"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-cards",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/transactionRules",
+      "wire_path": "/bcl/v2/transactionRules",
+      "operation_id": "post-transactionRules",
+      "tags": [
+        "Transaction rules"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "DELETE",
+      "path": "/transactionRules/{transactionRuleId}",
+      "wire_path": "/bcl/v2/transactionRules/{transactionRuleId}",
+      "operation_id": "delete-transactionRules-transactionRuleId",
+      "tags": [
+        "Transaction rules"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "GET",
+      "path": "/transactionRules/{transactionRuleId}",
+      "wire_path": "/bcl/v2/transactionRules/{transactionRuleId}",
+      "operation_id": "get-transactionRules-transactionRuleId",
+      "tags": [
+        "Transaction rules"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "PATCH",
+      "path": "/transactionRules/{transactionRuleId}",
+      "wire_path": "/bcl/v2/transactionRules/{transactionRuleId}",
+      "operation_id": "patch-transactionRules-transactionRuleId",
+      "tags": [
+        "Transaction rules"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/transferRoutes/calculate",
+      "wire_path": "/bcl/v2/transferRoutes/calculate",
+      "operation_id": "post-transferRoutes-calculate",
+      "tags": [
+        "Transfer routes"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "balance",
+      "method": "POST",
+      "path": "/validateBankAccountIdentification",
+      "wire_path": "/bcl/v2/validateBankAccountIdentification",
+      "operation_id": "post-validateBankAccountIdentification",
+      "tags": [
+        "Bank account validation"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-balance-controls",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/applePay/sessions",
+      "wire_path": "/checkout/v72/applePay/sessions",
+      "operation_id": "post-applePay-sessions",
+      "tags": [
+        "Utility"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/cancels",
+      "wire_path": "/checkout/v72/cancels",
+      "operation_id": "post-cancels",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/cardDetails",
+      "wire_path": "/checkout/v72/cardDetails",
+      "operation_id": "post-cardDetails",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "raw card and network-token detail inspection is intentionally excluded from this non-PCI pack"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/donationCampaigns",
+      "wire_path": "/checkout/v72/donationCampaigns",
+      "operation_id": "post-donationCampaigns",
+      "tags": [
+        "Donations"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/donations",
+      "wire_path": "/checkout/v72/donations",
+      "operation_id": "post-donations",
+      "tags": [
+        "Donations"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/forward",
+      "wire_path": "/checkout/v72/forward",
+      "operation_id": "post-forward",
+      "tags": [
+        "Recurring"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "stored payment-detail forwarding to a third party is intentionally excluded"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/orders",
+      "wire_path": "/checkout/v72/orders",
+      "operation_id": "post-orders",
+      "tags": [
+        "Orders"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/orders/cancel",
+      "wire_path": "/checkout/v72/orders/cancel",
+      "operation_id": "post-orders-cancel",
+      "tags": [
+        "Orders"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/originKeys",
+      "wire_path": "/checkout/v72/originKeys",
+      "operation_id": "post-originKeys",
+      "tags": [
+        "Utility"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/paymentLinks",
+      "wire_path": "/checkout/v72/paymentLinks",
+      "operation_id": "post-paymentLinks",
+      "tags": [
+        "Payment links"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "GET",
+      "path": "/paymentLinks/{linkId}",
+      "wire_path": "/checkout/v72/paymentLinks/{linkId}",
+      "operation_id": "get-paymentLinks-linkId",
+      "tags": [
+        "Payment links"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "PATCH",
+      "path": "/paymentLinks/{linkId}",
+      "wire_path": "/checkout/v72/paymentLinks/{linkId}",
+      "operation_id": "patch-paymentLinks-linkId",
+      "tags": [
+        "Payment links"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/paymentMethods",
+      "wire_path": "/checkout/v72/paymentMethods",
+      "operation_id": "post-paymentMethods",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/paymentMethods/balance",
+      "wire_path": "/checkout/v72/paymentMethods/balance",
+      "operation_id": "post-paymentMethods-balance",
+      "tags": [
+        "Orders"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments",
+      "wire_path": "/checkout/v72/payments",
+      "operation_id": "post-payments",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/{paymentPspReference}/amountUpdates",
+      "wire_path": "/checkout/v72/payments/{paymentPspReference}/amountUpdates",
+      "operation_id": "post-payments-paymentPspReference-amountUpdates",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/{paymentPspReference}/cancels",
+      "wire_path": "/checkout/v72/payments/{paymentPspReference}/cancels",
+      "operation_id": "post-payments-paymentPspReference-cancels",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/{paymentPspReference}/captures",
+      "wire_path": "/checkout/v72/payments/{paymentPspReference}/captures",
+      "operation_id": "post-payments-paymentPspReference-captures",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/{paymentPspReference}/refunds",
+      "wire_path": "/checkout/v72/payments/{paymentPspReference}/refunds",
+      "operation_id": "post-payments-paymentPspReference-refunds",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/{paymentPspReference}/reversals",
+      "wire_path": "/checkout/v72/payments/{paymentPspReference}/reversals",
+      "operation_id": "post-payments-paymentPspReference-reversals",
+      "tags": [
+        "Modifications"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/payments/details",
+      "wire_path": "/checkout/v72/payments/details",
+      "operation_id": "post-payments-details",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/paypal/updateOrder",
+      "wire_path": "/checkout/v72/paypal/updateOrder",
+      "operation_id": "post-paypal-updateOrder",
+      "tags": [
+        "Utility"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/sessions",
+      "wire_path": "/checkout/v72/sessions",
+      "operation_id": "post-sessions",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "GET",
+      "path": "/sessions/{sessionId}",
+      "wire_path": "/checkout/v72/sessions/{sessionId}",
+      "operation_id": "get-sessions-sessionId",
+      "tags": [
+        "Payments"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "GET",
+      "path": "/storedPaymentMethods",
+      "wire_path": "/checkout/v72/storedPaymentMethods",
+      "operation_id": "get-storedPaymentMethods",
+      "tags": [
+        "Recurring"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/storedPaymentMethods",
+      "wire_path": "/checkout/v72/storedPaymentMethods",
+      "operation_id": "post-storedPaymentMethods",
+      "tags": [
+        "Recurring"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "DELETE",
+      "path": "/storedPaymentMethods/{storedPaymentMethodId}",
+      "wire_path": "/checkout/v72/storedPaymentMethods/{storedPaymentMethodId}",
+      "operation_id": "delete-storedPaymentMethods-storedPaymentMethodId",
+      "tags": [
+        "Recurring"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "checkout",
+      "method": "POST",
+      "path": "/validateShopperId",
+      "wire_path": "/checkout/v72/validateShopperId",
+      "operation_id": "post-validateShopperId",
+      "tags": [
+        "Utility"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-checkout",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "disputes",
+      "method": "POST",
+      "path": "/acceptDispute",
+      "wire_path": "/ca/services/DisputeService/v30/acceptDispute",
+      "operation_id": "post-acceptDispute",
+      "tags": [
+        "General"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-disputes",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "disputes",
+      "method": "POST",
+      "path": "/defendDispute",
+      "wire_path": "/ca/services/DisputeService/v30/defendDispute",
+      "operation_id": "post-defendDispute",
+      "tags": [
+        "General"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-disputes",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "disputes",
+      "method": "POST",
+      "path": "/deleteDisputeDefenseDocument",
+      "wire_path": "/ca/services/DisputeService/v30/deleteDisputeDefenseDocument",
+      "operation_id": "post-deleteDisputeDefenseDocument",
+      "tags": [
+        "General"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-disputes",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "disputes",
+      "method": "POST",
+      "path": "/retrieveApplicableDefenseReasons",
+      "wire_path": "/ca/services/DisputeService/v30/retrieveApplicableDefenseReasons",
+      "operation_id": "post-retrieveApplicableDefenseReasons",
+      "tags": [
+        "General"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-disputes",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "disputes",
+      "method": "POST",
+      "path": "/supplyDefenseDocument",
+      "wire_path": "/ca/services/DisputeService/v30/supplyDefenseDocument",
+      "operation_id": "post-supplyDefenseDocument",
+      "tags": [
+        "General"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-disputes",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies",
+      "wire_path": "/v3/companies",
+      "operation_id": "get-companies",
+      "tags": [
+        "Account - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}",
+      "wire_path": "/v3/companies/{companyId}",
+      "operation_id": "get-companies-companyId",
+      "tags": [
+        "Account - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/androidApps",
+      "wire_path": "/v3/companies/{companyId}/androidApps",
+      "operation_id": "get-companies-companyId-androidApps",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/androidApps",
+      "wire_path": "/v3/companies/{companyId}/androidApps",
+      "operation_id": "post-companies-companyId-androidApps",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/androidApps/{id}",
+      "wire_path": "/v3/companies/{companyId}/androidApps/{id}",
+      "operation_id": "get-companies-companyId-androidApps-id",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/androidApps/{id}",
+      "wire_path": "/v3/companies/{companyId}/androidApps/{id}",
+      "operation_id": "patch-companies-companyId-androidApps-id",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/androidCertificates",
+      "wire_path": "/v3/companies/{companyId}/androidCertificates",
+      "operation_id": "get-companies-companyId-androidCertificates",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/androidCertificates",
+      "wire_path": "/v3/companies/{companyId}/androidCertificates",
+      "operation_id": "post-companies-companyId-androidCertificates",
+      "tags": [
+        "Android files - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/apiCredentials",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials",
+      "operation_id": "get-companies-companyId-apiCredentials",
+      "tags": [
+        "API credentials - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/apiCredentials",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials",
+      "operation_id": "post-companies-companyId-apiCredentials",
+      "tags": [
+        "API credentials - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "credential creation returns a new API password and is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}",
+      "operation_id": "get-companies-companyId-apiCredentials-apiCredentialId",
+      "tags": [
+        "API credentials - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}",
+      "operation_id": "patch-companies-companyId-apiCredentials-apiCredentialId",
+      "tags": [
+        "API credentials - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "operation_id": "get-companies-companyId-apiCredentials-apiCredentialId-allowedOrigins",
+      "tags": [
+        "Allowed origins - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "operation_id": "post-companies-companyId-apiCredentials-apiCredentialId-allowedOrigins",
+      "tags": [
+        "Allowed origins - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "operation_id": "delete-companies-companyId-apiCredentials-apiCredentialId-allowedOrigins-originId",
+      "tags": [
+        "Allowed origins - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "operation_id": "get-companies-companyId-apiCredentials-apiCredentialId-allowedOrigins-originId",
+      "tags": [
+        "Allowed origins - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/generateApiKey",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/generateApiKey",
+      "operation_id": "post-companies-companyId-apiCredentials-apiCredentialId-generateApiKey",
+      "tags": [
+        "API key - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "API-key secret generation is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/apiCredentials/{apiCredentialId}/generateClientKey",
+      "wire_path": "/v3/companies/{companyId}/apiCredentials/{apiCredentialId}/generateClientKey",
+      "operation_id": "post-companies-companyId-apiCredentials-apiCredentialId-generateClientKey",
+      "tags": [
+        "Client key - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "client-key issuance is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/billingEntities",
+      "wire_path": "/v3/companies/{companyId}/billingEntities",
+      "operation_id": "get-companies-companyId-billingEntities",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/campaignManagement",
+      "wire_path": "/v3/companies/{companyId}/campaignManagement",
+      "operation_id": "post-companies-companyId-campaignManagement",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/companies/{companyId}/campaignManagement/{donationCampaignId}",
+      "wire_path": "/v3/companies/{companyId}/campaignManagement/{donationCampaignId}",
+      "operation_id": "delete-companies-companyId-campaignManagement-donationCampaignId",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/campaignManagement/{donationCampaignId}",
+      "wire_path": "/v3/companies/{companyId}/campaignManagement/{donationCampaignId}",
+      "operation_id": "patch-companies-companyId-campaignManagement-donationCampaignId",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/campaignManagement/{donationCampaignId}/status/{status}",
+      "wire_path": "/v3/companies/{companyId}/campaignManagement/{donationCampaignId}/status/{status}",
+      "operation_id": "post-companies-companyId-campaignManagement-donationCampaignId-status-status",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/campaignManagement/accountHolders/{accountHolderId}",
+      "wire_path": "/v3/companies/{companyId}/campaignManagement/accountHolders/{accountHolderId}",
+      "operation_id": "get-companies-companyId-campaignManagement-accountHolders-accountHolderId",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/merchants",
+      "wire_path": "/v3/companies/{companyId}/merchants",
+      "operation_id": "get-companies-companyId-merchants",
+      "tags": [
+        "Account - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/nonprofits",
+      "wire_path": "/v3/companies/{companyId}/nonprofits",
+      "operation_id": "post-companies-companyId-nonprofits",
+      "tags": [
+        "Donation campaigns"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/shippingLocations",
+      "wire_path": "/v3/companies/{companyId}/shippingLocations",
+      "operation_id": "get-companies-companyId-shippingLocations",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/shippingLocations",
+      "wire_path": "/v3/companies/{companyId}/shippingLocations",
+      "operation_id": "post-companies-companyId-shippingLocations",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalActions",
+      "wire_path": "/v3/companies/{companyId}/terminalActions",
+      "operation_id": "get-companies-companyId-terminalActions",
+      "tags": [
+        "Terminal actions - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalActions/{actionId}",
+      "wire_path": "/v3/companies/{companyId}/terminalActions/{actionId}",
+      "operation_id": "get-companies-companyId-terminalActions-actionId",
+      "tags": [
+        "Terminal actions - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalLogos",
+      "wire_path": "/v3/companies/{companyId}/terminalLogos",
+      "operation_id": "get-companies-companyId-terminalLogos",
+      "tags": [
+        "Terminal settings - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/terminalLogos",
+      "wire_path": "/v3/companies/{companyId}/terminalLogos",
+      "operation_id": "patch-companies-companyId-terminalLogos",
+      "tags": [
+        "Terminal settings - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalModels",
+      "wire_path": "/v3/companies/{companyId}/terminalModels",
+      "operation_id": "get-companies-companyId-terminalModels",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalOrders",
+      "wire_path": "/v3/companies/{companyId}/terminalOrders",
+      "operation_id": "get-companies-companyId-terminalOrders",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/terminalOrders",
+      "wire_path": "/v3/companies/{companyId}/terminalOrders",
+      "operation_id": "post-companies-companyId-terminalOrders",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalOrders/{orderId}",
+      "wire_path": "/v3/companies/{companyId}/terminalOrders/{orderId}",
+      "operation_id": "get-companies-companyId-terminalOrders-orderId",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/terminalOrders/{orderId}",
+      "wire_path": "/v3/companies/{companyId}/terminalOrders/{orderId}",
+      "operation_id": "patch-companies-companyId-terminalOrders-orderId",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/terminalOrders/{orderId}/cancel",
+      "wire_path": "/v3/companies/{companyId}/terminalOrders/{orderId}/cancel",
+      "operation_id": "post-companies-companyId-terminalOrders-orderId-cancel",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalProducts",
+      "wire_path": "/v3/companies/{companyId}/terminalProducts",
+      "operation_id": "get-companies-companyId-terminalProducts",
+      "tags": [
+        "Terminal orders - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/terminalSettings",
+      "wire_path": "/v3/companies/{companyId}/terminalSettings",
+      "operation_id": "get-companies-companyId-terminalSettings",
+      "tags": [
+        "Terminal settings - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/terminalSettings",
+      "wire_path": "/v3/companies/{companyId}/terminalSettings",
+      "operation_id": "patch-companies-companyId-terminalSettings",
+      "tags": [
+        "Terminal settings - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/users",
+      "wire_path": "/v3/companies/{companyId}/users",
+      "operation_id": "get-companies-companyId-users",
+      "tags": [
+        "Users - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/users",
+      "wire_path": "/v3/companies/{companyId}/users",
+      "operation_id": "post-companies-companyId-users",
+      "tags": [
+        "Users - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/users/{userId}",
+      "wire_path": "/v3/companies/{companyId}/users/{userId}",
+      "operation_id": "get-companies-companyId-users-userId",
+      "tags": [
+        "Users - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/users/{userId}",
+      "wire_path": "/v3/companies/{companyId}/users/{userId}",
+      "operation_id": "patch-companies-companyId-users-userId",
+      "tags": [
+        "Users - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/webhooks",
+      "wire_path": "/v3/companies/{companyId}/webhooks",
+      "operation_id": "get-companies-companyId-webhooks",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/webhooks",
+      "wire_path": "/v3/companies/{companyId}/webhooks",
+      "operation_id": "post-companies-companyId-webhooks",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/companies/{companyId}/webhooks/{webhookId}",
+      "wire_path": "/v3/companies/{companyId}/webhooks/{webhookId}",
+      "operation_id": "delete-companies-companyId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/companies/{companyId}/webhooks/{webhookId}",
+      "wire_path": "/v3/companies/{companyId}/webhooks/{webhookId}",
+      "operation_id": "get-companies-companyId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/companies/{companyId}/webhooks/{webhookId}",
+      "wire_path": "/v3/companies/{companyId}/webhooks/{webhookId}",
+      "operation_id": "patch-companies-companyId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/webhooks/{webhookId}/generateHmac",
+      "wire_path": "/v3/companies/{companyId}/webhooks/{webhookId}/generateHmac",
+      "operation_id": "post-companies-companyId-webhooks-webhookId-generateHmac",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "webhook HMAC-secret generation is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/companies/{companyId}/webhooks/{webhookId}/test",
+      "wire_path": "/v3/companies/{companyId}/webhooks/{webhookId}/test",
+      "operation_id": "post-companies-companyId-webhooks-webhookId-test",
+      "tags": [
+        "Webhooks - company level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/me",
+      "wire_path": "/v3/me",
+      "operation_id": "get-me",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/me/allowedOrigins",
+      "wire_path": "/v3/me/allowedOrigins",
+      "operation_id": "get-me-allowedOrigins",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/me/allowedOrigins",
+      "wire_path": "/v3/me/allowedOrigins",
+      "operation_id": "post-me-allowedOrigins",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/me/allowedOrigins/{originId}",
+      "wire_path": "/v3/me/allowedOrigins/{originId}",
+      "operation_id": "delete-me-allowedOrigins-originId",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/me/allowedOrigins/{originId}",
+      "wire_path": "/v3/me/allowedOrigins/{originId}",
+      "operation_id": "get-me-allowedOrigins-originId",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/me/generateClientKey",
+      "wire_path": "/v3/me/generateClientKey",
+      "operation_id": "post-me-generateClientKey",
+      "tags": [
+        "My API credential"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "client-key issuance is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants",
+      "wire_path": "/v3/merchants",
+      "operation_id": "get-merchants",
+      "tags": [
+        "Account - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants",
+      "wire_path": "/v3/merchants",
+      "operation_id": "post-merchants",
+      "tags": [
+        "Account - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}",
+      "wire_path": "/v3/merchants/{merchantId}",
+      "operation_id": "get-merchants-merchantId",
+      "tags": [
+        "Account - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/activate",
+      "wire_path": "/v3/merchants/{merchantId}/activate",
+      "operation_id": "post-merchants-merchantId-activate",
+      "tags": [
+        "Account - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/apiCredentials",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials",
+      "operation_id": "get-merchants-merchantId-apiCredentials",
+      "tags": [
+        "API credentials - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/apiCredentials",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials",
+      "operation_id": "post-merchants-merchantId-apiCredentials",
+      "tags": [
+        "API credentials - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "credential creation returns a new API password and is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}",
+      "operation_id": "get-merchants-merchantId-apiCredentials-apiCredentialId",
+      "tags": [
+        "API credentials - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}",
+      "operation_id": "patch-merchants-merchantId-apiCredentials-apiCredentialId",
+      "tags": [
+        "API credentials - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "operation_id": "get-merchants-merchantId-apiCredentials-apiCredentialId-allowedOrigins",
+      "tags": [
+        "Allowed origins - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins",
+      "operation_id": "post-merchants-merchantId-apiCredentials-apiCredentialId-allowedOrigins",
+      "tags": [
+        "Allowed origins - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "operation_id": "delete-merchants-merchantId-apiCredentials-apiCredentialId-allowedOrigins-originId",
+      "tags": [
+        "Allowed origins - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/allowedOrigins/{originId}",
+      "operation_id": "get-merchants-merchantId-apiCredentials-apiCredentialId-allowedOrigins-originId",
+      "tags": [
+        "Allowed origins - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/generateApiKey",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/generateApiKey",
+      "operation_id": "post-merchants-merchantId-apiCredentials-apiCredentialId-generateApiKey",
+      "tags": [
+        "API key - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "API-key secret generation is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/apiCredentials/{apiCredentialId}/generateClientKey",
+      "wire_path": "/v3/merchants/{merchantId}/apiCredentials/{apiCredentialId}/generateClientKey",
+      "operation_id": "post-merchants-merchantId-apiCredentials-apiCredentialId-generateClientKey",
+      "tags": [
+        "Client key - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "client-key issuance is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/billingEntities",
+      "wire_path": "/v3/merchants/{merchantId}/billingEntities",
+      "operation_id": "get-merchants-merchantId-billingEntities",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/paymentMethodSettings",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings",
+      "operation_id": "get-merchants-merchantId-paymentMethodSettings",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/paymentMethodSettings",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings",
+      "operation_id": "post-merchants-merchantId-paymentMethodSettings",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}",
+      "operation_id": "get-merchants-merchantId-paymentMethodSettings-paymentMethodId",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}",
+      "operation_id": "patch-merchants-merchantId-paymentMethodSettings-paymentMethodId",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}/addApplePayDomains",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}/addApplePayDomains",
+      "operation_id": "post-merchants-merchantId-paymentMethodSettings-paymentMethodId-addApplePayDomains",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}/getApplePayDomains",
+      "wire_path": "/v3/merchants/{merchantId}/paymentMethodSettings/{paymentMethodId}/getApplePayDomains",
+      "operation_id": "get-merchants-merchantId-paymentMethodSettings-paymentMethodId-getApplePayDomains",
+      "tags": [
+        "Payment methods - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/payoutSettings",
+      "wire_path": "/v3/merchants/{merchantId}/payoutSettings",
+      "operation_id": "get-merchants-merchantId-payoutSettings",
+      "tags": [
+        "Payout settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/payoutSettings",
+      "wire_path": "/v3/merchants/{merchantId}/payoutSettings",
+      "operation_id": "post-merchants-merchantId-payoutSettings",
+      "tags": [
+        "Payout settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "wire_path": "/v3/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "operation_id": "delete-merchants-merchantId-payoutSettings-payoutSettingsId",
+      "tags": [
+        "Payout settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "wire_path": "/v3/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "operation_id": "get-merchants-merchantId-payoutSettings-payoutSettingsId",
+      "tags": [
+        "Payout settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "wire_path": "/v3/merchants/{merchantId}/payoutSettings/{payoutSettingsId}",
+      "operation_id": "patch-merchants-merchantId-payoutSettings-payoutSettingsId",
+      "tags": [
+        "Payout settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/shippingLocations",
+      "wire_path": "/v3/merchants/{merchantId}/shippingLocations",
+      "operation_id": "get-merchants-merchantId-shippingLocations",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/shippingLocations",
+      "wire_path": "/v3/merchants/{merchantId}/shippingLocations",
+      "operation_id": "post-merchants-merchantId-shippingLocations",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/splitConfigurations",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations",
+      "operation_id": "get-merchants-merchantId-splitConfigurations",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/splitConfigurations",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations",
+      "operation_id": "post-merchants-merchantId-splitConfigurations",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "operation_id": "delete-merchants-merchantId-splitConfigurations-splitConfigurationId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "operation_id": "get-merchants-merchantId-splitConfigurations-splitConfigurationId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "operation_id": "patch-merchants-merchantId-splitConfigurations-splitConfigurationId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}",
+      "operation_id": "post-merchants-merchantId-splitConfigurations-splitConfigurationId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}",
+      "operation_id": "delete-merchants-merchantId-splitConfigurations-splitConfigurationId-rules-ruleId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}",
+      "operation_id": "patch-merchants-merchantId-splitConfigurations-splitConfigurationId-rules-ruleId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}/splitLogic/{splitLogicId}",
+      "wire_path": "/v3/merchants/{merchantId}/splitConfigurations/{splitConfigurationId}/rules/{ruleId}/splitLogic/{splitLogicId}",
+      "operation_id": "patch-merchants-merchantId-splitConfigurations-splitConfigurationId-rules-ruleId-splitLogic-splitLogicId",
+      "tags": [
+        "Split configuration - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/stores",
+      "wire_path": "/v3/merchants/{merchantId}/stores",
+      "operation_id": "get-merchants-merchantId-stores",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/stores",
+      "wire_path": "/v3/merchants/{merchantId}/stores",
+      "operation_id": "post-merchants-merchantId-stores",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/stores/{reference}/terminalLogos",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{reference}/terminalLogos",
+      "operation_id": "get-merchants-merchantId-stores-reference-terminalLogos",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/stores/{reference}/terminalLogos",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{reference}/terminalLogos",
+      "operation_id": "patch-merchants-merchantId-stores-reference-terminalLogos",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/stores/{reference}/terminalSettings",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{reference}/terminalSettings",
+      "operation_id": "get-merchants-merchantId-stores-reference-terminalSettings",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/stores/{reference}/terminalSettings",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{reference}/terminalSettings",
+      "operation_id": "patch-merchants-merchantId-stores-reference-terminalSettings",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/stores/{storeId}",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{storeId}",
+      "operation_id": "get-merchants-merchantId-stores-storeId",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/stores/{storeId}",
+      "wire_path": "/v3/merchants/{merchantId}/stores/{storeId}",
+      "operation_id": "patch-merchants-merchantId-stores-storeId",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalLogos",
+      "wire_path": "/v3/merchants/{merchantId}/terminalLogos",
+      "operation_id": "get-merchants-merchantId-terminalLogos",
+      "tags": [
+        "Terminal settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/terminalLogos",
+      "wire_path": "/v3/merchants/{merchantId}/terminalLogos",
+      "operation_id": "patch-merchants-merchantId-terminalLogos",
+      "tags": [
+        "Terminal settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalModels",
+      "wire_path": "/v3/merchants/{merchantId}/terminalModels",
+      "operation_id": "get-merchants-merchantId-terminalModels",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalOrders",
+      "wire_path": "/v3/merchants/{merchantId}/terminalOrders",
+      "operation_id": "get-merchants-merchantId-terminalOrders",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/terminalOrders",
+      "wire_path": "/v3/merchants/{merchantId}/terminalOrders",
+      "operation_id": "post-merchants-merchantId-terminalOrders",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalOrders/{orderId}",
+      "wire_path": "/v3/merchants/{merchantId}/terminalOrders/{orderId}",
+      "operation_id": "get-merchants-merchantId-terminalOrders-orderId",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/terminalOrders/{orderId}",
+      "wire_path": "/v3/merchants/{merchantId}/terminalOrders/{orderId}",
+      "operation_id": "patch-merchants-merchantId-terminalOrders-orderId",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/terminalOrders/{orderId}/cancel",
+      "wire_path": "/v3/merchants/{merchantId}/terminalOrders/{orderId}/cancel",
+      "operation_id": "post-merchants-merchantId-terminalOrders-orderId-cancel",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalProducts",
+      "wire_path": "/v3/merchants/{merchantId}/terminalProducts",
+      "operation_id": "get-merchants-merchantId-terminalProducts",
+      "tags": [
+        "Terminal orders - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/terminalSettings",
+      "wire_path": "/v3/merchants/{merchantId}/terminalSettings",
+      "operation_id": "get-merchants-merchantId-terminalSettings",
+      "tags": [
+        "Terminal settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/terminalSettings",
+      "wire_path": "/v3/merchants/{merchantId}/terminalSettings",
+      "operation_id": "patch-merchants-merchantId-terminalSettings",
+      "tags": [
+        "Terminal settings - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/users",
+      "wire_path": "/v3/merchants/{merchantId}/users",
+      "operation_id": "get-merchants-merchantId-users",
+      "tags": [
+        "Users - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/users",
+      "wire_path": "/v3/merchants/{merchantId}/users",
+      "operation_id": "post-merchants-merchantId-users",
+      "tags": [
+        "Users - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/users/{userId}",
+      "wire_path": "/v3/merchants/{merchantId}/users/{userId}",
+      "operation_id": "get-merchants-merchantId-users-userId",
+      "tags": [
+        "Users - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/users/{userId}",
+      "wire_path": "/v3/merchants/{merchantId}/users/{userId}",
+      "operation_id": "patch-merchants-merchantId-users-userId",
+      "tags": [
+        "Users - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/webhooks",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks",
+      "operation_id": "get-merchants-merchantId-webhooks",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/webhooks",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks",
+      "operation_id": "post-merchants-merchantId-webhooks",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "DELETE",
+      "path": "/merchants/{merchantId}/webhooks/{webhookId}",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks/{webhookId}",
+      "operation_id": "delete-merchants-merchantId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/merchants/{merchantId}/webhooks/{webhookId}",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks/{webhookId}",
+      "operation_id": "get-merchants-merchantId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/merchants/{merchantId}/webhooks/{webhookId}",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks/{webhookId}",
+      "operation_id": "patch-merchants-merchantId-webhooks-webhookId",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/webhooks/{webhookId}/generateHmac",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks/{webhookId}/generateHmac",
+      "operation_id": "post-merchants-merchantId-webhooks-webhookId-generateHmac",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "webhook HMAC-secret generation is intentionally excluded"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/merchants/{merchantId}/webhooks/{webhookId}/test",
+      "wire_path": "/v3/merchants/{merchantId}/webhooks/{webhookId}/test",
+      "operation_id": "post-merchants-merchantId-webhooks-webhookId-test",
+      "tags": [
+        "Webhooks - merchant level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-commerce",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/stores",
+      "wire_path": "/v3/stores",
+      "operation_id": "get-stores",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/stores",
+      "wire_path": "/v3/stores",
+      "operation_id": "post-stores",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/stores/{storeId}",
+      "wire_path": "/v3/stores/{storeId}",
+      "operation_id": "get-stores-storeId",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/stores/{storeId}",
+      "wire_path": "/v3/stores/{storeId}",
+      "operation_id": "patch-stores-storeId",
+      "tags": [
+        "Account - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-accounts",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/stores/{storeId}/terminalLogos",
+      "wire_path": "/v3/stores/{storeId}/terminalLogos",
+      "operation_id": "get-stores-storeId-terminalLogos",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/stores/{storeId}/terminalLogos",
+      "wire_path": "/v3/stores/{storeId}/terminalLogos",
+      "operation_id": "patch-stores-storeId-terminalLogos",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/stores/{storeId}/terminalSettings",
+      "wire_path": "/v3/stores/{storeId}/terminalSettings",
+      "operation_id": "get-stores-storeId-terminalSettings",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/stores/{storeId}/terminalSettings",
+      "wire_path": "/v3/stores/{storeId}/terminalSettings",
+      "operation_id": "patch-stores-storeId-terminalSettings",
+      "tags": [
+        "Terminal settings - store level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/terminals",
+      "wire_path": "/v3/terminals",
+      "operation_id": "get-terminals",
+      "tags": [
+        "Terminals - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/terminals/{terminalId}/reassign",
+      "wire_path": "/v3/terminals/{terminalId}/reassign",
+      "operation_id": "post-terminals-terminalId-reassign",
+      "tags": [
+        "Terminals - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/terminals/{terminalId}/terminalLogos",
+      "wire_path": "/v3/terminals/{terminalId}/terminalLogos",
+      "operation_id": "get-terminals-terminalId-terminalLogos",
+      "tags": [
+        "Terminal settings - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/terminals/{terminalId}/terminalLogos",
+      "wire_path": "/v3/terminals/{terminalId}/terminalLogos",
+      "operation_id": "patch-terminals-terminalId-terminalLogos",
+      "tags": [
+        "Terminal settings - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "GET",
+      "path": "/terminals/{terminalId}/terminalSettings",
+      "wire_path": "/v3/terminals/{terminalId}/terminalSettings",
+      "operation_id": "get-terminals-terminalId-terminalSettings",
+      "tags": [
+        "Terminal settings - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "PATCH",
+      "path": "/terminals/{terminalId}/terminalSettings",
+      "wire_path": "/v3/terminals/{terminalId}/terminalSettings",
+      "operation_id": "patch-terminals-terminalId-terminalSettings",
+      "tags": [
+        "Terminal settings - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "management",
+      "method": "POST",
+      "path": "/terminals/scheduleActions",
+      "wire_path": "/v3/terminals/scheduleActions",
+      "operation_id": "post-terminals-scheduleActions",
+      "tags": [
+        "Terminal actions - terminal level"
+      ],
+      "security": [
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-management-terminals",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/cashouts",
+      "wire_path": "/btl/v4/cashouts",
+      "operation_id": "post-cashouts",
+      "tags": [
+        "CashOut"
+      ],
+      "security": [],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated buildable operation admitted under the API-level X-API-Key requirement despite missing operation security metadata"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/grants",
+      "wire_path": "/btl/v4/grants",
+      "operation_id": "get-grants",
+      "tags": [
+        "Capital"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/grants",
+      "wire_path": "/btl/v4/grants",
+      "operation_id": "post-grants",
+      "tags": [
+        "Capital"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/grants/{id}",
+      "wire_path": "/btl/v4/grants/{id}",
+      "operation_id": "get-grants-id",
+      "tags": [
+        "Capital"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": true,
+      "selected": false,
+      "reason": "deprecated official operation"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/transactions",
+      "wire_path": "/btl/v4/transactions",
+      "operation_id": "get-transactions",
+      "tags": [
+        "Transactions"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/transactions/{id}",
+      "wire_path": "/btl/v4/transactions/{id}",
+      "operation_id": "get-transactions-id",
+      "tags": [
+        "Transactions"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/transfers",
+      "wire_path": "/btl/v4/transfers",
+      "operation_id": "get-transfers",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/transfers",
+      "wire_path": "/btl/v4/transfers",
+      "operation_id": "post-transfers",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "GET",
+      "path": "/transfers/{id}",
+      "wire_path": "/btl/v4/transfers/{id}",
+      "operation_id": "get-transfers-id",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/transfers/{transferId}/returns",
+      "wire_path": "/btl/v4/transfers/{transferId}/returns",
+      "operation_id": "post-transfers-transferId-returns",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/transfers/approve",
+      "wire_path": "/btl/v4/transfers/approve",
+      "operation_id": "post-transfers-approve",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    },
+    {
+      "source": "transfers",
+      "method": "POST",
+      "path": "/transfers/cancel",
+      "wire_path": "/btl/v4/transfers/cancel",
+      "operation_id": "post-transfers-cancel",
+      "tags": [
+        "Transfers"
+      ],
+      "security": [
+        "clientKey",
+        "BasicAuth",
+        "ApiKeyAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "adyen-transfers",
+      "reason": "nondeprecated official X-API-Key operation with buildable static REST transport"
+    }
+  ]
+}

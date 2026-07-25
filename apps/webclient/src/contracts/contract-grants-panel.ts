@@ -1,0 +1,1065 @@
+/** D-174 delta 3 — the SMALL single-contract grant view (Ops + Entities).
+ *
+ *  The contracts route's detail page renders ONE contract at a time, so this is
+ *  the per-contract slice of the former global grant-matrix panel (retired in
+ *  delta 4): the same entry universe + `effective()` derivation + risk-badge +
+ *  write-then-
+ *  reconcile toggle, but for a SINGLE contract and with NO by-entry pivot, NO
+ *  all-contracts loop, NO expand/collapse, NO door-type axis (the header owns
+ *  the L1 door control). The global panel's bulk was the bundled multi-surface
+ *  chrome, not the row loop — so a few hundred lines suffice (R-decision 1).
+ *
+ *  ── Two kept-alive roots, one load ───────────────────────────────────────
+ *  The route mounts Ops and Entities as SEPARATE tabs, but both read the SAME
+ *  loaded state. So this mount owns TWO root elements — {@link opsRoot}
+ *  (op-kind entries) + {@link entitiesRoot} (collection + topic entries) — and
+ *  renders into both on every state change. The route attaches whichever tab is
+ *  active (mirroring the Connect tab's `ensureConnectHost` keep-alive), so a
+ *  switch never reloads and a just-toggled cell stays correct across tabs.
+ *
+ *  ── The salvaged derivation (DO NOT drift from the gate) ──────────────────
+ *  Reads return EXPLICIT stored rows only; an entry with no row resolves to its
+ *  AUTHOR DEFAULT at the gate. So the effective on/off is a JOIN: enumerate
+ *  every entry from the registry universe, then overlay the explicit rows, and
+ *  resolve the per-(entry × contract) default through `ownerOnlyAdjustedAuthor
+ *  Default` (the slice-3b owner-only sensitive surfaces read ON for the owner /
+ *  `user_self` and OFF for a door). Self is JUST ANOTHER CONTRACT: it loads
+ *  through the same `contract.grant.read` (its `user_self` rows are reconcile-
+ *  seeded `granted:true` — D-187 `owner-grant-reconcile.ts`), no special chrome.
+ *
+ *  ── Type home ─────────────────────────────────────────────────────────────
+ *  This module OWNS the grant-rpc caller type family (the route + bootstrap
+ *  import them from here). Delta 4 retired the former global grant-matrix panel
+ *  (which had held structurally-identical copies) and repointed the imports here.
+ *
+ *  Spec: `docs/d-187-spec.md` AMENDMENT §6; handover
+ *  `handover_contracts_list_detail_NEXT.md` (delta 3). */
+
+import {
+  KERNEL_OP_REGISTRY,
+  READABLE_COLLECTIONS,
+  collectionGrantEntry,
+  opGrantEntry,
+  topicGrantEntry,
+  type CatalogIngredientView,
+  type CliReachabilityListResponse,
+  type CliReachabilitySetRequest,
+  type CliReachabilitySetResponse,
+  type ContractDefinitionView,
+  type EnrichmentTopic,
+  type GrantEntryKind,
+  type RegistryDescribeRpcOutput,
+  type SetContractDoorTypesRequest,
+} from '@recued/contracts';
+
+// R3 — the cell derivation + the catalog-op universe slice are SHARED with
+// the by-PACK access view (`settings/pack-access-controls.ts`) via
+// `grant-op-universe.ts`, so the two axes of the one grant matrix resolve a
+// cell identically. This panel keeps the kernel / collection / topic universe
+// slices (the by-PACK view doesn't range over them).
+import {
+  catalogOpUniverseEntries,
+  cliRowKey,
+  cliRowsForPrincipal,
+  effectiveGrantState,
+  hasExplicitGrant,
+  riskApprovalCopy,
+  riskLabel,
+  type GrantUniverseEntry,
+} from './grant-op-universe.js';
+import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+
+export type { GrantUniverseEntry } from './grant-op-universe.js';
+
+// ════════════════════════════════════════════════════════════════
+// Caller seams — the frozen grant rpc + the two registry universes
+// ════════════════════════════════════════════════════════════════
+
+/** One explicit grant row in a contract's set (`contract.grant.read`). */
+export interface GrantEntryRow {
+  entry_key: string;
+  granted: boolean;
+  set_at: number;
+}
+
+/** One explicit grant row in an entry's column (`contract.grant.read_by_entry`).
+ *  Unused by this single-contract view; declared here as the family's home so
+ *  the route's options interface keeps a stable import after delta 4. */
+export interface GrantContractRow {
+  contract_id: string;
+  granted: boolean;
+  set_at: number;
+}
+
+/** `contract.grant.read` — a contract's explicit grant rows. */
+export type GrantReadCaller = (args: {
+  contract_id: string;
+}) => Promise<{ grants: ReadonlyArray<GrantEntryRow> }>;
+
+/** `contract.grant.read_by_entry` — the transpose column. Unused here (kept on
+ *  the route's options interface; the by-entry pivot retired with the global
+ *  panel). */
+export type GrantReadByEntryCaller = (args: {
+  entry_key: string;
+}) => Promise<{ contracts: ReadonlyArray<GrantContractRow> }>;
+
+/** `contract.grant.write` — grant (`true`) / revoke (`false`) / clear (`null`)
+ *  one entry for one contract. */
+export type GrantWriteCaller = (args: {
+  contract_id: string;
+  entry_key: string;
+  granted: boolean | null;
+}) => Promise<{ ok: true; granted: boolean | null }>;
+
+/** `collection.contract.listContracts` — the contract rows. Unused here (single
+ *  contract); kept on the route's options interface. */
+export type GrantContractsCaller = () => Promise<{
+  contracts: ReadonlyArray<ContractDefinitionView>;
+}>;
+
+/** `collection.contract.listCatalogOperations` — the pack-op universe. */
+export type GrantCatalogOperationsCaller = () => Promise<{
+  ingredients: ReadonlyArray<CatalogIngredientView>;
+}>;
+
+/** `housekeeping.registry.describe` — the topic universe (+ `mcp_exposed`). */
+export type GrantRegistryDescribeCaller = () => Promise<RegistryDescribeRpcOutput>;
+
+/** `collection.contract.setDoorTypes` — REPLACE a door's level-1 `door_types`
+ *  in place. Returns the updated contract row. Consumed by the route HEADER (the
+ *  L1 door control), not this panel; declared here as the family's home. */
+export type GrantSetDoorTypesCaller = (
+  args: SetContractDoorTypesRequest,
+) => Promise<ContractDefinitionView>;
+
+/** `cli.reachability.list` — every cli reachability row across all principals;
+ *  the panel filters to its own contract. CLI ops' admission is the SEPARATE
+ *  `cli_reachability` allowlist (fail-closed), NOT the `contract_grant` op axis
+ *  (D-182 §7.2) — so a cli op reads its effective state here, never from
+ *  `contract.grant.read`. Optional: absent ⇒ cli ops render off + inert. */
+export type GrantCliReachabilityListCaller = () => Promise<CliReachabilityListResponse>;
+/** `cli.reachability.set` — grant/revoke ONE (principal × cli-ingredient × op)
+ *  reachability row. The panel writes `principal = contractId` (the self
+ *  contract's id IS `user_self` = the owner cli principal, so no mapping). */
+export type GrantCliReachabilitySetCaller = (
+  args: CliReachabilitySetRequest,
+) => Promise<CliReachabilitySetResponse>;
+
+// ════════════════════════════════════════════════════════════════
+// The entry universe
+// ════════════════════════════════════════════════════════════════
+
+/** Build the entry universe for the two tabs. Ops span the compiled-in kernel
+ *  registry (`core.*`) + the installed pack catalog; entities span the static
+ *  readable collections + the topic registry. Each dynamic source is optional —
+ *  a missing/failed one drops its slice; kernel ops + collections are always
+ *  present. (Salvaged from the former global grant-matrix panel's `buildUniverse`.) */
+const buildUniverse = (
+  catalog: { ingredients: ReadonlyArray<CatalogIngredientView> } | undefined,
+  registry: RegistryDescribeRpcOutput | undefined,
+): GrantUniverseEntry[] => {
+  const entries: GrantUniverseEntry[] = [];
+
+  for (const k of KERNEL_OP_REGISTRY) {
+    let entry_key: string;
+    try {
+      entry_key = opGrantEntry(k.op);
+    } catch {
+      continue;
+    }
+    entries.push({
+      entry_key,
+      kind: 'op',
+      label: k.op,
+      group: ['Kernel', k.domain].join(' · '),
+      risk_tier: k.risk,
+      authorDefault: k.risk === 'read',
+    });
+  }
+
+  // The installed-pack-catalog op slice — shared with the by-PACK view.
+  entries.push(...catalogOpUniverseEntries(catalog?.ingredients ?? []));
+
+  for (const collection of READABLE_COLLECTIONS) {
+    entries.push({
+      entry_key: collectionGrantEntry(collection),
+      kind: 'collection',
+      label: collection,
+      group: '',
+      // D-187 slice 5 (codex HIGH) — match the BACKEND collection read-fence default:
+      // `read-grant-checker.ts isCollectionReadGranted` resolves a no-row collection to
+      // `isCollectionReadAdmissible(c, ALL)` = TRUE (the documented D-177 admit-all-then-
+      // narrow posture, fail-closed-backstopped by the per-tool read-tool grant; the
+      // per-collection revoke is the opt-in narrowing). `effective()` runs the SAME
+      // `ownerOnlyAdjustedAuthorDefault` the gate does, so raw webhook and free-form
+      // response collections still show OFF for a non-owner door
+      // (owner-default-only). A hardcoded `false` here made the UI
+      // report mail/calendar/etc as un-granted while the gate admitted them.
+      authorDefault: true,
+    });
+  }
+
+  for (const t of registry?.topics ?? []) {
+    entries.push({
+      entry_key: topicGrantEntry(t.topic as EnrichmentTopic),
+      kind: 'topic',
+      label: t.topic,
+      group: '',
+      description: t.description,
+      authorDefault: t.mcp_exposed === 'public',
+    });
+  }
+
+  return entries;
+};
+
+// ════════════════════════════════════════════════════════════════
+// Attribute constants — stable hooks for tests + the route
+// ════════════════════════════════════════════════════════════════
+
+/** Each kept-alive root. Carries `data-grant-view` (`ops` / `entities`). */
+export const CONTRACT_GRANTS_HOST_ATTR = 'data-recued-contract-grants';
+export const CONTRACT_GRANTS_LOADING_ATTR = 'data-recued-contract-grants-loading';
+export const CONTRACT_GRANTS_EMPTY_ATTR = 'data-recued-contract-grants-empty';
+export const CONTRACT_GRANTS_ERROR_ATTR = 'data-recued-contract-grants-error';
+/** The "N of M granted" summary for a tab. */
+export const CONTRACT_GRANTS_SUMMARY_ATTR = 'data-recued-contract-grants-summary';
+/** Debounced type-along filter for the operation universe. */
+export const CONTRACT_GRANTS_OP_FILTER_ATTR = 'data-recued-contract-grants-op-filter';
+/** Visible match count / debounce status beside the operation filter. */
+export const CONTRACT_GRANTS_OP_FILTER_STATUS_ATTR =
+  'data-recued-contract-grants-op-filter-status';
+/** One kind sub-group (Operations / Collections / Topics). Carries `data-kind`. */
+export const CONTRACT_GRANTS_KIND_GROUP_ATTR = 'data-recued-contract-grants-kind';
+/** One toggle-able grant cell. Carries `data-entry` / `data-kind` /
+ *  `data-effective` (`on`/`off`) / `data-source` (`explicit`/`default`). */
+export const CONTRACT_GRANTS_CELL_ATTR = 'data-recued-contract-grants-cell';
+/** The cell's checkbox. Carries the same `data-*` as its cell row. */
+export const CONTRACT_GRANTS_CELL_TOGGLE_ATTR = 'data-recued-contract-grants-cell-toggle';
+/** A cell's risk-tier badge (ops). Carries `data-risk`. */
+export const CONTRACT_GRANTS_RISK_ATTR = 'data-recued-contract-grants-risk';
+/** The "asks" mark on a write/admin/destructive op. */
+export const CONTRACT_GRANTS_ASKS_ATTR = 'data-recued-contract-grants-asks';
+/** The "also reads: <container>" transitive-admission disclosure on an op that
+ *  binds a `source_dependency` (D-192 Slice 7). Carries `data-reads` = the
+ *  comma-joined container refs. */
+/** The two-axis note above the OPS list (never the entities list — it is a claim
+ *  about op approval). Owner 2026-07-17: the enforcement is right, the reader's
+ *  mental model is what needs fixing, so the fix is words. */
+export const CONTRACT_GRANTS_AXIS_NOTE_ATTR = 'data-recued-contract-grants-axis-note';
+
+/** ⛔ Say REACH, never "visibility". An ungranted op is a HARD DENY, not a hidden
+ *  one — calling the toggle "visibility" would undersell it in the opposite
+ *  direction from the error it exists to correct. */
+export const CONTRACT_GRANTS_AXIS_NOTE =
+  'Granting an op decides what this contract can reach — not what it may do without '
+  + 'asking you. A granted Read runs silently; anything past Read is held for your approval.';
+
+export const CONTRACT_GRANTS_ALSO_READS_ATTR = 'data-recued-contract-grants-also-reads';
+/** The explicit-vs-default source marker on a cell. Carries `data-source`. */
+export const CONTRACT_GRANTS_SOURCE_ATTR = 'data-recued-contract-grants-source';
+
+// ════════════════════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════════════════════
+
+const KIND_TITLE: Record<GrantEntryKind, string> = {
+  op: 'Operations',
+  collection: 'Collections',
+  topic: 'Topics',
+};
+
+/** Render order WITHIN each tab. Ops tab shows `op`; Entities tab shows the two
+ *  read kinds (collections then topics). */
+const OPS_KINDS: readonly GrantEntryKind[] = ['op'];
+const ENTITIES_KINDS: readonly GrantEntryKind[] = ['collection', 'topic'];
+
+const errMessage = (err: unknown): string =>
+  humanizeRpcError(err);
+
+// ════════════════════════════════════════════════════════════════
+// Options + the mount handle
+// ════════════════════════════════════════════════════════════════
+
+export type ContractGrantsPanelState = 'loading' | 'ready' | 'error';
+
+export interface MountContractGrantsPanelOptions {
+  /** DOM document seam. Defaults to `globalThis.document`. */
+  document?: Document;
+  /** The contract whose grants this view edits (`user_self` for the owner). */
+  contractId: string;
+  /** `contract.grant.read`. */
+  runGrantRead: GrantReadCaller;
+  /** `contract.grant.write`. */
+  runGrantWrite: GrantWriteCaller;
+  /** D-196 R3 — customer templates stamp only their explicit contract_grant
+   * rows into an instance. When true, absent rows render OFF (no ordinary-door
+   * author defaults), and CLI entries are omitted because their separate
+   * cli_reachability rows are not part of that stamped grant list. */
+  explicitGrantRowsOnly?: boolean;
+  /** `collection.contract.listCatalogOperations` — the pack-op universe.
+   *  Optional: absent ⇒ kernel ops only. */
+  runCatalogOperations?: GrantCatalogOperationsCaller;
+  /** `housekeeping.registry.describe` — the topic universe. Optional: absent ⇒
+   *  no topics (collections still render). */
+  runRegistryDescribe?: GrantRegistryDescribeCaller;
+  /** `cli.reachability.list` — the effective state for CLI ops (whose admission is
+   *  the cli_reachability allowlist, not contract_grant). Optional: absent ⇒ cli
+   *  ops render off + their toggle is inert (they still SHOW, just uneditable). */
+  runCliReachabilityList?: GrantCliReachabilityListCaller;
+  /** `cli.reachability.set` — writes a CLI op's toggle (`principal = contractId`).
+   *  Optional: absent ⇒ cli op toggles are inert. */
+  runCliReachabilitySet?: GrantCliReachabilitySetCaller;
+  /** D-121 broadcast subscribe seam — re-loads on
+   *  `contract.contract_definition_changed`. */
+  subscribe?: BroadcastSubscriber['on'];
+  /** Trailing debounce for the Ops type-along filter. Defaults to 250 ms;
+   *  tests may pass 0 for deterministic immediate filtering. */
+  operationFilterDebounceMs?: number;
+}
+
+export interface ContractGrantsPanelMount {
+  /** The Ops tab content (op-kind entries). Kept alive across tab switches. */
+  readonly opsRoot: HTMLElement;
+  /** The Entities tab content (collection + topic entries). */
+  readonly entitiesRoot: HTMLElement;
+  /** Current load phase. */
+  getState(): ContractGrantsPanelState;
+  /** Top-level load-error message. Null when the last load succeeded. */
+  getError(): string | null;
+  /** The entry universe in display order. */
+  getEntries(): ReadonlyArray<GrantUniverseEntry>;
+  /** Effective state of one entry — `'on'` / `'off'`. */
+  getEffective(entryKey: string): 'on' | 'off';
+  /** True iff the contract carries an EXPLICIT row for the entry. */
+  isExplicit(entryKey: string): boolean;
+  /** The normalized operation query currently applied to the rendered list. */
+  getOperationFilter(): string;
+  /** Toggle one entry (grant when off, revoke when on). One `contract.grant.write`
+   *  + a reconciling re-read. No-op while that entry's write is in flight. */
+  toggleEntry(entryKey: string): Promise<void>;
+  /** Host-driven refresh — re-loads the universe + the contract's grants. */
+  refresh(): Promise<void>;
+  /** Resolves after the most recent load settles. */
+  whenLoaded(): Promise<void>;
+  /** Tear down both roots. Idempotent. */
+  dispose(): void;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Internal state
+// ════════════════════════════════════════════════════════════════
+
+interface InternalState {
+  phase: ContractGrantsPanelState;
+  universe: GrantUniverseEntry[];
+  /** entry_key → granted — EXPLICIT rows only for this one contract. */
+  grants: ReadonlyMap<string, boolean>;
+  /** {@link cliRowKey} → allowed — the cli_reachability rows for THIS contract
+   *  (principal === contractId). CLI ops resolve their effective state here
+   *  (fail-closed: absent ⇒ off), NOT from `grants`. */
+  cliRows: ReadonlyMap<string, boolean>;
+  error: string | null;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Mount
+// ════════════════════════════════════════════════════════════════
+
+export const mountContractGrantsPanel = (
+  opts: MountContractGrantsPanelOptions,
+): ContractGrantsPanelMount => {
+  const doc = opts.document ?? (globalThis as { document?: Document }).document;
+  if (doc === undefined) {
+    throw new Error(
+      'mountContractGrantsPanel: no document available — pass `opts.document` for non-browser environments',
+    );
+  }
+  const { contractId } = opts;
+
+  let state: InternalState = {
+    phase: 'loading',
+    universe: [],
+    grants: new Map(),
+    cliRows: new Map(),
+    error: null,
+  };
+  let disposed = false;
+  // Bumped before every load await; a post-await write lands only when its
+  // captured generation is still current (the local-tools / grant-matrix idiom).
+  let loadGeneration = 0;
+  let pendingLoad: Promise<void> = Promise.resolve();
+  // entry_keys with a write in flight — the cell renders disabled while running.
+  const pendingCells = new Set<string>();
+  const operationFilterDebounceMs = opts.operationFilterDebounceMs ?? 250;
+  let operationFilterDraft = '';
+  let operationFilter = '';
+  let operationFilterTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const opsRoot = doc.createElement('div');
+  opsRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
+  opsRoot.setAttribute('data-grant-view', 'ops');
+  const opsToolbar = doc.createElement('div');
+  opsToolbar.className = 'cg-filter-bar';
+  const operationFilterInput = doc.createElement('input');
+  operationFilterInput.setAttribute('type', 'search');
+  operationFilterInput.setAttribute('placeholder', 'Filter operations…');
+  operationFilterInput.setAttribute('aria-label', 'Filter operations');
+  operationFilterInput.setAttribute(CONTRACT_GRANTS_OP_FILTER_ATTR, '');
+  operationFilterInput.className = 'cg-filter-input';
+  opsToolbar.appendChild(operationFilterInput);
+  const operationFilterStatus = doc.createElement('span');
+  operationFilterStatus.setAttribute(CONTRACT_GRANTS_OP_FILTER_STATUS_ATTR, '');
+  operationFilterStatus.setAttribute('aria-live', 'polite');
+  operationFilterStatus.className = 'cg-filter-status';
+  opsToolbar.appendChild(operationFilterStatus);
+  opsRoot.appendChild(opsToolbar);
+  const opsResults = doc.createElement('div');
+  opsResults.className = 'cg-filter-results';
+  opsRoot.appendChild(opsResults);
+  const entitiesRoot = doc.createElement('div');
+  entitiesRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
+  entitiesRoot.setAttribute('data-grant-view', 'entities');
+
+  const clearChildren = (node: HTMLElement): void => {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  };
+  const appendLine = (
+    parent: HTMLElement,
+    attr: string,
+    className: string,
+    text: string,
+  ): void => {
+    const line = doc.createElement('div');
+    line.setAttribute(attr, '');
+    line.className = className;
+    line.textContent = text;
+    parent.appendChild(line);
+  };
+
+  // ── derivation (the ONE resolver — matches the gate; shared with the
+  //    by-PACK view via grant-op-universe.ts) ──────────────────────────
+  const effective = (entry: GrantUniverseEntry): 'on' | 'off' => {
+    if (opts.explicitGrantRowsOnly === true) {
+      return state.grants.get(entry.entry_key) === true ? 'on' : 'off';
+    }
+    return effectiveGrantState(entry, contractId, state.grants, state.cliRows);
+  };
+  const hasExplicit = (entryKey: string): boolean => {
+    const entry = state.universe.find((e) => e.entry_key === entryKey);
+    if (entry === undefined) return state.grants.has(entryKey);
+    return hasExplicitGrant(entry, state.grants, state.cliRows);
+  };
+  const entriesOfKind = (kind: GrantEntryKind): GrantUniverseEntry[] =>
+    state.universe.filter((e) => e.kind === kind);
+  const entriesOfKinds = (kinds: readonly GrantEntryKind[]): GrantUniverseEntry[] =>
+    state.universe.filter((e) => kinds.includes(e.kind));
+  const operationMatchesFilter = (entry: GrantUniverseEntry): boolean => {
+    if (operationFilter.length === 0) return true;
+    const haystack = [
+      entry.label,
+      entry.entry_key,
+      entry.group,
+      entry.ingredientId ?? '',
+      entry.risk_tier ?? '',
+      entry.cli?.ingredientId ?? '',
+      entry.cli?.operationKey ?? '',
+    ].join('\n').toLowerCase();
+    return haystack.includes(operationFilter);
+  };
+  const visibleEntriesOfKinds = (
+    kinds: readonly GrantEntryKind[],
+  ): GrantUniverseEntry[] =>
+    state.universe.filter(
+      (entry) =>
+        kinds.includes(entry.kind)
+        && (entry.kind !== 'op' || operationMatchesFilter(entry)),
+    );
+  const grantedCount = (kinds: readonly GrantEntryKind[]): { on: number; total: number } => {
+    const scoped = entriesOfKinds(kinds);
+    let on = 0;
+    for (const e of scoped) if (effective(e) === 'on') on += 1;
+    return { on, total: scoped.length };
+  };
+
+  // ── render: one toggle-able grant cell ──────────────────────────────
+  const renderCell = (parent: HTMLElement, entry: GrantUniverseEntry): void => {
+    const eff = effective(entry);
+    const explicit = hasExplicit(entry.entry_key);
+    const inFlight = pendingCells.has(entry.entry_key);
+    // A cli op with no cli.reachability.set caller is read-only (its toggle would
+    // no-op); render it disabled so the affordance matches the behaviour.
+    const cliInert = entry.cli !== undefined && opts.runCliReachabilitySet === undefined;
+
+    const rowLabel = doc.createElement('label');
+    rowLabel.setAttribute(CONTRACT_GRANTS_CELL_ATTR, '');
+    rowLabel.setAttribute('data-entry', entry.entry_key);
+    rowLabel.setAttribute('data-kind', entry.kind);
+    rowLabel.setAttribute('data-effective', eff);
+    rowLabel.setAttribute('data-source', explicit ? 'explicit' : 'default');
+    rowLabel.className = 'cg-cell';
+
+    const box = doc.createElement('input');
+    box.setAttribute('type', 'checkbox');
+    box.setAttribute(CONTRACT_GRANTS_CELL_TOGGLE_ATTR, '');
+    box.setAttribute('data-entry', entry.entry_key);
+    box.setAttribute('data-effective', eff);
+    box.className = 'cg-cell-box';
+    box.checked = eff === 'on';
+    if (inFlight || cliInert) box.setAttribute('disabled', '');
+    else
+      box.addEventListener('change', () => {
+        void runToggle(entry.entry_key);
+      });
+    rowLabel.appendChild(box);
+
+    const name = doc.createElement('span');
+    name.className = 'cg-cell-name';
+    name.textContent = entry.label;
+    rowLabel.appendChild(name);
+
+    if (entry.kind === 'op' && entry.risk_tier !== undefined) {
+      const badge = doc.createElement('span');
+      badge.setAttribute(CONTRACT_GRANTS_RISK_ATTR, '');
+      badge.setAttribute('data-risk', entry.risk_tier);
+      badge.className = ['cg-risk', `cg-risk-${entry.risk_tier}`].join(' ');
+      badge.textContent = riskLabel(entry.risk_tier);
+      rowLabel.appendChild(badge);
+      // The APPROVAL chip — now on EVERY tier, `read` included. It used to be
+      // suppressed for read (`riskAsks`), which said "nothing to say here" about the
+      // one decision nothing downstream will check: a read is never-class, so the
+      // grant IS the whole authorization. An unknown tier yields no copy ⇒ no chip:
+      // absence of a claim, never a wrong one. See `riskApprovalCopy`.
+      const approval = riskApprovalCopy(entry.risk_tier);
+      if (approval !== undefined) {
+        const asks = doc.createElement('span');
+        asks.setAttribute(CONTRACT_GRANTS_ASKS_ATTR, '');
+        asks.setAttribute('data-approval', entry.risk_tier);
+        // ⛔ ONE flat class, deliberately — the chip stays uniformly QUIET on every
+        // tier (muted italic). CAUTION is the BADGE's axis (`cg-risk-*` turns
+        // `--danger` red for write/admin/destructive); the chip's axis is the
+        // CONSEQUENCE STATEMENT. Browser-measured 2026-07-17 in both themes: chip
+        // #71717a/#a1a1aa grey 400 italic on all four tiers vs badge #dc2626/#f87171
+        // red 600 bordered — different registers, so 125 chips cannot drown 7 badges.
+        // A per-tier chip class (there was an unbacked `cg-asks-${tier}` here, styled
+        // by nothing and read by nothing) re-opens that settled split — if a tier ever
+        // needs more weight, it goes on the BADGE. Tests hook `data-approval`.
+        asks.className = 'cg-asks';
+        asks.textContent = approval.chip;
+        asks.title = approval.title;
+        rowLabel.appendChild(asks);
+      }
+    }
+
+    // D-192 Slice 7 — disclose the container reads granting this op TRANSITIVELY
+    // admits (e.g. Linear "Create issues" also reads `team.search` to resolve the
+    // container). The gateway auto-admits these WITHOUT a separate read grant, so
+    // without this the grant is silent. `title` names the exact list ops.
+    if (entry.kind === 'op' && entry.also_reads !== undefined && entry.also_reads.length > 0) {
+      const refs = [...new Set(entry.also_reads.map((r) => r.ref))];
+      const alsoReads = doc.createElement('span');
+      alsoReads.setAttribute(CONTRACT_GRANTS_ALSO_READS_ATTR, '');
+      alsoReads.setAttribute('data-reads', refs.join(','));
+      alsoReads.className = 'cg-also-reads';
+      alsoReads.textContent = `also reads: ${refs.join(', ')}`;
+      alsoReads.title =
+        `Granting this also lets it read ${entry.also_reads.map((r) => r.list_op).join(', ')} ` +
+        `to resolve the target — no separate grant needed.`;
+      rowLabel.appendChild(alsoReads);
+    }
+
+    const source = doc.createElement('span');
+    source.setAttribute(CONTRACT_GRANTS_SOURCE_ATTR, '');
+    source.setAttribute('data-source', explicit ? 'explicit' : 'default');
+    source.className = 'cg-source';
+    source.textContent = explicit ? 'set' : 'default';
+    rowLabel.appendChild(source);
+
+    parent.appendChild(rowLabel);
+  };
+
+  // ── render: a kind sub-group ────────────────────────────────────────
+  const renderKindGroup = (
+    parent: HTMLElement,
+    kind: GrantEntryKind,
+    visibleEntries?: ReadonlyArray<GrantUniverseEntry>,
+  ): void => {
+    const entries = visibleEntries === undefined
+      ? entriesOfKind(kind)
+      : visibleEntries.filter((entry) => entry.kind === kind);
+    if (entries.length === 0) return;
+    const group = doc.createElement('div');
+    group.setAttribute(CONTRACT_GRANTS_KIND_GROUP_ATTR, '');
+    group.setAttribute('data-kind', kind);
+    group.className = 'cg-kind';
+    const heading = doc.createElement('div');
+    heading.className = 'cg-kind-name';
+    heading.textContent = KIND_TITLE[kind];
+    group.appendChild(heading);
+
+    if (kind === 'op') {
+      // Ops nest under their ingredient/domain group.
+      let currentGroup: string | null = null;
+      let groupBody: HTMLElement = group;
+      for (const entry of entries) {
+        if (entry.group !== currentGroup) {
+          currentGroup = entry.group;
+          const sub = doc.createElement('div');
+          sub.className = 'cg-op-ingredient';
+          const subName = doc.createElement('div');
+          subName.className = 'cg-op-ingredient-name';
+          subName.textContent = entry.group;
+          sub.appendChild(subName);
+          group.appendChild(sub);
+          groupBody = sub;
+        }
+        renderCell(groupBody, entry);
+      }
+    } else {
+      for (const entry of entries) renderCell(group, entry);
+    }
+    parent.appendChild(group);
+  };
+
+  // ── render: one tab root ────────────────────────────────────────────
+  const renderInto = (
+    root: HTMLElement,
+    kinds: readonly GrantEntryKind[],
+    emptyNote: string,
+    /** Ops only — the two-axis note. Absent for the entities root. */
+    axisNote?: string,
+    filterOperations = false,
+  ): void => {
+    clearChildren(root);
+
+    if (state.error !== null) {
+      appendLine(
+        root,
+        CONTRACT_GRANTS_ERROR_ATTR,
+        'cg-error',
+        `Could not load grants: ${state.error}`,
+      );
+    }
+
+    if (state.phase === 'loading' && state.universe.length === 0) {
+      appendLine(root, CONTRACT_GRANTS_LOADING_ATTR, 'cg-loading', 'Loading grants…');
+      return;
+    }
+
+    const allScoped = entriesOfKinds(kinds);
+    if (allScoped.length === 0) {
+      if (state.error === null) {
+        appendLine(root, CONTRACT_GRANTS_EMPTY_ATTR, 'cg-empty', emptyNote);
+      }
+      return;
+    }
+    const scoped = filterOperations ? visibleEntriesOfKinds(kinds) : allScoped;
+
+    const { on, total } = grantedCount(kinds);
+    const summary = doc.createElement('div');
+    summary.setAttribute(CONTRACT_GRANTS_SUMMARY_ATTR, '');
+    summary.className = 'cg-summary';
+    summary.textContent = filterOperations && operationFilter.length > 0
+      ? `${on} of ${total} granted · ${scoped.length} matching`
+      : `${on} of ${total} granted`;
+    root.appendChild(summary);
+
+    if (axisNote !== undefined) {
+      appendLine(root, CONTRACT_GRANTS_AXIS_NOTE_ATTR, 'cg-axis-note', axisNote);
+    }
+
+    if (scoped.length === 0) {
+      appendLine(
+        root,
+        CONTRACT_GRANTS_EMPTY_ATTR,
+        'cg-empty',
+        `No operations match “${operationFilterDraft.trim()}”.`,
+      );
+      return;
+    }
+
+    for (const kind of kinds) renderKindGroup(root, kind, scoped);
+  };
+
+  const render = (): void => {
+    if (disposed) return;
+    const totalOps = entriesOfKinds(OPS_KINDS).length;
+    const matchingOps = visibleEntriesOfKinds(OPS_KINDS).length;
+    operationFilterStatus.textContent = operationFilterDraft.trim().toLowerCase()
+      !== operationFilter
+      ? 'Filtering…'
+      : operationFilter.length > 0
+        ? `${matchingOps} of ${totalOps} operations`
+        : `${totalOps} operations`;
+    renderInto(
+      opsResults,
+      OPS_KINDS,
+      'No operations are available on this server yet.',
+      CONTRACT_GRANTS_AXIS_NOTE,
+      true,
+    );
+    renderInto(
+      entitiesRoot,
+      ENTITIES_KINDS,
+      'No collections or topics are available on this server yet.',
+    );
+  };
+
+  const applyOperationFilter = (): void => {
+    operationFilterTimer = null;
+    operationFilter = operationFilterDraft.trim().toLowerCase();
+    render();
+  };
+  operationFilterInput.addEventListener('input', () => {
+    operationFilterDraft = operationFilterInput.value;
+    if (operationFilterTimer !== null) clearTimeout(operationFilterTimer);
+    if (operationFilterDebounceMs <= 0) {
+      applyOperationFilter();
+      return;
+    }
+    operationFilterStatus.textContent = 'Filtering…';
+    operationFilterTimer = setTimeout(
+      applyOperationFilter,
+      operationFilterDebounceMs,
+    );
+  });
+
+  // ── load ────────────────────────────────────────────────────────────
+  const doRefresh = (): Promise<void> => {
+    const gen = ++loadGeneration;
+    pendingLoad = (async () => {
+      const [catalogR, registryR, grantsR, cliR] = await Promise.allSettled([
+        opts.runCatalogOperations
+          ? opts.runCatalogOperations()
+          : Promise.resolve(undefined),
+        opts.runRegistryDescribe
+          ? opts.runRegistryDescribe()
+          : Promise.resolve(undefined),
+        opts.runGrantRead({ contract_id: contractId }),
+        opts.explicitGrantRowsOnly !== true && opts.runCliReachabilityList
+          ? opts.runCliReachabilityList()
+          : Promise.resolve(undefined),
+      ]);
+      if (disposed || gen !== loadGeneration) return;
+
+      const errors: string[] = [];
+      const catalog = catalogR.status === 'fulfilled' ? catalogR.value : undefined;
+      if (catalogR.status === 'rejected') errors.push(errMessage(catalogR.reason));
+      const registry = registryR.status === 'fulfilled' ? registryR.value : undefined;
+      if (registryR.status === 'rejected') errors.push(errMessage(registryR.reason));
+
+      const universe = buildUniverse(catalog, registry).filter(
+        (entry) => opts.explicitGrantRowsOnly !== true || entry.cli === undefined,
+      );
+
+      // The contract's own grant rows are the load's spine — a failure here is a
+      // top-level error (the cells would be unanchored author-defaults only).
+      // BUT a cell write reconciling concurrently is AUTHORITATIVE for this
+      // contract: if any write is in flight, carry the live (reconciling) grants
+      // forward instead of this possibly-pre-write snapshot, so an interleaved
+      // refresh can never clobber a write's result in the microtask tail before
+      // the write's finally-bump lands (the global grant-matrix panel's
+      // `contractHasPendingCell` carry-forward, single-contract form).
+      let grants: ReadonlyMap<string, boolean> = state.grants;
+      if (pendingCells.size > 0) {
+        grants = state.grants;
+      } else if (grantsR.status === 'fulfilled') {
+        const m = new Map<string, boolean>();
+        for (const g of grantsR.value.grants) m.set(g.entry_key, g.granted);
+        grants = m;
+      } else {
+        errors.push(errMessage(grantsR.reason));
+      }
+
+      // CLI ops resolve against cli_reachability (same pending-write carry-forward
+      // as `grants`). A failed/absent cli read is SOFT — cli ops fall back to the
+      // fail-closed off state; it does not error the whole panel (unlike the grant
+      // spine), so a server without the cli caller still renders the op axis.
+      let cliRows: ReadonlyMap<string, boolean> = state.cliRows;
+      if (pendingCells.size === 0 && cliR.status === 'fulfilled' && cliR.value !== undefined) {
+        cliRows = cliRowsForPrincipal(cliR.value.rows, contractId);
+      }
+
+      state = {
+        ...state,
+        phase: errors.length > 0 ? 'error' : 'ready',
+        universe,
+        grants,
+        cliRows,
+        error: errors.length > 0 ? errors.join('; ') : null,
+      };
+      render();
+    })();
+    return pendingLoad;
+  };
+
+  /** Re-read this contract's explicit grant rows into `state.grants` — the
+   *  reconciling read after a write, so a partial/failed write can't leave a
+   *  stale on-screen state. */
+  const reloadGrants = async (): Promise<void> => {
+    const res = await opts.runGrantRead({ contract_id: contractId });
+    if (disposed) return;
+    const m = new Map<string, boolean>();
+    for (const g of res.grants) m.set(g.entry_key, g.granted);
+    state = { ...state, grants: m };
+  };
+
+  /** Re-read this contract's cli_reachability rows into `state.cliRows` — the
+   *  reconciling read after a CLI op toggle (the cli analog of reloadGrants). */
+  const reloadCliRows = async (): Promise<void> => {
+    if (opts.runCliReachabilityList === undefined) return;
+    const res = await opts.runCliReachabilityList();
+    if (disposed) return;
+    state = { ...state, cliRows: cliRowsForPrincipal(res.rows, contractId) };
+  };
+
+  const runToggle = async (entryKey: string): Promise<void> => {
+    if (pendingCells.has(entryKey)) return;
+    const entry = state.universe.find((e) => e.entry_key === entryKey);
+    if (entry === undefined) return;
+    const cli = entry.cli;
+    // A CLI op routes to cli_reachability; with no set caller its toggle is inert
+    // (the cell also renders disabled), so bail before touching pending state.
+    if (cli !== undefined && opts.runCliReachabilitySet === undefined) return;
+
+    // Toggle relative to the current EFFECTIVE state (the same resolver the cell
+    // renders), so the write target is correct whether the prior value came from
+    // an explicit row or the per-(entry × contract) author default. Always write
+    // the explicit boolean (unambiguous + idempotent); the gate reads
+    // `explicit ?? default` either way.
+    const target = effective(entry) !== 'on';
+
+    pendingCells.add(entryKey);
+    // Invalidate any in-flight full load so its snapshot can't clobber the
+    // reconciling re-read below.
+    loadGeneration += 1;
+    if (state.error !== null) state = { ...state, error: null };
+    render();
+    try {
+      if (cli !== undefined) {
+        // CLI op — write the cli_reachability allowlist (principal = contractId),
+        // NOT contract_grant (which the cli gate never reads). `operation_id` is
+        // the manifest MAP KEY (cli.operationKey), NOT the qualified entry label,
+        // so it matches the rows the gateway + cli-tool-universe key on. The
+        // no-caller case returned above.
+        await opts.runCliReachabilitySet!({
+          principal: contractId,
+          ingredient_id: cli.ingredientId,
+          operation_id: cli.operationKey,
+          allowed: target,
+        });
+        if (disposed) return;
+        await reloadCliRows();
+      } else {
+        await opts.runGrantWrite({ contract_id: contractId, entry_key: entryKey, granted: target });
+        if (disposed) return;
+        await reloadGrants();
+      }
+      if (disposed) return;
+    } catch (err) {
+      if (disposed) return;
+      state = { ...state, error: errMessage(err) };
+    } finally {
+      pendingCells.delete(entryKey);
+      // The "write epoch" backstop: bump again so a refresh that STARTED during
+      // this write is invalidated and can't apply a pre-reconcile snapshot.
+      loadGeneration += 1;
+      if (!disposed) render();
+    }
+  };
+
+  // ── live coherence ──────────────────────────────────────────────────
+  const broadcastUnsubscribers: Array<() => void> = [];
+  if (opts.subscribe) {
+    broadcastUnsubscribers.push(
+      opts.subscribe('contract.contract_definition_changed', () => {
+        if (disposed) return;
+        void doRefresh();
+      }),
+    );
+  }
+
+  // ── initial paint + seed load ───────────────────────────────────────
+  render();
+  void doRefresh();
+
+  return {
+    opsRoot,
+    entitiesRoot,
+    getState: () => state.phase,
+    getError: () => state.error,
+    getEntries: () => state.universe,
+    getEffective: (entryKey) => {
+      const entry = state.universe.find((e) => e.entry_key === entryKey);
+      return entry === undefined ? 'off' : effective(entry);
+    },
+    isExplicit: (entryKey) => hasExplicit(entryKey),
+    getOperationFilter: () => operationFilter,
+    toggleEntry: (entryKey) => runToggle(entryKey),
+    refresh: () => doRefresh(),
+    whenLoaded: () => pendingLoad,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (operationFilterTimer !== null) {
+        clearTimeout(operationFilterTimer);
+        operationFilterTimer = null;
+      }
+      for (const unsub of broadcastUnsubscribers) {
+        try {
+          unsub();
+        } catch {
+          /* swallow per-handle teardown failures */
+        }
+      }
+      broadcastUnsubscribers.length = 0;
+      for (const root of [opsRoot, entitiesRoot]) {
+        const parent = root.parentNode as { removeChild?: (c: unknown) => void } | null;
+        try {
+          parent?.removeChild?.(root);
+        } catch {
+          /* a detached / fake-DOM root may throw — ignore */
+        }
+      }
+    },
+  };
+};
+
+// ════════════════════════════════════════════════════════════════
+// Styles — scoped under [data-recued-contract-grants]; the route joins
+// this into its one style bundle.
+// ════════════════════════════════════════════════════════════════
+
+export const CONTRACT_GRANTS_PANEL_STYLES = `
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0 10px;
+  background: var(--surface, Canvas);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-input {
+  width: min(100%, 440px);
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-status {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-loading,
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 6px 2px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-error {
+  font-size: 13px;
+  color: var(--danger, #b3261e);
+  padding: 6px 2px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-summary {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 2px 0 8px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-axis-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0 0 10px;
+  max-width: 62ch;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-kind {
+  margin: 12px 0;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-kind-name,
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-op-ingredient-name {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 2px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-op-ingredient {
+  margin: 6px 0 6px 6px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0 3px 8px;
+  cursor: pointer;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box {
+  cursor: pointer;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-name {
+  font-size: 13px;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-write,
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-admin,
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-risk-destructive {
+  color: var(--danger, #b3261e);
+  border-color: var(--danger, #b3261e);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-asks {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: italic;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-also-reads {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 1px 6px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-source {
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-source[data-source='explicit'] {
+  color: var(--accent, var(--fg));
+}
+`;

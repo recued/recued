@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Recued — sign-in</title>
+    <!-- R26.2 Option B — self-serve OAuth opener-relay page. Served by the
+         server's LAN-only webclient bundle (D-152) at
+         /webclient/oauth-callback.html for a loopback PWA, so the OAuth code
+         never leaves the user's machine. The serving handler sets the strict
+         webclient CSP (script-src 'self'); the relay logic is the same-origin
+         oauth-callback-relay.js below (no inline script). -->
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        padding: 2rem;
+        max-width: 32rem;
+        margin: 0 auto;
+        color: #1a1a1a;
+      }
+      h1 { font-size: 1.25rem; }
+      p { line-height: 1.5; }
+      .err { color: #b00020; }
+      .ok { color: #006400; }
+    </style>
+  </head>
+  <body>
+    <h1 id="status">Completing sign-in…</h1>
+    <p id="message">Handing the result back to Recued.</p>
+    <p><small>This page is served by your own server — the sign-in code never leaves your machine.</small></p>
+    <script src="./oauth-callback-relay.js"></script>
+  </body>
+</html>

@@ -1,0 +1,816 @@
+{
+  "_extract": {
+    "generated_by": "scripts/generate-tailscale-cli-pack.mjs",
+    "sources": {
+      "cli": {
+        "kind": "official_mutable_markdown_hash_locked",
+        "url": "https://tailscale.com/docs/reference/tailscale-cli.md",
+        "bytes": 49514,
+        "sha256": "0ae48e49acd4c1f32b3d4e65c095bd5613b5cb221fbec32253976312fc315325",
+        "last_validated": "2026-01-26",
+        "retrieved_on": "2026-07-16"
+      },
+      "serve": {
+        "kind": "official_mutable_markdown_hash_locked",
+        "url": "https://tailscale.com/docs/reference/tailscale-cli/serve.md",
+        "bytes": 12905,
+        "sha256": "709ea830c06def48521ce28c2322241dde3bfce5cad3b176347fbb225814f137",
+        "last_validated": "2026-01-26",
+        "retrieved_on": "2026-07-16"
+      },
+      "funnel": {
+        "kind": "official_mutable_markdown_hash_locked",
+        "url": "https://tailscale.com/docs/reference/tailscale-cli/funnel.md",
+        "bytes": 9088,
+        "sha256": "d96631edcab3fd619eebe6c5c205c0148836439ae7af25814f9c603f5ebfc852",
+        "last_validated": "2026-01-26",
+        "retrieved_on": "2026-07-16"
+      },
+      "lock": {
+        "kind": "official_mutable_markdown_hash_locked",
+        "url": "https://tailscale.com/docs/reference/tailscale-cli/lock.md",
+        "bytes": 15627,
+        "sha256": "cf074704eb08ca069aa78b03ba603ff2acabbc6c83fa2960d519f726dc208ad2",
+        "last_validated": "2026-01-05",
+        "retrieved_on": "2026-07-16"
+      },
+      "daemon": {
+        "kind": "official_mutable_markdown_hash_locked",
+        "url": "https://tailscale.com/docs/reference/tailscaled.md",
+        "bytes": 5625,
+        "sha256": "a3927da5bdce40d74ddb1e95f5788bb003cd3029bdff175ad76c2a94865c2068",
+        "last_validated": "2026-01-05",
+        "retrieved_on": "2026-07-16"
+      }
+    },
+    "official_command_root_count": 33,
+    "admitted_command_root_count": 15,
+    "excluded_command_root_count": 18,
+    "operation_count": 18,
+    "composition_bytes": 17991,
+    "risk_counts": {
+      "read": 18
+    },
+    "approval_counts": {
+      "ask": 17,
+      "never": 1
+    },
+    "output_shape_counts": {
+      "json": 12,
+      "text": 6
+    },
+    "daemon_required_count": 16,
+    "active_network_probe_count": 3,
+    "argument_operation_count": 3,
+    "runtime_boundary": {
+      "pack_slug": "tailscale-cli",
+      "service_kind": "cli",
+      "ingredient_kind": "cli",
+      "tool": "tailscale",
+      "package_ref": "system_binary:tailscale",
+      "probe": [
+        "tailscale",
+        "version",
+        "--json"
+      ],
+      "default_socket_only": true,
+      "connection_requirements": 0,
+      "credential_arguments": 0,
+      "api_pack_dependency": false
+    },
+    "docker_smoke": {
+      "spec": "community/tests/tailscale-cli.smoke.json",
+      "image": "tailscale/tailscale:stable",
+      "image_digest": "sha256:d54b2e6a9c09f0e5ec52e82b9ad4af3d446b54a7c08075e92f11c39dd410105f",
+      "client_version": "1.98.8",
+      "daemon_mode": "tailscaled --tun=userspace-networking --state=mem:",
+      "authenticated": false,
+      "successful_operation_ids": [
+        "tailscale.version",
+        "node.status",
+        "network.netcheck",
+        "dns.status",
+        "dns.query",
+        "serve.status",
+        "funnel.status",
+        "tailnet_lock.status",
+        "system.policy",
+        "account.list",
+        "metrics.snapshot",
+        "app_connector.routes"
+      ],
+      "help_verified_operation_ids": [
+        "network.ping",
+        "network.whois",
+        "exit_node.list",
+        "tailnet_lock.log"
+      ],
+      "enrollment_required_operation_ids": [
+        "node.ipv4",
+        "node.ipv6",
+        "network.ping",
+        "network.whois",
+        "exit_node.list",
+        "tailnet_lock.log"
+      ]
+    },
+    "source_decision": {
+      "admitted": false,
+      "candidates": [],
+      "reason": "Local Tailscale device, peer, account, DNS, routing, service, and security diagnostics are control-plane observations rather than semantically honest task, note, commitment, or user-work project Sources."
+    },
+    "audit_findings_folded": [
+      {
+        "severity": "HIGH",
+        "finding": "The Tailscale API and local CLI share a brand but have different runtime, identity, and trust boundaries.",
+        "resolution": "Ship tailscale-cli independently with system_binary:tailscale and no dependency, connection requirement, or credential argument from tailscale-api."
+      },
+      {
+        "severity": "HIGH",
+        "finding": "Most CLI commands depend on a privileged local daemon whose implementation differs across Linux, macOS variants, and Windows.",
+        "resolution": "Probe only the portable tailscale binary, declare daemon readiness explicitly, use the default local socket, and never admit a caller-selected --socket path."
+      },
+      {
+        "severity": "HIGH",
+        "finding": "Several top-level commands authenticate, disconnect, rewrite routing/firewall settings, or can cut off the host running Recued.",
+        "resolution": "Exclude up, down, login, logout, and set entirely instead of attempting a broad safe-looking flag subset."
+      },
+      {
+        "severity": "HIGH",
+        "finding": "SSH, nc, web, systray, and wait are interactive, server-starting, GUI, streaming, or potentially indefinite surfaces.",
+        "resolution": "Admit only finite foreground value-returning invocations with no stdin, detach, listener, shell, or streaming mode."
+      },
+      {
+        "severity": "HIGH",
+        "finding": "Certificate, Taildrop, and Taildrive commands can create private keys or read/write local and remote files.",
+        "resolution": "Exclude cert, file, and drive until a separate file_ref and secret-output design can prove materialization, ownership, and non-persistence."
+      },
+      {
+        "severity": "HIGH",
+        "finding": "Serve, Funnel, and Tailnet Lock command families combine useful reads with public exposure and security-authority mutations.",
+        "resolution": "Admit only JSON status and a fixed 50-entry Tailnet Lock log; exclude every reset, target, config, advertise, key, disable, sign, and revoke mutation."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "Tailscale marks status JSON subject to change and netcheck JSON not yet stable.",
+        "resolution": "Pin the current official docs, label both capabilities unstable, return provider JSON without a brittle response schema, and fail regeneration on documentation drift."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "Netcheck and ping actively probe network paths and can reveal public addressing, NAT, relay, and topology evidence.",
+        "resolution": "Require approval, disable repeating/verbose/bind controls, bound ping to three attempts and five seconds each, and disable the until-direct extension."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "Daemon-backed reads expose peer names, owner identities, accounts, policies, routes, services, traffic counters, and key metadata.",
+        "resolution": "Require approval and zero cache for every capability except the local CLI version."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "DNS query and peer selectors could become arbitrary argv or option injection if accepted as free-form command fragments.",
+        "resolution": "Use discrete argv holes, reject dash/URL/whitespace/path syntax, and constrain DNS record types to a closed eight-value enum."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "Tailnet Lock logs and App Connector routes can grow or disclose security topology.",
+        "resolution": "Fix the authority log limit at 50, keep routes read-only, require approval, and prohibit caller-supplied flags."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "A local binary probe must not depend on login state or daemon availability or pack installation would false-fail.",
+        "resolution": "Probe tailscale version --json only; model daemon and enrollment as operation-time readiness requirements."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "The official CLI reference contains 33 top-level command roots, but claiming all of them would misrepresent unsafe and unsupported execution modes.",
+        "resolution": "Record an exact 15-admitted/18-excluded command-root partition and test that every official root has one explicit decision."
+      },
+      {
+        "severity": "MEDIUM",
+        "finding": "Local node, network, account, and security status are not task, note, commitment, or user-work project records.",
+        "resolution": "Declare no work_entity_sources and bundle no automatic or chat workflow that could leak private local diagnostics."
+      }
+    ],
+    "operations_sha256": "9868207a99c3e2ff96460d3ef74622046754b3bf9be4b62fb73b39f919d259fe"
+  },
+  "official_commands": [
+    {
+      "root": "up",
+      "decision": "excluded",
+      "reason": "Authenticates and mutates local routing, advertised routes, exit-node, SSH, firewall, and login state; a fixed diagnostic pack must not silently rewrite the node preference set.",
+      "operation_ids": []
+    },
+    {
+      "root": "down",
+      "decision": "excluded",
+      "reason": "Disconnects the local node and can cut off the Recued host or the operator using it.",
+      "operation_ids": []
+    },
+    {
+      "root": "bugreport",
+      "decision": "excluded",
+      "reason": "Writes markers into diagnostic logs and creates support-visible identifiers; reserve this side effect for a dedicated support workflow.",
+      "operation_ids": []
+    },
+    {
+      "root": "cert",
+      "decision": "excluded",
+      "reason": "Creates certificate and private-key files and therefore needs a dedicated secret file-output contract.",
+      "operation_ids": []
+    },
+    {
+      "root": "dns",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "dns.status",
+        "dns.query"
+      ]
+    },
+    {
+      "root": "drive",
+      "decision": "excluded",
+      "reason": "Taildrive share management is file-system mutation, and the list surface is still marked alpha by the current binary.",
+      "operation_ids": []
+    },
+    {
+      "root": "completion",
+      "decision": "excluded",
+      "reason": "Emits shell integration code and is configuration tooling rather than an automation capability.",
+      "operation_ids": []
+    },
+    {
+      "root": "configure",
+      "decision": "excluded",
+      "reason": "Mutates kubeconfig, operating-system VPN, Synology, system-extension, or startup configuration and includes alpha/platform-specific surfaces.",
+      "operation_ids": []
+    },
+    {
+      "root": "exit-node",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "exit_node.list"
+      ]
+    },
+    {
+      "root": "file",
+      "decision": "excluded",
+      "reason": "Taildrop sends or writes files and needs explicit file_ref materialization, destination, conflict, and receipt semantics.",
+      "operation_ids": []
+    },
+    {
+      "root": "funnel",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "funnel.status"
+      ]
+    },
+    {
+      "root": "ip",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "node.ipv4",
+        "node.ipv6"
+      ]
+    },
+    {
+      "root": "licenses",
+      "decision": "excluded",
+      "reason": "Large static license output has no useful local network automation value.",
+      "operation_ids": []
+    },
+    {
+      "root": "lock",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "tailnet_lock.status",
+        "tailnet_lock.log"
+      ]
+    },
+    {
+      "root": "login",
+      "decision": "excluded",
+      "reason": "Interactive authentication and auth-key input must never be operation arguments in this pack.",
+      "operation_ids": []
+    },
+    {
+      "root": "logout",
+      "decision": "excluded",
+      "reason": "Expires local login state and can immediately remove an ephemeral node.",
+      "operation_ids": []
+    },
+    {
+      "root": "metrics",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "metrics.snapshot"
+      ]
+    },
+    {
+      "root": "netcheck",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "network.netcheck"
+      ]
+    },
+    {
+      "root": "nc",
+      "decision": "excluded",
+      "reason": "Opens an arbitrary raw network stream and requires interactive stdin/streaming semantics.",
+      "operation_ids": []
+    },
+    {
+      "root": "ping",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "network.ping"
+      ]
+    },
+    {
+      "root": "serve",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "serve.status"
+      ]
+    },
+    {
+      "root": "set",
+      "decision": "excluded",
+      "reason": "Mutates local routing, DNS, SSH, firewall, update, and advertised-service preferences with host-reachability consequences.",
+      "operation_ids": []
+    },
+    {
+      "root": "ssh",
+      "decision": "excluded",
+      "reason": "Starts an interactive remote shell and is not a bounded value-returning invocation.",
+      "operation_ids": []
+    },
+    {
+      "root": "status",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "node.status"
+      ]
+    },
+    {
+      "root": "switch",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "account.list"
+      ]
+    },
+    {
+      "root": "syspolicy",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "system.policy"
+      ]
+    },
+    {
+      "root": "systray",
+      "decision": "excluded",
+      "reason": "Starts a platform-specific GUI process and can be long-running.",
+      "operation_ids": []
+    },
+    {
+      "root": "update",
+      "decision": "excluded",
+      "reason": "Mutates the installed Tailscale software and release track.",
+      "operation_ids": []
+    },
+    {
+      "root": "version",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "tailscale.version"
+      ]
+    },
+    {
+      "root": "wait",
+      "decision": "excluded",
+      "reason": "Is intentionally blocking and can wait indefinitely; readiness belongs to the runtime probe/gate.",
+      "operation_ids": []
+    },
+    {
+      "root": "web",
+      "decision": "excluded",
+      "reason": "Starts a local HTTP control server and requires lifecycle, listen-address, and exposure policy.",
+      "operation_ids": []
+    },
+    {
+      "root": "whois",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "network.whois"
+      ]
+    },
+    {
+      "root": "appc-routes",
+      "decision": "admitted_bounded_read",
+      "operation_ids": [
+        "app_connector.routes"
+      ]
+    }
+  ],
+  "operation_contracts": {
+    "tailscale.version": {
+      "op": "tailscale.version",
+      "command_root": "version",
+      "docs_source": "cli",
+      "docs_heading": "version",
+      "argv": [
+        "tailscale",
+        "version",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "never",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 60000,
+      "arg_keys": [],
+      "daemon_required": false,
+      "active_network_probe": false,
+      "private_output": false,
+      "unstable_output": false
+    },
+    "node.status": {
+      "op": "node.status",
+      "command_root": "status",
+      "docs_source": "cli",
+      "docs_heading": "status",
+      "argv": [
+        "tailscale",
+        "status",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": true
+    },
+    "node.ipv4": {
+      "op": "node.ipv4",
+      "command_root": "ip",
+      "docs_source": "cli",
+      "docs_heading": "ip",
+      "argv": [
+        "tailscale",
+        "ip",
+        "--4"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "node.ipv6": {
+      "op": "node.ipv6",
+      "command_root": "ip",
+      "docs_source": "cli",
+      "docs_heading": "ip",
+      "argv": [
+        "tailscale",
+        "ip",
+        "--6"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "network.netcheck": {
+      "op": "network.netcheck",
+      "command_root": "netcheck",
+      "docs_source": "cli",
+      "docs_heading": "netcheck",
+      "argv": [
+        "tailscale",
+        "netcheck",
+        "--format=json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 30000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": false,
+      "active_network_probe": true,
+      "private_output": true,
+      "unstable_output": true
+    },
+    "network.ping": {
+      "op": "network.ping",
+      "command_root": "ping",
+      "docs_source": "cli",
+      "docs_heading": "ping",
+      "argv": [
+        "tailscale",
+        "ping",
+        "--c=3",
+        "--timeout=5s",
+        "--until-direct=false",
+        "{target}"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 20000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [
+        "target"
+      ],
+      "daemon_required": true,
+      "active_network_probe": true,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "network.whois": {
+      "op": "network.whois",
+      "command_root": "whois",
+      "docs_source": "cli",
+      "docs_heading": "whois",
+      "argv": [
+        "tailscale",
+        "whois",
+        "--json",
+        "{address}"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [
+        "address"
+      ],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "dns.status": {
+      "op": "dns.status",
+      "command_root": "dns",
+      "docs_source": "cli",
+      "docs_heading": "dns",
+      "argv": [
+        "tailscale",
+        "dns",
+        "status",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "dns.query": {
+      "op": "dns.query",
+      "command_root": "dns",
+      "docs_source": "cli",
+      "docs_heading": "dns",
+      "argv": [
+        "tailscale",
+        "dns",
+        "query",
+        "--json",
+        "{name}",
+        "{record_type}"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [
+        "name",
+        "record_type"
+      ],
+      "daemon_required": true,
+      "active_network_probe": true,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "exit_node.list": {
+      "op": "exit_node.list",
+      "command_root": "exit-node",
+      "docs_source": "cli",
+      "docs_heading": "exit-node",
+      "argv": [
+        "tailscale",
+        "exit-node",
+        "list"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "serve.status": {
+      "op": "serve.status",
+      "command_root": "serve",
+      "docs_source": "serve",
+      "docs_heading": "serve",
+      "argv": [
+        "tailscale",
+        "serve",
+        "status",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "funnel.status": {
+      "op": "funnel.status",
+      "command_root": "funnel",
+      "docs_source": "funnel",
+      "docs_heading": "funnel",
+      "argv": [
+        "tailscale",
+        "funnel",
+        "status",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "tailnet_lock.status": {
+      "op": "tailnet_lock.status",
+      "command_root": "lock",
+      "docs_source": "lock",
+      "docs_heading": "lock",
+      "argv": [
+        "tailscale",
+        "lock",
+        "status",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "tailnet_lock.log": {
+      "op": "tailnet_lock.log",
+      "command_root": "lock",
+      "docs_source": "lock",
+      "docs_heading": "lock",
+      "argv": [
+        "tailscale",
+        "lock",
+        "log",
+        "--json",
+        "--limit=50"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "system.policy": {
+      "op": "system.policy",
+      "command_root": "syspolicy",
+      "docs_source": "cli",
+      "docs_heading": "syspolicy",
+      "argv": [
+        "tailscale",
+        "syspolicy",
+        "list",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "account.list": {
+      "op": "account.list",
+      "command_root": "switch",
+      "docs_source": "cli",
+      "docs_heading": "switch",
+      "argv": [
+        "tailscale",
+        "switch",
+        "--list",
+        "--json"
+      ],
+      "shape": "json",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "metrics.snapshot": {
+      "op": "metrics.snapshot",
+      "command_root": "metrics",
+      "docs_source": "cli",
+      "docs_heading": "metrics",
+      "argv": [
+        "tailscale",
+        "metrics",
+        "print"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    },
+    "app_connector.routes": {
+      "op": "app_connector.routes",
+      "command_root": "appc-routes",
+      "docs_source": "cli",
+      "docs_heading": "appc-routes",
+      "argv": [
+        "tailscale",
+        "appc-routes",
+        "--all"
+      ],
+      "shape": "text",
+      "approval": "ask",
+      "risk": "read",
+      "timeout_ms": 15000,
+      "cache_ttl_ms": 0,
+      "arg_keys": [],
+      "daemon_required": true,
+      "active_network_probe": false,
+      "private_output": true,
+      "unstable_output": false
+    }
+  }
+}

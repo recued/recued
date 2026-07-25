@@ -1,0 +1,19 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1 YAML, v2 server base path (/api/v2) applied to path keys; URL is unversioned (drift risk - re-pin at publish)",
+    "url": "https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml",
+    "sha256": "e8e7a1aee8395545de80ecf8a2518a948ad7bef51a9014fe2412db9fd1836a12",
+    "fetched_at": "2026-07-15"
+  },
+  "paths": {
+    "/api/v2/activities": {
+      "get": {},
+      "post": {}
+    },
+    "/api/v2/activities/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    }
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "_fixture_note": "D-192 P1b coverage declaration (spec \u00a7 Pack coverage gate) \u2014 validation artifact, unpublished + runtime-disabled; exercises the work_entity_sources contract against the real pinned official OpenAPI document (see the sibling *.paths.json extract). auth is stubbed 'none' (enrollment realism is out of P1b scope).",
+  "slug": "asana-tasks-coverage",
+  "name": "Asana Tasks (D-192 coverage)",
+  "description": "D-192 P1b coverage declaration for Asana Tasks (D-192 coverage).",
+  "author": "recued-core",
+  "kind": "connection",
+  "version": 1,
+  "category": "data",
+  "risk_tier": "read",
+  "tags": [
+    "d-192-coverage"
+  ],
+  "input": {
+    "operation": null,
+    "args": null
+  },
+  "output": {
+    "result": "result"
+  },
+  "operations": {
+    "task.list_by_project": {
+      "operation_id": "recued-core/asana.task.list_by_project",
+      "risk_tier": "read"
+    },
+    "task.read": {
+      "operation_id": "recued-core/asana.task.read",
+      "risk_tier": "read"
+    },
+    "task.create": {
+      "operation_id": "recued-core/asana.task.create",
+      "risk_tier": "write"
+    },
+    "task.update": {
+      "operation_id": "recued-core/asana.task.update",
+      "risk_tier": "write"
+    },
+    "task.delete": {
+      "operation_id": "recued-core/asana.task.delete",
+      "risk_tier": "write"
+    }
+  },
+  "surfaces": {
+    "api": {
+      "transport": "rest",
+      "default_base_url": "https://app.asana.com/api/1.0",
+      "auth": {
+        "kind": "none"
+      },
+      "openapi_source": {
+        "url": "https://raw.githubusercontent.com/Asana/openapi/c13afb76dd53e5f6313b0f60b6efd9a81f270265/defs/asana_oas.yaml",
+        "sha256": "2f541dc34c71323d476b788b06d8f5b2b59eb0b84d1d05373c8e1b1b0cbb5659"
+      },
+      "executes": {
+        "task.list_by_project": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/projects/{project_gid}/tasks"
+        },
+        "task.read": {
+          "kind": "rest",
+          "method": "GET",
+          "path_template": "/tasks/{task_gid}"
+        },
+        "task.create": {
+          "kind": "rest",
+          "method": "POST",
+          "path_template": "/tasks"
+        },
+        "task.update": {
+          "kind": "rest",
+          "method": "PUT",
+          "path_template": "/tasks/{task_gid}"
+        },
+        "task.delete": {
+          "kind": "rest",
+          "method": "DELETE",
+          "path_template": "/tasks/{task_gid}"
+        }
+      }
+    }
+  },
+  "work_entity_sources": [
+    {
+      "kind": "task",
+      "source_id_template": "asana.${connection_id}.task",
+      "source_label_template": "Asana tasks (${connection_name})",
+      "source_kind": "connection",
+      "contract_source": {
+        "kind": "openapi",
+        "surface": "surfaces.api.openapi_source",
+        "url": "https://raw.githubusercontent.com/Asana/openapi/c13afb76dd53e5f6313b0f60b6efd9a81f270265/defs/asana_oas.yaml",
+        "sha256": "2f541dc34c71323d476b788b06d8f5b2b59eb0b84d1d05373c8e1b1b0cbb5659",
+        "operations": [
+          "task.list_by_project",
+          "task.read",
+          "task.create",
+          "task.update",
+          "task.delete"
+        ]
+      },
+      "remote": {
+        "entity": "task",
+        "id": "gid",
+        "version": {
+          "kind": "updated_at",
+          "field": "modified_at"
+        },
+        "hash_fields": [
+          "name",
+          "completed",
+          "due_on",
+          "assignee",
+          "notes"
+        ]
+      },
+      "ops": {
+        "list": "task.list_by_project",
+        "read": "task.read",
+        "create": "task.create",
+        "update": "task.update",
+        "delete": "task.delete"
+      },
+      "sync": {
+        "mode": "read_write",
+        "depth": "meta",
+        "tombstones": "missing_means_deleted",
+        "list_scope": "complete_authoritative",
+        "stale_after_ms": 21600000
+      },
+      "read_resolution": {
+        "default": "local_rich_meta",
+        "remote_when": [
+          "field_missing",
+          "source_stale",
+          "complete_body_required",
+          "current_remote_required",
+          "write_preflight"
+        ],
+        "wild_query": {
+          "remote_fanout": "bounded_targeted",
+          "max_sources": 3,
+          "max_remote_records": 10,
+          "on_exceeds_cap": "ask_to_narrow"
+        }
+      },
+      "projection": {
+        "canonical": {
+          "title": "name",
+          "done": "completed",
+          "due_at": "due_on"
+        },
+        "preview": {
+          "body": {
+            "field": "notes",
+            "max_chars": 800
+          }
+        },
+        "extension": {
+          "detail_fidelity": "preview",
+          "remote_url": "permalink_url"
+        }
+      },
+      "writable_fields": [
+        "title",
+        "done",
+        "due_at",
+        "body"
+      ],
+      "relationships": [
+        {
+          "local_field": "assigned_contact_id",
+          "remote_field": "assignee.email",
+          "target": "contact",
+          "pairing": "lookup",
+          "lookup_key": "email",
+          "cardinality": "one",
+          "write_back": false
+        }
+      ],
+      "write_policy": {
+        "conditional_write": "none",
+        "stale_write": "manual_merge",
+        "field_conflicts": "manual_merge"
+      }
+    }
+  ]
+}

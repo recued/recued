@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+.DS_Store
+
+# Runtime state
+*.db
+*.db-shm
+*.db-wal
+recued-server.lock
+recued-server.pid
+recued-server.log
+recued-server-identity.json
+
+# Test and browser artifacts
+test-results/
+playwright-report/
+backend/server/.tmp-*/

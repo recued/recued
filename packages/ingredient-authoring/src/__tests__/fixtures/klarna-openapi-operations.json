@@ -1,0 +1,4792 @@
+{
+  "_extract": {
+    "retrieved_on": "2026-07-16",
+    "official_path_count": 51,
+    "official_operation_count": 55,
+    "admitted_unique_operation_count": 41,
+    "catalog_operation_count": 41,
+    "exclusion_count": 14,
+    "compatibility_operation_count": 4,
+    "root_feature_operation_count": 24,
+    "root_operation_count": 28,
+    "leaf_operation_count": 13,
+    "pack_operation_counts": {
+      "klarna": 28,
+      "klarna-customer-tokens": 1,
+      "klarna-hosted-payment-page": 1,
+      "klarna-order-management": 5,
+      "klarna-settlements": 4,
+      "klarna-disputes-v4": 2
+    },
+    "composition_bytes": {
+      "klarna": 77733,
+      "klarna-customer-tokens": 1465,
+      "klarna-hosted-payment-page": 2549,
+      "klarna-order-management": 9639,
+      "klarna-settlements": 6783,
+      "klarna-disputes-v4": 5815
+    },
+    "exclusion_counts": {
+      "binary_attachment_response": 1,
+      "binary_report_response": 4,
+      "different_auth_audience": 1,
+      "multipart_attachment": 1,
+      "pci_key_encryption_surface": 7
+    },
+    "request_body_mode_counts": {
+      "compatibility_projected": 3,
+      "none": 23,
+      "projected_object": 13,
+      "raw_object": 2
+    },
+    "auth": {
+      "connection_type": "http_basic",
+      "connection_owned_headers": [
+        "Authorization"
+      ],
+      "non_caller_headers": [
+        "Klarna-Integrator",
+        "Klarna-Integration-Metadata",
+        "User-Agent"
+      ],
+      "partner_enrollment_excluded": true,
+      "origin": {
+        "fixed": "https://api.klarna.com",
+        "region": "Europe live",
+        "caller_controlled": false
+      }
+    },
+    "idempotency": {
+      "new_mutation_operation_count": 24,
+      "documented_key_operation_count": 14,
+      "required_key_operation_count": 14,
+      "non_idempotent_operation_count": 7,
+      "non_idempotent_operation_keys": [
+        "disputes-api-v4:POST /v4/payment/disputes/merchants/{merchant_id}/enroll",
+        "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/accept-loss",
+        "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/appeal",
+        "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/represent",
+        "hpp-merchant:POST /hpp/v1/sessions",
+        "hpp-merchant:POST /hpp/v1/sessions/{session_id}/distribution",
+        "payments:POST /payments/v1/authorizations/{authorizationToken}/customer-token"
+      ],
+      "compatibility_not_rewritten": [
+        "payment_session.create",
+        "payment_session.update",
+        "order.create"
+      ]
+    },
+    "pagination": {
+      "automatic_operation_count": 3,
+      "operation_keys": [
+        "disputes-api-v4:GET /v4/payment/disputes",
+        "settlements:GET /payouts",
+        "settlements:GET /transactions"
+      ],
+      "styles": {
+        "offset": 2,
+        "query_token": 1
+      }
+    },
+    "compatibility": {
+      "operation_ids": [
+        "payment_session.create",
+        "payment_session.read",
+        "payment_session.update",
+        "order.create"
+      ],
+      "phantom_payment_session_entity_removed": true,
+      "read_recipe_session_identity_source": "config.session_id",
+      "normalized_operations_sha256": "0972c2b0c33ecbc4cd2963c5582002d50724a98871fd522f1ce88686c6bb62b5",
+      "entities_sha256": "8ea6242f77dd78e11c08603f0eb10b85b3bd04bb72d2cfed0951d3fcc0035a30",
+      "recipe_contents_sha256": "91733fb090fe7b9eaa330e219a0c4e719d6a69fe101a9c565adfbd435c1adf97",
+      "recipes_field_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "recipe_files_sha256": "afebafb2ce30cce5a29ebae8b0130579ab02efacf759c02be80424479a6f5cc7"
+    },
+    "recipes": {
+      "baseline_count": 4,
+      "new_count": 6,
+      "total_count": 10,
+      "slugs": [
+        "create-payment-session-klarna",
+        "payment-session-brief-klarna",
+        "update-payment-session-cart-klarna",
+        "create-order-from-authorization-klarna",
+        "order-operations-brief-klarna",
+        "payout-reconciliation-brief-klarna",
+        "disputes-queue-digest-klarna",
+        "create-hosted-payment-page-klarna",
+        "capture-order-klarna",
+        "refund-order-klarna"
+      ],
+      "versions": {
+        "create-payment-session-klarna": 1,
+        "payment-session-brief-klarna": 2,
+        "update-payment-session-cart-klarna": 2,
+        "create-order-from-authorization-klarna": 2,
+        "order-operations-brief-klarna": 1,
+        "payout-reconciliation-brief-klarna": 1,
+        "disputes-queue-digest-klarna": 1,
+        "create-hosted-payment-page-klarna": 1,
+        "capture-order-klarna": 1,
+        "refund-order-klarna": 1
+      },
+      "all_recipe_files_sha256": "5990a3d56a0c5c85afc69ddc5ce11cc6b57ed2ef1197471379e3cbc23b5e0732"
+    },
+    "source_pin": {
+      "omitted": true,
+      "reason": "Klarna exposes complete schemas only inside public server-rendered page data, without a stable raw-document URL suitable for a truthful manifest pin.",
+      "schema_hashes_locked": 7
+    },
+    "source_posture": {
+      "work_entity_sources": 0,
+      "reason": "Checkout, order, payout, and dispute records are financial/control-plane evidence, not task, note, or project semantics."
+    },
+    "audit_findings_folded": [
+      {
+        "severity": "high",
+        "finding": "The legacy payment-session entity and two recipes treated session_id as a field returned by GET /payments/v1/sessions/{session_id}, but the official response schema does not contain it.",
+        "resolution": "The unaddressable entity is removed, the repaired read/update recipes are versioned at v2 and carry config.session_id, and the unchanged create recipe still uses the documented create-response session_id."
+      },
+      {
+        "severity": "high",
+        "finding": "The legacy order entity typed authorized_payment_method as a string even though the create-order response declares an object with a required type discriminator.",
+        "resolution": "The entity now maps authorized_payment_method as JSON and the repaired order recipe is versioned at v2 and renders authorized_payment_method.type."
+      },
+      {
+        "severity": "high",
+        "finding": "Merchant Card Service crosses into encrypted PAN/CVV handling and connection-external key enrollment/decryption.",
+        "resolution": "All seven MCS routes are census-visible exact exclusions; no KeyId, encrypted card blob, or private-key workflow enters the catalog."
+      },
+      {
+        "severity": "high",
+        "finding": "Klarna marks mutation idempotency headers optional even though retries without a durable key can duplicate financial actions.",
+        "resolution": "Every admitted route documenting Klarna-Idempotency-Key makes it caller-owned and mandatory; routes without a key are explicitly non-idempotent."
+      },
+      {
+        "severity": "high",
+        "finding": "One source pin cannot honestly cover seven independent embedded API documents.",
+        "resolution": "The root omits a misleading pin, read surfaces are split into five dependency packs, and the fixture byte/hash-locks all seven official schemas."
+      },
+      {
+        "severity": "medium",
+        "finding": "Settlement reports and dispute attachments use PDF, CSV, image, or multipart bodies outside the JSON catalog transport.",
+        "resolution": "Four binary reports and two attachment routes fail closed with exact categories and reasons."
+      },
+      {
+        "severity": "medium",
+        "finding": "Dispute list filters use repeated query arrays that the current binding cannot encode with documentary explode semantics.",
+        "resolution": "The six optional array filters are omitted with evidence; scalar dates, size, cursor, and exact same-route pagination remain available."
+      },
+      {
+        "severity": "medium",
+        "finding": "The V4 appeal route is published before the documented 2026-11-01 workflow activation.",
+        "resolution": "The route remains account/date/state gated in its description, approval-always, and admin-risk; callers receive no availability claim."
+      },
+      {
+        "severity": "medium",
+        "finding": "The old surface accepted undeclared nested request keys and parsed unsafe response integers lossily.",
+        "resolution": "Compatibility request schemas are recursively closed and every compatibility response opts into exact unsafe-integer strings without changing established catalog contracts."
+      },
+      {
+        "severity": "medium",
+        "finding": "Exposing all three new read briefs as chat tools pushed the root catalog over its prompt-budget guidance.",
+        "resolution": "The recipes remain installed and visible but chat_exposed is false; the two established headline tools retain the compact default chat surface."
+      },
+      {
+        "severity": "medium",
+        "finding": "The initial generated policy classified permanent hosted-payment-session disablement as an ordinary write.",
+        "resolution": "hosted_payment_session.disable is destructive, idempotent, grant-off, and approval-always."
+      },
+      {
+        "severity": "medium",
+        "finding": "The initial root prose claimed regional origin selection lived in the connection even though api_base is the connection row-match key and every ingredient pins api.klarna.com.",
+        "resolution": "The manifests and recipe help now truthfully state Europe live origin scope; no host or region argument enters the callable surface."
+      },
+      {
+        "severity": "medium",
+        "finding": "The initial audit labeled optional Klarna integration headers as binding-owned even though only Authorization and User-Agent have trusted runtime owners.",
+        "resolution": "Optional integration headers are now truthfully omitted, required future integration headers fail generation closed, Authorization remains connection-owned, and User-Agent remains transport-owned."
+      },
+      {
+        "severity": "medium",
+        "finding": "Several initial entity fields were authored as required even though the official response schemas expose the properties without requiring them.",
+        "resolution": "Entity audit now proves path, wire type, requiredness, and date format; every schema-optional field is explicitly optional in the generated entity contract."
+      },
+      {
+        "severity": "medium",
+        "finding": "All ten Klarna recipes placed raw vendor detail in output.content, a key outside RecipeOutput that no result consumer reads.",
+        "resolution": "All ten recipes now expose every summary, table, and raw JSON detail through output.render only; generator and focused audit gates reject any other output channel."
+      }
+    ]
+  },
+  "sources": [
+    {
+      "key": "payments",
+      "page": "payments",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/payments/",
+      "pack": null,
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 54047,
+      "embedded_schema_sha256": "9301b7d25e33d7fae07e475e895209e7457b14afa5dc3a7f25da17537569f29e",
+      "dialect": "openapi",
+      "dialect_version": "3.0.0",
+      "title": "Klarna Payments API V1",
+      "api_version": "1.0.0",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 5,
+      "operation_count": 6
+    },
+    {
+      "key": "customertoken",
+      "page": "customertoken",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/customertoken/",
+      "pack": "klarna-customer-tokens",
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 19312,
+      "embedded_schema_sha256": "b7beecdccb0263e6e471b9d7c129fe0e89ebd23f25d7ee3f012bb24e72f34fa7",
+      "dialect": "openapi",
+      "dialect_version": "3.0.0",
+      "title": "Klarna Payments API V1",
+      "api_version": "1.0.0",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 3,
+      "operation_count": 3
+    },
+    {
+      "key": "hpp-merchant",
+      "page": "hpp-merchant",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/hpp-merchant/",
+      "pack": "klarna-hosted-payment-page",
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 13299,
+      "embedded_schema_sha256": "b7b2c94aff2184c9ed613432431800bd348089784a2bb77b06993657c1e4df56",
+      "dialect": "swagger",
+      "dialect_version": "2.0",
+      "title": "HPP",
+      "api_version": "1.1",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 3,
+      "operation_count": 4
+    },
+    {
+      "key": "ordermanagement",
+      "page": "ordermanagement",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/ordermanagement/",
+      "pack": "klarna-order-management",
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 50571,
+      "embedded_schema_sha256": "93906d0e76bf03e65b29e1a71217230ad9a893801209150aee5f92d0a9490879",
+      "dialect": "openapi",
+      "dialect_version": "3.0.1",
+      "title": "Klarna Order Management API",
+      "api_version": "1.0",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 17,
+      "operation_count": 18
+    },
+    {
+      "key": "settlements",
+      "page": "settlements",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/settlements/",
+      "pack": "klarna-settlements",
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 25337,
+      "embedded_schema_sha256": "a1fcac8bc2b1d68aeb8e125b8393c4910547ca59be49540f9453d279055ffb3a",
+      "dialect": "swagger",
+      "dialect_version": "2.0",
+      "title": "Klarna Settlements API",
+      "api_version": "1.0.0-rc2",
+      "server": "https://api.klarna.com",
+      "base_path": "/settlements/v1",
+      "path_count": 8,
+      "operation_count": 8
+    },
+    {
+      "key": "disputes-api-v4",
+      "page": "disputes-api-v4",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/disputes-api-v4/",
+      "pack": "klarna-disputes-v4",
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 189673,
+      "embedded_schema_sha256": "95918ef502922ebe8462ece407e63c7a8ec6bc39811696fc02190a398cddd0eb",
+      "dialect": "openapi",
+      "dialect_version": "3.0.3",
+      "title": "Klarna Partner Product API - Payment Disputes",
+      "api_version": "v4",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 9,
+      "operation_count": 9
+    },
+    {
+      "key": "merchant-card-service",
+      "page": "merchant-card-service",
+      "url": "https://docs.klarna.com/acquirer/klarna/api/merchant-card-service/",
+      "pack": null,
+      "docs_release": "r2606",
+      "docs_version": "v2",
+      "embedded_schema_bytes": 13409,
+      "embedded_schema_sha256": "2e278b9cc6970e62b6e53b0ce7c28ba14a0181e3b9ca8d051128f2cfc46bcf29",
+      "dialect": "swagger",
+      "dialect_version": "2.0",
+      "title": "Merchant Card Service API",
+      "api_version": "1.0.0",
+      "server": "https://api.klarna.com",
+      "base_path": "",
+      "path_count": 6,
+      "operation_count": 7
+    }
+  ],
+  "exclusions": [
+    {
+      "key": "settlements:GET /reports/payout",
+      "category": "binary_report_response",
+      "reason": "The success body is a PDF file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "key": "settlements:GET /reports/payout-with-transactions",
+      "category": "binary_report_response",
+      "reason": "The success body is a CSV file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "key": "settlements:GET /reports/payouts-summary",
+      "category": "binary_report_response",
+      "reason": "The success body is a PDF file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "key": "settlements:GET /reports/payouts-summary-with-transactions",
+      "category": "binary_report_response",
+      "reason": "The success body is a CSV file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "key": "disputes-api-v4:POST /v4/payment/disputes/partners/{partner_id}/enroll",
+      "category": "different_auth_audience",
+      "reason": "Partner onboarding requires an OAuth2 client_id audience; the Klarna pack connection is merchant API-key Basic authentication."
+    },
+    {
+      "key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/attachments",
+      "category": "multipart_attachment",
+      "reason": "The request is multipart/form-data binary evidence and cannot be represented by the bounded JSON REST binding."
+    },
+    {
+      "key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}/attachments/{payment_dispute_attachment_id}/download",
+      "category": "binary_attachment_response",
+      "reason": "The success body is PDF, JPEG, or PNG binary evidence rather than JSON."
+    },
+    {
+      "key": "merchant-card-service:GET /merchantcard/v3/orders/{order_id}/cancel-request",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:POST /merchantcard/v3/orders/{order_id}/cancel-request",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:POST /merchantcard/v3/promises",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:GET /merchantcard/v3/promises/{promise_id}",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:POST /merchantcard/v3/settlements",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:GET /merchantcard/v3/settlements/order/{order_id}",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "key": "merchant-card-service:GET /merchantcard/v3/settlements/{settlement_id}",
+      "category": "pci_key_encryption_surface",
+      "reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    }
+  ],
+  "official_operations": [
+    {
+      "source": "payments",
+      "key": "payments:DELETE /payments/v1/authorizations/{authorizationToken}",
+      "method": "DELETE",
+      "path": "/payments/v1/authorizations/{authorizationToken}",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}",
+      "official_operation_id": "cancelAuthorization",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "authorization.cancel",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "payments",
+      "key": "payments:POST /payments/v1/authorizations/{authorizationToken}/customer-token",
+      "method": "POST",
+      "path": "/payments/v1/authorizations/{authorizationToken}/customer-token",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}/customer-token",
+      "official_operation_id": "purchaseToken",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "customer_token.create_from_authorization",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "payments",
+      "key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "method": "POST",
+      "path": "/payments/v1/authorizations/{authorizationToken}/order",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}/order",
+      "official_operation_id": "createOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "order.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "payments",
+      "key": "payments:POST /payments/v1/sessions",
+      "method": "POST",
+      "path": "/payments/v1/sessions",
+      "wire_path": "/payments/v1/sessions",
+      "official_operation_id": "createCreditSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "payments",
+      "key": "payments:GET /payments/v1/sessions/{session_id}",
+      "method": "GET",
+      "path": "/payments/v1/sessions/{session_id}",
+      "wire_path": "/payments/v1/sessions/{session_id}",
+      "official_operation_id": "readCreditSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "payments",
+      "key": "payments:POST /payments/v1/sessions/{session_id}",
+      "method": "POST",
+      "path": "/payments/v1/sessions/{session_id}",
+      "wire_path": "/payments/v1/sessions/{session_id}",
+      "official_operation_id": "updateCreditSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "payment_session.update",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "customertoken",
+      "key": "customertoken:GET /customer-token/v1/tokens/{customerToken}",
+      "method": "GET",
+      "path": "/customer-token/v1/tokens/{customerToken}",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}",
+      "official_operation_id": "readCustomerToken",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-customer-tokens",
+      "op": "customer_token.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "customertoken",
+      "key": "customertoken:POST /customer-token/v1/tokens/{customerToken}/order",
+      "method": "POST",
+      "path": "/customer-token/v1/tokens/{customerToken}/order",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}/order",
+      "official_operation_id": "createOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "customer_token.order.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "customertoken",
+      "key": "customertoken:PATCH /customer-token/v1/tokens/{customerToken}/status",
+      "method": "PATCH",
+      "path": "/customer-token/v1/tokens/{customerToken}/status",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}/status",
+      "official_operation_id": "patchCustomerToken",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "customer_token.status.update",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "hpp-merchant",
+      "key": "hpp-merchant:POST /hpp/v1/sessions",
+      "method": "POST",
+      "path": "/hpp/v1/sessions",
+      "wire_path": "/hpp/v1/sessions",
+      "official_operation_id": "createHppSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "hpp-merchant",
+      "key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "method": "GET",
+      "path": "/hpp/v1/sessions/{session_id}",
+      "wire_path": "/hpp/v1/sessions/{session_id}",
+      "official_operation_id": "getSessionById",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-hosted-payment-page",
+      "op": "hosted_payment_session.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "hpp-merchant",
+      "key": "hpp-merchant:DELETE /hpp/v1/sessions/{session_id}",
+      "method": "DELETE",
+      "path": "/hpp/v1/sessions/{session_id}",
+      "wire_path": "/hpp/v1/sessions/{session_id}",
+      "official_operation_id": "disableHppSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "hosted_payment_session.disable",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "hpp-merchant",
+      "key": "hpp-merchant:POST /hpp/v1/sessions/{session_id}/distribution",
+      "method": "POST",
+      "path": "/hpp/v1/sessions/{session_id}/distribution",
+      "wire_path": "/hpp/v1/sessions/{session_id}/distribution",
+      "official_operation_id": "distributeHppSession",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "hosted_payment_session.distribute",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}",
+      "official_operation_id": "getOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/acknowledge",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/acknowledge",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/acknowledge",
+      "official_operation_id": "acknowledgeOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.acknowledge",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/authorization",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/authorization",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/authorization",
+      "official_operation_id": "updateAuthorization",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.authorization.update",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/cancel",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/cancel",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/cancel",
+      "official_operation_id": "cancelOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.cancel",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "official_operation_id": "getCaptures",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "official_operation_id": "captureOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.capture.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_operation_id": "getCapture",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "official_operation_id": "extendDueDate",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.capture.due_date.extend",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "official_operation_id": "getOptionsForExtendDueDate",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.due_date_option.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "official_operation_id": "appendShippingInfo",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.capture.shipping_info.append",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "official_operation_id": "triggerSendOut",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.capture.customer_communication.send",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/customer-details",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/customer-details",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/customer-details",
+      "official_operation_id": "updateConsumerDetails",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.customer_details.update",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "official_operation_id": "extendAuthorizationTime",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.authorization.extend",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/merchant-references",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/merchant-references",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/merchant-references",
+      "official_operation_id": "updateMerchantReferences",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.merchant_reference.update",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/refunds",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/refunds",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/refunds",
+      "official_operation_id": "refundOrder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.refund.create",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_operation_id": "get",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-order-management",
+      "op": "managed_order.refund.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "official_operation_id": "releaseRemainingAuthorization",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.authorization.release",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "ordermanagement",
+      "key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/shipping-info",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/shipping-info",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/shipping-info",
+      "official_operation_id": "appendOrderShippingInfo",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "managed_order.shipping_info.append",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /payouts",
+      "method": "GET",
+      "path": "/payouts",
+      "wire_path": "/settlements/v1/payouts",
+      "official_operation_id": "getPayouts",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /payouts/summary",
+      "method": "GET",
+      "path": "/payouts/summary",
+      "wire_path": "/settlements/v1/payouts/summary",
+      "official_operation_id": "getPayoutSummary",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-settlements",
+      "op": "settlement.payout_summary.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /payouts/{payment_reference}",
+      "method": "GET",
+      "path": "/payouts/{payment_reference}",
+      "wire_path": "/settlements/v1/payouts/{payment_reference}",
+      "official_operation_id": "getPayout",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /reports/payout",
+      "method": "GET",
+      "path": "/reports/payout",
+      "wire_path": "/settlements/v1/reports/payout",
+      "official_operation_id": "payout",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "binary_report_response",
+      "exclusion_reason": "The success body is a PDF file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /reports/payout-with-transactions",
+      "method": "GET",
+      "path": "/reports/payout-with-transactions",
+      "wire_path": "/settlements/v1/reports/payout-with-transactions",
+      "official_operation_id": "getPayoutReportWithTransactions",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "binary_report_response",
+      "exclusion_reason": "The success body is a CSV file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /reports/payouts-summary",
+      "method": "GET",
+      "path": "/reports/payouts-summary",
+      "wire_path": "/settlements/v1/reports/payouts-summary",
+      "official_operation_id": "payoutsSummary",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "binary_report_response",
+      "exclusion_reason": "The success body is a PDF file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /reports/payouts-summary-with-transactions",
+      "method": "GET",
+      "path": "/reports/payouts-summary-with-transactions",
+      "wire_path": "/settlements/v1/reports/payouts-summary-with-transactions",
+      "official_operation_id": "getPayoutsSummaryReportWithTransactions",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "binary_report_response",
+      "exclusion_reason": "The success body is a CSV file, while the REST catalog contract is JSON-shaped."
+    },
+    {
+      "source": "settlements",
+      "key": "settlements:GET /transactions",
+      "method": "GET",
+      "path": "/transactions",
+      "wire_path": "/settlements/v1/transactions",
+      "official_operation_id": "getTransactions",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:GET /v4/payment/disputes",
+      "method": "GET",
+      "path": "/v4/payment/disputes",
+      "wire_path": "/v4/payment/disputes",
+      "official_operation_id": "listDisputes",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "method": "POST",
+      "path": "/v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "wire_path": "/v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "official_operation_id": "enrollMerchant",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "dispute.merchant.enroll",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/partners/{partner_id}/enroll",
+      "method": "POST",
+      "path": "/v4/payment/disputes/partners/{partner_id}/enroll",
+      "wire_path": "/v4/payment/disputes/partners/{partner_id}/enroll",
+      "official_operation_id": "enrollPartner",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "different_auth_audience",
+      "exclusion_reason": "Partner onboarding requires an OAuth2 client_id audience; the Klarna pack connection is merchant API-key Basic authentication."
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "method": "GET",
+      "path": "/v4/payment/disputes/{payment_dispute_id}",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}",
+      "official_operation_id": "getDisputeDetails",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.read",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "official_operation_id": "acceptLoss",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "dispute.loss.accept",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/appeal",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/appeal",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/appeal",
+      "official_operation_id": "appealDispute",
+      "deprecated": false,
+      "migration_gated": true,
+      "selected": true,
+      "pack": "klarna",
+      "op": "dispute.appeal",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/attachments",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/attachments",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/attachments",
+      "official_operation_id": "uploadAttachment",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "multipart_attachment",
+      "exclusion_reason": "The request is multipart/form-data binary evidence and cannot be represented by the bounded JSON REST binding."
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}/attachments/{payment_dispute_attachment_id}/download",
+      "method": "GET",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/attachments/{payment_dispute_attachment_id}/download",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/attachments/{payment_dispute_attachment_id}/download",
+      "official_operation_id": "getDisputeAttachment",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "binary_attachment_response",
+      "exclusion_reason": "The success body is PDF, JPEG, or PNG binary evidence rather than JSON."
+    },
+    {
+      "source": "disputes-api-v4",
+      "key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/represent",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/represent",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/represent",
+      "official_operation_id": "respondToDisputeRequest",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": true,
+      "pack": "klarna",
+      "op": "dispute.represent",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:GET /merchantcard/v3/orders/{order_id}/cancel-request",
+      "method": "GET",
+      "path": "/merchantcard/v3/orders/{order_id}/cancel-request",
+      "wire_path": "/merchantcard/v3/orders/{order_id}/cancel-request",
+      "official_operation_id": "getcancelorder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:POST /merchantcard/v3/orders/{order_id}/cancel-request",
+      "method": "POST",
+      "path": "/merchantcard/v3/orders/{order_id}/cancel-request",
+      "wire_path": "/merchantcard/v3/orders/{order_id}/cancel-request",
+      "official_operation_id": "postcancelorder",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:POST /merchantcard/v3/promises",
+      "method": "POST",
+      "path": "/merchantcard/v3/promises",
+      "wire_path": "/merchantcard/v3/promises",
+      "official_operation_id": "createPromise",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:GET /merchantcard/v3/promises/{promise_id}",
+      "method": "GET",
+      "path": "/merchantcard/v3/promises/{promise_id}",
+      "wire_path": "/merchantcard/v3/promises/{promise_id}",
+      "official_operation_id": "readPromise",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:POST /merchantcard/v3/settlements",
+      "method": "POST",
+      "path": "/merchantcard/v3/settlements",
+      "wire_path": "/merchantcard/v3/settlements",
+      "official_operation_id": "settlePromise",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:GET /merchantcard/v3/settlements/order/{order_id}",
+      "method": "GET",
+      "path": "/merchantcard/v3/settlements/order/{order_id}",
+      "wire_path": "/merchantcard/v3/settlements/order/{order_id}",
+      "official_operation_id": "readSettlementByOrderId",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    },
+    {
+      "source": "merchant-card-service",
+      "key": "merchant-card-service:GET /merchantcard/v3/settlements/{settlement_id}",
+      "method": "GET",
+      "path": "/merchantcard/v3/settlements/{settlement_id}",
+      "wire_path": "/merchantcard/v3/settlements/{settlement_id}",
+      "official_operation_id": "readSettlement",
+      "deprecated": false,
+      "migration_gated": false,
+      "selected": false,
+      "pack": null,
+      "op": null,
+      "exclusion_category": "pci_key_encryption_surface",
+      "exclusion_reason": "Merchant Card Service returns encrypted virtual-card material and requires enrolled public-key identifiers plus private-key decryption outside this Basic-auth JSON pack."
+    }
+  ],
+  "operation_contracts": [
+    {
+      "source": "payments",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "official_operation_id": "createCreditSession",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "method": "POST",
+      "path": "/payments/v1/sessions",
+      "wire_path": "/payments/v1/sessions",
+      "binding_path": "/payments/v1/sessions",
+      "compatibility": true,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "compatibility_projected",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": null,
+      "arg_keys": [
+        "body.purchase_country",
+        "body.purchase_currency",
+        "body.order_amount",
+        "body.order_lines",
+        "body.order_tax_amount",
+        "body.locale",
+        "body.intent",
+        "body.acquiring_channel",
+        "body.merchant_urls",
+        "body.merchant_reference1",
+        "body.merchant_reference2",
+        "body.merchant_data",
+        "body.billing_address",
+        "body.shipping_address",
+        "body.customer"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "attachment",
+        "authorization_token",
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "client_token",
+        "custom_payment_method_ids",
+        "customer",
+        "customer.customer_token",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "merchant_urls",
+        "options.color_border",
+        "options.color_border_selected",
+        "options.radius_border",
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "order_tax_amount",
+        "payment_method_categories",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ],
+      "response_sensitive_paths": [
+        "client_token",
+        "payment_method_categories"
+      ]
+    },
+    {
+      "source": "payments",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "official_operation_id": "readCreditSession",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "method": "GET",
+      "path": "/payments/v1/sessions/{session_id}",
+      "wire_path": "/payments/v1/sessions/{session_id}",
+      "binding_path": "/payments/v1/sessions/{{session_id}}",
+      "compatibility": true,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": null,
+      "arg_keys": [
+        "session_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "attachment",
+        "authorization_token",
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "client_token",
+        "custom_payment_method_ids",
+        "customer",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "merchant_urls",
+        "options.color_border",
+        "options.color_border_selected",
+        "options.radius_border",
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "order_tax_amount",
+        "payment_method_categories",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ]
+    },
+    {
+      "source": "payments",
+      "official_key": "payments:POST /payments/v1/sessions/{session_id}",
+      "official_operation_id": "updateCreditSession",
+      "pack": "klarna",
+      "op": "payment_session.update",
+      "method": "POST",
+      "path": "/payments/v1/sessions/{session_id}",
+      "wire_path": "/payments/v1/sessions/{session_id}",
+      "binding_path": "/payments/v1/sessions/{{session_id}}",
+      "compatibility": true,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "compatibility_projected",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": null,
+      "arg_keys": [
+        "session_id",
+        "body.purchase_country",
+        "body.purchase_currency",
+        "body.order_amount",
+        "body.order_lines",
+        "body.order_tax_amount",
+        "body.locale",
+        "body.intent",
+        "body.acquiring_channel",
+        "body.merchant_urls",
+        "body.merchant_reference1",
+        "body.merchant_reference2",
+        "body.merchant_data",
+        "body.billing_address",
+        "body.shipping_address",
+        "body.customer"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "attachment",
+        "authorization_token",
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "client_token",
+        "custom_payment_method_ids",
+        "customer",
+        "customer.customer_token",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "merchant_urls",
+        "options.color_border",
+        "options.color_border_selected",
+        "options.radius_border",
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "order_tax_amount",
+        "payment_method_categories",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "payments",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "official_operation_id": "createOrder",
+      "pack": "klarna",
+      "op": "order.create",
+      "method": "POST",
+      "path": "/payments/v1/authorizations/{authorizationToken}/order",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}/order",
+      "binding_path": "/payments/v1/authorizations/{{authorization_token}}/order",
+      "compatibility": true,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "compatibility_projected",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": null,
+      "arg_keys": [
+        "authorization_token",
+        "body.purchase_country",
+        "body.purchase_currency",
+        "body.order_amount",
+        "body.order_lines",
+        "body.order_tax_amount",
+        "body.locale",
+        "body.auto_capture",
+        "body.merchant_urls",
+        "body.merchant_reference1",
+        "body.merchant_reference2",
+        "body.merchant_data",
+        "body.billing_address",
+        "body.shipping_address",
+        "body.customer"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "authorization_token",
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "custom_payment_method_ids",
+        "customer",
+        "customer.customer_token",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "merchant_urls",
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "order_tax_amount",
+        "payment_method_categories",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ],
+      "response_sensitive_paths": [
+        "authorized_payment_method",
+        "order_id"
+      ]
+    },
+    {
+      "source": "payments",
+      "official_key": "payments:DELETE /payments/v1/authorizations/{authorizationToken}",
+      "official_operation_id": "cancelAuthorization",
+      "pack": "klarna",
+      "op": "authorization.cancel",
+      "method": "DELETE",
+      "path": "/payments/v1/authorizations/{authorizationToken}",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}",
+      "binding_path": "/payments/v1/authorizations/{{authorization_token}}",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "authorization_token"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "payments",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/customer-token",
+      "official_operation_id": "purchaseToken",
+      "pack": "klarna",
+      "op": "customer_token.create_from_authorization",
+      "method": "POST",
+      "path": "/payments/v1/authorizations/{authorizationToken}/customer-token",
+      "wire_path": "/payments/v1/authorizations/{authorizationToken}/customer-token",
+      "binding_path": "/payments/v1/authorizations/{{authorization_token}}/customer-token",
+      "compatibility": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "authorization_token",
+        "body.billing_address",
+        "body.customer",
+        "body.description",
+        "body.intended_use",
+        "body.locale",
+        "body.purchase_country",
+        "body.purchase_currency"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "customer",
+        "customer.customer_token"
+      ],
+      "response_sensitive_paths": [
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "customer",
+        "payment_method_reference",
+        "token_id"
+      ]
+    },
+    {
+      "source": "customertoken",
+      "official_key": "customertoken:GET /customer-token/v1/tokens/{customerToken}",
+      "official_operation_id": "readCustomerToken",
+      "pack": "klarna-customer-tokens",
+      "op": "customer_token.read",
+      "method": "GET",
+      "path": "/customer-token/v1/tokens/{customerToken}",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}",
+      "binding_path": "/customer-token/v1/tokens/{{customer_token}}",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "customer_token"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "card",
+        "payment_method_type"
+      ]
+    },
+    {
+      "source": "customertoken",
+      "official_key": "customertoken:POST /customer-token/v1/tokens/{customerToken}/order",
+      "official_operation_id": "createOrder",
+      "pack": "klarna",
+      "op": "customer_token.order.create",
+      "method": "POST",
+      "path": "/customer-token/v1/tokens/{customerToken}/order",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}/order",
+      "binding_path": "/customer-token/v1/tokens/{{customer_token}}/order",
+      "compatibility": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "raw_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "customer_token",
+        "header.Klarna-Idempotency-Key",
+        "body_raw"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "attachment",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "merchant_urls",
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "order_tax_amount",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ],
+      "response_sensitive_paths": [
+        "authorized_payment_method",
+        "order_id"
+      ]
+    },
+    {
+      "source": "customertoken",
+      "official_key": "customertoken:PATCH /customer-token/v1/tokens/{customerToken}/status",
+      "official_operation_id": "patchCustomerToken",
+      "pack": "klarna",
+      "op": "customer_token.status.update",
+      "method": "PATCH",
+      "path": "/customer-token/v1/tokens/{customerToken}/status",
+      "wire_path": "/customer-token/v1/tokens/{customerToken}/status",
+      "binding_path": "/customer-token/v1/tokens/{{customer_token}}/status",
+      "compatibility": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "customer_token",
+        "body.status"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "hpp-merchant",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions",
+      "official_operation_id": "createHppSession",
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "method": "POST",
+      "path": "/hpp/v1/sessions",
+      "wire_path": "/hpp/v1/sessions",
+      "binding_path": "/hpp/v1/sessions",
+      "compatibility": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.User-Agent",
+          "reason": "transport_owned_user_agent_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "body.merchant_urls",
+        "body.options",
+        "body.payment_session_url",
+        "body.profile_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "merchant_urls",
+        "options.payment_method_categories",
+        "options.payment_method_category",
+        "options.place_order_mode",
+        "payment_session_url"
+      ],
+      "response_sensitive_paths": [
+        "distribution_module.token"
+      ]
+    },
+    {
+      "source": "hpp-merchant",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_operation_id": "getSessionById",
+      "pack": "klarna-hosted-payment-page",
+      "op": "hosted_payment_session.read",
+      "method": "GET",
+      "path": "/hpp/v1/sessions/{session_id}",
+      "wire_path": "/hpp/v1/sessions/{session_id}",
+      "binding_path": "/hpp/v1/sessions/{{session_id}}",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "session_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "authorization_token",
+        "customer",
+        "klarna_reference",
+        "manual_identification.customer",
+        "manual_identification.customer_obfuscated",
+        "order_id"
+      ]
+    },
+    {
+      "source": "hpp-merchant",
+      "official_key": "hpp-merchant:DELETE /hpp/v1/sessions/{session_id}",
+      "official_operation_id": "disableHppSession",
+      "pack": "klarna",
+      "op": "hosted_payment_session.disable",
+      "method": "DELETE",
+      "path": "/hpp/v1/sessions/{session_id}",
+      "wire_path": "/hpp/v1/sessions/{session_id}",
+      "binding_path": "/hpp/v1/sessions/{{session_id}}",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "*/*"
+      ],
+      "selected_response_media": "*/*",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "session_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "hpp-merchant",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions/{session_id}/distribution",
+      "official_operation_id": "distributeHppSession",
+      "pack": "klarna",
+      "op": "hosted_payment_session.distribute",
+      "method": "POST",
+      "path": "/hpp/v1/sessions/{session_id}/distribution",
+      "wire_path": "/hpp/v1/sessions/{session_id}/distribution",
+      "binding_path": "/hpp/v1/sessions/{{session_id}}/distribution",
+      "compatibility": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "session_id",
+        "body.contact_information",
+        "body.method",
+        "body.template"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "contact_information.email",
+        "contact_information.phone",
+        "contact_information.phone_country"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_operation_id": "getOrder",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.Klarna-Integrator",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "order_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "captured_amount",
+        "captures[].billing_address",
+        "captures[].billing_address.email",
+        "captures[].billing_address.phone",
+        "captures[].billing_address.street_address",
+        "captures[].billing_address.street_address2",
+        "captures[].captured_amount",
+        "captures[].klarna_reference",
+        "captures[].order_lines",
+        "captures[].order_lines[].merchant_data",
+        "captures[].order_lines[].reference",
+        "captures[].order_lines[].total_amount",
+        "captures[].order_lines[].total_discount_amount",
+        "captures[].order_lines[].total_tax_amount",
+        "captures[].reference",
+        "captures[].refunded_amount",
+        "captures[].shipping_address",
+        "captures[].shipping_address.email",
+        "captures[].shipping_address.phone",
+        "captures[].shipping_address.street_address",
+        "captures[].shipping_address.street_address2",
+        "captures[].shipping_info",
+        "captures[].shipping_info[].return_shipping_company",
+        "captures[].shipping_info[].shipping_company",
+        "captures[].shipping_info[].shipping_method",
+        "customer",
+        "initial_payment_method",
+        "klarna_reference",
+        "merchant_data",
+        "merchant_reference1",
+        "merchant_reference2",
+        "order_amount",
+        "order_id",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "original_order_amount",
+        "refunded_amount",
+        "refunds",
+        "refunds[].order_lines",
+        "refunds[].order_lines[].merchant_data",
+        "refunds[].order_lines[].reference",
+        "refunds[].order_lines[].total_amount",
+        "refunds[].order_lines[].total_discount_amount",
+        "refunds[].order_lines[].total_tax_amount",
+        "refunds[].reference",
+        "refunds[].refund_id",
+        "refunds[].refunded_amount",
+        "refunds[].refunded_at",
+        "remaining_authorized_amount",
+        "selected_shipping_option",
+        "selected_shipping_option.location.address",
+        "selected_shipping_option.location.address.street_address",
+        "selected_shipping_option.location.address.street_address__2",
+        "selected_shipping_option.tax_amount",
+        "selected_shipping_option.tms_reference",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2",
+        "shipping_info",
+        "shipping_info[].return_shipping_company",
+        "shipping_info[].shipping_company",
+        "shipping_info[].shipping_method"
+      ]
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/acknowledge",
+      "official_operation_id": "acknowledgeOrder",
+      "pack": "klarna",
+      "op": "managed_order.acknowledge",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/acknowledge",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/acknowledge",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/acknowledge",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/authorization",
+      "official_operation_id": "updateAuthorization",
+      "pack": "klarna",
+      "op": "managed_order.authorization.update",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/authorization",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/authorization",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/authorization",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "raw_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body_raw"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "order_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/cancel",
+      "official_operation_id": "cancelOrder",
+      "pack": "klarna",
+      "op": "managed_order.cancel",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/cancel",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/cancel",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/cancel",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "official_operation_id": "getCaptures",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "order_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "[].billing_address",
+        "[].billing_address.email",
+        "[].billing_address.phone",
+        "[].billing_address.street_address",
+        "[].billing_address.street_address2",
+        "[].captured_amount",
+        "[].klarna_reference",
+        "[].order_lines",
+        "[].order_lines[].merchant_data",
+        "[].order_lines[].reference",
+        "[].order_lines[].total_amount",
+        "[].order_lines[].total_discount_amount",
+        "[].order_lines[].total_tax_amount",
+        "[].reference",
+        "[].refunded_amount",
+        "[].shipping_address",
+        "[].shipping_address.email",
+        "[].shipping_address.phone",
+        "[].shipping_address.street_address",
+        "[].shipping_address.street_address2",
+        "[].shipping_info",
+        "[].shipping_info[].return_shipping_company",
+        "[].shipping_info[].shipping_company",
+        "[].shipping_info[].shipping_method"
+      ]
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures",
+      "official_operation_id": "captureOrder",
+      "pack": "klarna",
+      "op": "managed_order.capture.create",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body.captured_amount",
+        "body.description",
+        "body.order_lines",
+        "body.reference",
+        "body.shipping_delay",
+        "body.shipping_info"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "captured_amount",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "reference",
+        "shipping_delay",
+        "shipping_info",
+        "shipping_info[].return_shipping_company",
+        "shipping_info[].shipping_company",
+        "shipping_info[].shipping_method"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_operation_id": "getCapture",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.read",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures/{{capture_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "order_id",
+        "capture_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "billing_address",
+        "billing_address.email",
+        "billing_address.phone",
+        "billing_address.street_address",
+        "billing_address.street_address2",
+        "captured_amount",
+        "klarna_reference",
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "reference",
+        "refunded_amount",
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2",
+        "shipping_info",
+        "shipping_info[].return_shipping_company",
+        "shipping_info[].shipping_company",
+        "shipping_info[].shipping_method"
+      ]
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "official_operation_id": "extendDueDate",
+      "pack": "klarna",
+      "op": "managed_order.capture.due_date.extend",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures/{{capture_id}}/extend-due-date",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "capture_id",
+        "header.Klarna-Idempotency-Key",
+        "body.number_of_days"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "official_operation_id": "getOptionsForExtendDueDate",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.due_date_option.search",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/extend-due-date-options",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures/{{capture_id}}/extend-due-date-options",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "order_id",
+        "capture_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "options[].amount"
+      ]
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "official_operation_id": "appendShippingInfo",
+      "pack": "klarna",
+      "op": "managed_order.capture.shipping_info.append",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/shipping-info",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures/{{capture_id}}/shipping-info",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "capture_id",
+        "header.Klarna-Idempotency-Key",
+        "body.shipping_info"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "shipping_info",
+        "shipping_info[].return_shipping_company",
+        "shipping_info[].shipping_company",
+        "shipping_info[].shipping_method"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "official_operation_id": "triggerSendOut",
+      "pack": "klarna",
+      "op": "managed_order.capture.customer_communication.send",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/captures/{capture_id}/trigger-send-out",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/captures/{{capture_id}}/trigger-send-out",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "capture_id",
+        "header.Klarna-Idempotency-Key"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/customer-details",
+      "official_operation_id": "updateConsumerDetails",
+      "pack": "klarna",
+      "op": "managed_order.customer_details.update",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/customer-details",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/customer-details",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/customer-details",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body.shipping_address"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "shipping_address",
+        "shipping_address.email",
+        "shipping_address.phone",
+        "shipping_address.street_address",
+        "shipping_address.street_address2"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "official_operation_id": "extendAuthorizationTime",
+      "pack": "klarna",
+      "op": "managed_order.authorization.extend",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/extend-authorization-time",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/extend-authorization-time",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:PATCH /ordermanagement/v1/orders/{order_id}/merchant-references",
+      "official_operation_id": "updateMerchantReferences",
+      "pack": "klarna",
+      "op": "managed_order.merchant_reference.update",
+      "method": "PATCH",
+      "path": "/ordermanagement/v1/orders/{order_id}/merchant-references",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/merchant-references",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/merchant-references",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body.merchant_reference1",
+        "body.merchant_reference2"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "merchant_reference1",
+        "merchant_reference2"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/refunds",
+      "official_operation_id": "refundOrder",
+      "pack": "klarna",
+      "op": "managed_order.refund.create",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/refunds",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/refunds",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/refunds",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body.description",
+        "body.order_lines",
+        "body.reference",
+        "body.refunded_amount"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "reference",
+        "refunded_amount"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_operation_id": "get",
+      "pack": "klarna-order-management",
+      "op": "managed_order.refund.read",
+      "method": "GET",
+      "path": "/ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/refunds/{{refund_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "order_id",
+        "refund_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "order_lines",
+        "order_lines[].merchant_data",
+        "order_lines[].reference",
+        "order_lines[].total_amount",
+        "order_lines[].total_discount_amount",
+        "order_lines[].total_tax_amount",
+        "reference",
+        "refund_id",
+        "refunded_amount",
+        "refunded_at"
+      ]
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "official_operation_id": "releaseRemainingAuthorization",
+      "pack": "klarna",
+      "op": "managed_order.authorization.release",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/release-remaining-authorization",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/release-remaining-authorization",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "ordermanagement",
+      "official_key": "ordermanagement:POST /ordermanagement/v1/orders/{order_id}/shipping-info",
+      "official_operation_id": "appendOrderShippingInfo",
+      "pack": "klarna",
+      "op": "managed_order.shipping_info.append",
+      "method": "POST",
+      "path": "/ordermanagement/v1/orders/{order_id}/shipping-info",
+      "wire_path": "/ordermanagement/v1/orders/{order_id}/shipping-info",
+      "binding_path": "/ordermanagement/v1/orders/{{order_id}}/shipping-info",
+      "compatibility": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "order_id",
+        "header.Klarna-Idempotency-Key",
+        "body.shipping_info"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "shipping_info",
+        "shipping_info[].return_shipping_company",
+        "shipping_info[].shipping_company",
+        "shipping_info[].shipping_method"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "settlements",
+      "official_key": "settlements:GET /payouts",
+      "official_operation_id": "getPayouts",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.search",
+      "method": "GET",
+      "path": "/payouts",
+      "wire_path": "/settlements/v1/payouts",
+      "binding_path": "/settlements/v1/payouts",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "query.start_date",
+        "query.end_date",
+        "query.currency_code",
+        "query.size",
+        "query.offset"
+      ],
+      "idempotency_key_required": false,
+      "result_path": "payouts",
+      "pagination_style": "offset",
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "payouts[].merchant_id",
+        "payouts[].merchant_settlement_type",
+        "payouts[].payment_reference",
+        "payouts[].totals.charge_amount",
+        "payouts[].totals.closing_debt_balance_amount",
+        "payouts[].totals.commission_amount",
+        "payouts[].totals.commission_reversal_amount",
+        "payouts[].totals.credit_amount",
+        "payouts[].totals.deposit_amount",
+        "payouts[].totals.fee_amount",
+        "payouts[].totals.fee_correction_amount",
+        "payouts[].totals.fee_refund_amount",
+        "payouts[].totals.holdback_amount",
+        "payouts[].totals.opening_debt_balance_amount",
+        "payouts[].totals.release_amount",
+        "payouts[].totals.repay_amount",
+        "payouts[].totals.return_amount",
+        "payouts[].totals.reversal_amount",
+        "payouts[].totals.sale_amount",
+        "payouts[].totals.settlement_amount",
+        "payouts[].totals.tax_amount",
+        "payouts[].totals.tax_refund_amount"
+      ]
+    },
+    {
+      "source": "settlements",
+      "official_key": "settlements:GET /payouts/summary",
+      "official_operation_id": "getPayoutSummary",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout_summary.search",
+      "method": "GET",
+      "path": "/payouts/summary",
+      "wire_path": "/settlements/v1/payouts/summary",
+      "binding_path": "/settlements/v1/payouts/summary",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "query.start_date",
+        "query.end_date",
+        "query.currency_code"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "[].summary_total_commission_amount",
+        "[].summary_total_commission_reversal_amount",
+        "[].summary_total_fee_amount",
+        "[].summary_total_fee_correction_amount",
+        "[].summary_total_holdback_amount",
+        "[].summary_total_release_amount",
+        "[].summary_total_repay_amount",
+        "[].summary_total_return_amount",
+        "[].summary_total_reversal_amount",
+        "[].summary_total_sale_amount",
+        "[].summary_total_settlement_amount",
+        "[].summary_total_tax_amount"
+      ]
+    },
+    {
+      "source": "settlements",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_operation_id": "getPayout",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "method": "GET",
+      "path": "/payouts/{payment_reference}",
+      "wire_path": "/settlements/v1/payouts/{payment_reference}",
+      "binding_path": "/settlements/v1/payouts/{{payment_reference}}",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "payment_reference"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "merchant_id",
+        "merchant_settlement_type",
+        "payment_reference",
+        "totals.charge_amount",
+        "totals.closing_debt_balance_amount",
+        "totals.commission_amount",
+        "totals.commission_reversal_amount",
+        "totals.credit_amount",
+        "totals.deposit_amount",
+        "totals.fee_amount",
+        "totals.fee_correction_amount",
+        "totals.fee_refund_amount",
+        "totals.holdback_amount",
+        "totals.opening_debt_balance_amount",
+        "totals.release_amount",
+        "totals.repay_amount",
+        "totals.return_amount",
+        "totals.reversal_amount",
+        "totals.sale_amount",
+        "totals.settlement_amount",
+        "totals.tax_amount",
+        "totals.tax_refund_amount"
+      ]
+    },
+    {
+      "source": "settlements",
+      "official_key": "settlements:GET /transactions",
+      "official_operation_id": "getTransactions",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "method": "GET",
+      "path": "/transactions",
+      "wire_path": "/settlements/v1/transactions",
+      "binding_path": "/settlements/v1/transactions",
+      "compatibility": false,
+      "security": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "query.payment_reference",
+        "query.order_id",
+        "query.size",
+        "query.offset"
+      ],
+      "idempotency_key_required": false,
+      "result_path": "transactions",
+      "pagination_style": "offset",
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "transactions[].amount",
+        "transactions[].initial_payment_method_monthly_downpayments",
+        "transactions[].initial_payment_method_type",
+        "transactions[].merchant_capture_reference",
+        "transactions[].merchant_reference1",
+        "transactions[].merchant_reference2",
+        "transactions[].merchant_refund_reference",
+        "transactions[].order_id",
+        "transactions[].payment_reference",
+        "transactions[].refund_id",
+        "transactions[].reversal_reference",
+        "transactions[].shipping_country",
+        "transactions[].short_order_id",
+        "transactions[].vat_amount"
+      ]
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "official_operation_id": "listDisputes",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "method": "GET",
+      "path": "/v4/payment/disputes",
+      "wire_path": "/v4/payment/disputes",
+      "binding_path": "/v4/payment/disputes",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "query.order_ids",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.payment_transaction_ids",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.state",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.reason",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.sort_by",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.purchase_references",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "header.Klarna-Integration-Metadata",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "query.created_at_start",
+        "query.created_at_end",
+        "query.closed_at_start",
+        "query.closed_at_end",
+        "query.updated_at_start",
+        "query.updated_at_end",
+        "query.size",
+        "query.starting_after",
+        "header.Partner-Correlation-Id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": "disputes",
+      "pagination_style": "query_token",
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "disputes",
+        "disputes[].customer_evidences",
+        "disputes[].dispute_details",
+        "disputes[].dispute_details.dispute_amount",
+        "disputes[].dispute_reason",
+        "disputes[].merchant_reference2",
+        "disputes[].order_id",
+        "disputes[].partner_account_id",
+        "disputes[].payment_account_id",
+        "disputes[].payment_account_reference",
+        "disputes[].payment_capture_id",
+        "disputes[].payment_capture_reference",
+        "disputes[].payment_dispute_id",
+        "disputes[].payment_transaction_id",
+        "disputes[].payment_transaction_reference",
+        "disputes[].purchase_reference",
+        "disputes[].state_context.dispute_outcome",
+        "disputes[].state_context.dispute_outcome_detailed"
+      ]
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:POST /v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "official_operation_id": "enrollMerchant",
+      "pack": "klarna",
+      "op": "dispute.merchant.enroll",
+      "method": "POST",
+      "path": "/v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "wire_path": "/v4/payment/disputes/merchants/{merchant_id}/enroll",
+      "binding_path": "/v4/payment/disputes/merchants/{{merchant_id}}/enroll",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [],
+      "selected_response_media": null,
+      "omitted_inputs": [],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "merchant_id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_operation_id": "getDisputeDetails",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.read",
+      "method": "GET",
+      "path": "/v4/payment/disputes/{payment_dispute_id}",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}",
+      "binding_path": "/v4/payment/disputes/{{payment_dispute_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.Klarna-Integration-Metadata",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "payment_dispute_id",
+        "header.Partner-Correlation-Id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": [
+        "arbitration.arbitration_request.attachments",
+        "customer_evidences",
+        "customer_evidences[].attachment",
+        "customer_evidences[].payment_dispute_customer_evidence_id",
+        "dispute_details",
+        "dispute_details.dispute_amount",
+        "dispute_reason",
+        "merchant_reference2",
+        "order_id",
+        "partner_account_id",
+        "payment_account_id",
+        "payment_account_reference",
+        "payment_capture_id",
+        "payment_capture_reference",
+        "payment_dispute_id",
+        "payment_transaction_id",
+        "payment_transaction_reference",
+        "purchase_reference",
+        "representment.partner_evidence.attachments",
+        "representment.partner_evidence.attachments[].payment_dispute_attachment_id",
+        "state_context.dispute_outcome",
+        "state_context.dispute_outcome_detailed",
+        "state_context.partner_evidence.attachments",
+        "state_context.partner_evidence.attachments[].payment_dispute_attachment_id",
+        "state_context.representment.partner_evidence.attachments"
+      ]
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "official_operation_id": "acceptLoss",
+      "pack": "klarna",
+      "op": "dispute.loss.accept",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/accept-loss",
+      "binding_path": "/v4/payment/disputes/{{payment_dispute_id}}/accept-loss",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.Klarna-Integration-Metadata",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "payment_dispute_id",
+        "header.Partner-Correlation-Id"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/appeal",
+      "official_operation_id": "appealDispute",
+      "pack": "klarna",
+      "op": "dispute.appeal",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/appeal",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/appeal",
+      "binding_path": "/v4/payment/disputes/{{payment_dispute_id}}/appeal",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.Klarna-Integration-Metadata",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": true,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "payment_dispute_id",
+        "header.Partner-Correlation-Id",
+        "body.additional_information",
+        "body.attachments"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "attachments",
+        "attachments[].payment_dispute_attachment_id"
+      ],
+      "response_sensitive_paths": []
+    },
+    {
+      "source": "disputes-api-v4",
+      "official_key": "disputes-api-v4:POST /v4/payment/disputes/{payment_dispute_id}/represent",
+      "official_operation_id": "respondToDisputeRequest",
+      "pack": "klarna",
+      "op": "dispute.represent",
+      "method": "POST",
+      "path": "/v4/payment/disputes/{payment_dispute_id}/represent",
+      "wire_path": "/v4/payment/disputes/{payment_dispute_id}/represent",
+      "binding_path": "/v4/payment/disputes/{{payment_dispute_id}}/represent",
+      "compatibility": false,
+      "security": [
+        {
+          "klarna_api_key": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_mode": "projected_object",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "omitted_inputs": [
+        {
+          "field": "header.Klarna-Integration-Metadata",
+          "reason": "optional_integration_header_omitted"
+        }
+      ],
+      "migration_gated": false,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "arg_keys": [
+        "payment_dispute_id",
+        "header.Partner-Correlation-Id",
+        "body.attachments",
+        "body.additional_information",
+        "body.partner_proposed_refund_amount"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "pagination_style": null,
+      "request_sensitive_paths": [
+        "attachments",
+        "attachments[].payment_dispute_attachment_id",
+        "partner_proposed_refund_amount"
+      ],
+      "response_sensitive_paths": [
+        "attachments",
+        "attachments[].payment_dispute_attachment_id"
+      ]
+    }
+  ],
+  "entity_audit": [
+    {
+      "pack": "klarna",
+      "entity": "order",
+      "maps_to": "id",
+      "field_path": "order_id",
+      "source_operation": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna",
+      "entity": "order",
+      "maps_to": "redirect_url",
+      "field_path": "redirect_url",
+      "source_operation": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna",
+      "entity": "order",
+      "maps_to": "fraud_status",
+      "field_path": "fraud_status",
+      "source_operation": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna",
+      "entity": "order",
+      "maps_to": "authorized_payment_method",
+      "field_path": "authorized_payment_method",
+      "source_operation": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "official_types": [
+        "object"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "id",
+      "field_path": "session_id",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "status",
+      "field_path": "status",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "order_id",
+      "field_path": "order_id",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "authorization_token",
+      "field_path": "authorization_token",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "expires_at",
+      "field_path": "expires_at",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-hosted-payment-page",
+      "entity": "hosted_payment_session",
+      "maps_to": "updated_at",
+      "field_path": "updated_at",
+      "source_operation": "hosted_payment_session.read",
+      "official_key": "hpp-merchant:GET /hpp/v1/sessions/{session_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "id",
+      "field_path": "order_id",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "status",
+      "field_path": "status",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "fraud_status",
+      "field_path": "fraud_status",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "currency",
+      "field_path": "purchase_currency",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "order_amount",
+      "field_path": "order_amount",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "captured_amount",
+      "field_path": "captured_amount",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "refunded_amount",
+      "field_path": "refunded_amount",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "remaining_authorized_amount",
+      "field_path": "remaining_authorized_amount",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "created_at",
+      "field_path": "created_at",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "expires_at",
+      "field_path": "expires_at",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "managed_order",
+      "maps_to": "merchant_reference1",
+      "field_path": "merchant_reference1",
+      "source_operation": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "capture",
+      "maps_to": "id",
+      "field_path": "capture_id",
+      "source_operation": "managed_order.capture.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "capture",
+      "maps_to": "captured_amount",
+      "field_path": "captured_amount",
+      "source_operation": "managed_order.capture.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "capture",
+      "maps_to": "refunded_amount",
+      "field_path": "refunded_amount",
+      "source_operation": "managed_order.capture.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "capture",
+      "maps_to": "captured_at",
+      "field_path": "captured_at",
+      "source_operation": "managed_order.capture.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "capture",
+      "maps_to": "reference",
+      "field_path": "reference",
+      "source_operation": "managed_order.capture.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures/{capture_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "refund",
+      "maps_to": "id",
+      "field_path": "refund_id",
+      "source_operation": "managed_order.refund.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "refund",
+      "maps_to": "refunded_amount",
+      "field_path": "refunded_amount",
+      "source_operation": "managed_order.refund.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_types": [
+        "integer"
+      ],
+      "official_formats": [
+        "int64"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "refund",
+      "maps_to": "refunded_at",
+      "field_path": "refunded_at",
+      "source_operation": "managed_order.refund.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "refund",
+      "maps_to": "reference",
+      "field_path": "reference",
+      "source_operation": "managed_order.refund.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-order-management",
+      "entity": "refund",
+      "maps_to": "description",
+      "field_path": "description",
+      "source_operation": "managed_order.refund.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/refunds/{refund_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "id",
+      "field_path": "payment_reference",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "payout_date",
+      "field_path": "payout_date",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "currency",
+      "field_path": "currency_code",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "merchant_id",
+      "field_path": "merchant_id",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "settlement_type",
+      "field_path": "merchant_settlement_type",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-settlements",
+      "entity": "payout",
+      "maps_to": "totals",
+      "field_path": "totals",
+      "source_operation": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "official_types": [
+        "object"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "id",
+      "field_path": "payment_dispute_id",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "state",
+      "field_path": "state",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "reason",
+      "field_path": "dispute_reason",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "order_id",
+      "field_path": "order_id",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "payment_transaction_id",
+      "field_path": "payment_transaction_id",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "created_at",
+      "field_path": "created_at",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "updated_at",
+      "field_path": "updated_at",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [
+        "date-time"
+      ],
+      "official_required": true,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    },
+    {
+      "pack": "klarna-disputes-v4",
+      "entity": "dispute",
+      "maps_to": "purchase_reference",
+      "field_path": "purchase_reference",
+      "source_operation": "dispute.read",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes/{payment_dispute_id}",
+      "official_types": [
+        "string"
+      ],
+      "official_formats": [],
+      "official_required": false,
+      "proven": true,
+      "type_proven": true,
+      "optionality_proven": true,
+      "date_granularity_proven": true
+    }
+  ],
+  "recipe_result_audit": [
+    {
+      "kind": "template_result",
+      "recipe": "create-payment-session-klarna",
+      "step": "session",
+      "result_path": "payment_method_categories",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-payment-session-klarna",
+      "step": "session",
+      "result_path": "session_id",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-payment-session-klarna",
+      "step": "session",
+      "result_path": "client_token",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "create-payment-session-klarna",
+      "step": "category_table",
+      "result_path": "identifier",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "create-payment-session-klarna",
+      "step": "category_table",
+      "result_path": "name",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "create-payment-session-klarna",
+      "step": "category_table",
+      "result_path": "asset_urls.standard",
+      "pack": "klarna",
+      "op": "payment_session.create",
+      "official_key": "payments:POST /payments/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "payment_method_categories",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "status",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "order_amount",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "purchase_currency",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "purchase_country",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payment-session-brief-klarna",
+      "step": "session",
+      "result_path": "expires_at",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payment-session-brief-klarna",
+      "step": "category_table",
+      "result_path": "identifier",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payment-session-brief-klarna",
+      "step": "category_table",
+      "result_path": "name",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payment-session-brief-klarna",
+      "step": "category_table",
+      "result_path": "asset_urls.standard",
+      "pack": "klarna",
+      "op": "payment_session.read",
+      "official_key": "payments:GET /payments/v1/sessions/{session_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-order-from-authorization-klarna",
+      "step": "order",
+      "result_path": "order_id",
+      "pack": "klarna",
+      "op": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-order-from-authorization-klarna",
+      "step": "order",
+      "result_path": "fraud_status",
+      "pack": "klarna",
+      "op": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-order-from-authorization-klarna",
+      "step": "order",
+      "result_path": "authorized_payment_method.type",
+      "pack": "klarna",
+      "op": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-order-from-authorization-klarna",
+      "step": "order",
+      "result_path": "redirect_url",
+      "pack": "klarna",
+      "op": "order.create",
+      "official_key": "payments:POST /payments/v1/authorizations/{authorizationToken}/order",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "order_id",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "status",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "order_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "purchase_currency",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "captured_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "order-operations-brief-klarna",
+      "step": "order",
+      "result_path": "refunded_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "order-operations-brief-klarna",
+      "step": "capture_table",
+      "result_path": "capture_id",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "order-operations-brief-klarna",
+      "step": "capture_table",
+      "result_path": "captured_at",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "order-operations-brief-klarna",
+      "step": "capture_table",
+      "result_path": "captured_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "order-operations-brief-klarna",
+      "step": "capture_table",
+      "result_path": "refunded_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "order-operations-brief-klarna",
+      "step": "capture_table",
+      "result_path": "reference",
+      "pack": "klarna-order-management",
+      "op": "managed_order.capture.search",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}/captures",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "payout",
+      "result_path": "payment_reference",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "payout",
+      "result_path": "payout_date",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "payout",
+      "result_path": "currency_code",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "payout",
+      "result_path": "merchant_settlement_type",
+      "pack": "klarna-settlements",
+      "op": "settlement.payout.read",
+      "official_key": "settlements:GET /payouts/{payment_reference}",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "order_id",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "type",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "detailed_type",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "amount",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "currency_code",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "payout-reconciliation-brief-klarna",
+      "step": "transaction_table",
+      "result_path": "capture_date",
+      "pack": "klarna-settlements",
+      "op": "settlement.transaction.search",
+      "official_key": "settlements:GET /transactions",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "disputes-queue-digest-klarna",
+      "step": "table",
+      "result_path": "payment_dispute_id",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "disputes-queue-digest-klarna",
+      "step": "table",
+      "result_path": "state",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "disputes-queue-digest-klarna",
+      "step": "table",
+      "result_path": "dispute_reason",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "disputes-queue-digest-klarna",
+      "step": "table",
+      "result_path": "order_id",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "proven": true
+    },
+    {
+      "kind": "table_column",
+      "recipe": "disputes-queue-digest-klarna",
+      "step": "table",
+      "result_path": "updated_at",
+      "pack": "klarna-disputes-v4",
+      "op": "dispute.search",
+      "official_key": "disputes-api-v4:GET /v4/payment/disputes",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-hosted-payment-page-klarna",
+      "step": "session",
+      "result_path": "session_id",
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-hosted-payment-page-klarna",
+      "step": "session",
+      "result_path": "session_url",
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-hosted-payment-page-klarna",
+      "step": "session",
+      "result_path": "redirect_url",
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "create-hosted-payment-page-klarna",
+      "step": "session",
+      "result_path": "expires_at",
+      "pack": "klarna",
+      "op": "hosted_payment_session.create",
+      "official_key": "hpp-merchant:POST /hpp/v1/sessions",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "capture-order-klarna",
+      "step": "after",
+      "result_path": "status",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "capture-order-klarna",
+      "step": "after",
+      "result_path": "captured_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "capture-order-klarna",
+      "step": "after",
+      "result_path": "purchase_currency",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "refund-order-klarna",
+      "step": "after",
+      "result_path": "status",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "refund-order-klarna",
+      "step": "after",
+      "result_path": "refunded_amount",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    },
+    {
+      "kind": "template_result",
+      "recipe": "refund-order-klarna",
+      "step": "after",
+      "result_path": "purchase_currency",
+      "pack": "klarna-order-management",
+      "op": "managed_order.read",
+      "official_key": "ordermanagement:GET /ordermanagement/v1/orders/{order_id}",
+      "proven": true
+    }
+  ]
+}
