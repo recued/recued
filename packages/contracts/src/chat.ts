@@ -1158,6 +1158,9 @@ export type ChatRpcMethod =
   /** Owner-only explicit outcome feedback. The server resolves the named turn
    * to a durable span; callers cannot name or steer a stored case. */
   | 'chat.execution.feedback'
+  /** Owner-only retraction of one exact typed outcome-feedback fact. Uses the
+   * same server-resolved span identity and cannot name a stored case. */
+  | 'chat.execution.feedback.retract'
   /** Owner-only aggregate D-214 diagnostics. No raw source, case,
    * intervention, prompt, argument, result, or error row is returned. */
   | 'chat.execution.diagnostics'
@@ -1266,6 +1269,7 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.plan.approve',
   'chat.plan.cancel',
   'chat.execution.feedback',
+  'chat.execution.feedback.retract',
   'chat.execution.diagnostics',
   'chat.session.set_picker',
   'chat.session.set_model_pref',

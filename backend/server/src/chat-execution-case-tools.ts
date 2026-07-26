@@ -17,6 +17,11 @@ import {
   hashExecutionCaseValue,
 } from './execution-case-core.js';
 import {
+  OUTCOME_REPORT_TOOL_NAME,
+  REQUEST_DISSECTION_TOOL_NAME,
+  isExecutionCaseGatewayDenialReason,
+} from './execution-case-vocabulary.js';
+import {
   policyFingerprintForSpan,
   type ExecutionCaseCompiler,
 } from './execution-case-compiler.js';
@@ -39,8 +44,10 @@ import type {
 } from './storage/case-intervention-store.js';
 import { insertToolEntryAfterTier1 } from './chat-tools-search.js';
 
-export const OUTCOME_REPORT_TOOL_NAME = 'outcome.report';
-export const REQUEST_DISSECTION_TOOL_NAME = 'request.dissection';
+export {
+  OUTCOME_REPORT_TOOL_NAME,
+  REQUEST_DISSECTION_TOOL_NAME,
+} from './execution-case-vocabulary.js';
 
 export const OUTCOME_REPORT_TOOL_ENTRY: ToolEntry = {
   name: OUTCOME_REPORT_TOOL_NAME,
@@ -252,11 +259,7 @@ export const createExecutionCaseLifecycle = (
         governing_contract_id !== OWNER_CONTRACT_ID
         || span.plans.length > 0
         || span.activities.some((item) =>
-          item.reason === 'classification_blocked'
-          || item.reason === 'contract_denied'
-          || item.reason === 'policy_denied'
-          || item.reason === 'destructive_denied'
-          || item.reason === 'channel_denied')
+          isExecutionCaseGatewayDenialReason(item.reason))
         || span.recipe_runs.some((item) =>
           item.contract_snapshot !== undefined),
       contract_snapshots: span.recipe_runs.flatMap((item) =>

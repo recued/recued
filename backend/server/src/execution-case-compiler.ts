@@ -28,6 +28,10 @@ import {
   type FlowStepInput,
   type RuntimeCompositionDiagnostics,
 } from './execution-case-core.js';
+import {
+  D214_INTERNAL_TOOL_NAMES,
+  isExecutionCaseGatewayDenialReason,
+} from './execution-case-vocabulary.js';
 import type {
   ExecutionCaseFeedback,
   ExecutionCaseFeedbackStore,
@@ -50,10 +54,7 @@ import type {
   ExecutionCaseVerificationStore,
 } from './storage/execution-case-verification-store.js';
 
-export const D214_INTERNAL_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'outcome.report',
-  'request.dissection',
-]);
+export { D214_INTERNAL_TOOL_NAMES } from './execution-case-vocabulary.js';
 
 interface AuditActivityRow {
   activity_id: string;
@@ -358,13 +359,6 @@ const listTypedCorrections = (
   }
   return out;
 };
-
-const isGatewayDenialReason = (reason: string | undefined): boolean =>
-  reason === 'classification_blocked'
-  || reason === 'contract_denied'
-  || reason === 'policy_denied'
-  || reason === 'destructive_denied'
-  || reason === 'channel_denied';
 
 const isApprovalExpiry = (
   run: Pick<ParsedRecipeAuditEntry, 'error_codes'>,
@@ -677,7 +671,7 @@ export const createExecutionCaseCompiler = (
       || typed_correction_plan_ids.size > 0
       || activities.some((activity) =>
         activity.status === 'error'
-        || isGatewayDenialReason(activity.reason))
+        || isExecutionCaseGatewayDenialReason(activity.reason))
       || recipe_runs.some((run) =>
         run.commit_status === 'failed' && !isApprovalExpiry(run));
     const activitySignaturesByTurn = new Map<string, string[]>();
@@ -958,7 +952,9 @@ export const createExecutionCaseCompiler = (
             groupPlans.some((plan) =>
               plan.tool === activity.tool_name && plan.status === 'approved')
               ? 'approved'
-              : isGatewayDenialReason(activity.reason) ? 'denied' : 'none',
+              : isExecutionCaseGatewayDenialReason(activity.reason)
+                ? 'denied'
+                : 'none',
         }));
       return {
         ...group,
@@ -991,7 +987,7 @@ export const createExecutionCaseCompiler = (
         activity.status === 'error'
         || activity.recipe_status === 'failed');
       const denied = group.activities.some((activity) =>
-        isGatewayDenialReason(activity.reason));
+        isExecutionCaseGatewayDenialReason(activity.reason));
       const groupFeedback = isLast
         ? span.feedback.filter((item) =>
             item.source_plan_id === undefined
@@ -1232,8 +1228,9 @@ export const createExecutionCaseCompiler = (
       return deps.caseStore.observationCount(report_id);
     }
 
-    // Normal closure/additive feedback changes one report. Serialize it with
-    // replay work, keep the completion stamp absent until replacement succeeds,
+    // Normal closure or typed-feedback record/retract changes one report.
+    // Serialize it with replay work, keep the completion stamp absent until
+    // replacement succeeds,
     // and preserve old source joins long enough to build upgrade lineage.
     replayInFlight = (async () => {
       deps.caseStore.clearCompilerVersion();

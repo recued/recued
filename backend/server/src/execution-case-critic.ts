@@ -9,6 +9,8 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  isRiskTier,
+  RISK_TIER_RANK,
   type CaseInterventionEvidence,
   type CaseInterventionRecord,
   type ExecutionSource,
@@ -81,15 +83,22 @@ export interface ExecutionCaseProposalCriticDeps {
   newInterventionId?: () => string;
 }
 
-const isConsequential = (entry: ToolEntry | null): boolean =>
-  entry !== null
-  && (
+const UNKNOWN_RISK_RANK = -1;
+const CONSEQUENTIAL_RISK_RANK = RISK_TIER_RANK.write;
+const riskRank = (value: unknown): number =>
+  isRiskTier(value) ? RISK_TIER_RANK[value] : UNKNOWN_RISK_RANK;
+
+const isConsequential = (entry: ToolEntry | null): boolean => {
+  if (entry === null) return false;
+  const strongestSignal = Math.max(
+    riskRank(entry.classification),
+    riskRank(entry.risk_tier),
     entry.destructive_hint === true
-    || entry.classification === 'write'
-    || entry.risk_tier === 'write'
-    || entry.risk_tier === 'admin'
-    || entry.risk_tier === 'destructive'
+      ? RISK_TIER_RANK.destructive
+      : UNKNOWN_RISK_RANK,
   );
+  return strongestSignal >= CONSEQUENTIAL_RISK_RANK;
+};
 
 const addStateValues = (
   state: Map<string, unknown>,
@@ -129,11 +138,22 @@ const evidenceFor = (
   }));
 };
 
+type CommittedCritiqueRender =
+  | { kind: 'nothing_to_show' }
+  | { kind: 'mismatch' }
+  | { kind: 'rendered'; critique: FlowCritique };
+
 const renderCommittedCritique = async (
   candidate: ReturnType<typeof deriveExecutionFlowPattern>,
   stored: StoredCaseIntervention,
   deps: ExecutionCaseProposalCriticDeps,
-): Promise<FlowCritique | null> => {
+): Promise<CommittedCritiqueRender> => {
+  // Support alone never justifies another planner round. This is a normal
+  // semantic no-op, including for a record written by an older selector, not
+  // evidence that the durable intervention failed to re-render.
+  if (!stored.record.shown_evidence.some(
+    (evidence) => evidence.role !== 'support',
+  )) return { kind: 'nothing_to_show' };
   const support: FlowCritique['support'] = [];
   const contradictions: FlowCritique['contradictions'] = [];
   const alternatives: FlowCritique['alternatives'] = [];
@@ -150,7 +170,7 @@ const renderCommittedCritique = async (
         row.policy_fingerprint !== 'none'
         && row.policy_fingerprint !== deps.experiment.policy_fingerprint
       )
-    ) return null;
+    ) return { kind: 'mismatch' };
     const card = renderExecutionCaseCard(row);
     if (evidence.role === 'support') support.push(card);
     else if (evidence.role === 'contradiction') contradictions.push(card);
@@ -161,14 +181,16 @@ const renderCommittedCritique = async (
   if (
     contradictions.length === 0
     && alternatives.length === 0
-  ) return null;
+  ) return { kind: 'mismatch' };
   const critique: FlowCritique = {
     candidate_pattern: candidate,
     support,
     contradictions,
     alternatives,
   };
-  return executionCaseAdvisoryFits(critique) ? critique : null;
+  return executionCaseAdvisoryFits(critique)
+    ? { kind: 'rendered', critique }
+    : { kind: 'mismatch' };
 };
 
 export const createExecutionCaseProposalCritic = (
@@ -273,10 +295,15 @@ export const createExecutionCaseProposalCritic = (
       const support: FlowCritique['support'] = [];
       const contradictions: FlowCritique['contradictions'] = [];
       const alternatives: FlowCritique['alternatives'] = [];
-      for (const evidence of qualifying) {
-        if (selected.length >= experiment.max_evidence) break;
+      const selectedEvidenceKeys = new Set<string>();
+      const trySelect = (evidence: CaseInterventionEvidence): boolean => {
+        const evidenceKey = `${evidence.case_id}\0${evidence.role}`;
+        if (
+          selected.length >= experiment.max_evidence
+          || selectedEvidenceKeys.has(evidenceKey)
+        ) return false;
         const row = rankedById.get(evidence.case_id);
-        if (!row) continue;
+        if (!row) return false;
         const card = renderExecutionCaseCard(row);
         const nextSupport = evidence.role === 'support'
           ? [...support, card]
@@ -295,8 +322,9 @@ export const createExecutionCaseProposalCritic = (
           support: nextSupport,
           contradictions: nextContradictions,
           alternatives: nextAlternatives,
-        } satisfies FlowCritique)) continue;
+        } satisfies FlowCritique)) return false;
         selected.push(evidence);
+        selectedEvidenceKeys.add(evidenceKey);
         if (evidence.role === 'support') support.push(card);
         else if (evidence.role === 'contradiction') contradictions.push(card);
         else {
@@ -304,6 +332,25 @@ export const createExecutionCaseProposalCritic = (
             case: card,
             material_difference: ['tool_sequence'],
           });
+        }
+        return true;
+      };
+      // A critique needs a contradiction or alternative. Reserve the first
+      // bounded slot for the highest-ranked renderable non-support item, then
+      // fill the remaining budget in ordinary relevance order. If none fits,
+      // the committed opportunity truthfully records a plain no-op.
+      let selectedRenderable = false;
+      for (const evidence of qualifying) {
+        if (evidence.role === 'support') continue;
+        if (trySelect(evidence)) {
+          selectedRenderable = true;
+          break;
+        }
+      }
+      if (selectedRenderable) {
+        for (const evidence of qualifying) {
+          if (selected.length >= experiment.max_evidence) break;
+          trySelect(evidence);
         }
       }
       const record: CaseInterventionRecord = {
@@ -376,8 +423,9 @@ export const createExecutionCaseProposalCritic = (
       committed.record.assignment !== 'treatment'
       || committed.record.shown_evidence.length === 0
     ) return null;
-    const critique = await renderCommittedCritique(candidate, committed, deps);
-    if (!critique) {
+    const rendered = await renderCommittedCritique(candidate, committed, deps);
+    if (rendered.kind === 'nothing_to_show') return null;
+    if (rendered.kind === 'mismatch') {
       deps.interventionStore.markUnhealthy(
         experiment.experiment_id,
         'treatment_render_mismatch',
@@ -402,7 +450,7 @@ export const createExecutionCaseProposalCritic = (
       [committed.record.intervention_id],
     );
     return {
-      critique,
+      critique: rendered.critique,
     };
   },
 });

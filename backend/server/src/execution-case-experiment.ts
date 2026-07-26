@@ -15,6 +15,9 @@ import type {
   ResolvedExecutionSpan,
 } from './execution-case-compiler.js';
 import {
+  isExecutionCaseGatewayDenialReason,
+} from './execution-case-vocabulary.js';
+import {
   CASE_EXPERIMENT_OUTCOME_AXES,
   validateExecutionCaseExperimentDefinition,
   type CaseExperimentOutcomeAxis,
@@ -48,6 +51,9 @@ export interface CaseExperimentRate {
 
 export interface CaseExperimentArmReport {
   cohort_roots: number;
+  /** Root-level outcome observability for this exact cohort. Axis rates below
+   * are closed-span complete-case estimates, not unconditional outcomes. */
+  closed_span_observation: CaseExperimentRate;
   axes: Record<CaseExperimentOutcomeAxis, CaseExperimentRate>;
   operational: {
     governed_calls: {
@@ -114,6 +120,10 @@ export interface CaseExperimentFingerprintStratum {
 export interface CaseExperimentReport {
   experiment_id: string;
   generated_at: number;
+  outcome_analysis: {
+    method: 'closed_span_complete_case';
+    causal_interpretation_requires_closure_balance: true;
+  };
   pre_registered: {
     eligible_population: string;
     varied_surface: ExecutionCaseExperimentDefinition['surface'];
@@ -140,14 +150,16 @@ export interface CaseExperimentReport {
   };
   opportunity: CaseExperimentAggregate;
   opportunity_measures: CaseExperimentOpportunityReport;
-  /** Primary causal population: both arms had non-empty deterministic
-   * pre-exposure selection, irrespective of actual exposure. */
-  eligibility_intent_to_treat: CaseExperimentCohortReport;
+  /** Pre-exposure assignment cohort: both arms had non-empty deterministic
+   * selection, irrespective of actual exposure. Axis estimates are
+   * closed-span complete-case; closure balance is a causal-use prerequisite. */
+  eligibility_assignment_complete_case: CaseExperimentCohortReport;
   /** Diluted rollout effect over every assigned structural opportunity. */
   all_opportunity_rollout: CaseExperimentCohortReport;
   /** Descriptive treatment exposure only; never presented as causal. */
   treatment_exposure_descriptive: CaseExperimentArmReport;
-  eligibility_itt_by_fingerprint: CaseExperimentFingerprintStratum[];
+  eligibility_assignment_complete_case_by_fingerprint:
+    CaseExperimentFingerprintStratum[];
   recipe_topology_diagnostic: {
     corpus_roots: number;
     dispatches: number;
@@ -177,14 +189,6 @@ interface RootFacts {
   governed_calls: number;
   planner_rounds?: number;
 }
-
-const denialReasons = new Set([
-  'classification_blocked',
-  'contract_denied',
-  'policy_denied',
-  'destructive_denied',
-  'channel_denied',
-]);
 
 const isApprovalExpiry = (
   span: ResolvedExecutionSpan,
@@ -277,7 +281,8 @@ const rootFacts = (
   const approvalExpired = isApprovalExpiry(span);
   const executionFailure =
     span.activities.some((item) =>
-      item.status === 'error' && !denialReasons.has(item.reason ?? ''))
+      item.status === 'error'
+      && !isExecutionCaseGatewayDenialReason(item.reason))
     || span.recipe_runs.some((item) =>
       item.commit_status === 'failed'
       && !item.error_codes.includes('RECIPE_APPROVAL_TIMEOUT'));
@@ -332,23 +337,28 @@ const rootFacts = (
         value: executionFailure,
       },
       authorization_denial: {
-        // Per-root incidence for the same ITT population. Conditioning on
-        // whether treatment caused an authorization opportunity would compare
-        // different post-treatment subsets.
+        // Per-root incidence for the same assignment population. Conditioning
+        // on whether treatment caused an authorization opportunity would
+        // compare different post-treatment subsets.
         eligible: spanClosed,
         value: span.activities.some((item) =>
-          denialReasons.has(item.reason ?? '')),
+          isExecutionCaseGatewayDenialReason(item.reason)),
       },
       plan_accepted: {
         eligible: spanClosed && hasApprovalChoice,
         value: approvedPlans.length > 0,
       },
       plan_declined: {
-        eligible: spanClosed && hasApprovalChoice,
+        // Owner refusal is material per-root incidence. Conditioning on whether
+        // treatment surfaced an approval choice would hide treatment-induced
+        // cancellations from the harm bound.
+        eligible: spanClosed,
         value: span.plans.some((plan) => plan.status === 'cancelled'),
       },
       plan_abandoned: {
-        eligible: spanClosed && hasApprovalChoice,
+        // Approval timeout is likewise incidence over the closed assignment
+        // cohort, not only over the post-treatment approval subset.
+        eligible: spanClosed,
         value: approvalExpired,
       },
       first_flow_survived: {
@@ -518,6 +528,10 @@ const armReport = (facts: readonly RootFacts[]): CaseExperimentArmReport => {
   );
   return {
     cohort_roots: facts.length,
+    closed_span_observation: measuredRate(
+      closedFacts.length,
+      facts.length,
+    ),
     axes,
     operational: {
       governed_calls: {
@@ -628,6 +642,10 @@ export const createExecutionCaseExperimentReporter = (deps: {
     return {
       experiment_id: definition.experiment_id,
       generated_at,
+      outcome_analysis: {
+        method: 'closed_span_complete_case',
+        causal_interpretation_requires_closure_balance: true,
+      },
       pre_registered: {
         eligible_population: definition.eligible_population,
         varied_surface: definition.surface,
@@ -676,17 +694,18 @@ export const createExecutionCaseExperimentReporter = (deps: {
           interventions,
         ),
       },
-      eligibility_intent_to_treat: cohortReport(eligibilityFacts),
+      eligibility_assignment_complete_case: cohortReport(eligibilityFacts),
       all_opportunity_rollout: cohortReport(facts),
       treatment_exposure_descriptive: armReport(exposedFacts),
-      eligibility_itt_by_fingerprint: [...strata.values()]
-        .sort((left, right) =>
-          fingerprintKey(left.fingerprint)
-            .localeCompare(fingerprintKey(right.fingerprint)))
-        .map(({ fingerprint, facts: stratumFacts }) => ({
-          ...fingerprint,
-          cohort: cohortReport(stratumFacts),
-        })),
+      eligibility_assignment_complete_case_by_fingerprint:
+        [...strata.values()]
+          .sort((left, right) =>
+            fingerprintKey(left.fingerprint)
+              .localeCompare(fingerprintKey(right.fingerprint)))
+          .map(({ fingerprint, facts: stratumFacts }) => ({
+            ...fingerprint,
+            cohort: cohortReport(stratumFacts),
+          })),
       recipe_topology_diagnostic: {
         corpus_roots: topology.corpus_roots,
         dispatches: topology.dispatches,

@@ -351,6 +351,7 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.plan.approve',
       'chat.plan.cancel',
       'chat.execution.feedback',
+      'chat.execution.feedback.retract',
       'chat.execution.diagnostics',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
@@ -381,7 +382,7 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-171 slice 2c — the grant checklist's live self tool catalog.
       'chat.inbound_token.tool_catalog',
     ]);
-    expect(CHAT_RPC_METHOD_SET.size).toBe(33);
+    expect(CHAT_RPC_METHOD_SET.size).toBe(34);
   });
 
   it('isChatRpcMethod accepts every method + rejects unknown', () => {

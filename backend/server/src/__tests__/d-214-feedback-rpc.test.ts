@@ -4,18 +4,25 @@ import { RpcError } from '@recued/contracts';
 import {
   handleExecutionCaseDiagnostics,
   handleExecutionCaseFeedback,
+  handleExecutionCaseFeedbackRetract,
   handlePlanCancel,
   handleSend,
   type ChatRpcDeps,
 } from '../chat-handler.js';
 
 const deps = (
-  record: NonNullable<ChatRpcDeps['executionCaseFeedbackRecorder']>,
+  recorder: Partial<
+    NonNullable<ChatRpcDeps['executionCaseFeedbackRecorder']>
+  >,
 ): ChatRpcDeps => ({
   store: {
     getSession: (id: string) => id === 's1' ? { id: 's1' } : undefined,
   },
-  executionCaseFeedbackRecorder: record,
+  executionCaseFeedbackRecorder: {
+    record: async () => ({ ok: true, recorded: false }),
+    retract: async () => ({ ok: true, retracted: false }),
+    ...recorder,
+  },
   orchestrator: {},
   selfSignature: {
     server_kind: 'recued',
@@ -64,6 +71,45 @@ describe('D-214 explicit feedback RPC', () => {
       turn_id: 't1',
       kind: 'no_complaint',
     })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('retracts only the same server-resolved typed target', async () => {
+    const retract = vi.fn(async () => ({
+      ok: true as const,
+      retracted: true,
+    }));
+    await expect(handleExecutionCaseFeedbackRetract(deps({ retract }), {
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+      source_plan_id: 'p1',
+    })).resolves.toEqual({ retracted: true });
+    expect(retract).toHaveBeenCalledWith({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+      source_plan_id: 'p1',
+    });
+
+    await expect(handleExecutionCaseFeedbackRetract(deps({ retract }), {
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+      case_id: 'case-attacker-chosen',
+    })).rejects.toMatchObject({ status: 400 });
+    await expect(handleExecutionCaseFeedbackRetract(deps({ retract }), {
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+      feedback_id: 'feedback-attacker-chosen',
+    })).rejects.toMatchObject({ status: 400 });
+    await expect(handleExecutionCaseFeedbackRetract(deps({
+      retract: async () => ({ ok: false, reason: 'span_not_found' }),
+    }), {
+      session_id: 's1',
+      turn_id: 'missing',
+      kind: 'rejected',
+    })).rejects.toMatchObject({ status: 404 });
   });
 });
 

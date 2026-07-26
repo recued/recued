@@ -80,6 +80,7 @@ import { RECALL_WITHHELD_MESSAGE, type RecallResolver } from './chat-recall-inde
 import { projectToolDispatchCandidates } from './chat-pii-source.js';
 import type { CandidateContributor } from './chat-pii-candidate-contributor.js';
 import type { RecallJoinRef } from './chat-recall-search-tool.js';
+import { normalizeExecutionCaseText } from './execution-case-core.js';
 import type { RetainedAliasCandidate } from './storage/chat-store.js';
 
 /** The session alias-ledger handle — inferred off the gateway store so the
@@ -781,6 +782,195 @@ const aliasLedgerFieldInPlace = (
   return false;
 };
 
+interface NormalizedExecutionCaseAlias {
+  readonly phrase: string;
+  readonly replacement: string;
+}
+
+const escapeExecutionCaseAliasPattern = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+/** D-214 request shapes are normalized derivatives, not verbatim source text.
+ *  A ledger entry such as `Delphine Rowntree` therefore reaches a historical
+ *  card as the split leaves `['delphine', 'rowntree']`; the ordinary content
+ *  walk cannot match either leaf to the full stored value. Build a bounded
+ *  mapping from the ledger's already-authorized real values to the exact
+ *  normalization D-214 used, preserving the existing alias/restore identity.
+ *
+ *  Casing siblings collapse onto their canonical relationship. If two
+ *  unrelated ledger identities normalize to the same phrase, emit a plain
+ *  non-restorable redaction marker instead of choosing the wrong identity. */
+const normalizedExecutionCaseAliases = (
+  plan: PiiEgressPlan,
+): NormalizedExecutionCaseAlias[] => {
+  const grouped = new Map<string, Array<{
+    readonly identity: string;
+    readonly replacement: string;
+  }>>();
+  for (const entry of [...plan.ledger.byKindRealValue.values()]) {
+    const phrase = normalizeExecutionCaseText(entry.real_value);
+    if (phrase.length === 0) continue;
+    const probed = piiEgress.aliasArgsForEgress(
+      plan.ledger,
+      entry.real_value,
+    ).aliased;
+    const replacement =
+      typeof probed === 'string' && probed !== entry.real_value
+        ? probed
+        : entry.alias_value;
+    const canonical = entry.relationship_refs?.[0] ?? entry.alias_value;
+    const candidates = grouped.get(phrase) ?? [];
+    candidates.push({
+      identity: `${entry.kind}\u0000${canonical}`,
+      replacement,
+    });
+    grouped.set(phrase, candidates);
+  }
+  return [...grouped.entries()]
+    .map(([phrase, candidates]) => {
+      const identities = new Set(candidates.map(({ identity }) => identity));
+      return {
+        phrase,
+        replacement:
+          identities.size === 1
+            ? candidates[0]!.replacement
+            : 'redacted',
+      };
+    })
+    .sort((left, right) =>
+      right.phrase.length - left.phrase.length
+      || left.phrase.localeCompare(right.phrase));
+};
+
+const replaceNormalizedExecutionCaseAliases = (
+  value: string,
+  aliases: readonly NormalizedExecutionCaseAlias[],
+): { value: string; replacements: number } => {
+  let next = value;
+  let replacements = 0;
+  for (const alias of aliases) {
+    const pattern = new RegExp(
+      `(?<![\\p{L}\\p{N}_])${escapeExecutionCaseAliasPattern(alias.phrase)
+        .replace(/ /gu, '\\s+')}(?![\\p{L}\\p{N}_])`,
+      'gu',
+    );
+    next = next.replace(pattern, () => {
+      replacements += 1;
+      return alias.replacement;
+    });
+  }
+  return { value: next, replacements };
+};
+
+/** Alias every D-214 model-facing request-shape projection nested in one
+ *  packet field, including its two token arrays. This covers both the S4
+ *  augmentation context and proposal-critic cards carried in a prior result. */
+const aliasNormalizedExecutionCaseShapesInPlace = (
+  value: unknown,
+  aliases: readonly NormalizedExecutionCaseAlias[],
+): number => {
+  if (aliases.length === 0) return 0;
+  const normalizedComponents = new Set(
+    aliases.flatMap(({ phrase }) => phrase.split(' ').filter(Boolean)),
+  );
+  let replacements = 0;
+  const replaceString = (value: string): string => {
+    const replaced = replaceNormalizedExecutionCaseAliases(value, aliases);
+    replacements += replaced.replacements;
+    return replaced.value;
+  };
+  const aliasShape = (shape: unknown): void => {
+    if (shape === null || typeof shape !== 'object' || Array.isArray(shape)) return;
+    const record = shape as Record<string, unknown>;
+    for (const key of ['surface_terms', 'segmented_terms'] as const) {
+      const terms = record[key];
+      if (!Array.isArray(terms) || !terms.every((term) => typeof term === 'string')) {
+        continue;
+      }
+      const joined = (terms as string[]).join(' ');
+      const replaced = replaceString(joined);
+      const scrubbedTerms = replaced
+        .split(/\s+/u)
+        .filter(Boolean)
+        .map((term) => {
+          if (!normalizedComponents.has(term)) return term;
+          replacements += 1;
+          return 'redacted';
+        });
+      if (
+        replaced !== joined
+        || scrubbedTerms.some((term, index) => term !== terms[index])
+      ) {
+        // `segmentExecutionCaseText` emits unique terms. Preserve that shape
+        // after several ambiguous fragments collapse to the same marker.
+        record[key] = [...new Set(scrubbedTerms)];
+      }
+    }
+    const intentFacets = record.intent_facets;
+    if (Array.isArray(intentFacets)) {
+      record.intent_facets = intentFacets.map((facet) =>
+        typeof facet === 'string' ? replaceString(facet) : facet);
+    }
+    const entitySlots = record.entity_slots;
+    if (Array.isArray(entitySlots)) {
+      for (const slot of entitySlots) {
+        if (slot === null || typeof slot !== 'object' || Array.isArray(slot)) continue;
+        const slotRecord = slot as Record<string, unknown>;
+        for (const key of ['role', 'kind'] as const) {
+          if (typeof slotRecord[key] === 'string') {
+            slotRecord[key] = replaceString(slotRecord[key] as string);
+          }
+        }
+      }
+    }
+  };
+  const visit = (current: unknown): void => {
+    if (Array.isArray(current)) {
+      for (const item of current) visit(item);
+      return;
+    }
+    if (current === null || typeof current !== 'object') return;
+    for (const [key, child] of Object.entries(current as Record<string, unknown>)) {
+      if (key === 'request_shape') aliasShape(child);
+      else visit(child);
+    }
+  };
+  visit(value);
+  return replacements;
+};
+
+const aliasExecutionCaseDerivedFieldInPlace = (
+  container: Record<string, unknown>,
+  key: string,
+  plan: PiiEgressPlan,
+  aliases: readonly NormalizedExecutionCaseAlias[],
+): boolean => {
+  if (!(key in container)) return false;
+  const original = container[key];
+  const originalJson = JSON.stringify(original);
+  const normalizedReplacements = aliasNormalizedExecutionCaseShapesInPlace(
+    original,
+    aliases,
+  );
+  const { aliased, summary } = piiEgress.aliasArgsForEgress(
+    plan.ledger,
+    original,
+  );
+  if (normalizedReplacements > 0) {
+    plan.summary.value = mergeRedactionSummary(plan.summary.value, {
+      mode: 'alias',
+      scope_kind: 'session',
+      counts: { content_text_replacements: normalizedReplacements },
+    });
+  }
+  if (JSON.stringify(aliased) !== originalJson) {
+    container[key] = aliased;
+    plan.summary.value = mergeRedactionSummary(plan.summary.value, summary);
+    return true;
+  }
+  return false;
+};
+
 /** D-167 (recall path, off-cap) — alias ONE container field's value against the
  *  CONTACT recall surface (seed ⊇ scan) + overlap-reveal, instead of the ledger-only
  *  scan. Composes the per-result `RecallIndex` store-wide: the per-turn whole-warehouse
@@ -853,15 +1043,20 @@ const aliasRecallFieldInPlace = (
  *      is consistent aliasing, not corruption — the model only ever sees the aliased
  *      form), and `detail` (a raw dispatch `Error.message`).
  *    - `correction_context` — the correction-learning summary strings.
- *  Substring via `aliasArgsForEgress` (a direct value walk → dotted-arg-key-safe);
- *  ledger-anchored. Mutates the owned packet in place; returns whether anything
- *  changed so the early no-field path stays byte-identical when nothing did. */
+ *    - D-214 `request_shape` objects in top-level augmentation and nested critic
+ *      results — normalized phrases are reconstructed before the ordinary walk.
+ *  Ledger-anchored throughout. Mutates the owned packet in place; returns
+ *  whether anything changed so the early no-field path stays byte-identical
+ *  when nothing did. */
 const uniformContentScanDataFields = (
   packet: unknown,
   plan: PiiEgressPlan,
 ): boolean => {
   if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) return false;
   const record = packet as Record<string, unknown>;
+  // Deriving a composite alias may itself walk the ledger. Build this bounded
+  // phrase map once per provider packet, not once per prior-call data field.
+  const normalizedAliases = normalizedExecutionCaseAliases(plan);
   let changed = false;
   const calls = record.prior_tool_calls;
   if (Array.isArray(calls)) {
@@ -869,7 +1064,14 @@ const uniformContentScanDataFields = (
       if (call === null || typeof call !== 'object' || Array.isArray(call)) continue;
       const entry = call as Record<string, unknown>;
       for (const field of PRIOR_TOOL_CALL_DATA_FIELDS) {
-        if (aliasLedgerFieldInPlace(entry, field, plan)) changed = true;
+        if (aliasExecutionCaseDerivedFieldInPlace(
+          entry,
+          field,
+          plan,
+          normalizedAliases,
+        )) {
+          changed = true;
+        }
       }
     }
   }
@@ -877,7 +1079,12 @@ const uniformContentScanDataFields = (
   // D-214 cards are scope-checked typed projections, but their request-shape
   // facets can still echo the owner's own entity tokens. Keep them on the same
   // single egress boundary as every other dynamic context field.
-  if (aliasLedgerFieldInPlace(record, 'execution_case_context', plan)) {
+  if (aliasExecutionCaseDerivedFieldInPlace(
+    record,
+    'execution_case_context',
+    plan,
+    normalizedAliases,
+  )) {
     changed = true;
   }
   return changed;

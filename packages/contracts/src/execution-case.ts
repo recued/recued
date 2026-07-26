@@ -563,8 +563,8 @@ export const EXECUTION_CASE_RECURRENCE_FLOOR = 3;
  *
  *  ⛔ **The asymmetry is deliberate and is the third independent appearance of
  *  one rule: negatives file freely, positives are gated** (cf. A16 drift
- *  suppression, A18 additive-only feedback). A *correct* single-call answer is
- *  already optimal — no sequence to remember, no discovery to short-circuit —
+ *  suppression, A18 non-load-bearing reporting). A *correct* single-call answer
+ *  is already optimal — no sequence to remember, no discovery to short-circuit —
  *  so a case would carry no value and only dilute the corpus. But choosing the
  *  *wrong* single tool is exactly what users correct, and "for this ask, not
  *  tool A" is the cheapest win available. ⛔ Do not gate negatives at 2. */
@@ -573,8 +573,9 @@ export const EXECUTION_CASE_MIN_CALLS_NEGATIVE = 1;
 
 /** §8.1 — one distinct tool sequence tried for a request, with its counters.
  *
- *  The counter split is deliberate and is A18/B.11's additive-only rule made
- *  structural: the first group is DETERMINISTIC (plan lifecycle + audit; a span
+ *  The counter split is deliberate and is A18/B.11's non-load-bearing
+ *  reporting rule made structural: the first group is DETERMINISTIC (plan
+ *  lifecycle + audit; a span
  *  either happened or it did not), the second is BEST-EFFORT (present only when
  *  a report or explicit signal arrived). ⛔ **No admission, retrieval, or card
  *  path may require a best-effort counter** — acceptance #46 asserts a case
@@ -760,10 +761,10 @@ export interface SupersededCaseRun {
  *  {@link OutcomeReportArgs.open_items}. Adding it would look like helpful
  *  context and would silently convert `outcome.report` into a memory tool.
  *
- *  The egress guarantee is *within-scope*: `request_shape.surface_terms` and
- *  `segmented_terms` derive from the requester's own prompt and may echo the
- *  requester's own tokens. The safety property is that no case crosses a
- *  contract or principal (§9.1) — not that request terms are scrubbed. */
+ *  Stored cards are scope-isolated, but that is not a model-egress exemption.
+ *  `request_shape.surface_terms` / `segmented_terms` are normalized derivatives
+ *  of the requester's prompt, so the chat PII boundary must reconstruct and
+ *  alias ledger-known phrases before any card reaches a provider (A38). */
 export interface ExecutionCaseCard {
   request_shape: RequestShape;
   /** Bounded; strongest-evidence first. */

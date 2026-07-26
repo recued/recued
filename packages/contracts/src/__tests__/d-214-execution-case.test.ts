@@ -203,8 +203,9 @@ describe('D-214 §6.2 flow basis', () => {
 });
 
 describe('D-214 owner RPC channel isolation', () => {
-  it('keeps feedback and aggregate diagnostics off the MCP surface', () => {
+  it('keeps feedback lifecycle and aggregate diagnostics off the MCP surface', () => {
     expect(isReservedLocalRpc('chat.execution.feedback')).toBe(true);
+    expect(isReservedLocalRpc('chat.execution.feedback.retract')).toBe(true);
     expect(isReservedLocalRpc('chat.execution.diagnostics')).toBe(true);
   });
 });

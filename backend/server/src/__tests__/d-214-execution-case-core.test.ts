@@ -643,6 +643,15 @@ describe('D-214 exact aggregation, graded retrieval, and safe cards', () => {
         intent: 'delete events',
       },
     ).request_shape?.intent_facets[0]).toBe('delete events');
+    for (const [root, label] of [
+      ['compare the file sizes before upload', 'compare file size'],
+      ['award the contest prizes tomorrow', 'award contest prize'],
+      ['analyzes customer reports nightly', 'analyze customer report'],
+      ['schedule the folk waltzes next', 'schedule folk waltz'],
+      ['review the quiz quizzes today', 'review quiz quiz'],
+    ] as const) {
+      expect(isExecutionCaseIntentGrounded(root, label)).toBe(true);
+    }
 
     const prompt = 'wire $40,000 to the vendor account';
     const grounded = {

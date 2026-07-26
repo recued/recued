@@ -1,9 +1,13 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import type {
-  InternalToolRegistry,
-  ToolEntry,
-  ToolTier,
+import {
+  RISK_TIERS,
+  RISK_TIER_RANK,
+  type CaseInterventionRecord,
+  type InternalToolRegistry,
+  type ToolEntry,
+  type ToolCall,
+  type ToolTier,
 } from '@recued/contracts';
 
 import {
@@ -36,6 +40,7 @@ import {
 } from '../composition/bin/wire-execution-cases.js';
 import {
   createCaseInterventionStore,
+  validateCaseInterventionRecord,
 } from '../storage/case-intervention-store.js';
 import {
   createExecutionCaseStore,
@@ -86,6 +91,14 @@ const registry: InternalToolRegistry = {
   dispatch: async () => ({ ok: false, reason: 'not_implemented' }),
   subscribeRefresh: () => () => {},
 };
+
+const registryWith = (entry: ToolEntry): InternalToolRegistry => ({
+  list: () => [entry],
+  listByTier: (tier: ToolTier) => entry.tier === tier ? [entry] : [],
+  getByName: (name) => name === entry.name ? entry : null,
+  dispatch: async () => ({ ok: false, reason: 'not_implemented' }),
+  subscribeRefresh: () => () => {},
+});
 
 const experiment = (
   over: Partial<ExecutionCaseExperimentDefinition> = {},
@@ -297,6 +310,9 @@ describe('D-214 bounded experiment definition', () => {
   it('fails malformed pre-registration closed and keeps malformed env dark', () => {
     expect(() => validateExecutionCaseExperimentDefinition(experiment()))
       .not.toThrow();
+    expect(() => validateExecutionCaseExperimentDefinition(experiment({
+      max_critique_opportunities_per_root: 8,
+    }))).not.toThrow();
     for (const invalid of [
       { surface: 'both' },
       { planner_fingerprint: '' },
@@ -317,6 +333,13 @@ describe('D-214 bounded experiment definition', () => {
         experiment(invalid as Partial<ExecutionCaseExperimentDefinition>),
       )).toThrow(/incomplete/);
     }
+    expect(() => validateExecutionCaseExperimentDefinition(experiment({
+      material_harm_bounds: {
+        authorization_denial: 0,
+        plan_declined: 0,
+        plan_abandoned: 0,
+      },
+    }))).not.toThrow();
     const validEnv = {
       RECUED_D214_EXPERIMENT_ID: 'bad-exp',
       RECUED_D214_EXPERIMENT_SURFACE: 'proposal_critique',
@@ -355,6 +378,39 @@ describe('D-214 bounded experiment definition', () => {
       RECUED_D214_EXPERIMENT_MATERIAL_HARM_BOUNDS:
         '{"execution_failure":0.1,"silently_dropped":"not-a-number"}',
     })).toBeUndefined();
+  });
+
+  it('rejects control-arm evidence exposure at the storage boundary', () => {
+    const evidence = {
+      case_id: 'case-1',
+      case_key: 'key-1',
+      role: 'contradiction' as const,
+    };
+    const record: CaseInterventionRecord = {
+      schema_version: 1,
+      intervention_id: 'control-leak',
+      experiment_id: 'exp-control-leak',
+      root_request_id: 'root-control-leak',
+      session_id: 's1',
+      turn_id: 't1',
+      governing_contract_id: 'owner',
+      principal_key: 'user_self',
+      assignment: 'control',
+      qualifying_evidence: [evidence],
+      selected_evidence: [evidence],
+      shown_evidence: [evidence],
+      planner_fingerprint: 'planner-v1',
+      prompt_fingerprint: 'prompt-v1',
+      retrieval_fingerprint: 'retrieval-v1',
+      policy_fingerprint: 'policy-v1',
+      compiler_version: EXECUTION_CASE_COMPILER_VERSION,
+      recorded_at: 1,
+      surface: 'proposal_critique',
+      candidate_flow_hash: 'flow-1',
+    };
+
+    expect(() => validateCaseInterventionRecord(record))
+      .toThrow(/control cannot show evidence/);
   });
 
   it('repairs a legacy nullable intervention sequence before indexing it', () => {
@@ -451,6 +507,93 @@ describe('D-214 bounded experiment definition', () => {
 });
 
 describe('D-214 A25 proposal-critique attribution', () => {
+  it('does not assign or record when the resolved critic scope is inactive', async () => {
+    const f = await fixture();
+    const root = 'inactive-critic-root';
+    await anchor(f, root, 'inactive-critic-turn');
+
+    await expect(makeCritic(f, {
+      resolveScope: () => ({
+        governing_contract_id: 'owner',
+        principal_key: 'user_self',
+        active: false,
+      }),
+    }).critique({
+      session_id: 's1',
+      turn_id: 'inactive-critic-turn',
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state: new Map(),
+    })).resolves.toBeNull();
+
+    expect(f.interventionStore.listAssignments('exp-1')).toEqual([]);
+    expect(await f.interventionStore.listForRoot('exp-1', root)).toEqual([]);
+  });
+
+  it('derives consequential risk tiers from the canonical risk ladder', async () => {
+    for (const tier of RISK_TIERS) {
+      const f = await fixture();
+      const definition = experiment({
+        experiment_id: `exp-risk-tier-${tier}`,
+      });
+      const root = `root-risk-tier-${tier}`;
+      const turn = `turn-risk-tier-${tier}`;
+      await anchor(f, root, turn);
+      const entry: ToolEntry = {
+        ...mailEntry,
+        classification: 'unknown',
+        risk_tier: tier,
+      };
+
+      await makeCritic(f, {
+        experiment: definition,
+        registry: registryWith(entry),
+      }).critique({
+        session_id: 's1',
+        turn_id: turn,
+        prompt: 'send the quarterly report to the customer',
+        calls: [proposal],
+        state: new Map(),
+      });
+
+      const expected = RISK_TIER_RANK[tier] >= RISK_TIER_RANK.write ? 1 : 0;
+      expect(
+        await f.interventionStore.listForRoot(definition.experiment_id, root),
+        tier,
+      ).toHaveLength(expected);
+    }
+  });
+
+  it('does not let unknown risk metadata suppress a write classification', async () => {
+    const f = await fixture();
+    const root = 'classification-only-root';
+    const turn = 'classification-only-turn';
+    await anchor(f, root, turn);
+    const classificationOnly: ToolEntry = {
+      name: mailEntry.name,
+      tier: mailEntry.tier,
+      description: mailEntry.description,
+      arg_schema: mailEntry.arg_schema,
+      topic_tags: mailEntry.topic_tags,
+      classification: 'write',
+      risk_tier: '__proto__',
+      concurrency_safe: mailEntry.concurrency_safe,
+    };
+
+    await makeCritic(f, {
+      registry: registryWith(classificationOnly),
+    }).critique({
+      session_id: 's1',
+      turn_id: turn,
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state: new Map(),
+    });
+
+    expect(await f.interventionStore.listForRoot('exp-1', root))
+      .toHaveLength(1);
+  });
+
   it('commits treatment before one advisory, then lets the repeated hash fall through', async () => {
     const f = await fixture();
     const root = findArmRoot(f.interventionStore, 'treatment');
@@ -649,6 +792,161 @@ describe('D-214 A25 proposal-critique attribution', () => {
     ))[0]!.record.qualifying_evidence).toEqual([]);
   });
 
+  it('selects renderable evidence when a higher-ranked support fills the budget', async () => {
+    const f = await fixture();
+    const support = {
+      ...f.row,
+      case_id: 'higher-ranked-support',
+      case_key: 'higher-ranked-support-key',
+      last_seen_at: f.row.last_seen_at + 100,
+      flows: f.row.flows.map((flow) => ({
+        ...flow,
+        outcome_strength: {
+          positive: 1,
+          negative: 0,
+          contested: false,
+          evidence_families: ['verification_pass'],
+        },
+      })),
+      outcome_strength: {
+        positive: 1,
+        negative: 0,
+        contested: false,
+        evidence_families: ['verification_pass'],
+      },
+    };
+    const contradiction = {
+      ...f.row,
+      case_id: 'lower-ranked-contradiction',
+      case_key: 'lower-ranked-contradiction-key',
+    };
+    await f.caseStore.replaceMaterialized(
+      [support, contradiction],
+      new Map([
+        [support.case_id, ['support-report']],
+        [contradiction.case_id, ['contradiction-report']],
+      ]),
+      new Map([
+        [
+          support.case_id,
+          'send the quarterly report to the customer',
+        ],
+        [
+          contradiction.case_id,
+          'send the quarterly report to the customer',
+        ],
+      ]),
+    );
+    const definition = experiment({
+      experiment_id: 'exp-support-first',
+      max_evidence: 1,
+    });
+    const root = findArmRoot(
+      f.interventionStore,
+      'treatment',
+      definition,
+    );
+    await anchor(f, root, 't-support-first');
+
+    const result = await makeCritic(f, {
+      experiment: definition,
+    }).critique({
+      session_id: 's1',
+      turn_id: 't-support-first',
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state: new Map(),
+    });
+
+    expect(result?.critique.contradictions).toHaveLength(1);
+    const committed = (await f.interventionStore.listForRoot(
+      definition.experiment_id,
+      root,
+    ))[0]!.record;
+    expect(committed.qualifying_evidence.map((item) => item.role))
+      .toEqual(['support', 'contradiction']);
+    expect(committed.selected_evidence.map((item) => item.role))
+      .toEqual(['contradiction']);
+    expect(committed.shown_evidence).toEqual(committed.selected_evidence);
+    expect(f.interventionStore.health(definition.experiment_id))
+      .toBeUndefined();
+    expect(await f.interventionStore.aggregate(definition.experiment_id))
+      .toMatchObject({
+        invalid_roots: { control: 0, treatment: 0 },
+      });
+  });
+
+  it('treats a committed support-only critique as a benign no-op', async () => {
+    const f = await fixture();
+    const definition = experiment({
+      experiment_id: 'exp-legacy-support-only',
+      max_evidence: 1,
+    });
+    const root = findArmRoot(
+      f.interventionStore,
+      'treatment',
+      definition,
+    );
+    await anchor(f, root, 't-legacy-support-only');
+    const candidate = deriveExecutionFlowPattern([{
+      tool_name: proposal.tool,
+      operation_ids: [proposal.tool],
+      dependency_ordinals: [],
+      risk_tier: 'write',
+      entity_kinds: [],
+      topic_tags: ['mail'],
+    }]);
+    const support = {
+      case_id: f.row.case_id,
+      case_key: f.row.case_key,
+      role: 'support' as const,
+    };
+    await expect(f.interventionStore.put({
+      schema_version: 1,
+      intervention_id: 'legacy-support-only',
+      experiment_id: definition.experiment_id,
+      root_request_id: root,
+      session_id: 's1',
+      turn_id: 't-legacy-support-only',
+      governing_contract_id: 'owner',
+      principal_key: 'user_self',
+      assignment: 'treatment',
+      qualifying_evidence: [support],
+      selected_evidence: [support],
+      shown_evidence: [support],
+      planner_fingerprint: definition.planner_fingerprint,
+      prompt_fingerprint: definition.prompt_fingerprint,
+      retrieval_fingerprint: definition.retrieval_fingerprint,
+      policy_fingerprint: definition.policy_fingerprint,
+      compiler_version: EXECUTION_CASE_COMPILER_VERSION,
+      recorded_at: 499,
+      surface: 'proposal_critique',
+      candidate_flow_hash: candidate.exact_signature,
+    })).resolves.toBe(true);
+    const state = new Map<string, unknown>();
+
+    await expect(makeCritic(f, {
+      experiment: definition,
+    }).critique({
+      session_id: 's1',
+      turn_id: 't-legacy-support-only',
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state,
+    })).resolves.toBeNull();
+
+    expect(state.has(EXECUTION_CASE_INTERVENTION_IDS_STATE_KEY)).toBe(false);
+    expect(state.has('d214:consulted-case-keys')).toBe(false);
+    expect(f.interventionStore.health(definition.experiment_id))
+      .toBeUndefined();
+    expect(f.interventionStore.listAssignments(definition.experiment_id)
+      .some((item) => item.root_request_id === root)).toBe(true);
+    expect(await f.interventionStore.aggregate(definition.experiment_id))
+      .toMatchObject({
+        invalid_roots: { control: 0, treatment: 0 },
+      });
+  });
+
   it('reports a post-critique topology revision separately from outcome quality', async () => {
     const f = await fixture();
     const root = findArmRoot(f.interventionStore, 'treatment');
@@ -688,11 +986,11 @@ describe('D-214 A25 proposal-critique attribution', () => {
       now: () => 700,
     }).report(experiment());
     expect(
-      report.eligibility_intent_to_treat.treatment.axes
+      report.eligibility_assignment_complete_case.treatment.axes
         .critique_flow_revised,
     ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
     expect(
-      report.eligibility_intent_to_treat.treatment.axes
+      report.eligibility_assignment_complete_case.treatment.axes
         .first_flow_survived,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
     expect(report.opportunity_measures.treatment.opportunities_per_root)
@@ -741,7 +1039,7 @@ describe('D-214 A25 proposal-critique attribution', () => {
       now: () => 700,
     }).report(experiment());
     expect(
-      report.eligibility_intent_to_treat.treatment.axes
+      report.eligibility_assignment_complete_case.treatment.axes
         .critique_flow_revised,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
   });
@@ -795,11 +1093,11 @@ describe('D-214 A25 proposal-critique attribution', () => {
     }).report(experiment());
 
     expect(
-      report.eligibility_intent_to_treat.control.axes
+      report.eligibility_assignment_complete_case.control.axes
         .first_flow_survived,
     ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
     expect(
-      report.eligibility_intent_to_treat.control.axes
+      report.eligibility_assignment_complete_case.control.axes
         .critique_flow_revised,
     ).toMatchObject({ numerator: 0, denominator: 0, rate: null });
   });
@@ -897,6 +1195,65 @@ describe('D-214 A25 proposal-critique attribution', () => {
     )).toHaveLength(1);
     expect(f.interventionStore.health(definition.experiment_id))
       .toBeUndefined();
+  });
+
+  it('stops at the exact critique cap before minting another opportunity', async () => {
+    const f = await fixture();
+    const definition = experiment({
+      experiment_id: 'exp-exact-critique-cap',
+      max_critique_opportunities_per_root: 2,
+    });
+    const root = findArmRoot(
+      f.interventionStore,
+      'treatment',
+      definition,
+    );
+    await anchor(f, root, 'exact-cap-turn-1');
+    expect(f.anchorStore.anchorTurn({
+      root_request_id: root,
+      session_id: 's1',
+      turn_id: 'exact-cap-turn-2',
+      origin_turn_id: 'exact-cap-turn-1',
+      now: 11,
+    })).toBe(true);
+    expect(f.anchorStore.anchorTurn({
+      root_request_id: root,
+      session_id: 's1',
+      turn_id: 'exact-cap-turn-3',
+      origin_turn_id: 'exact-cap-turn-1',
+      now: 12,
+    })).toBe(true);
+    let minted = 0;
+    const critic = makeCritic(f, {
+      experiment: definition,
+      newInterventionId: () => `exact-cap-${++minted}`,
+    });
+    const run = (
+      turn_id: string,
+      calls: ToolCall[],
+    ) => critic.critique({
+      session_id: 's1',
+      turn_id,
+      prompt: 'send the quarterly report to the customer',
+      calls,
+      state: new Map(),
+    });
+
+    await run('exact-cap-turn-1', [proposal]);
+    await run('exact-cap-turn-2', [
+      { tool: 'file.search', args: { query: 'quarterly report' } },
+      proposal,
+    ]);
+    await expect(run('exact-cap-turn-3', [
+      proposal,
+      { tool: 'file.search', args: { query: 'quarterly report' } },
+    ])).resolves.toBeNull();
+
+    expect(minted).toBe(2);
+    expect(await f.interventionStore.listForRoot(
+      definition.experiment_id,
+      root,
+    )).toHaveLength(2);
   });
 
   it('fails unsteered and marks health when attribution cannot commit', async () => {
@@ -1414,6 +1771,100 @@ describe('D-214 A25 request augmentation attribution', () => {
 });
 
 describe('D-214 owner experiment reporting', () => {
+  it('does not treat an assigned root with zero interventions as closed', async () => {
+    const f = await fixture();
+    const definition = experiment({
+      experiment_id: 'exp-zero-interventions',
+    });
+    const root = 'root-zero-interventions';
+    const assignment = f.interventionStore.assignment({
+      experiment_id: definition.experiment_id,
+      root_request_id: root,
+      assigned_at: 10,
+      definition,
+    });
+    expect(assignment).toBeDefined();
+
+    const report = await createExecutionCaseExperimentReporter({
+      compiler: emptyCompiler(),
+      interventionStore: f.interventionStore,
+      caseStore: f.caseStore,
+      now: () => 999,
+    }).report(definition);
+    const arm = report.all_opportunity_rollout[assignment!];
+
+    expect(arm.closed_span_observation)
+      .toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
+    expect(arm.axes.explicit_acceptance)
+      .toMatchObject({ numerator: 0, denominator: 0, rate: null });
+  });
+
+  it('requires every intervention in a root to be durably closed', async () => {
+    const f = await fixture();
+    const definition = experiment({
+      experiment_id: 'exp-partial-span-close',
+      max_critique_opportunities_per_root: 2,
+    });
+    const root = 'root-partial-span-close';
+    const assignment = f.interventionStore.assignment({
+      experiment_id: definition.experiment_id,
+      root_request_id: root,
+      assigned_at: 10,
+      definition,
+    });
+    expect(assignment).toBeDefined();
+    await anchor(f, root, 'partial-close-turn-1');
+    expect(f.anchorStore.anchorTurn({
+      root_request_id: root,
+      session_id: 's1',
+      turn_id: 'partial-close-turn-2',
+      origin_turn_id: 'partial-close-turn-1',
+      now: 11,
+    })).toBe(true);
+    const critic = makeCritic(f, { experiment: definition });
+    await critic.critique({
+      session_id: 's1',
+      turn_id: 'partial-close-turn-1',
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state: new Map(),
+    });
+    await critic.critique({
+      session_id: 's1',
+      turn_id: 'partial-close-turn-2',
+      prompt: 'send the quarterly report to the customer',
+      calls: [
+        { tool: 'file.search', args: { query: 'quarterly report' } },
+        proposal,
+      ],
+      state: new Map(),
+    });
+    const interventions = await f.interventionStore.listForRoot(
+      definition.experiment_id,
+      root,
+    );
+    expect(interventions).toHaveLength(2);
+    f.db.prepare(`
+      UPDATE case_interventions
+         SET span_closed_at = ?
+       WHERE intervention_id = ?
+    `).run(700, interventions[0]!.record.intervention_id);
+
+    const report = await createExecutionCaseExperimentReporter({
+      compiler: emptyCompiler(),
+      interventionStore: f.interventionStore,
+      caseStore: f.caseStore,
+      now: () => 999,
+    }).report(definition);
+    const arm = report.eligibility_assignment_complete_case[assignment!];
+
+    expect(arm.cohort_roots).toBe(1);
+    expect(arm.closed_span_observation)
+      .toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
+    expect(arm.axes.explicit_acceptance)
+      .toMatchObject({ numerator: 0, denominator: 0, rate: null });
+  });
+
   it('reports missing planner-round telemetry as missing, never as zero', async () => {
     const f = await fixture();
     const definition = experiment({ experiment_id: 'exp-missing-rounds' });
@@ -1468,28 +1919,111 @@ describe('D-214 owner experiment reporting', () => {
 
     const open = await reporter.report(definition);
     expect(
-      open.eligibility_intent_to_treat.treatment.axes.explicit_acceptance,
+      open.eligibility_assignment_complete_case.treatment.axes
+        .explicit_acceptance,
+    ).toMatchObject({ numerator: 0, denominator: 0, rate: null });
+    expect(
+      open.eligibility_assignment_complete_case.treatment.axes
+        .execution_failure,
     ).toMatchObject({ numerator: 0, denominator: 0, rate: null });
     expect(open.opportunity_measures.treatment.record_to_closed_span)
       .toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
     expect(
-      open.eligibility_intent_to_treat.treatment.operational.governed_calls,
+      open.eligibility_assignment_complete_case.treatment
+        .closed_span_observation,
+    ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
+    expect(
+      open.eligibility_assignment_complete_case.treatment.operational
+        .governed_calls,
     ).toEqual({ total: 0, denominator_roots: 0, mean_per_root: null });
 
     f.interventionStore.markSpanClosed(root, 1_000);
     const closed = await reporter.report(definition);
     expect(
-      closed.eligibility_intent_to_treat.treatment.axes.explicit_acceptance,
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .explicit_acceptance,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
     expect(
-      closed.eligibility_intent_to_treat.treatment.axes.execution_failure,
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .execution_failure,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
     expect(
-      closed.eligibility_intent_to_treat.treatment.axes.authorization_denial,
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .authorization_denial,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
     expect(
-      closed.eligibility_intent_to_treat.treatment.operational.governed_calls,
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .plan_declined,
+    ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
+    expect(
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .plan_abandoned,
+    ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
+    expect(
+      closed.eligibility_assignment_complete_case.treatment.axes
+        .plan_accepted,
+    ).toMatchObject({ numerator: 0, denominator: 0, rate: null });
+    expect(
+      closed.eligibility_assignment_complete_case.treatment
+        .closed_span_observation,
+    ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
+    expect(
+      closed.eligibility_assignment_complete_case.treatment.operational
+        .governed_calls,
     ).toEqual({ total: 0, denominator_roots: 1, mean_per_root: 0 });
+  });
+
+  it('keeps execution failures out of the estimand until the span closes', async () => {
+    const f = await fixture();
+    const definition = experiment({
+      experiment_id: 'exp-open-execution-failure',
+    });
+    const root = 'root-open-execution-failure';
+    const assignment = f.interventionStore.assignment({
+      experiment_id: definition.experiment_id,
+      root_request_id: root,
+      assigned_at: 10,
+      definition,
+    });
+    expect(assignment).toBeDefined();
+    await anchor(f, root, 'open-failure-turn');
+    await makeCritic(f, { experiment: definition }).critique({
+      session_id: 's1',
+      turn_id: 'open-failure-turn',
+      prompt: 'send the quarterly report to the customer',
+      calls: [proposal],
+      state: new Map(),
+    });
+    const compiler = {
+      ...emptyCompiler(),
+      resolveSpan: (resolvedRoot: string): ResolvedExecutionSpan => ({
+        ...emptySpan(resolvedRoot),
+        activities: [{
+          activity_id: 'open-failure-activity',
+          timestamp: 600,
+          session_id: 's1',
+          turn_id: 'open-failure-turn',
+          tool_name: 'mail.send',
+          status: 'error',
+          reason: 'provider_failure',
+        }],
+        first_event_id: 'open-failure-activity',
+        last_event_id: 'open-failure-activity',
+        has_substantive_flow: true,
+      }),
+    } as ExecutionCaseCompiler;
+
+    const report = await createExecutionCaseExperimentReporter({
+      compiler,
+      interventionStore: f.interventionStore,
+      caseStore: f.caseStore,
+      now: () => 999,
+    }).report(definition);
+
+    expect(
+      report.eligibility_assignment_complete_case[assignment!].axes
+        .execution_failure,
+    ).toMatchObject({ numerator: 0, denominator: 0, rate: null });
   });
 
   it('reports separated causal axes with denominators, uncertainty, and no raw roots', async () => {
@@ -1629,16 +2163,32 @@ describe('D-214 owner experiment reporting', () => {
       now: () => 999,
     }).report(experiment());
 
-    expect(report.eligibility_intent_to_treat.control.cohort_roots).toBe(1);
-    expect(report.eligibility_intent_to_treat.treatment.cohort_roots).toBe(1);
-    expect(report.eligibility_intent_to_treat.control.axes)
+    expect(
+      report.eligibility_assignment_complete_case.control.cohort_roots,
+    ).toBe(1);
+    expect(
+      report.eligibility_assignment_complete_case.treatment.cohort_roots,
+    ).toBe(1);
+    expect(
+      report.eligibility_assignment_complete_case.control
+        .closed_span_observation,
+    ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
+    expect(
+      report.eligibility_assignment_complete_case.treatment
+        .closed_span_observation,
+    ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
+    expect(report.outcome_analysis).toEqual({
+      method: 'closed_span_complete_case',
+      causal_interpretation_requires_closure_balance: true,
+    });
+    expect(report.eligibility_assignment_complete_case.control.axes)
       .toMatchObject({
         explicit_correction: { numerator: 1, denominator: 1, rate: 1 },
         explicit_acceptance: { numerator: 0, denominator: 1, rate: 0 },
         verification_failure: { numerator: 1, denominator: 1, rate: 1 },
         plan_declined: { numerator: 1, denominator: 1, rate: 1 },
       });
-    expect(report.eligibility_intent_to_treat.treatment.axes)
+    expect(report.eligibility_assignment_complete_case.treatment.axes)
       .toMatchObject({
         explicit_acceptance: { numerator: 1, denominator: 1, rate: 1 },
         explicit_correction: { numerator: 0, denominator: 1, rate: 0 },
@@ -1646,11 +2196,12 @@ describe('D-214 owner experiment reporting', () => {
         plan_accepted: { numerator: 1, denominator: 1, rate: 1 },
       });
     expect(
-      report.eligibility_intent_to_treat.control.axes
+      report.eligibility_assignment_complete_case.control.axes
         .explicit_correction.uncertainty_95,
     ).toMatchObject({ method: 'wilson' });
     expect(
-      report.eligibility_intent_to_treat.control.operational.planner_rounds,
+      report.eligibility_assignment_complete_case.control.operational
+        .planner_rounds,
     ).toEqual({
       available: true,
       total: 4,
@@ -1658,7 +2209,8 @@ describe('D-214 owner experiment reporting', () => {
       mean_per_root: 4,
     });
     expect(
-      report.eligibility_intent_to_treat.treatment.operational.planner_rounds,
+      report.eligibility_assignment_complete_case.treatment.operational
+        .planner_rounds,
     ).toMatchObject({
       available: true,
       total: 3,
@@ -1677,14 +2229,16 @@ describe('D-214 owner experiment reporting', () => {
       report.opportunity_measures.treatment.record_to_egress,
     ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
     expect(
-      report.eligibility_intent_to_treat.treatment.axes
+      report.eligibility_assignment_complete_case.treatment.axes
         .approval_binding_survived,
     ).toMatchObject({ numerator: 1, denominator: 1, rate: 1 });
     expect(
-      report.eligibility_intent_to_treat.treatment.axes
+      report.eligibility_assignment_complete_case.treatment.axes
         .critique_flow_revised,
     ).toMatchObject({ numerator: 0, denominator: 1, rate: 0 });
-    expect(report.eligibility_itt_by_fingerprint).toHaveLength(1);
+    expect(
+      report.eligibility_assignment_complete_case_by_fingerprint,
+    ).toHaveLength(1);
     expect(report.recipe_topology_diagnostic).toMatchObject({
       corpus_roots: 2,
       dispatches: 2,
@@ -1699,6 +2253,7 @@ describe('D-214 owner experiment reporting', () => {
     expect(serialized).not.toContain(treatmentRoot);
     expect(serialized).not.toContain('false_positive');
     expect(serialized).not.toContain('unnecessary_call');
+    expect(serialized).not.toContain('intent_to_treat');
     expect(serialized).not.toContain('"score"');
   });
 });

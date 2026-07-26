@@ -171,35 +171,51 @@ const isIntentGroundingTerm = (term: string): boolean =>
  * lets a model label such as "delete events" attest the literal request
  * "delete every event" without treating synonyms or reordered terms as proof.
  */
-const foldIntentGroundingInflection = (term: string): string => {
-  if (!/^[a-z]+$/u.test(term)) return term;
+const intentGroundingInflectionVariants = (term: string): string[] => {
+  const variants = new Set([term]);
+  if (!/^[a-z]+$/u.test(term)) return [...variants];
   if (term.length > 4 && term.endsWith('ies')) {
-    return `${term.slice(0, -3)}y`;
+    variants.add(`${term.slice(0, -3)}y`);
   }
   if (
     term.length > 4
-    && /(?:sses|shes|ches|xes|zes)$/u.test(term)
+    && /(?:sses|shes|ches|xes)$/u.test(term)
   ) {
-    return term.slice(0, -2);
+    variants.add(term.slice(0, -2));
+  }
+  // A terminal `zes` is ambiguous without a lexicon: `sizes`/`prizes`/
+  // `analyzes` drop only `s`, while `waltzes` drops `es`. Keep both bounded
+  // forms for the grounding comparison rather than choosing an asymmetric
+  // pseudo-stem. `quizzes` additionally undoubles its terminal z.
+  if (term.length > 4 && term.endsWith('zes')) {
+    variants.add(term.slice(0, -1));
+    variants.add(term.slice(0, -2));
+    if (term.endsWith('zzes')) variants.add(term.slice(0, -3));
   }
   if (term.length > 3 && term.endsWith('s') && !term.endsWith('ss')) {
-    return term.slice(0, -1);
+    variants.add(term.slice(0, -1));
   }
-  return term;
+  return [...variants];
 };
 
-const intentGroundingTerms = (value: string): string[] =>
+const intentGroundingTerms = (value: string): string[][] =>
   segmentExecutionCaseText(value)
     .filter(isIntentGroundingTerm)
-    .map(foldIntentGroundingInflection);
+    .map(intentGroundingInflectionVariants);
+
+const groundingTermsOverlap = (
+  left: readonly string[],
+  right: readonly string[],
+): boolean => left.some((term) => right.includes(term));
 
 const isOrderedSubsequence = (
-  needle: readonly string[],
-  haystack: readonly string[],
+  needle: readonly (readonly string[])[],
+  haystack: readonly (readonly string[])[],
 ): boolean => {
   let cursor = 0;
   for (const term of haystack) {
-    if (term === needle[cursor]) cursor += 1;
+    const expected = needle[cursor];
+    if (expected && groundingTermsOverlap(term, expected)) cursor += 1;
     if (cursor === needle.length) return true;
   }
   return needle.length === 0;
@@ -229,7 +245,7 @@ export const isExecutionCaseIntentGrounded = (
   return (
     promptTerms.length >= 2
     && intentTerms.length >= 2
-    && intentTerms[0] === promptTerms[0]
+    && groundingTermsOverlap(intentTerms[0]!, promptTerms[0]!)
     && isOrderedSubsequence(intentTerms, promptTerms)
   );
 };
@@ -1077,14 +1093,14 @@ export interface ClassifiedExecutionFlowCase {
   material_difference?: string[];
 }
 
-const materialNegativeFamilies = new Set<CaseEvidenceKind>([
-  'verification_fail',
-  'typed_correction',
-  'typed_rejection',
-  'typed_undo',
-  'gateway_denial',
-  'execution_failure',
-]);
+// A one-observation contradiction is material for exactly the evidence that is
+// both independently negative and strong enough to bypass recurrence. Derive
+// this projection from the admission partition so the critic cannot silently
+// reinterpret a kind (for example, admit `typed_undo` at one but decline to
+// surface it as a contradiction).
+const materialNegativeFamilies: ReadonlySet<CaseEvidenceKind> = new Set(
+  [...strongKinds].filter((kind) => negativeKinds.has(kind)),
+);
 
 const isMaterialContradiction = (flow: ExecutionCaseFlow): boolean =>
   flow.outcome_strength.negative > flow.outcome_strength.positive

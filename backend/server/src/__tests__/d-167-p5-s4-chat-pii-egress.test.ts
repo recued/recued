@@ -231,6 +231,14 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
       commitment_context: [],
       chat_tail: [{ role: 'user', content: 'hi alice@acme.com' }],
       user_message: 'ping',
+      execution_case_context: {
+        cards: [{
+          request_shape: {
+            surface_terms: ['unknown', 'person'],
+            segmented_terms: ['unknown', 'person'],
+          },
+        }],
+      },
     });
     let seen = '';
     const real: ExecuteChatAiCall = async (_m, input) => {
@@ -378,6 +386,275 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
       name: 1,
       content_text_replacements: 2,
     });
+  });
+
+  it('aliases normalized D-214 request-shape terms absent from the current turn', async () => {
+    const { ledger } = freshLedger();
+    const seedPlan = makePlan({
+      ledger,
+      resolver: (packet) => {
+        const record = packet as Record<string, unknown>;
+        return [
+          ...(typeof record.owner === 'string'
+            ? [{ path: 'owner', kind: 'name' as const }]
+            : []),
+          ...(typeof record.email === 'string'
+            ? [{ path: 'email', kind: 'email' as const }]
+            : []),
+        ];
+      },
+    });
+    const providerPackets: Record<string, unknown>[] = [];
+    const real: ExecuteChatAiCall = async (_m, input) => {
+      providerPackets.push(
+        JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>,
+      );
+      return {
+        body: { response: 'ok', events: [], tool_calls: [] } satisfies AIOutput,
+      };
+    };
+
+    await wrapExecuteAiCallForPii(real, seedPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        owner: 'Delphine Rowntree',
+        email: 'delphine.rowntree@example.com',
+        user_message: 'save this contact',
+      }),
+    });
+    const currentPlan = makePlan({ ledger });
+    await wrapExecuteAiCallForPii(real, currentPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        user_message: 'try that workflow again',
+        chat_tail: [{ role: 'user', content: 'try that workflow again' }],
+        prior_tool_calls: [{
+          result: {
+            kind: 'historical_flow_critique',
+            owner: 'Delphine Rowntree',
+            email: 'delphine.rowntree@example.com',
+            critique: {
+              support: [{
+                request_shape: {
+                  surface_terms: ['delphine', 'rowntree'],
+                  segmented_terms: ['delphine', 'rowntree'],
+                },
+              }],
+            },
+          },
+        }],
+        execution_case_context: {
+          notice: 'Historical evidence only.',
+          cards: [{
+            request_shape: {
+              schema_version: 1,
+              locale_candidates: ['und'],
+              surface_terms: ['email', 'delphine', 'rowntree'],
+              segmented_terms: [
+                'send',
+                'delphine',
+                'rowntree',
+                'example',
+                'com',
+              ],
+              entity_slots: [{ role: 'delphine rowntree', kind: 'person' }],
+              intent_facets: ['email delphine rowntree'],
+              constraint_facets: [],
+              risk_facets: [],
+            },
+          }],
+        },
+      }),
+    });
+
+    expect(providerPackets).toHaveLength(2);
+    expect(providerPackets[1]?.user_message).toBe('try that workflow again');
+    expect(JSON.stringify(providerPackets[1]?.chat_tail)).not.toMatch(
+      /delphine|rowntree/iu,
+    );
+    const context = providerPackets[1]?.execution_case_context as {
+      cards: Array<{
+        request_shape: {
+          surface_terms: string[];
+          segmented_terms: string[];
+          entity_slots: Array<{ role: string; kind: string }>;
+          intent_facets: string[];
+        };
+      }>;
+    };
+    const shape = context.cards[0]!.request_shape;
+    expect(shape.surface_terms).toEqual(['email', 'pii.Person1']);
+    expect(shape.segmented_terms).toEqual(['send', 'm1@d1.invalid']);
+    expect(shape.entity_slots).toEqual([
+      { role: 'pii.Person1', kind: 'person' },
+    ]);
+    expect(shape.intent_facets).toEqual(['email pii.Person1']);
+    const critiqueShape = (
+      providerPackets[1]?.prior_tool_calls as Array<{
+        result: {
+          owner: string;
+          email: string;
+          critique: {
+            support: Array<{
+              request_shape: {
+                surface_terms: string[];
+                segmented_terms: string[];
+              };
+            }>;
+          };
+        };
+      }>
+    )[0]!.result.critique.support[0]!.request_shape;
+    const critiqueResult = (
+      providerPackets[1]?.prior_tool_calls as Array<{
+        result: { owner: string; email: string };
+      }>
+    )[0]!.result;
+    expect(critiqueResult.owner).toBe('pii.Person1');
+    expect(critiqueResult.email).toBe('m1@d1.invalid');
+    expect(critiqueShape.surface_terms).toEqual(['pii.Person1']);
+    expect(critiqueShape.segmented_terms).toEqual(['pii.Person1']);
+    const cardsJson = JSON.stringify(context);
+    expect(cardsJson).not.toMatch(/delphine|rowntree|example/iu);
+    expect(cardsJson).toMatch(/(?:pii\.Person|m\d+@d\d+\.invalid)/u);
+    expect(readPiiRedactionSummary(currentPlan)?.counts).toEqual({
+      content_text_replacements: 8,
+    });
+  });
+
+  it('redacts an ambiguous normalized D-214 phrase without granting restore authority', async () => {
+    const { ledger } = freshLedger();
+    const seedPlan = makePlan({
+      ledger,
+      resolver: (packet) => {
+        const record = packet as Record<string, unknown>;
+        return [
+          ...(typeof record.first_name === 'string'
+            ? [{ path: 'first_name', kind: 'name' as const }]
+            : []),
+          ...(typeof record.second_name === 'string'
+            ? [{ path: 'second_name', kind: 'name' as const }]
+            : []),
+        ];
+      },
+    });
+    let currentPacket: Record<string, unknown> = {};
+    const real: ExecuteChatAiCall = async (_m, input) => {
+      currentPacket = JSON.parse(String(input['llm.prompt'])) as Record<
+        string,
+        unknown
+      >;
+      const context = currentPacket.execution_case_context as
+        | { cards?: Array<{ request_shape?: { surface_terms?: string[] } }> }
+        | undefined;
+      return {
+        body: {
+          response: context?.cards?.[0]?.request_shape?.surface_terms?.join(' ')
+            ?? 'ok',
+          events: [],
+          tool_calls: [],
+        } satisfies AIOutput,
+      };
+    };
+    await wrapExecuteAiCallForPii(real, seedPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        first_name: 'A-B',
+        second_name: 'A B',
+      }),
+    });
+    const currentPlan = makePlan({ ledger });
+    const result = await wrapExecuteAiCallForPii(real, currentPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        user_message: 'repeat it',
+        execution_case_context: {
+          cards: [{
+            request_shape: {
+              surface_terms: ['a', 'b'],
+              segmented_terms: ['a', 'b'],
+            },
+          }],
+        },
+      }),
+    });
+
+    const shape = (
+      currentPacket.execution_case_context as {
+        cards: Array<{
+          request_shape: {
+            surface_terms: string[];
+            segmented_terms: string[];
+          };
+        }>;
+      }
+    ).cards[0]!.request_shape;
+    expect(shape.surface_terms).toEqual(['redacted']);
+    expect(shape.segmented_terms).toEqual(['redacted']);
+    expect((result.body as AIOutput).response).toBe('redacted');
+    expect(currentPlan.restoreAuthority?.value?.ledger.byKindBaseAlias.size).toBe(0);
+  });
+
+  it('redacts residual normalized identifier fragments after term deduplication', async () => {
+    const { ledger } = freshLedger();
+    const seedPlan = makePlan({
+      ledger,
+      resolver: () => [{ path: 'email', kind: 'email' }],
+    });
+    let currentPacket: Record<string, unknown> = {};
+    const real: ExecuteChatAiCall = async (_m, input) => {
+      currentPacket = JSON.parse(String(input['llm.prompt'])) as Record<
+        string,
+        unknown
+      >;
+      return {
+        body: { response: 'ok', events: [], tool_calls: [] } satisfies AIOutput,
+      };
+    };
+    await wrapExecuteAiCallForPii(real, seedPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        email: 'delphine.rowntree@example.com',
+      }),
+    });
+    const currentPlan = makePlan({ ledger });
+    await wrapExecuteAiCallForPii(real, currentPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        user_message: 'repeat it',
+        execution_case_context: {
+          cards: [{
+            request_shape: {
+              // `segmentExecutionCaseText` de-duplicates terms in first-seen
+              // order, so an earlier local-part token can destroy the full
+              // normalized email phrase's adjacency.
+              surface_terms: [
+                'delphine',
+                'send',
+                'rowntree',
+                'example',
+                'com',
+              ],
+              segmented_terms: [
+                'delphine',
+                'send',
+                'rowntree',
+                'example',
+                'com',
+              ],
+            },
+          }],
+        },
+      }),
+    });
+
+    const shape = (
+      currentPacket.execution_case_context as {
+        cards: Array<{
+          request_shape: {
+            surface_terms: string[];
+            segmented_terms: string[];
+          };
+        }>;
+      }
+    ).cards[0]!.request_shape;
+    expect(shape.surface_terms).toEqual(['redacted', 'send', 'd1.invalid']);
+    expect(shape.segmented_terms).toEqual(['redacted', 'send', 'd1.invalid']);
+    expect(JSON.stringify(shape)).not.toMatch(/delphine|rowntree|example/iu);
   });
 
   it('treats tagged free-text user_message as content, not one malformed identifier', async () => {

@@ -56,6 +56,7 @@
  *  (design § 5: the state-dependent slice stays in the recipe). */
 
 import { CRM_ALIAS_VALUES, type ConnectionVendorEntity } from './connection-vendors.js';
+import { ELEMENT_ON_SHORTHAND } from './dom-watch-trigger.js';
 import { FORM_RESPONSE_CREATED_EVENT_PATTERN } from './form-response.js';
 import {
   DOM_WATCH_BUS_PREFIX,
@@ -88,14 +89,7 @@ export const TRIGGER_SUGAR_VERB_TO_KIND: Readonly<
 export const MESSENGER_ON_SHORTHAND = 'message.received';
 export const RECEPTION_ON_SHORTHAND = 'reception.request';
 export const FORM_RESPONSE_ON_SHORTHAND = 'form_response.accepted';
-
-/** DOM-watch shorthand. A single fixed form (not verb-parameterized): the
- *  dom POLL source only ever emits `updated` (after the silent baseline the
- *  selector record is always present, so a content change — incl. the
- *  element vanishing to `text: null` — is an `updated`, never `created` /
- *  `deleted`). Exposing `element.created` / `element.removed` would mint
- *  silently-dead subscriptions, so the grammar admits only `changed`. */
-export const ELEMENT_ON_SHORTHAND = 'element.changed';
+export { ELEMENT_ON_SHORTHAND, isDomWatchTriggerEntry } from './dom-watch-trigger.js';
 
 /** Lowercase identifier — the same grammar `composeVendorEntityScope`
  *  enforces on scope segments (and `watch.ts` uses for literal pattern
@@ -551,16 +545,3 @@ export const validateRecipeEventTriggerEntry = (entry: unknown): string[] => {
   }
   return problems;
 };
-
-/** True when an `event_triggers` entry subscribes to a DOM watch — either
- *  the dom sugar shorthand (`on: 'element.changed'`) or a raw bus pattern
- *  on the `data.dom.…` namespace. The §5 publish gate uses this to bar a
- *  dom watch from a self-serve PUBLISHED recipe: an arbitrary-domain DOM
- *  read carries no publisher-signed `domain_allowlist`, so the
- *  shareable form must ship in a pack (the curated tier). Local /
- *  unpublished recipes keep the sugar as their escape hatch. */
-export const isDomWatchTriggerEntry = (
-  entry: Pick<RecipeEventTrigger, 'on' | 'event'>,
-): boolean =>
-  entry.on === ELEMENT_ON_SHORTHAND ||
-  (typeof entry.event === 'string' && entry.event.startsWith(`data.${DOM_WATCH_PLATFORM}.`));

@@ -676,11 +676,25 @@ describe('composeChatOrchestrator', () => {
     const { bundle } = composeHarness();
     const diagnostics = await bundle.chatDeps.executionCaseDiagnostics?.() as {
       active_experiment: boolean;
-      compiler: { materialized_cases: number };
+      compiler: {
+        materialized_cases: number;
+        request_shape_source_reports: {
+          grounded_dissection: number;
+          ungrounded_dissection_fallback: number;
+          missing_dissection_fallback: number;
+        };
+      };
     };
     expect(diagnostics).toMatchObject({
       active_experiment: false,
-      compiler: { materialized_cases: 0 },
+      compiler: {
+        materialized_cases: 0,
+        request_shape_source_reports: {
+          grounded_dissection: 0,
+          ungrounded_dissection_fallback: 0,
+          missing_dissection_fallback: 0,
+        },
+      },
     });
     expect(JSON.stringify(diagnostics)).not.toContain('root_request');
     expect(JSON.stringify(diagnostics)).not.toContain('payload_encrypted');

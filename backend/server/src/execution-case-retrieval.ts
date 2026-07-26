@@ -194,14 +194,17 @@ export const CASE_EXPERIMENT_CAUSAL_AXES = [
   'first_flow_survived',
   'approval_binding_survived',
 ] as const satisfies readonly CaseExperimentOutcomeAxis[];
-/** §10.4.1's exact anchoring-harm vocabulary. These are adverse when their
- * treatment-minus-control rate increases. */
+/** §10.4.1 material-harm vocabulary. These are adverse when their
+ * treatment-minus-control closed-root incidence increases. */
 export const CASE_EXPERIMENT_MATERIAL_HARM_AXES = [
   'explicit_correction',
   'explicit_rejection',
   'explicit_undo',
   'verification_failure',
   'execution_failure',
+  'authorization_denial',
+  'plan_declined',
+  'plan_abandoned',
 ] as const satisfies readonly CaseExperimentOutcomeAxis[];
 const CASE_EXPERIMENT_CAUSAL_AXIS_SET = new Set<string>(
   CASE_EXPERIMENT_CAUSAL_AXES,

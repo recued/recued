@@ -296,6 +296,7 @@ const fixture = async () => {
     reportStore,
     caseStore,
     feedbackStore,
+    interventionStore,
     compiler,
     now: () => clock++,
   });
@@ -353,7 +354,7 @@ const context = (
   turn_state: state,
 });
 
-describe('D-214 report lifecycle and additive feedback', () => {
+describe('D-214 report and feedback lifecycle', () => {
   it('consumes pending advisory attribution at the next planner egress only', async () => {
     const f = await fixture();
     const state = new Map<string, unknown>([[
@@ -446,6 +447,141 @@ describe('D-214 report lifecycle and additive feedback', () => {
     await f.compiler.deleteSource('report-1');
     expect(await f.caseStore.listAll()).toEqual([]);
     expect(await f.reportStore.get('report-1')).toBeUndefined();
+  });
+
+  it('retracts one strong typed feedback fact and removes its durable precedent', async () => {
+    const f = await fixture();
+    await open(f);
+    addActivity(f.db, { id: 'retract-a1', at: 101, tool: 'file.search' });
+    addActivity(f.db, { id: 'retract-a2', at: 102, tool: 'mail.send' });
+    await f.lifecycle.dispatchOutcome({ claim: 'fulfilled' }, context());
+    await f.lifecycle.finalizeTurn({
+      session_id: 's1',
+      turn_id: 't1',
+    });
+    expect(await f.caseStore.listAll()).toEqual([]);
+
+    await expect(f.feedbackRecorder.record({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+    })).resolves.toEqual({ ok: true, recorded: true });
+    expect(await f.caseStore.listAll()).toEqual([
+      expect.objectContaining({
+        outcome_strength: expect.objectContaining({
+          positive: 0,
+          negative: 1,
+          evidence_families: expect.arrayContaining(['typed_rejection']),
+        }),
+      }),
+    ]);
+    const admittedCase = (await f.caseStore.listAll())[0]!;
+    let treatmentExperiment: ExecutionCaseExperimentDefinition | undefined;
+    for (let index = 0; index < 100; index += 1) {
+      const definition = experimentDefinition(`retract-exp-${index}`);
+      if (f.interventionStore.assignment({
+        experiment_id: definition.experiment_id,
+        root_request_id: 'future-critique-root',
+        assigned_at: 103,
+        definition,
+      }) === 'treatment') {
+        treatmentExperiment = definition;
+        break;
+      }
+    }
+    expect(treatmentExperiment).toBeDefined();
+    const evidence = [{
+      case_id: admittedCase.case_id,
+      case_key: admittedCase.case_key,
+      role: 'contradiction' as const,
+    }];
+    await f.interventionStore.put({
+      schema_version: 1,
+      intervention_id: 'retract-dependent-intervention',
+      experiment_id: treatmentExperiment!.experiment_id,
+      root_request_id: 'future-critique-root',
+      session_id: 'future-session',
+      turn_id: 'future-turn',
+      governing_contract_id: 'user_self',
+      principal_key: 'user_self',
+      assignment: 'treatment',
+      qualifying_evidence: evidence,
+      selected_evidence: evidence,
+      shown_evidence: evidence,
+      planner_fingerprint: treatmentExperiment!.planner_fingerprint,
+      prompt_fingerprint: treatmentExperiment!.prompt_fingerprint,
+      retrieval_fingerprint: treatmentExperiment!.retrieval_fingerprint,
+      policy_fingerprint: treatmentExperiment!.policy_fingerprint,
+      compiler_version: EXECUTION_CASE_COMPILER_VERSION,
+      recorded_at: 104,
+      surface: 'proposal_critique',
+      candidate_flow_hash: 'future-flow',
+    });
+    expect(await f.interventionStore.listForRoot(
+      treatmentExperiment!.experiment_id,
+      'future-critique-root',
+    )).toHaveLength(1);
+
+    await expect(f.feedbackRecorder.record({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'accepted',
+    })).resolves.toEqual({ ok: true, recorded: true });
+    expect(await f.interventionStore.listForRoot(
+      treatmentExperiment!.experiment_id,
+      'future-critique-root',
+    )).toHaveLength(1);
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'accepted',
+    })).resolves.toEqual({ ok: true, retracted: true });
+    expect(await f.caseStore.listAll()).toHaveLength(1);
+    expect(await f.interventionStore.listForRoot(
+      treatmentExperiment!.experiment_id,
+      'future-critique-root',
+    )).toHaveLength(1);
+
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'corrected',
+    })).resolves.toEqual({ ok: true, retracted: false });
+    expect(await f.caseStore.listAll()).toHaveLength(1);
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 'missing-turn',
+      kind: 'rejected',
+    })).resolves.toEqual({ ok: false, reason: 'span_not_found' });
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+      source_plan_id: 'plan-outside-span',
+    })).resolves.toEqual({ ok: false, reason: 'plan_not_in_span' });
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+    })).resolves.toEqual({ ok: true, retracted: true });
+    await expect(f.feedbackRecorder.retract({
+      session_id: 's1',
+      turn_id: 't1',
+      kind: 'rejected',
+    })).resolves.toEqual({ ok: true, retracted: false });
+
+    expect(f.feedbackStore.listForRoot('r1')).toEqual([]);
+    expect(await f.caseStore.listAll()).toEqual([]);
+    expect(await f.interventionStore.listForRoot(
+      treatmentExperiment!.experiment_id,
+      'future-critique-root',
+    )).toEqual([]);
+    const observations = await f.caseStore.listObservations();
+    expect(observations).toHaveLength(1);
+    expect(observations[0]!.evidence_kinds)
+      .toContain('unverified_success');
+    expect(observations[0]!.evidence_kinds)
+      .not.toContain('typed_rejection');
   });
 
   it('falls an ungrounded stored dissection back without suppressing a strong negative', async () => {
@@ -1732,6 +1868,17 @@ describe('D-214 retrieval and storage mechanism guards', () => {
       turn_id: 't1',
       now: 100,
     });
+    await expect(composed.lifecycle.dispatchDissection({
+      schema_version: 1,
+      intent: 'send quarterly report',
+      objects: ['report'],
+      entities: [],
+      constraints: [],
+      outcome_sought: 'customer receives report',
+    }, context())).resolves.toMatchObject({
+      ok: true,
+      result: { recorded: true },
+    });
     addActivity(db, { id: 'p1', at: 101, tool: 'file.search' });
     addActivity(db, { id: 'p2', at: 102, tool: 'mail.send' });
     await composed.lifecycle.dispatchOutcome(
@@ -1798,6 +1945,12 @@ describe('D-214 retrieval and storage mechanism guards', () => {
     });
     expect(anchorStore.getRoot('privacy-root')).toBeUndefined();
     expect(anchorStore.listAnchors('privacy-root')).toEqual([]);
+    expect((db.prepare(`
+      SELECT COUNT(*) AS count FROM execution_span_dissections
+    `).get() as { count: number }).count).toBe(0);
+    expect((db.prepare(`
+      SELECT COUNT(*) AS count FROM execution_turn_dissections
+    `).get() as { count: number }).count).toBe(0);
     expect(await composed.reportStore.listAll()).toEqual([]);
     expect(await composed.caseStore.listObservations()).toEqual([]);
     expect(composed.caseStore.compiledReportVersions().size).toBe(0);

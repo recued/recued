@@ -46,6 +46,10 @@ interface FeedbackRow {
 export interface ExecutionCaseFeedbackStore {
   record(value: ExecutionCaseFeedback): boolean;
   listForRoot(root_request_id: string): ExecutionCaseFeedback[];
+  deleteExact(input: {
+    feedback_id: string;
+    root_request_id: string;
+  }): boolean;
   deleteForRoot(root_request_id: string): number;
 }
 
@@ -67,6 +71,11 @@ export const createExecutionCaseFeedbackStore = (
     SELECT * FROM execution_case_feedback
      WHERE root_request_id = ?
      ORDER BY recorded_at ASC, feedback_id ASC
+  `);
+  const removeExact = db.prepare(`
+    DELETE FROM execution_case_feedback
+     WHERE feedback_id = @feedback_id
+       AND root_request_id = @root_request_id
   `);
   const remove = db.prepare(`
     DELETE FROM execution_case_feedback WHERE root_request_id = ?
@@ -104,6 +113,12 @@ export const createExecutionCaseFeedbackStore = (
     },
     listForRoot(root_request_id) {
       return (list.all(root_request_id) as FeedbackRow[]).map(fromRow);
+    },
+    deleteExact(input) {
+      if (!input.feedback_id || !input.root_request_id) {
+        throw new Error('execution-case-feedback-store: invalid deletion');
+      }
+      return removeExact.run(input).changes === 1;
     },
     deleteForRoot(root_request_id) {
       return remove.run(root_request_id).changes;

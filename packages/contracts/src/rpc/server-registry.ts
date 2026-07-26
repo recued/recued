@@ -5237,6 +5237,17 @@ export type ServerRpcRegistry = {
     },
     { recorded: boolean }
   >;
+  /** Retract one exact owner feedback fact and deterministically recompile the
+   * affected closed span. The caller still names no case or feedback row. */
+  'chat.execution.feedback.retract': RpcMethodSpec<
+    {
+      session_id: string;
+      turn_id: string;
+      kind: import('../execution-case.js').ExecutionCaseFeedbackKind;
+      source_plan_id?: string;
+    },
+    { retracted: boolean }
+  >;
   /** Owner-only D-214 compiler/experiment aggregates. Kept `unknown` at the
    * transport boundary because the report is versioned independently and is
    * not a model-facing contract. */
@@ -6769,6 +6780,7 @@ export const SERVER_RPC_METHODS = [
   'chat.plan.approve',
   'chat.plan.cancel',
   'chat.execution.feedback',
+  'chat.execution.feedback.retract',
   'chat.execution.diagnostics',
   'chat.session.set_picker',
   'chat.session.set_model_pref',

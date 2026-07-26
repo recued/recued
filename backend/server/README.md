@@ -11,7 +11,7 @@ Pick the install path that matches your setup. All four deliver the same `recued
 | Distribution | Best for | Command |
 |---|---|---|
 | **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.7.25` |
+| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.7.26` |
 | **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
 | **One-click VPS** | Non-technical users on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
 

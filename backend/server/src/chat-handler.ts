@@ -90,6 +90,7 @@ import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.j
 import { PEER_HANDLE_CONFLICT_PREFIX } from './storage/chat-inbound-token-store.js';
 import type {
   ExecutionCaseFeedbackRecorder,
+  ExecutionCaseFeedbackTarget,
 } from './execution-case-feedback.js';
 import type {
   ExecutionCaseLifecycle,
@@ -125,7 +126,7 @@ export interface ChatRpcDeps {
    *  `not_configured` (501) and the MCP HTTP transport falls back to
    *  the v1 `RECUED_MCP_HTTP_TOKEN` env-var path. */
   inboundTokenStore?: ChatInboundTokenStore;
-  /** D-214 owner-only typed completion feedback. */
+  /** D-214 owner-only typed completion-feedback lifecycle. */
   executionCaseFeedbackRecorder?: ExecutionCaseFeedbackRecorder;
   /** D-214 terminal plan resolutions can close a previously deferred span. */
   executionCaseLifecycle?: ExecutionCaseLifecycle;
@@ -185,6 +186,7 @@ type ChatMethods =
   | 'chat.plan.approve'
   | 'chat.plan.cancel'
   | 'chat.execution.feedback'
+  | 'chat.execution.feedback.retract'
   | 'chat.execution.diagnostics'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
@@ -1111,18 +1113,11 @@ export const handlePlanCancel = async (
 ): Promise<{ plan: ChatPlanProposal }> =>
   resolvePlanRpc(deps, 'chat.plan.cancel', 'cancelled', args);
 
-export const handleExecutionCaseFeedback = async (
+const executionCaseFeedbackTarget = (
   deps: ChatRpcDeps,
   args: unknown,
-): Promise<{ recorded: boolean }> => {
-  const method = 'chat.execution.feedback';
-  if (!deps.executionCaseFeedbackRecorder) {
-    throw new RpcError(
-      'not_configured',
-      `${method}: execution-case feedback is not wired`,
-      501,
-    );
-  }
+  method: 'chat.execution.feedback' | 'chat.execution.feedback.retract',
+): ExecutionCaseFeedbackTarget => {
   const safe = ensureRecordArgs(method, args);
   const allowed = new Set([
     'session_id',
@@ -1158,22 +1153,66 @@ export const handleExecutionCaseFeedback = async (
         'source_plan_id',
         safe.source_plan_id,
       );
-  const result = await deps.executionCaseFeedbackRecorder.record({
+  return {
     session_id,
     turn_id,
     kind: safe.kind,
     ...(source_plan_id ? { source_plan_id } : {}),
-  });
-  if (!result.ok) {
+  };
+};
+
+const throwExecutionCaseFeedbackTargetError = (
+  method: 'chat.execution.feedback' | 'chat.execution.feedback.retract',
+  result: {
+    ok: false;
+    reason: 'span_not_found' | 'plan_not_in_span';
+  },
+): never => {
+  throw new RpcError(
+    result.reason === 'span_not_found' ? 'not_found' : 'bad_request',
+    result.reason === 'span_not_found'
+      ? `${method}: turn is not anchored to this session`
+      : `${method}: source_plan_id is not part of the resolved span`,
+    result.reason === 'span_not_found' ? 404 : 400,
+  );
+};
+
+export const handleExecutionCaseFeedback = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ recorded: boolean }> => {
+  const method = 'chat.execution.feedback';
+  if (!deps.executionCaseFeedbackRecorder) {
     throw new RpcError(
-      result.reason === 'span_not_found' ? 'not_found' : 'bad_request',
-      result.reason === 'span_not_found'
-        ? `${method}: turn is not anchored to this session`
-        : `${method}: source_plan_id is not part of the resolved span`,
-      result.reason === 'span_not_found' ? 404 : 400,
+      'not_configured',
+      `${method}: execution-case feedback is not wired`,
+      501,
     );
   }
-  return { recorded: result.recorded };
+  const result = await deps.executionCaseFeedbackRecorder.record(
+    executionCaseFeedbackTarget(deps, args, method),
+  );
+  if (result.ok) return { recorded: result.recorded };
+  return throwExecutionCaseFeedbackTargetError(method, result);
+};
+
+export const handleExecutionCaseFeedbackRetract = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ retracted: boolean }> => {
+  const method = 'chat.execution.feedback.retract';
+  if (!deps.executionCaseFeedbackRecorder) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution-case feedback is not wired`,
+      501,
+    );
+  }
+  const result = await deps.executionCaseFeedbackRecorder.retract(
+    executionCaseFeedbackTarget(deps, args, method),
+  );
+  if (result.ok) return { retracted: result.retracted };
+  return throwExecutionCaseFeedbackTargetError(method, result);
 };
 
 export const handleExecutionCaseDiagnostics = async (
@@ -2377,6 +2416,7 @@ export const makeChatHandlers = (
       'chat.plan.approve',
       'chat.plan.cancel',
       'chat.execution.feedback',
+      'chat.execution.feedback.retract',
       'chat.execution.diagnostics',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
@@ -2427,6 +2467,8 @@ export const makeChatHandlers = (
       'chat.plan.cancel': async (args) => handlePlanCancel(deps, args),
       'chat.execution.feedback': async (args) =>
         handleExecutionCaseFeedback(deps, args),
+      'chat.execution.feedback.retract': async (args) =>
+        handleExecutionCaseFeedbackRetract(deps, args),
       'chat.execution.diagnostics': async () =>
         handleExecutionCaseDiagnostics(deps),
       'chat.session.set_picker': async (args) =>

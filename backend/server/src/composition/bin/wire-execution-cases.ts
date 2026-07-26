@@ -327,6 +327,7 @@ export const composeExecutionCases = (input: {
     feedbackStore,
     reportStore,
     caseStore,
+    interventionStore,
     compiler,
   });
   const verificationRecorder = createExecutionCaseVerificationRecorder({

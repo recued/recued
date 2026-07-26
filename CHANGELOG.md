@@ -7,6 +7,24 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.7.26 — 2026-07-26
+
+### Added
+
+- Owner feedback on a chat execution can be retracted:
+  `chat.execution.feedback.retract` withdraws one exact feedback fact and
+  deterministically recompiles the affected span. As with the rest of the
+  feedback surface, the caller names no case or feedback row.
+- An `element.changed` shorthand for DOM watch triggers, alongside the existing
+  trigger sugar.
+
+### Changed
+
+- `@recued/contracts` now declares `sideEffects`, so bundlers can tree-shake
+  the modules that have none.
+- Execution-case handling is tightened throughout: case grounding, experiment
+  invariants, critic behaviour, retrieval, and the case vocabulary.
+
 ## 26.7.25 — 2026-07-25
 
 ### Added

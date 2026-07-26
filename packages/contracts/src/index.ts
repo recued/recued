@@ -2931,14 +2931,16 @@ export {
   MESSENGER_ON_SHORTHAND,
   RECEPTION_ON_SHORTHAND,
   FORM_RESPONSE_ON_SHORTHAND,
-  ELEMENT_ON_SHORTHAND,
   parseTriggerOn,
   whereToDispatchFilter,
   compileTriggerSugarEntry,
   matchesTriggerDispatchFilter,
   validateRecipeEventTriggerEntry,
-  isDomWatchTriggerEntry,
 } from './trigger-sugar.js';
+export {
+  ELEMENT_ON_SHORTHAND,
+  isDomWatchTriggerEntry,
+} from './dom-watch-trigger.js';
 
 // Entity-targeting rule (design § 8) — targeted-without-target warn+block,
 // the one rule set the run modal + server execute guard share.
